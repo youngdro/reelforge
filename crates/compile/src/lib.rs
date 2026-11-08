@@ -8,11 +8,13 @@
 
 use std::collections::BTreeMap;
 
-use reelforge_model::{Clip, ClipContent, MediaKind, Project, Prop, TitleAlign, Track, TrackKind, TransitionKind};
+use reelforge_model::{
+    Clip, ClipContent, MediaKind, Project, Prop, Timing, TitleAlign, Track, TrackKind, TransitionKind,
+};
 use reelforge_renderspec::{
     Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Blend, Color, Ease, Effect, Fit, Key, Layer,
-    LayerContent, Output, Probe, RenderSpec, TextAlign, TextBackground, TextContent, TextShadow, TextStroke, TimeMap,
-    Transform, VideoCodec, VideoEncoding, validate,
+    LayerContent, Output, Probe, RenderSpec, SpeedKey, TextAlign, TextBackground, TextContent, TextShadow, TextStroke,
+    TimeMap, Transform, VideoCodec, VideoEncoding, validate,
 };
 use reelforge_time::Tick;
 use thiserror::Error;
@@ -108,9 +110,9 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
             if picture {
                 let shape = shape(clip, cuts[i], cuts.get(i + 1).copied().flatten());
                 let content = match &clip.content {
-                    ClipContent::Media { media, source_in, speed } => LayerContent::Media {
+                    ClipContent::Media { media, .. } => LayerContent::Media {
                         asset: asset_for(media)?,
-                        time: TimeMap { source_in: *source_in - shape.lead.scale(*speed), speed: *speed },
+                        time: time_map(&clip.timing().expect("a media clip"), shape.lead),
                         fit: Fit::Contain,
                     },
                     ClipContent::Solid { color } => LayerContent::Solid { color: Color(*color) },
@@ -194,15 +196,22 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                     ClipContent::Media { media, .. } => project.media[media].kind != MediaKind::Image,
                     _ => false,
                 };
-            if sound && let ClipContent::Media { media, source_in, speed } = &clip.content {
+            // a freeze frame is silent
+            if sound
+                && let ClipContent::Media { media, .. } = &clip.content
+                && let Some(timing) = clip.timing().filter(|t| t.speed != 0.0)
+            {
+                let time = time_map(&timing, Tick::ZERO);
+                // backwards, sound plays like tape run the other way
+                let keep_pitch = clip.keep_pitch && !time.reverses() && (time.speed != 1.0 || !time.ramp.is_empty());
                 spec.audio.push(AudioClip {
                     id: clip.id.clone(),
                     asset: asset_for(media)?,
                     at: clip.start,
                     dur: clip.duration,
-                    time: TimeMap { source_in: *source_in, speed: *speed },
+                    time,
                     gain_db: motion::lower(clip, Prop::VolumeDb, &Shape::of(clip), step),
-                    keep_pitch: clip.keep_pitch && *speed != 1.0,
+                    keep_pitch,
                 });
             }
         }
@@ -211,6 +220,14 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
     spec.engine.features = spec.required_features().into_iter().collect();
     validate(&spec).map_err(|e| CompileError::Invalid(e.to_string()))?;
     Ok(spec)
+}
+
+/// A clip's timing as a layer or audio clip that starts `lead` before the clip.
+fn time_map(t: &Timing, lead: Tick) -> TimeMap {
+    let mut ramp: Vec<SpeedKey> = t.ramp.iter().map(|&(at, speed)| SpeedKey { t: at + lead, speed }).collect();
+    // a very short clip can round two points onto one tick
+    ramp.dedup_by_key(|k| k.t);
+    TimeMap { source_in: t.source_at(-lead), speed: t.speed, ramp }
 }
 
 /// For each clip of `track`, the transition into it that plays, with half its length: a transition
@@ -286,12 +303,7 @@ mod tests {
                 size: Some([1920, 1080]),
             },
         );
-        p.tracks[0].clips.push(clip(
-            "c20",
-            Tick::ZERO,
-            Tick::SECOND * 2,
-            ClipContent::Media { media: "m9".into(), source_in: Tick::SECOND, speed: 1.0 },
-        ));
+        p.tracks[0].clips.push(clip("c20", Tick::ZERO, Tick::SECOND * 2, ClipContent::media("m9", Tick::SECOND)));
         p.tracks[1].clips.push(clip(
             "c21",
             Tick::ZERO,
@@ -320,12 +332,7 @@ mod tests {
                 size: None,
             },
         );
-        p.tracks[0].clips.push(clip(
-            "c20",
-            Tick::ZERO,
-            Tick::SECOND,
-            ClipContent::Media { media: "m9".into(), source_in: Tick::ZERO, speed: 1.0 },
-        ));
+        p.tracks[0].clips.push(clip("c20", Tick::ZERO, Tick::SECOND, ClipContent::media("m9", Tick::ZERO)));
         assert_eq!(compile(&p, &CompileOptions::default()), Err(CompileError::Unhashed("m9".into())));
     }
 

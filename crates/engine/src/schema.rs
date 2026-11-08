@@ -176,6 +176,10 @@ pub fn input_schema(id: &str) -> Option<Value> {
                     json!({"type": "boolean", "description": "Hide the track's picture (video and text tracks)."}),
                 ),
                 ("muted", json!({"type": "boolean", "description": "Mute the track's sound."})),
+                (
+                    "magnetic",
+                    json!({"type": "boolean", "description": "Keep the clips end to end from the start: removing or trimming closes gaps, moving reorders."}),
+                ),
             ],
             &["track"],
         ),
@@ -218,10 +222,16 @@ pub fn input_schema(id: &str) -> Option<Value> {
             &["clip", "start"],
         ),
         "clip.remove" => object(
-            vec![(
-                "clips",
-                json!({"description": "A clip id or a list of them.", "oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}, "minItems": 1}]}),
-            )],
+            vec![
+                (
+                    "clips",
+                    json!({"description": "A clip id or a list of them.", "oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}, "minItems": 1}]}),
+                ),
+                (
+                    "ripple",
+                    json!({"type": "boolean", "description": "Move later clips on the same track up to close the gaps."}),
+                ),
+            ],
             &["clips"],
         ),
         "clip.setSpeed" => object(
@@ -290,6 +300,35 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ("duration", time("How long it plays; 0.5 s by default.")),
             ],
             &["clip", "slot", "kind"],
+        ),
+        "clip.setReverse" => object(
+            vec![
+                clip(),
+                ("reversed", json!({"type": "boolean", "description": "Play backwards; false plays forwards again."})),
+            ],
+            &["clip", "reversed"],
+        ),
+        "clip.setSpeedCurve" => object(
+            vec![
+                clip(),
+                (
+                    "curve",
+                    json!({"description": "A preset, points of [fraction of the clip 0-1, multiple of the average speed 0.1-10] in order, or null for a steady speed.", "oneOf": [
+                        {"enum": ["montage", "hero", "bullet", "jumpCut", "flashIn", "flashOut"]},
+                        {"type": "array", "minItems": 2, "items": {"type": "array", "prefixItems": [{"type": "number", "minimum": 0, "maximum": 1}, {"type": "number", "minimum": 0.1, "maximum": 10}], "minItems": 2, "maxItems": 2}},
+                        {"type": "null"}
+                    ]}),
+                ),
+            ],
+            &["clip", "curve"],
+        ),
+        "clip.freeze" => object(
+            vec![
+                clip(),
+                ("at", time("Timeline time of the frame to hold, within the clip.")),
+                ("duration", time("How long the still lasts; 3 s by default.")),
+            ],
+            &["clip", "at"],
         ),
         "clip.setTransition" => object(
             vec![

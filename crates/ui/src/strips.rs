@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use eframe::egui::{self, Color32, Rect, Stroke, pos2};
 use reelforge_media::Footage;
-use reelforge_model::{Media, MediaKind};
+use reelforge_model::{Media, MediaKind, Timing};
 use reelforge_renderspec::{Asset, AssetKind};
 use reelforge_time::{TICKS_PER_SECOND, Tick};
 use web_time::{Duration, Instant};
@@ -71,17 +71,16 @@ fn key(a: &Asset) -> &str {
     if a.sha256.is_empty() { &a.uri } else { &a.sha256 }
 }
 
-/// Where a clip's source is: the source time at the clip's start and how fast it runs.
-#[derive(Copy, Clone)]
+/// Where a clip's source is: how it runs through its media, from its start on the timeline.
+#[derive(Clone)]
 pub(crate) struct Source {
-    pub source_in: Tick,
-    pub speed: f64,
+    pub timing: Timing,
     pub start: Tick,
 }
 
 impl Source {
     fn at(&self, t: f64) -> f64 {
-        self.source_in.seconds() + (t - self.start.seconds()) * self.speed
+        self.timing.source_at(Tick::from_seconds(t) - self.start).seconds()
     }
 }
 
@@ -107,7 +106,7 @@ impl Strips {
             return;
         }
         // a grid of source times no finer than one picture's worth, so zooming reuses pictures
-        let span = ((t_of(r.left() + w) - t_of(r.left())) * src.speed).max(1e-3);
+        let span = ((t_of(r.left() + w) - t_of(r.left())) * src.timing.speed.abs()).max(1e-3);
         let grid = 2f64.powf(span.log2().floor()).max(1.0 / 64.0);
         let duration = m.duration.map_or(f64::MAX, |d| d.seconds());
         let first = ((visible.left() - r.left()) / w).floor() as i32;
@@ -175,6 +174,8 @@ impl Strips {
         let mut x = visible.left();
         while x < visible.right() {
             let (s0, s1) = (src.at(t_of(x)), src.at(t_of(x + step)));
+            // backwards, source time falls along the clip
+            let (s0, s1) = (s0.min(s1), s0.max(s1));
             let (b0, b1) = (
                 (s0 * PEAKS_PER_SECOND as f64).floor().max(0.0) as usize,
                 ((s1 * PEAKS_PER_SECOND as f64).ceil().max(0.0) as usize)
@@ -296,7 +297,8 @@ mod tests {
 
     #[test]
     fn source_time_follows_the_clip() {
-        let s = Source { source_in: Tick::SECOND * 2, speed: 2.0, start: Tick::SECOND * 10 };
+        let timing = Timing::of(Tick::SECOND * 2, 2.0, false, &[], Tick::SECOND * 4);
+        let s = Source { timing, start: Tick::SECOND * 10 };
         assert_eq!(s.at(10.0), 2.0);
         assert_eq!(s.at(11.5), 5.0);
     }

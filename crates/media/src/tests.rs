@@ -123,11 +123,7 @@ fn exported_mp4_probes_and_decodes_to_the_same_pictures() {
         "clip",
         Tick::ZERO,
         Tick::SECOND,
-        LayerContent::Media {
-            asset: "v".into(),
-            time: TimeMap { source_in: Tick::from_seconds(1.5), speed: 1.0 },
-            fit: Fit::Contain,
-        },
+        LayerContent::Media { asset: "v".into(), time: TimeMap::new(Tick::from_seconds(1.5), 1.0), fit: Fit::Contain },
     ));
     let (img, report) = render_frame(&spec, Tick::ZERO, 1.0, &footage, Quality::Final).expect("render");
     assert!(report.placeholders.is_empty());
@@ -312,7 +308,7 @@ fn faster_sound_keeps_its_pitch_when_asked() {
         asset: "a".into(),
         at: Tick::ZERO,
         dur: Tick::SECOND,
-        time: TimeMap { source_in: Tick::ZERO, speed: 2.0 },
+        time: TimeMap::new(Tick::ZERO, 2.0),
         gain_db: Animated::Constant(0.0),
         keep_pitch,
     };
@@ -336,4 +332,64 @@ fn faster_sound_keeps_its_pitch_when_asked() {
     }
     let worst = sliced.iter().zip(&kept[0]).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
     assert!(worst < 1e-4, "{worst}");
+}
+
+#[test]
+fn sound_plays_backwards_ramps_and_holds() {
+    let wav = temp("tone-time.wav");
+    std::fs::write(&wav, tone_wav(48_000, 3.0)).expect("write wav");
+    let mut spec = two_colours();
+    spec.assets.insert(
+        "a".into(),
+        Asset {
+            kind: AssetKind::Audio,
+            sha256: sha(6),
+            uri: wav.to_string_lossy().into_owned(),
+            of: None,
+            probe: None,
+        },
+    );
+    let clip = |time: TimeMap, keep_pitch| AudioClip {
+        id: "tone".into(),
+        asset: "a".into(),
+        at: Tick::ZERO,
+        dur: Tick::SECOND,
+        time,
+        gain_db: Animated::Constant(0.0),
+        keep_pitch,
+    };
+    let crossings = |x: &[f32]| x.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
+    let footage = Footage::new();
+    let expected = 16000.0 / 32768.0 / 2f32.sqrt();
+    // backwards at normal speed: the same tone, from 2 s down to 1 s
+    spec.audio = vec![clip(TimeMap::new(Tick::SECOND * 2, -1.0), true)];
+    let back = export::mix(&spec, &footage, 48_000, 0, 48_000).expect("mix");
+    let c = crossings(&back[0][12_000..36_000]);
+    assert!((c as i64 - 220).abs() <= 4, "backwards {c}");
+    assert!((rms(&back[0][4_800..43_200]) - expected).abs() < 0.04);
+    // a speed rising from 1 to 2 keeps the pitch, and slices match the whole
+    let ramp = TimeMap {
+        source_in: Tick::ZERO,
+        speed: 1.0,
+        ramp: vec![SpeedKey { t: Tick::ZERO, speed: 1.0 }, SpeedKey { t: Tick::SECOND, speed: 2.0 }],
+    };
+    spec.audio = vec![clip(ramp.clone(), true)];
+    let kept = export::mix(&spec, &footage, 48_000, 0, 48_000).expect("mix");
+    let c = crossings(&kept[0][12_000..36_000]);
+    assert!((c as i64 - 220).abs() <= 6, "ramp kept {c}");
+    let mut sliced = vec![];
+    for i in 0..4 {
+        sliced.extend(export::mix(&spec, &footage, 48_000, i * 12_000, 12_000).expect("mix")[0].clone());
+    }
+    let worst = sliced.iter().zip(&kept[0]).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    assert!(worst < 1e-4, "{worst}");
+    // on tape the same ramp rises in pitch: about 1.5 times the crossings over the middle half
+    spec.audio = vec![clip(ramp, false)];
+    let tape = export::mix(&spec, &footage, 48_000, 0, 48_000).expect("mix");
+    let c = crossings(&tape[0][12_000..36_000]);
+    assert!((c as i64 - 330).abs() <= 8, "ramp tape {c}");
+    // a freeze frame is silent
+    spec.audio = vec![clip(TimeMap::new(Tick::SECOND, 0.0), true)];
+    let held = export::mix(&spec, &footage, 48_000, 0, 48_000).expect("mix");
+    assert!(held[0].iter().all(|s| *s == 0.0));
 }

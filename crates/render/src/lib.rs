@@ -40,8 +40,16 @@ pub use plan::{FramePlan, PlannedLayer, PlannedSource, plan_frame};
 
 /// Feature ids this renderer implements; see `RenderSpec::required_features`. (`audio.stretch/1` is
 /// `reelforge-media`'s mix, which every reelforge renderer of sound uses.)
-pub const SUPPORTED_FEATURES: &[&str] =
-    &["audio.stretch/1", "color.brightness@1", "color.saturation@1", "text/1", "text/2"];
+pub const SUPPORTED_FEATURES: &[&str] = &[
+    "audio.stretch/1",
+    "color.brightness@1",
+    "color.saturation@1",
+    "text/1",
+    "text/2",
+    "time.hold/1",
+    "time.ramp/1",
+    "time.reverse/1",
+];
 
 /// Why a frame could not be rendered.
 #[derive(Debug, Clone, PartialEq, Error)]

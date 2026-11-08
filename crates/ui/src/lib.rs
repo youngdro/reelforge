@@ -35,7 +35,9 @@ use i18n::{Lang, Strings, fill};
 use reelforge_compile::{CompileOptions, compile};
 use reelforge_engine::{Session, SharedSession};
 use reelforge_media::Footage;
-use reelforge_model::{AnimKind, ClipContent, ClipTransform, MediaKind, Project, Prop, TrackKind, TransitionKind};
+use reelforge_model::{
+    AnimKind, ClipContent, ClipTransform, CurvePreset, MediaKind, Project, Prop, TrackKind, TransitionKind,
+};
 use reelforge_render::{Quality, render_frame};
 use reelforge_time::Tick;
 use serde_json::{Value, json};
@@ -147,8 +149,22 @@ struct Inspector {
     transition: Option<(Option<(TransitionKind, f32)>, bool)>,
     /// Clips with sound: fade-in and fade-out lengths in seconds.
     fades: Option<[f32; 2]>,
-    /// Video and sound clips: the speed, and whether sound keeps its pitch.
-    speed: Option<(f32, bool)>,
+    /// Video and sound clips: speed, pitch, direction and curve.
+    speed: Option<SpeedEdit>,
+}
+
+/// How a video or sound clip runs, as the inspector edits it.
+#[derive(Clone, PartialEq)]
+struct SpeedEdit {
+    speed: f32,
+    keep_pitch: bool,
+    reversed: bool,
+    /// `None`: steady; `Some(None)`: a curve that is not a preset.
+    curve: Option<Option<CurvePreset>>,
+    /// A freeze frame (speed 0).
+    frozen: bool,
+    /// Video, which can be frozen.
+    video: bool,
 }
 
 /// Whether a property has a keyframe at the playhead.
@@ -537,9 +553,9 @@ impl EditorApp {
         }
     }
 
-    fn delete(&mut self) {
+    fn delete(&mut self, ripple: bool) {
         if let Some(sel) = self.selected.clone()
-            && self.execute("clip.remove", json!({"clips": sel})).is_ok()
+            && self.execute("clip.remove", json!({"clips": sel, "ripple": ripple})).is_ok()
         {
             self.selected = None;
             self.inspector = None;
@@ -575,8 +591,11 @@ impl EditorApp {
         if pressed(Modifiers::NONE, Key::S) || pressed(cmd, Key::B) {
             self.split();
         }
+        if pressed(Modifiers::SHIFT, Key::Delete) || pressed(Modifiers::SHIFT, Key::Backspace) {
+            self.delete(true);
+        }
         if pressed(Modifiers::NONE, Key::Delete) || pressed(Modifiers::NONE, Key::Backspace) {
-            self.delete();
+            self.delete(false);
         }
         let frame = fps.frame_at(self.playhead);
         let second = fps.fps().round() as i64;
@@ -712,7 +731,10 @@ impl EditorApp {
                 self.split();
             }
             if theme::tool(ui, icon::DELETE, s.delete, s.delete_tip, sel).clicked() {
-                self.delete();
+                self.delete(false);
+            }
+            if theme::tool(ui, icon::DELETE, s.ripple_delete, s.ripple_delete_tip, sel).clicked() {
+                self.delete(true);
             }
             ui.separator();
             if theme::tool(ui, icon::TEXT, s.title, s.title_tip, true).clicked() {
@@ -827,11 +849,27 @@ impl EditorApp {
             volume: has_sound.then(|| clip.value_at(Prop::VolumeDb, local)),
             fades: has_sound.then(|| [clip.fade.fade_in.seconds() as f32, clip.fade.fade_out.seconds() as f32]),
             speed: match &clip.content {
-                ClipContent::Media { media, speed, .. }
+                ClipContent::Media { media, speed, reversed, curve, .. }
                     if p.media.get(media).is_some_and(|m| m.kind != MediaKind::Image) =>
                 {
-                    Some((*speed as f32, clip.keep_pitch))
+                    Some(SpeedEdit {
+                        speed: *speed as f32,
+                        keep_pitch: clip.keep_pitch,
+                        reversed: *reversed,
+                        curve: (!curve.is_empty()).then(|| CurvePreset::of(curve)),
+                        frozen: *speed == 0.0,
+                        video: p.media.get(media).is_some_and(|m| m.kind == MediaKind::Video)
+                            && p.clip(&id).is_some_and(|(ti, _)| p.tracks[ti].kind == TrackKind::Video),
+                    })
                 }
+                ClipContent::Media { speed, .. } if *speed == 0.0 => Some(SpeedEdit {
+                    speed: 0.0,
+                    keep_pitch: true,
+                    reversed: false,
+                    curve: None,
+                    frozen: true,
+                    video: false,
+                }),
                 _ => None,
             },
             title: match &clip.content {
@@ -1055,17 +1093,56 @@ impl EditorApp {
                     });
                 });
             }
-            if let Some((speed, keep)) = &mut edit.speed {
+            if let Some(sp) = &mut edit.speed {
                 ui.add_space(6.0);
                 theme::section(ui, s.sec_speed, |ui| {
+                    if sp.frozen {
+                        ui.label(egui::RichText::new(s.frozen).color(theme::color::WEAK));
+                        return;
+                    }
                     ui.horizontal(|ui| {
-                        let r = ui
-                            .add(egui::DragValue::new(speed).speed(0.01).range(0.1..=10.0).suffix("×").max_decimals(2));
+                        let r = ui.add(
+                            egui::DragValue::new(&mut sp.speed)
+                                .speed(0.01)
+                                .range(0.1..=10.0)
+                                .suffix("×")
+                                .max_decimals(2),
+                        );
                         if r.drag_stopped() || (r.changed() && !r.dragged()) {
-                            actions.push(("clip.setSpeed", json!({"clip": id, "speed": *speed})));
+                            actions.push(("clip.setSpeed", json!({"clip": id, "speed": sp.speed})));
                         }
-                        if edit.fades.is_some() && ui.toggle_value(keep, s.keep_pitch).changed() {
-                            actions.push(("clip.setSpeed", json!({"clip": id, "keepPitch": *keep})));
+                        if edit.fades.is_some() && ui.toggle_value(&mut sp.keep_pitch, s.keep_pitch).changed() {
+                            actions.push(("clip.setSpeed", json!({"clip": id, "keepPitch": sp.keep_pitch})));
+                        }
+                        if ui.toggle_value(&mut sp.reversed, s.reverse).changed() {
+                            actions.push(("clip.setReverse", json!({"clip": id, "reversed": sp.reversed})));
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(s.curve).color(theme::color::WEAK));
+                        let name = |c: Option<CurvePreset>| {
+                            c.and_then(|c| CurvePreset::ALL.iter().position(|x| *x == c))
+                                .map_or(s.curve_custom, |i| s.curves[i])
+                        };
+                        let shown = sp.curve.map_or(s.curve_none, name);
+                        let mut picked = sp.curve;
+                        egui::ComboBox::from_id_salt("curve").selected_text(shown).width(110.0).show_ui(ui, |ui| {
+                            ui.selectable_value(&mut picked, None, s.curve_none);
+                            for (c, label) in CurvePreset::ALL.into_iter().zip(s.curves.iter()) {
+                                ui.selectable_value(&mut picked, Some(Some(c)), *label);
+                            }
+                        });
+                        if picked != sp.curve {
+                            let curve = match picked {
+                                None => Value::Null,
+                                Some(c) => json!(c.map(CurvePreset::name)),
+                            };
+                            if !curve.is_null() || sp.curve.is_some() {
+                                actions.push(("clip.setSpeedCurve", json!({"clip": id, "curve": curve})));
+                            }
+                        }
+                        if sp.video && ui.button(s.freeze).on_hover_text(s.freeze_tip).clicked() {
+                            actions.push(("clip.freeze", json!({"clip": id, "at": at})));
                         }
                     });
                 });

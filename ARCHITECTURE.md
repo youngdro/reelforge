@@ -28,7 +28,7 @@ service ships them without the editor.
 | --- | --- | --- |
 | L0 | `reelforge-time` | `Tick`, `FrameRate`, `TimeRange` |
 | L1 | `reelforge-renderspec` | RenderSpec types, validation, JSON Schema (`schema/renderspec-1.schema.json`) |
-| L1 | `reelforge-model` | The project document: canvas, media, tracks, clips, keyframes and in/out animations (`anim`), transitions (`transition`); invariants |
+| L1 | `reelforge-model` | The project document: canvas, media, tracks (magnetic or not), clips, keyframes and in/out animations (`anim`), transitions (`transition`), speed curves, reverse and freeze frames (`timing`); invariants |
 | L2 | `reelforge-compile` | Project → RenderSpec: all editing meaning resolved here (keyframes, animations and transitions become RenderSpec keys and overlapping layers, `motion`) |
 | L2 | `reelforge-render` | Pure frame plan, CPU reference compositor, wgpu compositor (feature `gpu`); `MediaSource` trait |
 | L3 | `reelforge-media` | Probing, video/audio decoding (`Footage`), MP4 export (H.264 + AAC); FilmCraft's pure-Rust codecs |
@@ -85,7 +85,8 @@ In rough priority order for short videos:
 4. Audio, next steps: scrubbing sound, and mixing on a worker thread (in the browser, an
    AudioWorklet). In place: fades and volume keyframes (lowered to `gain_db` keys), speed changes
    that keep the pitch (`audio.stretch/1`, WSOLA in `reelforge_media::stretch`, chained in fixed
-   blocks so a mix made in slices matches one made whole), and the export's mix (`reelforge_media::export::mix`) plays in the
+   blocks so a mix made in slices matches one made whole), sound played backwards or along a speed curve
+   (`time.reverse/1` read like tape; `time.ramp/1` through the same stretch), silent freeze frames (`time.hold/1`), and the export's mix (`reelforge_media::export::mix`) plays in the
    preview (`reelforge-ui`'s `audio`, through cpal: ALSA, CoreAudio, WASAPI, WebAudio), mixed a
    quarter second ahead on the editor's thread; while it plays the device's sample count is the
    playhead, so picture follows sound, and an edit or a seek mixes again from the playhead.
