@@ -26,8 +26,9 @@ or HTTP), and the same operations are an HTTP API and `reelforge-cli call`. Peop
 another machine join a server's session and edit live alongside agents. The preview plays sound,
 mixed as the export mixes it, with the picture following the sound. In the preview, what you see is
 selected, moved, scaled and turned by dragging it. The timeline shows pictures
-along video clips and the waveform of sound. The editor speaks English and
-Chinese: it follows the system (or browser) language, and the switch in the top bar is remembered.
+along video clips and the waveform of sound. The editor speaks English, Simplified
+Chinese and Japanese: it follows the system (or browser) language, and
+the pick in the top bar is remembered. A language is one `Strings` table in `crates/ui/src/lang/`.
 See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Video and audio codecs and containers are FilmCraft's clean-room, pure-Rust crates

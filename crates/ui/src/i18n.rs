@@ -1,4 +1,4 @@
-//! The interface's words in English and Chinese. The language follows the system's (the browser's
+//! The interface's words in English, Chinese and Japanese. The language follows the system's (the browser's
 //! on the web) until the person picks one in the top bar; the pick is remembered.
 //!
 //! Every word the interface shows is a field of [`Strings`], so a language that misses one does
@@ -12,24 +12,26 @@ pub enum Lang {
     En,
     /// Simplified Chinese.
     Zh,
+    /// Japanese.
+    Ja,
 }
 
+#[path = "lang/ja.rs"]
+mod ja;
+
 impl Lang {
+    /// Every language, in the order the picker lists them.
+    pub const ALL: [Lang; 3] = [Lang::En, Lang::Zh, Lang::Ja];
+
     /// The system's language, when it is one of ours; English otherwise.
     pub fn detect() -> Lang {
         sys_locale::get_locale().as_deref().and_then(Lang::from_code).unwrap_or(Lang::En)
     }
 
-    /// `zh`, `zh-CN`, `zh_Hans`… is Chinese; `en…` English.
+    /// `zh`, `zh-CN`, `zh_Hans`… is Chinese, `ja-JP` Japanese, `en…` English.
     pub fn from_code(code: &str) -> Option<Lang> {
         let code = code.to_ascii_lowercase();
-        if code.starts_with("zh") {
-            Some(Lang::Zh)
-        } else if code.starts_with("en") {
-            Some(Lang::En)
-        } else {
-            None
-        }
+        Lang::ALL.into_iter().find(|l| code.starts_with(l.code()))
     }
 
     /// The code it is stored as.
@@ -37,6 +39,7 @@ impl Lang {
         match self {
             Lang::En => "en",
             Lang::Zh => "zh",
+            Lang::Ja => "ja",
         }
     }
 
@@ -45,74 +48,31 @@ impl Lang {
         match self {
             Lang::En => &EN,
             Lang::Zh => &ZH,
+            Lang::Ja => &ja::JA,
         }
     }
 
-    /// A command's name, for the status bar: `clip.split` is "Split" or "分割".
+    /// A command's name, for the status bar: `clip.split` is "Split" or "分割"; empty for one
+    /// without a name.
     pub fn command(self, id: &str) -> &'static str {
-        let (en, zh) = match id {
-            "project.setCanvas" => ("Canvas settings", "画布设置"),
-            "media.import" => ("Import", "导入素材"),
-            "timeline.list" => ("Timelines", "时间线"),
-            "capcut.import" => ("Import CapCut draft", "导入剪映草稿"),
-            "timeline.add" => ("New timeline", "新建时间线"),
-            "timeline.switch" => ("Switch timeline", "切换时间线"),
-            "timeline.rename" => ("Rename timeline", "重命名时间线"),
-            "timeline.remove" => ("Delete timeline", "删除时间线"),
-            "track.add" => ("Add track", "添加轨道"),
-            "track.set" => ("Track settings", "轨道设置"),
-            "clip.add" => ("Add clip", "添加片段"),
-            "clip.split" => ("Split", "分割"),
-            "clip.trim" => ("Trim", "修剪"),
-            "clip.move" => ("Move", "移动"),
-            "clip.remove" => ("Delete", "删除"),
-            "clip.setSpeed" => ("Speed", "变速"),
-            "clip.setColor" => ("Colour", "调色"),
-            "clip.setCrop" => ("Crop", "裁剪"),
-            "sound.add" => ("Add Sound", "添加音效"),
-            "project.setExport" => ("Export Settings", "导出设置"),
-            "clip.setBlend" => ("Blend Mode", "混合模式"),
-            "clip.setMask" => ("Mask", "蒙版"),
-            "clip.setReverse" => ("Reverse", "倒放"),
-            "clip.setSpeedCurve" => ("Speed curve", "曲线变速"),
-            "clip.freeze" => ("Freeze frame", "定格"),
-            "clip.set" => ("Clip properties", "片段属性"),
-            "clip.addEffect" => ("Add effect", "添加效果"),
-            "clip.setKey" => ("Add keyframe", "添加关键帧"),
-            "clip.removeKey" => ("Remove keyframe", "删除关键帧"),
-            "clip.clearKeys" => ("Clear keyframes", "清除关键帧"),
-            "clip.setAnimation" => ("Animation", "动画"),
-            "clip.setTransition" => ("Transition", "转场"),
-            "edit.undo" => ("Undo", "撤销"),
-            "edit.redo" => ("Redo", "重做"),
-            "edit.batch" => ("Several edits", "批量编辑"),
-            "captions.import" => ("Import captions", "导入字幕"),
-            "captions.export" => ("Export captions", "导出字幕"),
-            "title.templates" => ("Title templates", "花字模板"),
-            "sync" => ("Sync", "同步"),
-            _ => return "",
-        };
-        if self == Lang::Zh { zh } else { en }
+        let find = |l: Lang| l.strings().commands.iter().find(|(c, _)| *c == id).map(|(_, n)| *n);
+        find(self).or_else(|| find(Lang::En)).unwrap_or("")
     }
 
-    /// A track's name as shown: the engine's default names ("Video 2") read in this language;
-    /// names people gave are shown as they are.
+    /// A track's name as shown: the engine's default names ("Video 2", "Captions") read in this
+    /// language; names people gave are shown as they are.
     pub fn track_name(self, name: &str) -> String {
-        if self == Lang::En {
-            return name.to_string();
-        }
+        let words = self.strings().track_words;
         if name == reelforge_engine::CAPTIONS_TRACK {
-            return "字幕".into();
+            return words[3].into();
         }
         let Some((word, n)) = name.split_once(' ') else { return name.to_string() };
         if !n.chars().all(|c| c.is_ascii_digit()) {
             return name.to_string();
         }
-        match word {
-            "Video" => format!("视频 {n}"),
-            "Text" => format!("文字 {n}"),
-            "Audio" => format!("音频 {n}"),
-            _ => name.to_string(),
+        match ["Video", "Text", "Audio"].iter().position(|w| *w == word) {
+            Some(i) => format!("{} {n}", words[i]),
+            None => name.to_string(),
         }
     }
 }
@@ -137,9 +97,17 @@ pub fn fill(template: &str, values: &[&dyn std::fmt::Display]) -> String {
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // the browser has no Export
 pub(crate) struct Strings {
     pub(crate) ready: &'static str,
-    /// The language switch: the other language's name.
-    pub(crate) switch_to: &'static str,
-    pub(crate) switch_tip: &'static str,
+    /// The language's own name, for the picker.
+    pub(crate) lang_name: &'static str,
+    pub(crate) lang_tip: &'static str,
+    /// Command names by id ([`Lang::command`]).
+    pub(crate) commands: &'static [(&'static str, &'static str)],
+    /// The words in default track names: video, text, audio, and the captions track.
+    pub(crate) track_words: [&'static str; 4],
+    /// The library's sounds, in `reelforge_media::library::SOUNDS` order.
+    pub(crate) sound_names: [&'static str; 16],
+    /// The title templates, in `reelforge_engine::title_templates` order.
+    pub(crate) template_names: [&'static str; 10],
     pub(crate) joining: &'static str,
     pub(crate) joined: &'static str,
     pub(crate) unreachable: &'static str,
@@ -322,8 +290,80 @@ pub(crate) struct Strings {
 
 static EN: Strings = Strings {
     ready: "Ready",
-    switch_to: "中文",
-    switch_tip: "切换到中文界面",
+    lang_name: "English",
+    lang_tip: "Language",
+    commands: &[
+        ("project.setCanvas", "Canvas settings"),
+        ("media.import", "Import"),
+        ("timeline.list", "Timelines"),
+        ("capcut.import", "Import CapCut draft"),
+        ("timeline.add", "New timeline"),
+        ("timeline.switch", "Switch timeline"),
+        ("timeline.rename", "Rename timeline"),
+        ("timeline.remove", "Delete timeline"),
+        ("track.add", "Add track"),
+        ("track.set", "Track settings"),
+        ("clip.add", "Add clip"),
+        ("clip.split", "Split"),
+        ("clip.trim", "Trim"),
+        ("clip.move", "Move"),
+        ("clip.remove", "Delete"),
+        ("clip.setSpeed", "Speed"),
+        ("clip.setColor", "Colour"),
+        ("clip.setCrop", "Crop"),
+        ("sound.add", "Add Sound"),
+        ("project.setExport", "Export Settings"),
+        ("clip.setBlend", "Blend Mode"),
+        ("clip.setMask", "Mask"),
+        ("clip.setReverse", "Reverse"),
+        ("clip.setSpeedCurve", "Speed curve"),
+        ("clip.freeze", "Freeze frame"),
+        ("clip.set", "Clip properties"),
+        ("clip.addEffect", "Add effect"),
+        ("clip.setKey", "Add keyframe"),
+        ("clip.removeKey", "Remove keyframe"),
+        ("clip.clearKeys", "Clear keyframes"),
+        ("clip.setAnimation", "Animation"),
+        ("clip.setTransition", "Transition"),
+        ("edit.undo", "Undo"),
+        ("edit.redo", "Redo"),
+        ("edit.batch", "Several edits"),
+        ("captions.import", "Import captions"),
+        ("captions.export", "Export captions"),
+        ("title.templates", "Title templates"),
+        ("sync", "Sync"),
+    ],
+    track_words: ["Video", "Text", "Audio", "Captions"],
+    sound_names: [
+        "Whoosh",
+        "Swipe",
+        "Riser",
+        "Boom",
+        "Pop",
+        "Click",
+        "Ding",
+        "Chime",
+        "Camera shutter",
+        "Typing",
+        "Beep",
+        "Coin",
+        "Lo-fi",
+        "Upbeat",
+        "Ambient",
+        "Cinematic",
+    ],
+    template_names: [
+        "Classic",
+        "Variety",
+        "Sticker",
+        "Candy",
+        "Fire",
+        "Neon",
+        "Retro",
+        "Soft shadow",
+        "Boxed",
+        "Label",
+    ],
     joining: "Joining {}…",
     joined: "Joined {}",
     unreachable: "Cannot reach {}: {}",
@@ -546,8 +586,80 @@ static EN: Strings = Strings {
 
 static ZH: Strings = Strings {
     ready: "就绪",
-    switch_to: "EN",
-    switch_tip: "Switch to English",
+    lang_name: "简体中文",
+    lang_tip: "界面语言",
+    commands: &[
+        ("project.setCanvas", "画布设置"),
+        ("media.import", "导入素材"),
+        ("timeline.list", "时间线"),
+        ("capcut.import", "导入剪映草稿"),
+        ("timeline.add", "新建时间线"),
+        ("timeline.switch", "切换时间线"),
+        ("timeline.rename", "重命名时间线"),
+        ("timeline.remove", "删除时间线"),
+        ("track.add", "添加轨道"),
+        ("track.set", "轨道设置"),
+        ("clip.add", "添加片段"),
+        ("clip.split", "分割"),
+        ("clip.trim", "修剪"),
+        ("clip.move", "移动"),
+        ("clip.remove", "删除"),
+        ("clip.setSpeed", "变速"),
+        ("clip.setColor", "调色"),
+        ("clip.setCrop", "裁剪"),
+        ("sound.add", "添加音效"),
+        ("project.setExport", "导出设置"),
+        ("clip.setBlend", "混合模式"),
+        ("clip.setMask", "蒙版"),
+        ("clip.setReverse", "倒放"),
+        ("clip.setSpeedCurve", "曲线变速"),
+        ("clip.freeze", "定格"),
+        ("clip.set", "片段属性"),
+        ("clip.addEffect", "添加效果"),
+        ("clip.setKey", "添加关键帧"),
+        ("clip.removeKey", "删除关键帧"),
+        ("clip.clearKeys", "清除关键帧"),
+        ("clip.setAnimation", "动画"),
+        ("clip.setTransition", "转场"),
+        ("edit.undo", "撤销"),
+        ("edit.redo", "重做"),
+        ("edit.batch", "批量编辑"),
+        ("captions.import", "导入字幕"),
+        ("captions.export", "导出字幕"),
+        ("title.templates", "花字模板"),
+        ("sync", "同步"),
+    ],
+    track_words: ["视频", "文字", "音频", "字幕"],
+    sound_names: [
+        "嗖",
+        "划过",
+        "上升",
+        "轰",
+        "啵",
+        "咔哒",
+        "叮",
+        "风铃",
+        "快门",
+        "打字",
+        "哔哔",
+        "金币",
+        "低保真",
+        "轻快",
+        "氛围",
+        "电影感",
+    ],
+    template_names: [
+        "经典字幕",
+        "综艺黄字",
+        "贴纸",
+        "糖果渐变",
+        "火焰",
+        "霓虹",
+        "复古",
+        "柔和投影",
+        "黑底白字",
+        "黄色标签",
+    ],
     joining: "正在连接 {}…",
     joined: "已加入 {}",
     unreachable: "连不上 {}：{}",
@@ -767,7 +879,11 @@ mod tests {
         assert_eq!(Lang::from_code("zh-CN"), Some(Lang::Zh));
         assert_eq!(Lang::from_code("zh_Hans_CN"), Some(Lang::Zh));
         assert_eq!(Lang::from_code("en-GB"), Some(Lang::En));
+        assert_eq!(Lang::from_code("ja-JP"), Some(Lang::Ja));
         assert_eq!(Lang::from_code("fr-FR"), None);
+        for l in Lang::ALL {
+            assert_eq!(Lang::from_code(l.code()), Some(l));
+        }
     }
 
     #[test]
@@ -778,35 +894,67 @@ mod tests {
     }
 
     #[test]
-    fn default_track_names_read_in_chinese() {
+    fn default_track_names_read_in_each_language() {
         assert_eq!(Lang::Zh.track_name("Video 2"), "视频 2");
         assert_eq!(Lang::Zh.track_name("B-roll"), "B-roll");
         assert_eq!(Lang::En.track_name("Video 2"), "Video 2");
         assert_eq!(Lang::Zh.command("clip.split"), "分割");
+        assert_eq!(Lang::Zh.command("nope"), "");
+        assert_eq!(Lang::Ja.track_name("Video 3"), "動画 3");
+        assert_eq!(Lang::Ja.track_name("Captions"), "字幕");
     }
 
-    /// Every template has as many `{}` in both languages.
+    /// Every language names the same commands, and the lists of names are as long as the things
+    /// they name.
+    #[test]
+    fn languages_are_complete() {
+        let ids = |l: Lang| l.strings().commands.iter().map(|(id, _)| *id).collect::<std::collections::BTreeSet<_>>();
+        for l in Lang::ALL {
+            assert_eq!(ids(l), ids(Lang::En), "{l:?}");
+            assert!(l.strings().commands.iter().all(|(_, n)| !n.is_empty()), "{l:?}");
+        }
+        assert_eq!(reelforge_media::library::SOUNDS.len(), EN.sound_names.len());
+        assert_eq!(reelforge_engine::title_templates().len(), EN.template_names.len());
+    }
+
+    /// Every template has as many `{}` in every language.
     #[test]
     fn templates_agree() {
         let count = |s: &str| s.matches("{}").count();
-        for (en, zh) in [
-            (EN.joining, ZH.joining),
-            (EN.joined, ZH.joined),
-            (EN.unreachable, ZH.unreachable),
-            (EN.no_copy, ZH.no_copy),
-            (EN.done, ZH.done),
-            (EN.sending, ZH.sending),
-            (EN.imported, ZH.imported),
-            (EN.frame, ZH.frame),
-            (EN.gpu_preview, ZH.gpu_preview),
-            (EN.preview_failed, ZH.preview_failed),
-            (EN.no_sound, ZH.no_sound),
-            (EN.export_tip, ZH.export_tip),
-            (EN.exporting, ZH.exporting),
-            (EN.exported, ZH.exported),
-            (EN.export_failed, ZH.export_failed),
-        ] {
-            assert_eq!(count(en), count(zh), "{en} / {zh}");
+        let templates = |s: &Strings| {
+            [
+                s.joining,
+                s.joined,
+                s.unreachable,
+                s.no_copy,
+                s.done,
+                s.sending,
+                s.imported,
+                s.frame,
+                s.gpu_preview,
+                s.preview_failed,
+                s.no_sound,
+                s.export_tip,
+                s.exporting,
+                s.exported,
+                s.export_failed,
+                s.captions_imported,
+                s.draft_imported,
+                s.draft_offline,
+                s.draft_skipped,
+                s.relinked,
+                s.lut_worn,
+                s.lut_imported,
+                s.timeline_n,
+                s.timeline_copy,
+                s.mic_failed,
+                s.export_megabytes,
+            ]
+        };
+        for l in Lang::ALL {
+            for (en, other) in templates(&EN).into_iter().zip(templates(l.strings())) {
+                assert_eq!(count(en), count(other), "{l:?}: {en} / {other}");
+            }
         }
     }
 }
