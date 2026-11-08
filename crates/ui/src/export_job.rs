@@ -102,6 +102,7 @@ mod native {
 
 #[cfg(target_arch = "wasm32")]
 mod web {
+    use std::collections::HashMap;
     use std::io::Cursor;
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
@@ -115,11 +116,12 @@ mod web {
     use reelforge_model::Project;
     use reelforge_render::Quality;
     use reelforge_render::gpu::GpuCompositor;
-    use reelforge_renderspec::VideoCodec;
+    use reelforge_render::plan::{PlannedSource, plan_frame};
+    use reelforge_renderspec::{AssetKind, RenderSpec, VideoCodec};
     use wasm_bindgen::prelude::*;
 
     use super::{CANCELLED, ExportJob};
-    use crate::webcodecs::{WebEncoder, sleep};
+    use crate::webcodecs::{WebDecoder, WebEncoder, sleep};
 
     #[wasm_bindgen(inline_js = r#"
 export function rf_save(name, bytes) {
@@ -170,14 +172,17 @@ export function rf_save(name, bytes) {
                 total.store(n, Ordering::Relaxed);
                 let mut yuv = Yuv420::default();
                 let step = |e: ExportError| e.to_string();
+                let mut decoders = Decoders::default();
                 for i in 0..n {
                     if cancel.load(Ordering::Relaxed) {
+                        decoders.let_go(&spec, &media);
                         return Err(CANCELLED.to_string());
                     }
+                    let t = spec.output.fps.tick_of(i as i64);
+                    decoders.prepare(&spec, &media, t).await;
                     match &mut gpu {
                         Some(g) => {
                             let scale = video_encoding(&spec).scale(spec.output.width);
-                            let t = spec.output.fps.tick_of(i as i64);
                             g.render(&spec, t, scale, &*media, Quality::Final).map_err(|e| e.to_string())?;
                             let back = g.start_yuv420().map_err(|e| e.to_string())?;
                             // the browser maps the copy when the GPU is done; give it the turn
@@ -189,14 +194,16 @@ export function rf_save(name, bytes) {
                         }
                         None => draw_frame(&spec, &media, i, &mut yuv).map_err(step)?,
                     }
+                    decoders.let_go(&spec, &media);
                     w.push(&spec, &media, i, &yuv).map_err(step)?;
                     // let the encoder catch up, and the page draw
                     while w.backlog() > 3 {
                         sleep(4).await;
                         w.poll(&spec, &media).map_err(step)?;
                     }
+                    // the progress bar repaints on its own, ten times a second: a repaint per frame
+                    // would cost as much as the frame
                     done.store(i + 1, Ordering::Relaxed);
-                    ctx.request_repaint();
                     sleep(0).await;
                 }
                 w.end().map_err(step)?;
@@ -205,13 +212,67 @@ export function rf_save(name, bytes) {
                 }
                 let (out, _) = w.finish(&spec, &media).map_err(step)?;
                 rf_save(&name, &out.into_inner());
-                Ok(if gpu.is_some() { format!("{encoder} · GPU") } else { encoder })
+                let mut how = encoder;
+                if gpu.is_some() {
+                    how.push_str(" · GPU");
+                }
+                if decoders.used {
+                    how.push_str(" · WebCodecs");
+                }
+                Ok(how)
             }
             .await;
+            media.clear_prepared();
             *result.lock().expect("result lock") = Some(r);
             ctx.request_repaint();
         });
         Ok(job)
+    }
+
+    /// The browser's decoders, one per clip on screen, each handing the renderer its pictures for
+    /// the frame about to be drawn. Footage they cannot decode is left to the software decoder.
+    #[derive(Default)]
+    struct Decoders {
+        /// By layer; `None` once the browser could not take the clip on.
+        open: HashMap<String, Option<WebDecoder>>,
+        /// Assets with pictures handed over for this frame.
+        prepared: Vec<String>,
+        /// Whether any picture came from the browser.
+        used: bool,
+    }
+
+    impl Decoders {
+        async fn prepare(&mut self, spec: &RenderSpec, media: &Footage, t: reelforge_time::Tick) {
+            let plan = plan_frame(spec, t, 1.0);
+            // clips that ended give their decoders back
+            self.open.retain(|id, _| plan.layers.iter().any(|l| &l.id == id));
+            for layer in &plan.layers {
+                let PlannedSource::Media { asset, at } = &layer.source else { continue };
+                let Some(def) = spec.assets.get(asset).filter(|d| d.kind == AssetKind::Video) else { continue };
+                if !self.open.contains_key(&layer.id) {
+                    let dec = match media.video_bytes(def) {
+                        Some(bytes) => WebDecoder::open(bytes).await,
+                        None => None,
+                    };
+                    self.open.insert(layer.id.clone(), dec);
+                }
+                let Some(Some(dec)) = self.open.get_mut(&layer.id) else { continue };
+                if let Some(picture) = dec.picture(*at).await {
+                    media.prepare(def, *at, picture);
+                    self.prepared.push(asset.clone());
+                    self.used = true;
+                }
+            }
+        }
+
+        /// Drops this frame's pictures.
+        fn let_go(&mut self, spec: &RenderSpec, media: &Footage) {
+            for asset in self.prepared.drain(..) {
+                if let Some(def) = spec.assets.get(&asset) {
+                    media.unprepare(def);
+                }
+            }
+        }
     }
 }
 

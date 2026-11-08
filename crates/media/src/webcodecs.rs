@@ -121,6 +121,74 @@ impl Bits<'_> {
     }
 }
 
+/// The H.264 video of an MP4 file, as the browser's decoder (WebCodecs `VideoDecoder`) takes it:
+/// its configuration and its samples in decode order. Other codecs and containers are decoded in
+/// Rust.
+pub struct DecodableVideo {
+    /// The WebCodecs codec string (`avc1.PPCCLL`).
+    pub codec: String,
+    /// The `avcC` record, WebCodecs' `description`.
+    pub description: Vec<u8>,
+    /// Coded size in pixels.
+    pub size: [u32; 2],
+    bytes: std::sync::Arc<[u8]>,
+    track: filmcraft_isobmff::Track,
+}
+
+impl DecodableVideo {
+    /// The file's first video track when it is H.264 the browser can take as it is (not rotated).
+    pub fn open(bytes: std::sync::Arc<[u8]>) -> Option<DecodableVideo> {
+        let file = filmcraft_isobmff::open(bytes.clone()).ok()?;
+        let i = file.track_of_kind(filmcraft_isobmff::TrackKind::Video)?;
+        let track = file.tracks.into_iter().nth(i)?;
+        if track.display_rotation().is_some_and(|r| r != 0) || track.entries.len() != 1 || track.samples.is_empty() {
+            return None;
+        }
+        let filmcraft_isobmff::CodecConfig::Avc(avc) = track.codec()? else { return None };
+        let codec = format!("avc1.{:02x}{:02x}{:02x}", avc.profile, avc.compatibility, avc.level);
+        let description = avc.to_bytes();
+        let size = track.video().map_or([track.width, track.height], |v| [u32::from(v.width), u32::from(v.height)]);
+        Some(DecodableVideo { codec, description, size, bytes, track })
+    }
+
+    /// How many samples.
+    pub fn len(&self) -> usize {
+        self.track.samples.len()
+    }
+
+    /// Whether it has no samples (never, once opened).
+    pub fn is_empty(&self) -> bool {
+        self.track.samples.is_empty()
+    }
+
+    /// The sample (decode order) whose picture shows at `at` in the file's own time, as the Rust
+    /// decoder picks it: nearest in the track's timescale, the last one past the end.
+    pub fn sample_at(&self, at: reelforge_time::Tick) -> usize {
+        let ts = i64::from(self.track.timescale.max(1));
+        let t = (i128::from(at.0) * i128::from(ts) + i128::from(reelforge_time::TICKS_PER_SECOND / 2))
+            / i128::from(reelforge_time::TICKS_PER_SECOND);
+        let t = i64::try_from(t).unwrap_or(i64::MAX);
+        self.track.sample_at_presentation_time(t).unwrap_or(self.len() - 1)
+    }
+
+    /// The sync sample decoding must start from to reach sample `i`.
+    pub fn sync_before(&self, i: usize) -> usize {
+        self.track.sync_sample_before(i)
+    }
+
+    /// Sample `i`: its bytes, presentation time and length in microseconds, and whether decoding
+    /// can start there.
+    pub fn sample(&self, i: usize) -> Option<(&[u8], i64, i64, bool)> {
+        let s = self.track.samples.get(i)?;
+        let start = usize::try_from(s.offset).ok()?;
+        let data = self.bytes.get(start..start.checked_add(s.size as usize)?)?;
+        let ts = i128::from(self.track.timescale.max(1));
+        let us = |v: i64| i64::try_from(i128::from(v) * 1_000_000 / ts).unwrap_or(0);
+        let pts = self.track.presentation_pts(i)?;
+        Some((data, us(pts), us(i64::from(s.duration)), s.is_sync))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

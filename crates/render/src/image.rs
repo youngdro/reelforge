@@ -19,12 +19,16 @@ impl Image {
 
     /// Reads straight sRGB 8-bit RGBA, as decoders and PNG files give it.
     pub fn from_srgba8(width: u32, height: u32, bytes: &[u8]) -> Image {
+        // the same sums as premultiply_srgb, looked up: a frame is millions of them
+        static LINEAR: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
+        let linear = LINEAR.get_or_init(|| std::array::from_fn(|v| srgb_to_linear(v as f32 / 255.0)));
         let pixels = bytes
             .as_chunks::<4>()
             .0
             .iter()
             .map(|p| {
-                premultiply_srgb([p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0, p[3] as f32 / 255.0])
+                let a = p[3] as f32 / 255.0;
+                [linear[p[0] as usize] * a, linear[p[1] as usize] * a, linear[p[2] as usize] * a, a]
             })
             .collect();
         Image { width, height, pixels }
@@ -88,6 +92,16 @@ pub fn premultiply_srgb(c: [f32; 4]) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bytes_convert_as_premultiply_srgb_does() {
+        let bytes: Vec<u8> = (0..=255u8).flat_map(|v| [v, 255 - v, v / 3, v ^ 0x5a]).collect();
+        let img = Image::from_srgba8(256, 1, &bytes);
+        for (p, b) in img.pixels.iter().zip(bytes.chunks(4)) {
+            let f = |i: usize| b[i] as f32 / 255.0;
+            assert_eq!(*p, premultiply_srgb([f(0), f(1), f(2), f(3)]));
+        }
+    }
 
     #[test]
     fn srgb8_round_trips() {
