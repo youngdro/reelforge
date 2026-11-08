@@ -77,30 +77,36 @@ pub(crate) mod icon {
 }
 
 static ICONS: &[u8] = include_bytes!("../fonts/phosphor-icons.ttf");
+/// Kana and the JIS level-1 kanji, for the Japanese interface (SIL OFL, see
+/// `fonts/NOTO-SANS-JP-LICENSE`).
+static NOTO_SANS_JP: &[u8] = include_bytes!("../fonts/NotoSansJP-Regular.subset.otf");
 
 /// Gives `ctx` the palette, spacing and faces. Call once.
-pub(crate) fn install(ctx: &egui::Context) {
-    // egui's own faces have no Chinese or icons: fall back to the face titles are drawn with, and
-    // the icon subset
-    let families = [FontFamily::Proportional, FontFamily::Monospace];
-    for (name, bytes) in [
-        ("Noto Sans SC", egui::FontData::from_static(reelforge_render::text::NOTO_SANS_SC_REGULAR)),
-        ("Phosphor", egui::FontData::from_static(ICONS)),
-    ] {
-        ctx.add_font(egui::epaint::text::FontInsert::new(
-            name,
-            bytes,
-            families
-                .clone()
-                .map(|family| egui::epaint::text::InsertFontFamily {
-                    family,
-                    priority: egui::epaint::text::FontPriority::Lowest,
-                })
-                .to_vec(),
-        ));
-    }
+pub(crate) fn install(ctx: &egui::Context, japanese: bool) {
+    set_fonts(ctx, japanese);
     ctx.set_theme(egui::Theme::Dark);
     ctx.all_styles_mut(style);
+}
+
+/// egui's own faces have no CJK or icons: after them come the face titles are drawn with (Noto
+/// Sans SC), a Japanese face and the icon subset. For the Japanese interface the Japanese face
+/// goes first, so kanji take their Japanese shapes.
+pub(crate) fn set_fonts(ctx: &egui::Context, japanese: bool) {
+    let mut defs = egui::FontDefinitions::default();
+    for (name, bytes) in [
+        ("Noto Sans SC", reelforge_render::text::NOTO_SANS_SC_REGULAR),
+        ("Noto Sans JP", NOTO_SANS_JP),
+        ("Phosphor", ICONS),
+    ] {
+        defs.font_data.insert(name.into(), std::sync::Arc::new(egui::FontData::from_static(bytes)));
+    }
+    let cjk = if japanese { ["Noto Sans JP", "Noto Sans SC"] } else { ["Noto Sans SC", "Noto Sans JP"] };
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        let list = defs.families.entry(family).or_default();
+        list.extend(cjk.iter().map(|n| n.to_string()));
+        list.push("Phosphor".into());
+    }
+    ctx.set_fonts(defs);
 }
 
 fn style(s: &mut egui::Style) {

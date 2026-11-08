@@ -753,6 +753,9 @@ impl EditorApp {
                     if self.status == s.ready {
                         self.status.clear();
                     }
+                    if (lang == Lang::Ja) != (self.lang == Lang::Ja) {
+                        theme::set_fonts(ui.ctx(), lang == Lang::Ja);
+                    }
                     self.lang = lang;
                     self.lang_chosen = true;
                     self.lang_unsaved = true;
@@ -2001,7 +2004,7 @@ impl eframe::App for EditorApp {
                     repaint.request_repaint();
                 }
             });
-            theme::install(&ctx);
+            theme::install(&ctx, self.lang == Lang::Ja);
         }
         let change = self.session.last_change();
         if change.revision != self.seen {

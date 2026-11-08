@@ -27,7 +27,7 @@ another machine join a server's session and edit live alongside agents. The prev
 mixed as the export mixes it, with the picture following the sound. In the preview, what you see is
 selected, moved, scaled and turned by dragging it. The timeline shows pictures
 along video clips and the waveform of sound. The editor speaks English, Simplified
-Chinese, Spanish, Portuguese, French and German: it follows the system (or browser) language, and
+Chinese and Japanese: it follows the system (or browser) language, and
 the pick in the top bar is remembered. A language is one `Strings` table in `crates/ui/src/lang/`.
 See [ARCHITECTURE.md](ARCHITECTURE.md).
 

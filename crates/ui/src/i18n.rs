@@ -1,4 +1,4 @@
-//! The interface's words in English, Chinese, Spanish, Portuguese, French and German. The language follows the system's (the browser's
+//! The interface's words in English, Chinese and Japanese. The language follows the system's (the browser's
 //! on the web) until the person picks one in the top bar; the pick is remembered.
 //!
 //! Every word the interface shows is a field of [`Strings`], so a language that misses one does
@@ -12,35 +12,23 @@ pub enum Lang {
     En,
     /// Simplified Chinese.
     Zh,
-    /// Spanish.
-    Es,
-    /// Portuguese (Brazil).
-    Pt,
-    /// French.
-    Fr,
-    /// German.
-    De,
+    /// Japanese.
+    Ja,
 }
 
-#[path = "lang/de.rs"]
-mod de;
-#[path = "lang/es.rs"]
-mod es;
-#[path = "lang/fr.rs"]
-mod fr;
-#[path = "lang/pt.rs"]
-mod pt;
+#[path = "lang/ja.rs"]
+mod ja;
 
 impl Lang {
     /// Every language, in the order the picker lists them.
-    pub const ALL: [Lang; 6] = [Lang::En, Lang::Zh, Lang::Es, Lang::Pt, Lang::Fr, Lang::De];
+    pub const ALL: [Lang; 3] = [Lang::En, Lang::Zh, Lang::Ja];
 
     /// The system's language, when it is one of ours; English otherwise.
     pub fn detect() -> Lang {
         sys_locale::get_locale().as_deref().and_then(Lang::from_code).unwrap_or(Lang::En)
     }
 
-    /// `zh`, `zh-CN`, `zh_Hans`… is Chinese, `pt-BR` Portuguese, and so on.
+    /// `zh`, `zh-CN`, `zh_Hans`… is Chinese, `ja-JP` Japanese, `en…` English.
     pub fn from_code(code: &str) -> Option<Lang> {
         let code = code.to_ascii_lowercase();
         Lang::ALL.into_iter().find(|l| code.starts_with(l.code()))
@@ -51,10 +39,7 @@ impl Lang {
         match self {
             Lang::En => "en",
             Lang::Zh => "zh",
-            Lang::Es => "es",
-            Lang::Pt => "pt",
-            Lang::Fr => "fr",
-            Lang::De => "de",
+            Lang::Ja => "ja",
         }
     }
 
@@ -63,10 +48,7 @@ impl Lang {
         match self {
             Lang::En => &EN,
             Lang::Zh => &ZH,
-            Lang::Es => &es::ES,
-            Lang::Pt => &pt::PT,
-            Lang::Fr => &fr::FR,
-            Lang::De => &de::DE,
+            Lang::Ja => &ja::JA,
         }
     }
 
@@ -897,9 +879,8 @@ mod tests {
         assert_eq!(Lang::from_code("zh-CN"), Some(Lang::Zh));
         assert_eq!(Lang::from_code("zh_Hans_CN"), Some(Lang::Zh));
         assert_eq!(Lang::from_code("en-GB"), Some(Lang::En));
-        assert_eq!(Lang::from_code("pt-BR"), Some(Lang::Pt));
-        assert_eq!(Lang::from_code("fr-FR"), Some(Lang::Fr));
-        assert_eq!(Lang::from_code("ja-JP"), None);
+        assert_eq!(Lang::from_code("ja-JP"), Some(Lang::Ja));
+        assert_eq!(Lang::from_code("fr-FR"), None);
         for l in Lang::ALL {
             assert_eq!(Lang::from_code(l.code()), Some(l));
         }
@@ -919,8 +900,8 @@ mod tests {
         assert_eq!(Lang::En.track_name("Video 2"), "Video 2");
         assert_eq!(Lang::Zh.command("clip.split"), "分割");
         assert_eq!(Lang::Zh.command("nope"), "");
-        assert_eq!(Lang::Es.track_name("Video 3"), "Vídeo 3");
-        assert_eq!(Lang::Fr.track_name("Captions"), "Sous-titres");
+        assert_eq!(Lang::Ja.track_name("Video 3"), "動画 3");
+        assert_eq!(Lang::Ja.track_name("Captions"), "字幕");
     }
 
     /// Every language names the same commands, and the lists of names are as long as the things
