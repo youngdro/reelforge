@@ -166,6 +166,8 @@ pub(crate) fn place(
             opacity: 1.0,
             volume_db: 0.0,
             effects: vec![],
+            keys: Default::default(),
+            anim: Default::default(),
         });
     }
     let track = proj.tracks.iter_mut().find(|t| t.id == track_id).expect("found or made above");

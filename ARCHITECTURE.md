@@ -28,8 +28,8 @@ service ships them without the editor.
 | --- | --- | --- |
 | L0 | `reelforge-time` | `Tick`, `FrameRate`, `TimeRange` |
 | L1 | `reelforge-renderspec` | RenderSpec types, validation, JSON Schema (`schema/renderspec-1.schema.json`) |
-| L1 | `reelforge-model` | The project document: canvas, media, tracks, clips; invariants |
-| L2 | `reelforge-compile` | Project → RenderSpec: all editing meaning resolved here |
+| L1 | `reelforge-model` | The project document: canvas, media, tracks, clips, keyframes and in/out animations (`anim`); invariants |
+| L2 | `reelforge-compile` | Project → RenderSpec: all editing meaning resolved here (keyframes and animations become RenderSpec keys, `motion`) |
 | L2 | `reelforge-render` | Pure frame plan, CPU reference compositor, wgpu compositor (feature `gpu`); `MediaSource` trait |
 | L3 | `reelforge-media` | Probing, video/audio decoding (`Footage`), MP4 export (H.264 + AAC); FilmCraft's pure-Rust codecs |
 | L4 | `reelforge-engine` | `Session`, command registry, copy-on-write undo, batches; title templates (`templates`); SubRip captions (`captions`) |

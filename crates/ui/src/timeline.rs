@@ -544,6 +544,9 @@ fn paint_clip(
         [r.left_top() + vec2(3.0, 1.0), r.right_top() + vec2(-3.0, 1.0)],
         Stroke::new(1.0, Color32::from_white_alpha(40)),
     );
+    if !dragging {
+        paint_motion(painter, r, clip, selected);
+    }
     let stroke =
         if selected { Stroke::new(2.0, color::ACCENT) } else { Stroke::new(1.0, Color32::from_black_alpha(90)) };
     painter.rect_stroke(r, radius, stroke, if selected { StrokeKind::Outside } else { StrokeKind::Inside });
@@ -573,4 +576,54 @@ fn paint_clip(
             text.text(at, align, name, FontId::proportional(12.0), text_color);
         }
     }
+}
+
+/// In and out animations as ramps at the clip's ends, and its keyframes as diamonds along its foot.
+fn paint_motion(painter: &egui::Painter, r: Rect, clip: &reelforge_model::Clip, selected: bool) {
+    let len = clip.duration.0 as f32;
+    if len <= 0.0 {
+        return;
+    }
+    let x_of = |t: Tick| r.left() + r.width() * (t.0 as f32 / len);
+    let on = painter.with_clip_rect(painter.clip_rect().intersect(r));
+    let (a, b) = clip.anim.spans(clip.duration);
+    let wash = Color32::from_white_alpha(46);
+    if clip.anim.enter.is_some() && a > Tick::ZERO {
+        let x = x_of(a);
+        on.add(egui::Shape::convex_polygon(
+            vec![r.left_top(), egui::pos2(x, r.top()), r.left_bottom()],
+            wash,
+            Stroke::NONE,
+        ));
+        on.line_segment([r.left_bottom(), egui::pos2(x, r.top())], Stroke::new(1.0, Color32::from_white_alpha(150)));
+    }
+    if clip.anim.exit.is_some() && b > Tick::ZERO {
+        let x = x_of(clip.duration - b);
+        on.add(egui::Shape::convex_polygon(
+            vec![egui::pos2(x, r.top()), r.right_top(), r.right_bottom()],
+            wash,
+            Stroke::NONE,
+        ));
+        on.line_segment([egui::pos2(x, r.top()), r.right_bottom()], Stroke::new(1.0, Color32::from_white_alpha(150)));
+    }
+    let mut times: Vec<Tick> =
+        clip.keys.values().flatten().map(|k| k.t).filter(|t| *t >= Tick::ZERO && *t <= clip.duration).collect();
+    times.sort();
+    times.dedup();
+    let fill = if selected { color::ACCENT } else { Color32::from_white_alpha(220) };
+    for t in times {
+        diamond(
+            &on,
+            egui::pos2(x_of(t), r.bottom() - 6.0),
+            3.5,
+            fill,
+            Stroke::new(1.0, Color32::from_black_alpha(160)),
+        );
+    }
+}
+
+/// A keyframe mark.
+pub(crate) fn diamond(painter: &egui::Painter, c: egui::Pos2, h: f32, fill: Color32, stroke: Stroke) {
+    let pts = vec![c + vec2(0.0, -h), c + vec2(h, 0.0), c + vec2(0.0, h), c + vec2(-h, 0.0)];
+    painter.add(egui::Shape::convex_polygon(pts, fill, stroke));
 }

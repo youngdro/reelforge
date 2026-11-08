@@ -283,6 +283,77 @@ fn tracks_are_renamed_hidden_and_muted() {
 }
 
 #[test]
+fn keyframes_move_a_clip_and_stay_put_on_the_timeline() {
+    use reelforge_model::Prop;
+    let mut s = Session::default();
+    let c = add_red(&mut s, 1.0, 4.0);
+    s.execute("clip.setKey", &json!({"clip": c, "prop": "x", "at": {"seconds": 1}, "value": -0.5})).unwrap();
+    s.execute("clip.setKey", &json!({"clip": c, "prop": "x", "at": {"seconds": 3}, "value": 0.5, "ease": "inOut"}))
+        .unwrap();
+    let x_at = |s: &Session, secs: f64| {
+        let p = s.project();
+        let clip = p.clip(&c).unwrap().1;
+        clip.value_at(Prop::X, Tick::from_seconds(secs) - clip.start)
+    };
+    assert_eq!(x_at(&s, 2.0), 0.0);
+
+    // a keyed property is set at a time; without one the command explains itself
+    let e = s.execute("clip.set", &json!({"clip": c, "x": 0.2})).unwrap_err().to_string();
+    assert!(e.contains("`at`"), "{e}");
+    s.execute("clip.set", &json!({"clip": c, "x": 0.25, "at": {"seconds": 2}, "opacity": 0.5})).unwrap();
+    assert_eq!(x_at(&s, 2.0), 0.25);
+    assert_eq!(s.project().clip(&c).unwrap().1.keys[&Prop::X].len(), 3);
+    assert_eq!(s.project().clip(&c).unwrap().1.opacity, 0.5);
+
+    // trimming the start and splitting keep every key at its timeline time
+    s.execute("clip.trim", &json!({"clip": c, "start": {"seconds": 1.5}})).unwrap();
+    assert_eq!(x_at(&s, 2.0), 0.25);
+    let r = s.execute("clip.split", &json!({"clip": c, "at": {"seconds": 2.5}})).unwrap();
+    let right = r["right"].as_str().unwrap().to_string();
+    let p = s.project();
+    let rc = p.clip(&right).unwrap().1;
+    assert_eq!(rc.value_at(Prop::X, Tick::from_seconds(3.0) - rc.start), 0.5);
+
+    // removing the last key leaves its value
+    for at in [1.0, 2.0] {
+        s.execute("clip.removeKey", &json!({"clip": c, "prop": "x", "at": {"seconds": at}})).unwrap();
+    }
+    s.execute("clip.removeKey", &json!({"clip": c, "prop": "x", "at": {"seconds": 3}})).unwrap();
+    let p = s.project();
+    let lc = p.clip(&c).unwrap().1;
+    assert!(!lc.keyed(Prop::X));
+    assert_eq!(lc.transform.x, 0.5);
+    assert!(s.execute("clip.removeKey", &json!({"clip": c, "prop": "x", "at": 0})).is_err());
+
+    s.execute("clip.clearKeys", &json!({"clip": right, "at": {"seconds": 3}})).unwrap();
+    assert!(s.project().clip(&right).unwrap().1.keys.is_empty());
+    s.execute("render.compile", &json!({})).unwrap();
+}
+
+#[test]
+fn animations_are_set_kept_apart_by_a_split_and_compiled() {
+    let mut s = Session::default();
+    let c = add_red(&mut s, 0.0, 4.0);
+    s.execute("clip.setAnimation", &json!({"clip": c, "slot": "in", "kind": "pop"})).unwrap();
+    s.execute("clip.setAnimation", &json!({"clip": c, "slot": "out", "kind": "slideDown", "duration": {"seconds": 1}}))
+        .unwrap();
+    assert!(s.execute("clip.setAnimation", &json!({"clip": c, "slot": "in", "kind": "wobble"})).is_err());
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert!(spec["layers"][0]["transform"]["scale"].is_array());
+    assert!(spec["layers"][0]["transform"]["position"][0]["t"].is_number());
+
+    let r = s.execute("clip.split", &json!({"clip": c, "at": {"seconds": 2}})).unwrap();
+    let right = r["right"].as_str().unwrap().to_string();
+    let p = s.project();
+    let (l, rt) = (p.clip(&c).unwrap().1, p.clip(&right).unwrap().1);
+    assert!(l.anim.enter.is_some() && l.anim.exit.is_none());
+    assert!(rt.anim.enter.is_none() && rt.anim.exit.is_some_and(|a| a.duration == Tick::SECOND));
+
+    s.execute("clip.setAnimation", &json!({"clip": c, "slot": "in", "kind": null})).unwrap();
+    assert!(s.project().clip(&c).unwrap().1.anim.is_empty());
+}
+
+#[test]
 fn title_templates_restyle_a_title_in_one_step() {
     let mut s = Session::default();
     let text = s.project().tracks.iter().find(|t| t.kind == TrackKind::Text).unwrap().id.clone();

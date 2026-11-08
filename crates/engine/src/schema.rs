@@ -98,6 +98,20 @@ fn title_props() -> Vec<(&'static str, Value)> {
     ]
 }
 
+fn prop_schema() -> (&'static str, Value) {
+    (
+        "prop",
+        json!({"enum": ["x", "y", "scale", "rotation", "opacity", "volumeDb"], "description": "The property that moves."}),
+    )
+}
+
+fn ease_schema() -> (&'static str, Value) {
+    (
+        "ease",
+        json!({"enum": ["linear", "hold", "inOut"], "description": "How the value moves on to the next keyframe: a straight line, a jump at the next key, or slow out and in."}),
+    )
+}
+
 fn object(props: Vec<(&'static str, Value)>, required: &[&str]) -> Value {
     let mut p = serde_json::Map::new();
     for (k, v) in props {
@@ -229,10 +243,48 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ("rotation", num("Clockwise, degrees.")),
                 ("opacity", json!({"type": "number", "minimum": 0, "maximum": 1, "description": "Opacity."})),
                 ("volumeDb", num("Gain in dB; 0 is unchanged.")),
+                ("at", time("Timeline time at which keyframed properties are set.")),
             ];
             props.extend(title_props());
             object(props, &["clip"])
         }
+        "clip.setKey" => object(
+            vec![
+                clip(),
+                prop_schema(),
+                ("at", time("Timeline time of the keyframe.")),
+                ("value", num("Value there; the property's current value at that time by default.")),
+                ease_schema(),
+            ],
+            &["clip", "prop", "at"],
+        ),
+        "clip.removeKey" => object(
+            vec![clip(), prop_schema(), ("at", time("Timeline time of the keyframe, to within half a frame."))],
+            &["clip", "prop", "at"],
+        ),
+        "clip.clearKeys" => object(
+            vec![
+                clip(),
+                prop_schema(),
+                ("at", time("Timeline time whose values the clip keeps; its start by default.")),
+            ],
+            &["clip"],
+        ),
+        "clip.setAnimation" => object(
+            vec![
+                clip(),
+                (
+                    "slot",
+                    json!({"enum": ["in", "out"], "description": "Plays from the clip's start (in) or up to its end (out)."}),
+                ),
+                (
+                    "kind",
+                    json!({"description": "Preset; null removes the animation.", "oneOf": [{"enum": ["fade", "slideUp", "slideDown", "slideLeft", "slideRight", "zoomIn", "zoomOut", "pop", "spin"]}, {"type": "null"}]}),
+                ),
+                ("duration", time("How long it plays; 0.5 s by default.")),
+            ],
+            &["clip", "slot", "kind"],
+        ),
         "clip.addEffect" => object(
             vec![
                 clip(),

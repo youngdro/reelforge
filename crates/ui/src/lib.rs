@@ -35,7 +35,7 @@ use i18n::{Lang, Strings, fill};
 use reelforge_compile::{CompileOptions, compile};
 use reelforge_engine::{Session, SharedSession};
 use reelforge_media::Footage;
-use reelforge_model::{ClipContent, MediaKind, Project, TrackKind};
+use reelforge_model::{AnimKind, ClipContent, ClipTransform, MediaKind, Project, Prop, TrackKind};
 use reelforge_render::{Quality, render_frame};
 use reelforge_time::Tick;
 use serde_json::{Value, json};
@@ -77,8 +77,8 @@ pub struct EditorApp {
     fonts: bool,
     timeline: timeline::TimelineView,
     inspector: Option<Inspector>,
-    /// The project revision the inspector's values were read at.
-    inspector_seen: u64,
+    /// The project revision and playhead the inspector's values were read at.
+    inspector_seen: (u64, Tick),
     /// Pictures of the title templates, made when first shown.
     looks: Option<Vec<(&'static str, egui::TextureHandle)>>,
     /// The server whose session this editor mirrors, when it joined one.
@@ -140,6 +140,19 @@ struct Inspector {
     /// Clips with sound, in dB.
     volume: Option<f32>,
     title: Option<Title>,
+    /// Picture clips: the in and out animations, with their lengths in seconds.
+    anim: Option<[Option<(AnimKind, f32)>; 2]>,
+}
+
+/// Whether a property has a keyframe at the playhead.
+#[derive(Copy, Clone, PartialEq)]
+enum KeyMark {
+    /// No keyframes.
+    Off,
+    /// Keyframes, none here.
+    Elsewhere,
+    /// A keyframe here.
+    Here,
 }
 
 /// A title's own values in the inspector.
@@ -184,7 +197,7 @@ impl EditorApp {
             fonts: false,
             timeline: timeline::TimelineView::default(),
             inspector: None,
-            inspector_seen: 0,
+            inspector_seen: (0, Tick::ZERO),
             looks: None,
             remote: None,
             lang: Lang::detect(),
@@ -781,18 +794,30 @@ impl EditorApp {
             ClipContent::Media { media, .. } => p.media.get(media).is_some_and(|m| m.kind != MediaKind::Image),
             _ => false,
         };
+        let picture = p.clip(&id).is_some_and(|(ti, _)| p.tracks[ti].kind != TrackKind::Audio);
+        // values are read, and keyframes set, where the playhead is (held inside the clip)
+        let at = p.canvas.fps.snap(self.playhead);
+        let local = (at - clip.start).max(Tick::ZERO).min(clip.duration);
+        let half = p.canvas.fps.frame_duration().0 / 2;
+        let mark = |prop: Prop| match clip.keys.get(&prop) {
+            Some(keys) if keys.iter().any(|k| (k.t - (at - clip.start)).0.abs() <= half) => KeyMark::Here,
+            Some(keys) if !keys.is_empty() => KeyMark::Elsewhere,
+            _ => KeyMark::Off,
+        };
+        let marks: Vec<(Prop, KeyMark)> = Prop::ALL.into_iter().map(|p| (p, mark(p))).collect();
+        let anim_of = |a: Option<reelforge_model::Animation>| a.map(|a| (a.kind, a.duration.seconds() as f32));
         let current = Inspector {
             clip: id.clone(),
-            x: clip.transform.x,
-            y: clip.transform.y,
-            scale: clip.transform.scale,
-            rotation: clip.transform.rotation,
-            opacity: clip.opacity,
+            x: clip.value_at(Prop::X, local),
+            y: clip.value_at(Prop::Y, local),
+            scale: clip.value_at(Prop::Scale, local),
+            rotation: clip.value_at(Prop::Rotation, local),
+            opacity: clip.value_at(Prop::Opacity, local),
             color: match &clip.content {
                 ClipContent::Text { color, .. } | ClipContent::Solid { color } => Some(*color),
                 ClipContent::Media { .. } => None,
             },
-            volume: has_sound.then_some(clip.volume_db),
+            volume: has_sound.then(|| clip.value_at(Prop::VolumeDb, local)),
             title: match &clip.content {
                 ClipContent::Text { text, size, style, .. } => Some(Title {
                     text: text.clone(),
@@ -803,12 +828,14 @@ impl EditorApp {
                 }),
                 _ => None,
             },
+            anim: picture.then(|| [anim_of(clip.anim.enter), anim_of(clip.anim.exit)]),
         };
-        // reloaded when the project changes (a drag in the preview, undo, another editor)
-        let revision = self.session.revision();
-        if self.inspector.as_ref().is_none_or(|i| i.clip != id) || self.inspector_seen != revision {
+        // reloaded when the project changes (a drag in the preview, undo, another editor) or the
+        // playhead moves
+        let seen = (self.session.revision(), at);
+        if self.inspector.as_ref().is_none_or(|i| i.clip != id) || self.inspector_seen != seen {
             self.inspector = Some(current.clone());
-            self.inspector_seen = revision;
+            self.inspector_seen = seen;
         }
         let (glyph, kind) = match &clip.content {
             ClipContent::Media { media, .. } => match p.media.get(media).map(|m| m.kind) {
@@ -859,6 +886,8 @@ impl EditorApp {
         let looks = self.looks.as_deref().unwrap_or_default();
         let edit = self.inspector.as_mut().expect("set above");
         let mut commit = false;
+        // commands the panel asks for beyond the values above
+        let mut actions: Vec<(&'static str, Value)> = vec![];
         // a value is committed when its drag ends or it is typed in
         let row = |ui: &mut egui::Ui,
                    name: &str,
@@ -873,6 +902,24 @@ impl EditorApp {
             );
             ui.end_row();
             r.drag_stopped() || (r.changed() && !r.dragged())
+        };
+        // a keyframe toggle for a property: filled where the playhead sits on one
+        let key_button = |ui: &mut egui::Ui, m: KeyMark| -> bool {
+            let (rect, r) = ui.allocate_exact_size(egui::vec2(18.0, 24.0), egui::Sense::click());
+            let (fill, stroke) = match m {
+                KeyMark::Here => (theme::color::ACCENT, theme::color::ACCENT),
+                KeyMark::Elsewhere => (egui::Color32::TRANSPARENT, theme::color::ACCENT),
+                KeyMark::Off => {
+                    (egui::Color32::TRANSPARENT, if r.hovered() { theme::color::TEXT } else { theme::color::WEAK })
+                }
+            };
+            timeline::diamond(ui.painter(), rect.center(), 5.0, fill, egui::Stroke::new(1.2, stroke));
+            r.on_hover_text(if m == KeyMark::Here { s.key_remove } else { s.key_add }).clicked()
+        };
+        let mark_of = |prop: Prop| marks.iter().find(|(p, _)| *p == prop).map_or(KeyMark::Off, |(_, m)| *m);
+        let toggle = |prop: Prop, m: KeyMark| -> (&'static str, Value) {
+            let cmd = if m == KeyMark::Here { "clip.removeKey" } else { "clip.setKey" };
+            (cmd, json!({"clip": id, "prop": prop.name(), "at": at}))
         };
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             if let Some(t) = &mut edit.title {
@@ -937,19 +984,99 @@ impl EditorApp {
                 ui.add_space(6.0);
             }
             theme::section(ui, s.sec_transform, |ui| {
-                egui::Grid::new("transform").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                    commit |= row(ui, s.pos_x, &mut edit.x, 0.005, -2.0..=2.0, "");
-                    commit |= row(ui, s.pos_y, &mut edit.y, 0.005, -2.0..=2.0, "");
-                    commit |= row(ui, s.scale, &mut edit.scale, 0.01, 0.0..=10.0, "×");
-                    commit |= row(ui, s.rotation, &mut edit.rotation, 0.5, -360.0..=360.0, "°");
-                    commit |= row(ui, s.opacity, &mut edit.opacity, 0.01, 0.0..=1.0, "");
+                egui::Grid::new("transform").num_columns(3).spacing([10.0, 6.0]).show(ui, |ui| {
+                    let rows = [
+                        (Prop::X, s.pos_x, &mut edit.x, 0.005, -2.0..=2.0, ""),
+                        (Prop::Y, s.pos_y, &mut edit.y, 0.005, -2.0..=2.0, ""),
+                        (Prop::Scale, s.scale, &mut edit.scale, 0.01, 0.0..=10.0, "×"),
+                        (Prop::Rotation, s.rotation, &mut edit.rotation, 0.5, -360.0..=360.0, "°"),
+                        (Prop::Opacity, s.opacity, &mut edit.opacity, 0.01, 0.0..=1.0, ""),
+                    ];
+                    for (prop, name, v, speed, range, suffix) in rows {
+                        ui.label(egui::RichText::new(name).color(theme::color::WEAK));
+                        let r = ui.add_sized(
+                            [ui.available_width() - 26.0, 24.0],
+                            egui::DragValue::new(v).speed(speed).range(range).suffix(suffix),
+                        );
+                        commit |= r.drag_stopped() || (r.changed() && !r.dragged());
+                        if key_button(ui, mark_of(prop)) {
+                            actions.push(toggle(prop, mark_of(prop)));
+                        }
+                        ui.end_row();
+                    }
                 });
             });
             if let Some(v) = &mut edit.volume {
                 ui.add_space(6.0);
                 theme::section(ui, s.sec_sound, |ui| {
-                    egui::Grid::new("sound").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                        commit |= row(ui, s.volume, v, 0.2, -60.0..=12.0, " dB");
+                    egui::Grid::new("sound").num_columns(3).spacing([10.0, 6.0]).show(ui, |ui| {
+                        ui.label(egui::RichText::new(s.volume).color(theme::color::WEAK));
+                        let r = ui.add_sized(
+                            [ui.available_width() - 26.0, 24.0],
+                            egui::DragValue::new(v).speed(0.2).range(-60.0..=12.0).suffix(" dB"),
+                        );
+                        commit |= r.drag_stopped() || (r.changed() && !r.dragged());
+                        if key_button(ui, mark_of(Prop::VolumeDb)) {
+                            actions.push(toggle(Prop::VolumeDb, mark_of(Prop::VolumeDb)));
+                        }
+                        ui.end_row();
+                    });
+                });
+            }
+            if let Some(slots) = &mut edit.anim {
+                ui.add_space(6.0);
+                theme::section(ui, s.sec_motion, |ui| {
+                    egui::Grid::new("motion").num_columns(3).spacing([10.0, 6.0]).show(ui, |ui| {
+                        for (i, slot) in slots.iter_mut().enumerate() {
+                            let (label, names, slot_id) = if i == 0 {
+                                (s.anim_in, &s.anim_kinds, "in")
+                            } else {
+                                (s.anim_out, &s.anim_out_kinds, "out")
+                            };
+                            ui.label(egui::RichText::new(label).color(theme::color::WEAK));
+                            let shown = slot.map_or(s.anim_none, |(k, _)| {
+                                names[AnimKind::ALL.iter().position(|x| *x == k).unwrap_or(0)]
+                            });
+                            let mut picked = slot.map(|(k, _)| k);
+                            egui::ComboBox::from_id_salt(("anim", i)).selected_text(shown).width(110.0).show_ui(
+                                ui,
+                                |ui| {
+                                    ui.selectable_value(&mut picked, None, s.anim_none);
+                                    for (k, name) in AnimKind::ALL.into_iter().zip(names.iter()) {
+                                        ui.selectable_value(&mut picked, Some(k), *name);
+                                    }
+                                },
+                            );
+                            if picked != slot.map(|(k, _)| k) {
+                                actions.push((
+                                    "clip.setAnimation",
+                                    json!({"clip": id, "slot": slot_id, "kind": picked.map(AnimKind::name)}),
+                                ));
+                            }
+                            match slot {
+                                Some((kind, secs)) => {
+                                    let r = ui.add(
+                                        egui::DragValue::new(secs)
+                                            .speed(0.02)
+                                            .range(0.1..=5.0)
+                                            .suffix(" s")
+                                            .max_decimals(2),
+                                    );
+                                    if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                                        actions.push((
+                                            "clip.setAnimation",
+                                            json!({"clip": id, "slot": slot_id,
+                                                "kind": kind.name(), "duration": {"seconds": *secs}}),
+                                        ));
+                                    }
+                                    r.on_hover_text(s.anim_length);
+                                }
+                                None => {
+                                    ui.label("");
+                                }
+                            }
+                            ui.end_row();
+                        }
                     });
                 });
             }
@@ -957,17 +1084,37 @@ impl EditorApp {
         // a colour is committed once the pointer lets go of the picker
         let picked = self.inspector.as_ref().is_some_and(|e| e.color != current.color);
         commit |= picked && !ui.ctx().egui_is_using_pointer();
+        for (cmd, params) in actions {
+            let _ = self.execute(cmd, params);
+        }
         if commit && self.inspector.as_ref() != Some(&current) {
             let e = self.inspector.clone().expect("set");
-            let mut params =
-                json!({"clip": id, "x": e.x, "y": e.y, "scale": e.scale, "rotation": e.rotation, "opacity": e.opacity});
-            if let Some(c) = e.color {
+            // only what changed is sent, at the playhead, so keyframed values change only there
+            let mut params = json!({"clip": id, "at": at});
+            for (prop, now, was) in [
+                (Prop::X, e.x, current.x),
+                (Prop::Y, e.y, current.y),
+                (Prop::Scale, e.scale, current.scale),
+                (Prop::Rotation, e.rotation, current.rotation),
+                (Prop::Opacity, e.opacity, current.opacity),
+            ] {
+                if now != was {
+                    params[prop.name()] = json!(now);
+                }
+            }
+            if let Some(c) = e.color
+                && e.color != current.color
+            {
                 params["color"] = json!(c);
             }
-            if let Some(v) = e.volume {
+            if let Some(v) = e.volume
+                && e.volume != current.volume
+            {
                 params["volumeDb"] = json!(v);
             }
-            if let Some(t) = e.title {
+            if let Some(t) = &e.title
+                && e.title != current.title
+            {
                 let was = current.title.as_ref();
                 params["text"] = json!(t.text);
                 params["size"] = json!(t.size);
@@ -995,6 +1142,9 @@ impl EditorApp {
             && let Some(clip) = Arc::make_mut(&mut p).clip_mut(&g.clip)
         {
             clip.transform = g.now;
+            for prop in [Prop::X, Prop::Y, Prop::Scale, Prop::Rotation] {
+                clip.keys.remove(&prop);
+            }
         }
         let frame = p.canvas.fps.frame_at(self.playhead);
         let moving = self.gesture.as_ref().map(|g| [g.now.x, g.now.y, g.now.scale, g.now.rotation].map(f32::to_bits));
@@ -1079,17 +1229,39 @@ impl EditorApp {
             &self.outlines,
             self.selected.as_deref(),
             &mut self.gesture,
-            |id| committed.clip(id).map(|(_, c)| c.transform),
+            // where the clip is now: its keyframed placement at the playhead
+            |id| committed.clip(id).map(|(_, c)| placement_at(c, at)),
         );
         if let Some(sel) = out.select {
             self.selected = sel;
         }
         if let Some((clip, t)) = out.commit {
-            let _ = self.execute(
-                "clip.set",
-                json!({"clip": clip, "x": t.x, "y": t.y, "scale": t.scale, "rotation": t.rotation}),
-            );
+            // only what the gesture changed, at the playhead, so keyframes change only there
+            let was = committed.clip(&clip).map(|(_, c)| placement_at(c, at)).unwrap_or_default();
+            let mut params = json!({"clip": clip, "at": at});
+            for (prop, now, before) in [
+                (Prop::X, t.x, was.x),
+                (Prop::Y, t.y, was.y),
+                (Prop::Scale, t.scale, was.scale),
+                (Prop::Rotation, t.rotation, was.rotation),
+            ] {
+                if now != before {
+                    params[prop.name()] = json!(now);
+                }
+            }
+            let _ = self.execute("clip.set", params);
         }
+    }
+}
+
+/// A clip's placement at timeline time `at`, keyframes evaluated (held at the clip's ends).
+fn placement_at(c: &reelforge_model::Clip, at: Tick) -> ClipTransform {
+    let t = (at - c.start).max(Tick::ZERO).min(c.duration);
+    ClipTransform {
+        x: c.value_at(Prop::X, t),
+        y: c.value_at(Prop::Y, t),
+        scale: c.value_at(Prop::Scale, t),
+        rotation: c.value_at(Prop::Rotation, t),
     }
 }
 
