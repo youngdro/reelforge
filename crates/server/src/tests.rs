@@ -226,3 +226,61 @@ fn remote_clients_hear_who_changed_what() {
     assert_eq!(heard, json!({"revision": since + 1, "command": "clip.add", "by": "agent claude-code"}));
     assert_eq!(hub.session().last_change().by, "agent claude-code");
 }
+
+#[test]
+fn browsers_send_media_and_fetch_it_back() {
+    let dir = temp("web");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("index.html"), "<!doctype html>editor").unwrap();
+    let file = temp("browser.reel.json");
+    let _ = std::fs::remove_file(&file);
+    let hub = Arc::new(Hub::open(&file).unwrap());
+    let server = HttpServer::bind(hub.clone(), "127.0.0.1:0", Some("k".into())).unwrap().with_web(dir);
+    let base = format!("http://{}", server.local_addr());
+    std::thread::spawn(move || server.run());
+    let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
+
+    // the page itself needs no token; everything it does does
+    let mut r = agent.get(format!("{base}/")).call().unwrap();
+    assert_eq!(r.body_mut().read_to_string().unwrap(), "<!doctype html>editor");
+    assert_eq!(agent.get(format!("{base}/..%2Fsecret")).call().unwrap().status(), 404);
+    assert_eq!(agent.get(format!("{base}/v1/project")).call().unwrap().status(), 401);
+
+    let png = {
+        let mut out = Vec::new();
+        let img = image::RgbaImage::from_pixel(4, 2, image::Rgba([255, 0, 0, 255]));
+        img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+        out
+    };
+    use sha2::Digest;
+    let sha: String = sha2::Sha256::digest(&png).iter().map(|b| format!("{b:02x}")).collect();
+    let put = |sha: &str| {
+        let mut r = agent
+            .put(format!("{base}/v1/media/{sha}?name=my%20red%20dot.png"))
+            .header("Authorization", "Bearer k")
+            .send(&png[..])
+            .unwrap();
+        (r.status().as_u16(), serde_json::from_slice::<Value>(&r.body_mut().read_to_vec().unwrap()).unwrap())
+    };
+    assert_eq!(put(&"0".repeat(64)).0, 422, "the hash is checked");
+    let (status, kept) = put(&sha);
+    assert_eq!(status, 200);
+    let path = kept["path"].as_str().unwrap().to_string();
+    assert!(path.ends_with("-my_red_dot.png") && std::path::Path::new(&path).is_absolute(), "{path}");
+    assert_eq!(std::fs::read(&path).unwrap(), png);
+
+    // imported by that path, by a client that names itself
+    let import = json!({"path": path, "name": "my red dot.png", "sha256": sha}).to_string();
+    let (status, _, _) =
+        post(&base, "/v1/ops/media.import", &import, &[("Authorization", "Bearer k"), ("X-Reelforge-Client", "web")]);
+    assert_eq!(status, 200);
+    assert_eq!(hub.session().last_change().by, "web");
+    let m = hub.session().project().media.values().next().unwrap().clone();
+    assert_eq!((m.name.as_str(), m.size), ("my red dot.png", Some([4, 2])));
+
+    let mut r = agent.get(format!("{base}/v1/media/{sha}")).header("Authorization", "Bearer k").call().unwrap();
+    assert_eq!(r.body_mut().read_to_vec().unwrap(), png);
+    let other = "f".repeat(64);
+    let r = agent.get(format!("{base}/v1/media/{other}")).header("Authorization", "Bearer k").call().unwrap();
+    assert_eq!(r.status(), 404);
+}

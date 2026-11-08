@@ -745,6 +745,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ehttp"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d1c51126a4e8242c5b3bcd4c5b350ed3540f0c13c10e0c3c840a3833fa3474c"
+dependencies = [
+ "document-features",
+ "js-sys",
+ "ureq",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2724,6 +2738,7 @@ dependencies = [
  "reelforge-renderspec",
  "reelforge-time",
  "serde_json",
+ "sha2",
  "tiny_http",
  "ureq",
 ]
@@ -2743,12 +2758,15 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "egui",
+ "ehttp",
+ "image",
  "reelforge-compile",
  "reelforge-engine",
  "reelforge-media",
  "reelforge-model",
  "reelforge-render",
  "reelforge-renderspec",
+ "reelforge-server",
  "reelforge-time",
  "serde_json",
  "sha2",

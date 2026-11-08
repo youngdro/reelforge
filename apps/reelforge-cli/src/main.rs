@@ -127,6 +127,10 @@ enum Cmd {
         /// Bearer token clients must send.
         #[arg(long, env = "REELFORGE_TOKEN", hide_env_values = true)]
         token: Option<String>,
+        /// Serve the browser editor from this folder (the built `reelforge-web`), so opening the
+        /// server's address in a browser edits this project.
+        #[arg(long, env = "REELFORGE_WEB")]
+        web: Option<PathBuf>,
     },
     /// List the operations `call`, MCP agents and the HTTP API share, with their parameters.
     Ops {
@@ -330,7 +334,7 @@ fn run(cmd: Cmd) -> Result<(), String> {
             print(&reelforge_renderspec::json_schema());
             Ok(())
         }
-        Cmd::Serve { project, stdio, listen, token } => {
+        Cmd::Serve { project, stdio, listen, token, web } => {
             let hub = match &project {
                 Some(path) => Hub::open(path)?,
                 None => Hub::new(Session::default()),
@@ -338,9 +342,18 @@ fn run(cmd: Cmd) -> Result<(), String> {
             if stdio {
                 return reelforge_server::mcp::serve_stdio(&hub).map_err(|e| e.to_string());
             }
-            let server = reelforge_server::http::HttpServer::bind(std::sync::Arc::new(hub), &listen, token)?;
+            let mut server =
+                reelforge_server::http::HttpServer::bind(std::sync::Arc::new(hub), &listen, token.clone())?;
             let addr = server.local_addr();
             eprintln!("reelforge on http://{addr}: MCP at /mcp, operations at /v1/ops");
+            if let Some(dir) = web {
+                if !dir.join("index.html").is_file() {
+                    return Err(format!("{} has no index.html: build reelforge-web into it first", dir.display()));
+                }
+                server = server.with_web(dir);
+                let query = token.map(|t| format!("/?token={t}")).unwrap_or_default();
+                eprintln!("edit in a browser at http://{addr}{query}");
+            }
             if let Some(p) = &project {
                 eprintln!("editing {} (every edit is saved)", p.display());
             }

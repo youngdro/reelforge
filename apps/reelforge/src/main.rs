@@ -4,7 +4,8 @@
 //! reelforge                                  # a demo project
 //! reelforge cut.reel.json                    # open (or create) a project; every edit is saved
 //! reelforge cut.reel.json --serve            # and let agents edit it too: MCP at http://127.0.0.1:7878/mcp
-//! reelforge cut.reel.json --serve 0.0.0.0:7878 --token SECRET
+//! reelforge cut.reel.json --serve 0.0.0.0:7878 --token SECRET --web dist   # and people in a browser
+//! reelforge --join http://studio:7878 --token SECRET   # edit a project another machine serves
 //! ```
 //!
 //! Drop video, image or audio files on the window to import them; Export writes beside the project.
@@ -26,6 +27,7 @@ fn main() -> eframe::Result {
     };
     let mut args = std::env::args().skip(1).peekable();
     let (mut path, mut serve, mut token) = (None, None, std::env::var("REELFORGE_TOKEN").ok());
+    let (mut join, mut web) = (None, std::env::var_os("REELFORGE_WEB").map(std::path::PathBuf::from));
     while let Some(a) = args.next() {
         match a.as_str() {
             "--serve" => {
@@ -33,13 +35,30 @@ fn main() -> eframe::Result {
                 serve = Some(addr);
             }
             "--token" => token = Some(args.next().unwrap_or_else(|| fail("--token needs a value".into()))),
+            "--join" => join = Some(args.next().unwrap_or_else(|| fail("--join needs a server address".into()))),
+            "--web" => web = Some(args.next().unwrap_or_else(|| fail("--web needs a folder".into())).into()),
             "-h" | "--help" => {
-                println!("reelforge [project.reel.json] [--serve [addr]] [--token TOKEN]");
+                println!("reelforge [project.reel.json] [--serve [addr]] [--web DIR] [--token TOKEN]");
+                println!("reelforge --join http://host:7878 [--token TOKEN]");
                 return Ok(());
             }
             flag if flag.starts_with("--") => fail(format!("unknown option {flag}")),
             p => path = Some(std::path::PathBuf::from(p)),
         }
+    }
+
+    let options = eframe::NativeOptions {
+        renderer: eframe::Renderer::Wgpu,
+        viewport: eframe::egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]).with_title("reelforge"),
+        ..Default::default()
+    };
+    if let Some(base) = join {
+        if path.is_some() || serve.is_some() {
+            fail("--join edits the server's project: it takes no project file and no --serve".into());
+        }
+        let base = if base.contains("://") { base } else { format!("http://{base}") };
+        let app = EditorApp::join(&base, token, "desktop");
+        return eframe::run_native("reelforge", options, Box::new(|cc| Ok(Box::new(app.with_gpu(cc)))));
     }
 
     let mut app = match &path {
@@ -53,18 +72,17 @@ fn main() -> eframe::Result {
     // the hub saves every change to the file, whoever makes it, and serves agents when asked
     let hub = Hub::shared(app.session().clone(), path.clone()).unwrap_or_else(|e| fail(e));
     if let Some(addr) = serve {
-        let server = HttpServer::bind(Arc::new(hub), &addr, token).unwrap_or_else(|e| fail(e));
+        let mut server = HttpServer::bind(Arc::new(hub), &addr, token).unwrap_or_else(|e| fail(e));
         let url = format!("http://{}/mcp", server.local_addr());
         eprintln!("reelforge: agents can edit this project over MCP at {url}");
+        if let Some(dir) = web {
+            eprintln!("reelforge: and people in a browser at http://{}/", server.local_addr());
+            server = server.with_web(dir);
+        }
         app = app.with_status(format!("Agents can edit over MCP at {url}"));
         std::thread::spawn(move || server.run());
     }
 
-    let options = eframe::NativeOptions {
-        renderer: eframe::Renderer::Wgpu,
-        viewport: eframe::egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]).with_title("reelforge"),
-        ..Default::default()
-    };
     eframe::run_native("reelforge", options, Box::new(|cc| Ok(Box::new(app.with_gpu(cc)))))
 }
 

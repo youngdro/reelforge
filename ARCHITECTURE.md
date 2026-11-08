@@ -33,7 +33,7 @@ service ships them without the editor.
 | L2 | `reelforge-render` | Pure frame plan, CPU reference compositor, wgpu compositor (feature `gpu`); `MediaSource` trait |
 | L3 | `reelforge-media` | Probing, video/audio decoding (`Footage`), MP4 export (H.264 + AAC); FilmCraft's pure-Rust codecs |
 | L4 | `reelforge-engine` | `Session`, command registry, copy-on-write undo, batches |
-| L5 | `reelforge-ui` | The egui editor: toolbar, preview, timeline, inspector |
+| L5 | `reelforge-ui` | The egui editor: toolbar, preview, timeline, inspector; joins a server's session (`remote`) |
 | L5 | `reelforge-server` | One shared session as a service: MCP (stdio, Streamable HTTP) and a plain HTTP API over the same operations; native only |
 | L6 | `reelforge` | Desktop app (eframe, wgpu renderer) |
 | L6 | `reelforge-cli` | Commands, scripts, compile, validate, render a frame, export; `serve`, and `call` on a file or a server |
@@ -83,11 +83,14 @@ In rough priority order for short videos:
    reference to one 8-bit code, drawing the editor's preview on eframe's own device and exports on
    a headless one, with the sRGB and 4:2:0 conversions in shaders.
 4. Audio mixing and playback.
-5. Shared editing, next steps: the browser editor joining a server's session (project over
-   `/v1/events`, media bytes served by the server), MCP resources and change notifications, and
-   per-client undo. In place: `reelforge-server` exposes every command and render/export/save as
-   MCP tools (stdio, Streamable HTTP) and at `/v1`; `reelforge-cli call` works on a file or a
-   server; and the desktop editor hosts a server on its own session (`--serve`), so an agent's
-   edits show in the window as they commit (`SharedSession` records who made each change and
-   wakes listeners and long-polls).
+5. Shared editing, next steps: MCP resources and change notifications, per-client undo, a push
+   channel (WebSocket or SSE) in place of long polls, and presence (who is looking where). In
+   place: `reelforge-server` exposes every command and render/export/save as MCP tools (stdio,
+   Streamable HTTP) and at `/v1`; `reelforge-cli call` works on a file or a server; the desktop
+   editor hosts a server on its own session (`--serve`); and an editor in a browser or on another
+   machine joins a server's session (`reelforge_ui::remote`). A joined editor runs each edit on its
+   own mirror `SharedSession` first (ids are minted from the project, so both sides agree), sends it
+   to `/v1/ops`, and adopts the server's project whenever nothing is pending: after its own edits
+   are answered and when `/v1/events` reports someone else's. Undo runs on the server. Media moves
+   by hash (`PUT`/`GET /v1/media/{sha256}`), and the server serves the web build (`--web`).
 6. A standalone render service that accepts a RenderSpec.

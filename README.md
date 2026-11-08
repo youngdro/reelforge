@@ -88,6 +88,21 @@ cargo run -r -p reelforge -- cut.reel.json --serve        # MCP at http://127.0.
 
 Opening a project in the editor saves every edit to it, whoever makes it.
 
+People can join from a browser, or from another machine's editor. Build the web editor once (see
+Build and run, into `dist/`), then serve it with the project; opening the address edits the same
+session as the agents:
+
+```sh
+reelforge-cli serve cut.reel.json --web dist                 # open http://127.0.0.1:7878/
+reelforge-cli serve cut.reel.json --listen 0.0.0.0:7878 --token SECRET --web dist
+                                                             # open http://host:7878/?token=SECRET
+cargo run -r -p reelforge -- --join http://host:7878 --token SECRET   # the desktop editor joins too
+```
+
+Each editor edits its own copy at once and sends the edit to the server; it follows everyone else's
+edits as they commit, and fetches the media the project uses. Files dropped on a joined editor are
+sent to the server and kept in `media/` beside the project.
+
 On anything but loopback the server needs a token (`--token` or `REELFORGE_TOKEN`), sent as
 `Authorization: Bearer …`.
 

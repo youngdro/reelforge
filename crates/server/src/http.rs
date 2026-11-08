@@ -9,7 +9,13 @@
 //! | `POST /v1/ops/{name}` | Runs one; the body is its parameters. JSON back, or `image/png` (with `X-Reelforge-Info`). |
 //! | `GET /v1/project` | `project.inspect`. |
 //! | `GET /v1/events?since=N` | Waits (up to `timeout` s, 25 by default) for a revision after `N`: `{revision, command, by}`. |
+//! | `PUT /v1/media/{sha256}?name=clip.mp4` | Keeps a file a client sent (the body); returns the `path` to import it by. |
+//! | `GET /v1/media/{sha256}` | The bytes of the project's media with that hash, for a client to draw it. |
 //! | `GET /health` | `ok`, without a token. |
+//! | `GET /`, `GET /{file}` | With [`HttpServer::with_web`], the browser editor, which joins this session. |
+//!
+//! A client may name itself with `X-Reelforge-Client: <name>`; changes it makes are said to be by
+//! that name (the browser editor sends `web`), and `http` otherwise.
 //!
 //! Safety: a server on a loopback address checks that browser requests come from a local page
 //! (`Origin`), against DNS rebinding. Anywhere else it needs a token, sent as
@@ -31,6 +37,8 @@ pub struct HttpServer {
     token: Option<String>,
     /// MCP sessions and their clients' names.
     sessions: Mutex<HashMap<String, String>>,
+    /// The built browser editor (`index.html`, `reelforge_web.js`, the wasm), served at `/`.
+    web: Option<std::path::PathBuf>,
 }
 
 impl HttpServer {
@@ -43,7 +51,14 @@ impl HttpServer {
             ));
         }
         let server = Server::http(parsed).map_err(|e| format!("cannot listen on {addr}: {e}"))?;
-        Ok(HttpServer { server, hub, token, sessions: Mutex::default() })
+        Ok(HttpServer { server, hub, token, sessions: Mutex::default(), web: None })
+    }
+
+    /// Serves the browser editor from `dir` (what `wasm-bindgen --target web` wrote, plus
+    /// `index.html`), so opening the server's address in a browser joins this session.
+    pub fn with_web(mut self, dir: std::path::PathBuf) -> HttpServer {
+        self.web = Some(dir);
+        self
     }
 
     /// The address it listens on.
@@ -71,8 +86,20 @@ impl HttpServer {
                 .map(|h| h.value.as_str().to_string())
         };
         let (origin, auth, session) = (header("Origin"), header("Authorization"), header("Mcp-Session-Id"));
+        let by = header("X-Reelforge-Client")
+            .map(|c| c.chars().filter(|c| c.is_alphanumeric() || " -_.".contains(*c)).take(40).collect::<String>())
+            .filter(|c| !c.trim().is_empty())
+            .unwrap_or_else(|| "http".into());
         if url == "/health" {
             return reply(req, text(200, "ok"));
+        }
+        if method == Method::Get
+            && let Some(dir) = &self.web
+            && !url.starts_with("/v1/")
+            && url != "/mcp"
+        {
+            // the page is public; what it does needs the token, which the person puts in its address
+            return reply(req, static_file(dir, &url));
         }
         match &self.token {
             Some(t) if auth.as_deref() != Some(&format!("Bearer {t}")) => {
@@ -82,6 +109,35 @@ impl HttpServer {
                 return reply(req, json_response(403, &json!({"error": "requests from other sites are refused"})));
             }
             _ => {}
+        }
+        if let Some(sha) = url.strip_prefix("/v1/media/") {
+            let sha = sha.to_string();
+            let response = match method {
+                Method::Get => match self.hub.media_bytes(&sha) {
+                    Ok(bytes) => Response::from_data(bytes)
+                        .with_status_code(200)
+                        .with_header(h("Content-Type", "application/octet-stream"))
+                        .with_header(h("Cache-Control", "private, max-age=31536000, immutable")),
+                    Err(e) => call_error(e),
+                },
+                Method::Put => {
+                    let name = query
+                        .split('&')
+                        .find_map(|kv| kv.strip_prefix("name="))
+                        .map(percent_decode)
+                        .unwrap_or_else(|| "file".into());
+                    let mut bytes = Vec::new();
+                    match req.as_reader().read_to_end(&mut bytes) {
+                        Ok(_) => match self.hub.upload(&sha, &name, &bytes) {
+                            Ok(v) => json_response(200, &v),
+                            Err(e) => call_error(e),
+                        },
+                        Err(e) => json_response(400, &json!({"error": format!("cannot read the body: {e}")})),
+                    }
+                }
+                _ => text(405, "").with_header(h("Allow", "GET, PUT")),
+            };
+            return reply(req, response);
         }
         let mut body = String::new();
         if req.as_reader().read_to_string(&mut body).is_err() {
@@ -106,7 +162,7 @@ impl HttpServer {
                     .collect();
                 json_response(200, &Value::Array(list))
             }
-            (Method::Get, "/v1/project") => self.op("project.inspect", "{}"),
+            (Method::Get, "/v1/project") => self.op("project.inspect", "{}", &by),
             (Method::Get, "/v1/events") => {
                 let arg = |k: &str| {
                     query.split('&').find_map(|kv| kv.strip_prefix(k)?.strip_prefix('=')?.parse::<u64>().ok())
@@ -115,7 +171,7 @@ impl HttpServer {
                 let c = self.hub.session().wait_for_change(arg("since").unwrap_or(0), wait);
                 json_response(200, &json!({"revision": c.revision, "command": c.command, "by": c.by}))
             }
-            (Method::Post, path) if path.starts_with("/v1/ops/") => self.op(&path["/v1/ops/".len()..], &body),
+            (Method::Post, path) if path.starts_with("/v1/ops/") => self.op(&path["/v1/ops/".len()..], &body, &by),
             _ => json_response(404, &json!({"error": format!("no route {url}")})),
         };
         reply(req, response)
@@ -148,7 +204,7 @@ impl HttpServer {
         }
     }
 
-    fn op(&self, name: &str, body: &str) -> Response<std::io::Cursor<Vec<u8>>> {
+    fn op(&self, name: &str, body: &str, by: &str) -> Response<std::io::Cursor<Vec<u8>>> {
         let params: Value = if body.trim().is_empty() {
             json!({})
         } else {
@@ -157,16 +213,74 @@ impl HttpServer {
                 Err(e) => return json_response(400, &json!({"error": format!("the body is not JSON: {e}")})),
             }
         };
-        match self.hub.call_as("http", name, &params) {
+        match self.hub.call_as(by, name, &params) {
             Ok(Output::Json(v)) => json_response(200, &json!({"result": v})),
             Ok(Output::Png { png, info }) => Response::from_data(png)
                 .with_status_code(200)
                 .with_header(h("Content-Type", "image/png"))
                 .with_header(h("X-Reelforge-Info", &info.to_string())),
-            Err(CallError::Unknown(n)) => json_response(404, &json!({"error": format!("unknown operation {n:?}")})),
-            Err(CallError::Failed(why)) => json_response(422, &json!({"error": why})),
+            Err(e) => call_error(e),
         }
     }
+}
+
+fn call_error(e: CallError) -> Response<std::io::Cursor<Vec<u8>>> {
+    match e {
+        CallError::Unknown(n) => json_response(404, &json!({"error": format!("unknown {n}")})),
+        CallError::Failed(why) => json_response(422, &json!({"error": why})),
+    }
+}
+
+/// A file of the browser editor, or 404. Only plain names inside `dir`.
+fn static_file(dir: &std::path::Path, url: &str) -> Response<std::io::Cursor<Vec<u8>>> {
+    let name = match url.trim_start_matches('/') {
+        "" => "index.html",
+        n => n,
+    };
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) || name.starts_with('.') {
+        return text(404, "not found");
+    }
+    let kind = match name.rsplit_once('.').map(|(_, e)| e) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") => "text/javascript",
+        Some("wasm") => "application/wasm",
+        Some("css") => "text/css",
+        Some("png") => "image/png",
+        Some("svg") => "image/svg+xml",
+        _ => "application/octet-stream",
+    };
+    match std::fs::read(dir.join(name)) {
+        Ok(bytes) => Response::from_data(bytes)
+            .with_status_code(200)
+            .with_header(h("Content-Type", kind))
+            .with_header(h("Cache-Control", "no-cache")),
+        Err(_) => text(404, "not found"),
+    }
+}
+
+/// `%XX` escapes and `+`, as a query value is written.
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' if i + 2 < b.len() => {
+                match u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or(""), 16) {
+                    Ok(v) => {
+                        out.push(v);
+                        i += 3;
+                        continue;
+                    }
+                    Err(_) => out.push(b'%'),
+                }
+            }
+            b'+' => out.push(b' '),
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn local_origin(origin: &str) -> bool {

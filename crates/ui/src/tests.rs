@@ -1,0 +1,132 @@
+//! An editor joined to a real server, with an agent editing the same session.
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use reelforge_engine::Session;
+use reelforge_server::Hub;
+use reelforge_server::http::HttpServer;
+use serde_json::{Value, json};
+
+use crate::EditorApp;
+
+fn serve(hub: &Arc<Hub>) -> String {
+    let server = HttpServer::bind(hub.clone(), "127.0.0.1:0", Some("t".into())).expect("binds");
+    let base = format!("http://{}", server.local_addr());
+    std::thread::spawn(move || server.run());
+    base
+}
+
+/// Waits up to ten seconds for `ok`.
+fn until(what: &str, mut ok: impl FnMut() -> bool) {
+    let start = Instant::now();
+    while !ok() {
+        assert!(start.elapsed() < Duration::from_secs(10), "timed out waiting until {what}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn agent(hub: &Hub, op: &str, params: Value) -> Value {
+    match hub.call_as("agent test", op, &params).expect("the agent's edit runs") {
+        reelforge_server::Output::Json(v) => v,
+        other => panic!("{other:?}"),
+    }
+}
+
+fn first_track(app: &EditorApp, kind: reelforge_model::TrackKind) -> String {
+    app.session().project().tracks.iter().find(|t| t.kind == kind).expect("a track").id.clone()
+}
+
+#[test]
+fn an_editor_and_an_agent_edit_one_session_through_a_server() {
+    let hub = Arc::new(Hub::new(Session::default()));
+    let base = serve(&hub);
+    let video = hub.session().project().tracks[0].id.clone();
+    agent(&hub, "clip.add", json!({"track": video, "color": [1, 0, 0], "duration": {"seconds": 2}}));
+
+    let mut app = EditorApp::join(&base, Some("t".into()), "desktop");
+    let remote = app.remote().expect("joined").clone();
+    let same = || *app.session().project() == *hub.session().project();
+    until("the editor has the server's project", || remote.settled() && same());
+
+    // the editor's edit reaches the server, with the same ids on both
+    let video = first_track(&app, reelforge_model::TrackKind::Video);
+    let added =
+        app.execute("clip.add", json!({"track": video, "color": [0, 0, 1], "duration": {"seconds": 1}})).unwrap();
+    let mine = added["clip"].as_str().unwrap().to_string();
+    until("the server has the editor's clip", || hub.session().project().clip(&mine).is_some());
+    assert_eq!(hub.session().last_change().by, "desktop");
+    until("both agree", || remote.settled() && *app.session().project() == *hub.session().project());
+
+    // the agent's edit reaches the editor, by name
+    let title = first_track(&app, reelforge_model::TrackKind::Text);
+    let theirs = agent(&hub, "clip.add", json!({"track": title, "text": "你好"}))["clip"].as_str().unwrap().to_string();
+    until("the editor has the agent's title", || app.session().project().clip(&theirs).is_some());
+    assert_eq!(app.session().last_change().by, "agent test");
+
+    // an edit the server refuses (the agent removed the clip first) gives way to the server's state
+    agent(&hub, "clip.remove", json!({"clips": mine}));
+    let _ = app.execute("clip.set", json!({"clip": mine, "opacity": 0.5}));
+    until("the editor follows the server", || remote.settled() && *app.session().project() == *hub.session().project());
+    assert!(app.session().project().clip(&mine).is_none());
+
+    // undo runs on the server, whose history holds everyone's edits: it brings the clip back
+    app.execute("edit.undo", json!({})).unwrap();
+    until("the undo comes back", || app.session().project().clip(&mine).is_some());
+    until("both agree after undo", || remote.settled() && *app.session().project() == *hub.session().project());
+}
+
+#[test]
+fn files_go_to_the_server_and_other_editors_fetch_them() {
+    let dir = std::env::temp_dir().join(format!("reelforge-ui-remote-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("shared.reel.json");
+    let _ = std::fs::remove_file(&file);
+    let hub = Arc::new(Hub::open(&file).unwrap());
+    let base = serve(&hub);
+
+    let png = {
+        let mut out = Vec::new();
+        let img = image::RgbaImage::from_pixel(8, 4, image::Rgba([0, 200, 0, 255]));
+        img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+        out
+    };
+    let mut app = EditorApp::join(&base, Some("t".into()), "web");
+    let remote = app.remote().unwrap().clone();
+    until("joined", || remote.joined());
+    remote.upload("绿色.png", png.clone()).unwrap();
+    let mut up = Vec::new();
+    until("the server has the file", || {
+        up.extend(remote.take_uploaded());
+        !up.is_empty()
+    });
+    let imported = app.execute("media.import", up[0].import.clone()).unwrap();
+    let id = imported["media"]["id"].as_str().unwrap().to_string();
+    until("the server has the media", || hub.session().project().media.contains_key(&id));
+    let m = hub.session().project().media[&id].clone();
+    assert_eq!((m.name.as_str(), m.size), ("绿色.png", Some([8, 4])));
+    assert!(m.uri.starts_with(dir.join("media").to_str().unwrap()), "{}", m.uri);
+    assert_eq!(std::fs::read(&m.uri).unwrap(), png);
+    until("both agree", || remote.settled() && *app.session().project() == *hub.session().project());
+
+    // another editor joining later gets the file from the server
+    let other = EditorApp::join(&base, Some("t".into()), "web");
+    let r2 = other.remote().unwrap().clone();
+    until("the second editor has the footage", || r2.media_epoch() > 0);
+    assert_eq!(*other.session().project(), *hub.session().project());
+}
+
+#[test]
+fn a_wrong_token_is_reported_and_nothing_is_joined() {
+    let hub = Arc::new(Hub::new(Session::default()));
+    let base = serve(&hub);
+    let app = EditorApp::join(&base, Some("wrong".into()), "web");
+    let remote = app.remote().unwrap().clone();
+    let mut notes = Vec::new();
+    until("the refusal is reported", || {
+        notes.extend(remote.take_notes());
+        !notes.is_empty()
+    });
+    assert!(notes[0].contains("token"), "{notes:?}");
+    assert!(!remote.joined());
+}
