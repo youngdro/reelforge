@@ -99,6 +99,76 @@ pub fn render_frame(
     cpu::composite(spec, &plan, media, quality)
 }
 
+/// Where a visible layer lands: its box's corners in output pixels (`[x, y]`, clockwise from the
+/// content's top-left), turned with the layer.
+pub type Outline = [[f32; 2]; 4];
+
+/// Where each layer visible at `t` lands, bottom first: `(layer id, outline)`. For editors that
+/// draw a selection box and let people drag what they see. Text is measured as drawn (clipped to
+/// the frame); a picture by its probe, or by fetching it.
+pub fn layer_outlines(spec: &RenderSpec, t: Tick, media: &dyn MediaSource) -> Vec<(String, Outline)> {
+    let plan = plan_frame(spec, t, 1.0);
+    let target = [plan.width as f32, plan.height as f32];
+    let corners = |m: plan::Affine, w: f32, h: f32| -> Outline {
+        [[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]].map(|[x, y]| [m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5]])
+    };
+    let mut out = Vec::new();
+    for layer in &plan.layers {
+        let outline = match &layer.source {
+            PlannedSource::Solid(_) => {
+                let mut l = layer.clone();
+                l.fit = reelforge_renderspec::Fit::Stretch;
+                corners(l.matrix(1.0, 1.0, target), 1.0, 1.0)
+            }
+            PlannedSource::Media { asset, .. } => {
+                let probed =
+                    spec.assets.get(asset).and_then(|a| a.probe.as_ref()).and_then(|p| Some((p.width?, p.height?)));
+                let size = match probed {
+                    Some(s) => s,
+                    None => match spec.assets.get(asset).map(|def| media.picture(asset, def, plan.t)) {
+                        Some(Ok(Some(pic))) => (pic.width, pic.height),
+                        _ => (plan.width, plan.height),
+                    },
+                };
+                let (w, h) = (size.0 as f32, size.1 as f32);
+                corners(layer.matrix(w, h, target), w, h)
+            }
+            PlannedSource::Text(_) => {
+                // measured upright, then turned about the layer's centre
+                let mut upright = layer.clone();
+                upright.rotation = 0.0;
+                let mut report = FrameReport::default();
+                let Ok(cpu::Resolved::Sprite(sp)) =
+                    cpu::resolve(spec, &plan, &upright, media, Quality::Draft, &mut report)
+                else {
+                    continue;
+                };
+                // the ink, not the layout box (a wrapping title's box is as wide as its wrap)
+                let w = sp.image.width as usize;
+                let (mut lo, mut hi) = ([usize::MAX; 2], [0usize; 2]);
+                for (i, px) in sp.image.pixels.iter().enumerate() {
+                    if px[3] > 0.0 {
+                        let (x, y) = (i % w, i / w);
+                        lo = [lo[0].min(x), lo[1].min(y)];
+                        hi = [hi[0].max(x + 1), hi[1].max(y + 1)];
+                    }
+                }
+                if lo[0] == usize::MAX {
+                    continue;
+                }
+                let (x0, y0) = (sp.x as f32 + lo[0] as f32, sp.y as f32 + lo[1] as f32);
+                let (x1, y1) = (sp.x as f32 + hi[0] as f32, sp.y as f32 + hi[1] as f32);
+                let (sin, cos) = layer.rotation.sin_cos();
+                let [cx, cy] = layer.center;
+                [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+                    .map(|[x, y]| [cx + (x - cx) * cos - (y - cy) * sin, cy + (x - cx) * sin + (y - cy) * cos])
+            }
+        };
+        out.push((layer.id.clone(), outline));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,6 +207,20 @@ mod tests {
         let b = img.to_srgba8();
         let i = ((y * img.width + x) * 4) as usize;
         [b[i], b[i + 1], b[i + 2], b[i + 3]]
+    }
+
+    #[test]
+    fn outlines_say_where_layers_land() {
+        let mut s = spec();
+        let outlines = layer_outlines(&s, Tick::ZERO, &NoMedia);
+        assert_eq!(outlines, vec![("half".to_string(), [[20.0, 5.0], [40.0, 5.0], [40.0, 15.0], [20.0, 15.0]])]);
+        // turned a quarter: the box turns about its centre
+        s.layers[0].transform.rotation = Animated::Constant(90.0);
+        let (_, o) = &layer_outlines(&s, Tick::ZERO, &NoMedia)[0];
+        let near = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3;
+        assert!(near(o[0], [35.0, 0.0]) && near(o[2], [25.0, 20.0]), "{o:?}");
+        // past its end nothing is there
+        assert!(layer_outlines(&s, Tick::SECOND, &NoMedia).is_empty());
     }
 
     #[test]

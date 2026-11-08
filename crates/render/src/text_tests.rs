@@ -78,6 +78,17 @@ fn chinese_and_latin_text_is_drawn_centred() {
 }
 
 #[test]
+fn a_titles_outline_is_its_ink() {
+    let s = spec_with(white("短视频 Hi", 64.0));
+    let b = ink_box(&draw(&s, 1.0)).map(|v| v as f32);
+    let outlines = layer_outlines(&s, Tick::ZERO, &NoMedia);
+    let [tl, _, br, _] = outlines[0].1;
+    for (got, want) in [(tl[0], b[0]), (tl[1], b[1]), (br[0], b[2]), (br[1], b[3])] {
+        assert!((got - want).abs() <= 2.0, "outline {:?} ink {b:?}", outlines[0].1);
+    }
+}
+
+#[test]
 fn bold_lays_down_more_ink_than_regular() {
     let mut t = white("剪辑", 80.0);
     let regular = ink(&draw(&spec_with(t.clone()), 1.0));
