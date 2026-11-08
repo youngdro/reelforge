@@ -1,0 +1,40 @@
+{
+  "canvas_config": {"height": 1280, "ratio": "9:16", "width": 720},
+  "duration": 9000000,
+  "fps": 30.0,
+  "id": "3A1B5C2D-0000-4000-8000-000000000001",
+  "name": "旅行 vlog",
+  "materials": {
+    "videos": [
+      {"id": "V1", "type": "video", "path": "##_draftpath_placeholder_0E685133-18CE-45ED-8CB8-2904A212EC80_##/assets/beach.mp4", "material_name": "beach.mp4", "duration": 12000000, "width": 1080, "height": 1920},
+      {"id": "V2", "type": "photo", "path": "/Users/me/Pictures/sunset.jpg", "material_name": "sunset.jpg", "duration": 10800000000, "width": 1080, "height": 1350}
+    ],
+    "audios": [
+      {"id": "A1", "type": "music", "path": "/Users/me/Music/song.mp3", "name": "Summer song", "duration": 60000000}
+    ],
+    "texts": [
+      {"id": "T1", "type": "text", "content": "{\"text\":\"海边的一天\",\"styles\":[{\"size\":20,\"fill\":{\"content\":{\"solid\":{\"color\":[1,0.8,0]}}},\"range\":[0,5]}]}"}
+    ],
+    "speeds": [{"id": "S1", "type": "speed", "mode": 0, "speed": 2.0}],
+    "audio_fades": [{"id": "F1", "type": "audio_fade", "fade_in_duration": 1000000, "fade_out_duration": 2000000}],
+    "transitions": [{"id": "X1", "type": "transition", "name": "叠化", "duration": 500000}],
+    "stickers": [{"id": "K1"}],
+    "effects": []
+  },
+  "tracks": [
+    {"id": "TR1", "type": "video", "attribute": 0, "segments": [
+      {"id": "s1", "material_id": "V1", "source_timerange": {"start": 2000000, "duration": 10000000}, "target_timerange": {"start": 0, "duration": 5000000}, "speed": 2.0, "volume": 0.5, "extra_material_refs": ["S1", "X1"],
+       "clip": {"alpha": 1.0, "flip": {"horizontal": true, "vertical": false}, "rotation": 0.0, "scale": {"x": 1.0, "y": 1.0}, "transform": {"x": 0.0, "y": 0.0}}},
+      {"id": "s2", "material_id": "V2", "source_timerange": {"start": 0, "duration": 4000000}, "target_timerange": {"start": 5000000, "duration": 4000000}, "speed": 1.0, "volume": 1.0, "extra_material_refs": [],
+       "clip": {"alpha": 0.8, "flip": {"horizontal": false, "vertical": false}, "rotation": 15.0, "scale": {"x": 1.2, "y": 1.2}, "transform": {"x": 0.5, "y": 0.25}}}
+    ]},
+    {"id": "TR2", "type": "text", "segments": [
+      {"id": "s3", "material_id": "T1", "target_timerange": {"start": 500000, "duration": 3000000}, "extra_material_refs": [],
+       "clip": {"alpha": 1.0, "rotation": 0.0, "scale": {"x": 1.0, "y": 1.0}, "transform": {"x": 0.0, "y": -0.6}}}
+    ]},
+    {"id": "TR3", "type": "audio", "segments": [
+      {"id": "s4", "material_id": "A1", "source_timerange": {"start": 0, "duration": 9000000}, "target_timerange": {"start": 0, "duration": 9000000}, "speed": 1.0, "volume": 0.25, "extra_material_refs": ["F1"]}
+    ]},
+    {"id": "TR4", "type": "sticker", "segments": [{"id": "s5", "material_id": "K1"}]}
+  ]
+}

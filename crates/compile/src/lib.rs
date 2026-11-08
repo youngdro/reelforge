@@ -89,6 +89,10 @@ impl Default for CompileOptions {
     }
 }
 
+/// The content hash a frames-only spec gives media that has none: no file has it, so the renderer
+/// draws the offline slate.
+pub const OFFLINE_SHA256: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
 /// Lowers `project` into a validated RenderSpec.
 pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec, CompileError> {
     project.check().map_err(|e| CompileError::Model(e.to_string()))?;
@@ -129,7 +133,13 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
     let mut asset_for = |media_id: &str| -> Result<String, CompileError> {
         let m = &project.media[media_id];
         if !assets.contains_key(media_id) {
-            let sha256 = m.sha256.clone().ok_or_else(|| CompileError::Unhashed(media_id.to_string()))?;
+            // a preview draws unmeasured (offline) media as the renderer's offline slate; an export
+            // needs every file
+            let sha256 = match &m.sha256 {
+                Some(h) => h.clone(),
+                None if !options.encode => OFFLINE_SHA256.to_string(),
+                None => return Err(CompileError::Unhashed(media_id.to_string())),
+            };
             assets.insert(
                 media_id.to_string(),
                 Asset {
@@ -432,6 +442,9 @@ mod tests {
         );
         p.tracks[0].clips.push(clip("c20", Tick::ZERO, Tick::SECOND, ClipContent::media("m9", Tick::ZERO)));
         assert_eq!(compile(&p, &CompileOptions::default()), Err(CompileError::Unhashed("m9".into())));
+        // a preview shows it as offline
+        let spec = compile(&p, &CompileOptions { encode: false }).unwrap();
+        assert_eq!(spec.assets.values().next().unwrap().sha256, OFFLINE_SHA256);
     }
 
     #[test]

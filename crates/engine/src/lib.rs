@@ -10,6 +10,7 @@
 //! checks the invariants and only then commits, pushing the old snapshot onto the undo stack. A
 //! reader (a preview, an export) holds a snapshot and never blocks an edit.
 
+mod capcut;
 mod captions;
 mod commands;
 mod params;

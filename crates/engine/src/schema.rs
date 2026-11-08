@@ -207,6 +207,14 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["path"],
         ),
+        "capcut.import" => object(
+            vec![
+                ("draft", json!({"type": "string", "description": "The text of the draft's draft_content.json."})),
+                ("folder", json!({"type": "string", "description": "The draft's folder, for paths relative to it."})),
+                ("name", json!({"type": "string", "description": "Timeline name; the draft's by default."})),
+            ],
+            &["draft"],
+        ),
         "timeline.add" => object(
             vec![
                 ("name", json!({"type": "string", "description": "Name; \"Timeline N\" by default."})),

@@ -66,6 +66,15 @@ static REGISTRY: &[CommandSpec] = &[
         run: crate::captions::captions_import,
     },
     CommandSpec {
+        id: "capcut.import",
+        label: "Import CapCut Draft",
+        params: r#"{"draft": string, "folder"?: string, "name"?: string}"#,
+        doc: "Reads a CapCut / 剪映 draft (the text of draft_content.json) into a new timeline, or into an untouched project (taking its canvas). `folder` is the draft's folder, for its relative paths. Video, photo, sound and text segments come across with speed, volume, opacity, placement, mirroring, sound fades and transitions (as dissolves); the reply lists what was skipped and which files are not on this machine.",
+        edits: true,
+        enabled: always,
+        run: crate::capcut::capcut_import,
+    },
+    CommandSpec {
         id: "captions.export",
         label: "Export Captions",
         params: r#"{"track"?: id}"#,
@@ -733,7 +742,22 @@ fn media_import(s: &mut Session, v: &Value) -> CmdResult {
         .opt_str("name")?
         .map(str::to_string)
         .unwrap_or_else(|| path.rsplit(['/', '\\']).next().unwrap_or(&path).to_string());
+    let base = |u: &str| u.rsplit(['/', '\\']).next().unwrap_or(u).to_ascii_lowercase();
     s.edit("Import Media", |proj| {
+        // a file that was offline (from a CapCut draft, say) is relinked rather than added again
+        let file = base(&path);
+        if sha256.is_some()
+            && let Some(m) = proj
+                .media
+                .values_mut()
+                .find(|m| m.sha256.is_none() && m.kind == kind && (base(&m.uri) == file || base(&m.name) == file))
+        {
+            m.uri = path;
+            m.sha256 = sha256;
+            m.duration = duration.or(m.duration);
+            m.size = size.or(m.size);
+            return Ok(json!({ "media": serde_json::to_value(&*m).expect("serialises"), "relinked": true }));
+        }
         let id = proj.mint("m");
         let m = Media { id: id.clone(), name, uri: path, sha256, kind, duration, size };
         let out = json!({ "media": serde_json::to_value(&m).expect("serialises") });

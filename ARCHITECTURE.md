@@ -32,7 +32,7 @@ service ships them without the editor.
 | L2 | `reelforge-compile` | Project → RenderSpec: all editing meaning resolved here (keyframes, animations and transitions become RenderSpec keys and overlapping layers, `motion`) |
 | L2 | `reelforge-render` | Pure frame plan, CPU reference compositor, wgpu compositor (feature `gpu`); `MediaSource` trait |
 | L3 | `reelforge-media` | Probing, video/audio decoding (`Footage`), MP4 export (`ExportWriter` over any `VideoEncoder`, AAC sound), the synthesised sound library (`library:` URIs); FilmCraft's pure-Rust codecs |
-| L4 | `reelforge-engine` | `Session`, command registry, copy-on-write undo, batches; title templates (`templates`); SubRip captions (`captions`) |
+| L4 | `reelforge-engine` | `Session`, command registry, copy-on-write undo, batches; title templates (`templates`); SubRip captions (`captions`); CapCut / 剪映 draft import (`capcut`) |
 | L5 | `reelforge-ui` | The egui editor: top bar, preview and transport, direct manipulation in the preview (select, move, scale, turn; `stage`), timeline (move, trim, snap; pictures along video clips and waveforms of sound, `strips`), inspector, shortcuts; its own dark theme and Phosphor icon subset (`theme`); preview sound (`audio`); English and Chinese, following the system and switched in the top bar (`i18n`); joins a server's session (`remote`); pictures of the title templates (`looks`) |
 | L5 | `reelforge-server` | One shared session as a service: MCP (stdio, Streamable HTTP) and a plain HTTP API over the same operations; native only |
 | L6 | `reelforge` | Desktop app (eframe, wgpu renderer) |

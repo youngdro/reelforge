@@ -782,3 +782,67 @@ fn timelines_are_added_copied_switched_renamed_and_removed() {
     s.execute("edit.undo", &json!({})).unwrap();
     assert!(s.project().clip(&c).is_some());
 }
+
+#[test]
+fn a_capcut_draft_becomes_a_timeline() {
+    let draft = include_str!("fixtures/capcut_draft.json");
+    // into an untouched project: its canvas and its only timeline
+    let mut s = Session::default();
+    let r = s.execute("capcut.import", &json!({"draft": draft, "folder": "/drafts/trip"})).unwrap();
+    assert_eq!(r["clips"], 4);
+    assert_eq!(r["skipped"]["sticker"], 1);
+    assert_eq!(r["skipped"]["stickers"], 1);
+    let p = s.project();
+    assert_eq!((p.canvas.width, p.canvas.height), (720, 1280));
+    assert_eq!(p.timelines.len(), 1);
+    assert_eq!(p.timelines[0].name, "旅行 vlog");
+    assert_eq!(p.duration(), Tick::SECOND * 9);
+    let beach = p.media.values().find(|m| m.name == "beach.mp4").unwrap();
+    assert_eq!(beach.uri, "/drafts/trip/assets/beach.mp4");
+    assert_eq!(beach.size, Some([1080, 1920]));
+
+    let kinds: Vec<TrackKind> = p.tracks.iter().map(|t| t.kind).collect();
+    assert_eq!(kinds, [TrackKind::Video, TrackKind::Text, TrackKind::Audio]);
+    let v = &p.tracks[0].clips;
+    match &v[0].content {
+        ClipContent::Media { source_in, speed, .. } => {
+            assert_eq!(*source_in, Tick::SECOND * 2);
+            assert_eq!(*speed, 2.0);
+        }
+        c => panic!("{c:?}"),
+    }
+    assert!(v[0].look.flip_x);
+    assert!((v[0].volume_db + 6.02).abs() < 0.01);
+    assert_eq!(v[1].transition.unwrap().duration, Tick::from_seconds(0.5));
+    assert_eq!((v[1].transform.x, v[1].transform.y, v[1].transform.rotation), (0.25, -0.125, 15.0));
+    assert_eq!(v[1].opacity, 0.8);
+    match &p.tracks[1].clips[0].content {
+        ClipContent::Text { text, color, .. } => {
+            assert_eq!(text, "海边的一天");
+            assert_eq!(*color, [1.0, 0.8, 0.0, 1.0]);
+        }
+        c => panic!("{c:?}"),
+    }
+    let music = &p.tracks[2].clips[0];
+    assert_eq!((music.fade.fade_in, music.fade.fade_out), (Tick::SECOND, Tick::SECOND * 2));
+    // offline files preview as a slate, cannot export, and relink when the file arrives
+    s.execute("render.compile", &json!({"encode": false})).unwrap();
+    assert!(s.execute("render.compile", &json!({})).is_err());
+    assert_eq!(r["offline"].as_array().unwrap().len(), 3);
+    let sha = "ab".repeat(32);
+    for (name, kind) in [("beach.mp4", "video"), ("sunset.jpg", "image"), ("song.mp3", "audio")] {
+        let r = s.execute("media.import", &json!({"path": name, "kind": kind, "sha256": sha})).unwrap();
+        assert_eq!(r["relinked"], true, "{name}");
+    }
+    s.execute("render.compile", &json!({})).unwrap();
+    let p = s.project();
+
+    // a second import goes beside the first, reusing its files
+    let media = p.media.len();
+    s.execute("capcut.import", &json!({"draft": draft, "folder": "/drafts/trip", "name": "B"})).unwrap();
+    let p = s.project();
+    assert_eq!(p.timelines.len(), 2);
+    assert_eq!(p.media.len(), media);
+    assert!(s.execute("capcut.import", &json!({"draft": "not json"})).is_err());
+    assert!(s.execute("capcut.import", &json!({"draft": "{}"})).is_err());
+}

@@ -459,6 +459,14 @@ impl EditorApp {
             }
             return;
         }
+        if is_draft(&path.to_string_lossy()) {
+            let folder = path.parent().map(|f| f.to_string_lossy().into_owned());
+            match std::fs::read(path) {
+                Ok(bytes) => self.import_draft(&bytes, folder),
+                Err(e) => self.status = format!("{}: {e}", path.display()),
+            }
+            return;
+        }
         let path = path.to_string_lossy().into_owned();
         if let Ok(v) = self.execute("media.import", json!({ "path": path })) {
             self.place(&v);
@@ -469,6 +477,10 @@ impl EditorApp {
     fn import_bytes(&mut self, name: &str, bytes: Vec<u8>) {
         if is_subrip(name) {
             self.import_captions(name, &bytes);
+            return;
+        }
+        if is_draft(name) {
+            self.import_draft(&bytes, None);
             return;
         }
         if let Some(remote) = &self.remote {
@@ -515,10 +527,40 @@ impl EditorApp {
         }
     }
 
+    /// Reads a CapCut / 剪映 draft into a new timeline (a command, so a joined editor shares it).
+    fn import_draft(&mut self, bytes: &[u8], folder: Option<String>) {
+        let text = String::from_utf8_lossy(bytes);
+        let mut params = json!({ "draft": text });
+        if let Some(f) = folder {
+            params["folder"] = json!(f);
+        }
+        if let Ok(v) = self.execute("capcut.import", params) {
+            self.selected = None;
+            self.playhead = Tick::ZERO;
+            let clips = v["clips"].as_u64().unwrap_or(0);
+            let offline = v["offline"].as_array().map_or(0, Vec::len);
+            let skipped: u64 = v["skipped"].as_object().map_or(0, |o| o.values().filter_map(Value::as_u64).sum());
+            let s = self.s();
+            let mut msg = fill(s.draft_imported, &[&clips]);
+            if offline > 0 {
+                msg.push_str(&fill(s.draft_offline, &[&offline]));
+            }
+            if skipped > 0 {
+                msg.push_str(&fill(s.draft_skipped, &[&skipped]));
+            }
+            self.status = msg;
+        }
+    }
+
     /// Puts newly imported media at the playhead, on the lowest track of its kind with room there,
     /// or on a new track above the others.
     fn place(&mut self, imported: &Value) {
         let Ok(m) = serde_json::from_value::<reelforge_model::Media>(imported["media"].clone()) else { return };
+        if imported["relinked"] == true {
+            // it was offline on the timeline already
+            self.status = fill(self.s().relinked, &[&m.name]);
+            return;
+        }
         if m.kind == MediaKind::Lut {
             // a lookup table is worn by the selected picture clip, or waits in the colour section
             let wear = self
@@ -1916,6 +1958,12 @@ fn placement_at(c: &reelforge_model::Clip, at: Tick) -> ClipTransform {
 }
 
 /// Whether a file name is a SubRip caption file.
+/// A CapCut / 剪映 draft: `draft_content.json` or `draft_info.json`.
+fn is_draft(name: &str) -> bool {
+    let file = name.rsplit(['/', '\\']).next().unwrap_or(name).to_ascii_lowercase();
+    file.starts_with("draft_") && file.ends_with(".json") && (file.contains("content") || file.contains("info"))
+}
+
 fn is_subrip(name: &str) -> bool {
     name.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("srt"))
 }
