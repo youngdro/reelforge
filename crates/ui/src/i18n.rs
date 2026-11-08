@@ -68,6 +68,7 @@ impl Lang {
             "edit.batch" => ("Several edits", "批量编辑"),
             "captions.import" => ("Import captions", "导入字幕"),
             "captions.export" => ("Export captions", "导出字幕"),
+            "captions.add" => ("Add captions", "添加字幕"),
             "title.templates" => ("Title templates", "花字模板"),
             "sync" => ("Sync", "同步"),
             _ => return "",

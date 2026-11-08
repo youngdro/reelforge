@@ -361,3 +361,28 @@ fn captions_come_in_and_go_out_as_subrip() {
         s.execute("captions.import", &json!({"srt": "1\nnot a time\n"})).unwrap_err().to_string().contains("line 1")
     );
 }
+
+#[test]
+fn recognised_lines_become_captions() {
+    let mut s = Session::default();
+    let out = s
+        .execute(
+            "captions.add",
+            &json!({"cues": [
+                {"start": {"seconds": 0.5}, "end": {"seconds": 2.0}, "text": "大家好"},
+                {"start": {"seconds": 2.0}, "end": {"seconds": 3.5}, "text": "今天剪一条短视频"}
+            ], "template": "variety"}),
+        )
+        .unwrap();
+    let p = s.project();
+    let track = p.track(out["track"].as_str().unwrap()).unwrap();
+    assert_eq!(track.name, crate::CAPTIONS_TRACK);
+    assert_eq!(track.clips.len(), 2);
+    assert_eq!(track.clips[1].start, Tick::SECOND * 2);
+    let srt = s.execute("captions.export", &json!({})).unwrap();
+    assert!(srt["srt"].as_str().unwrap().contains("00:00:00,500 --> 00:00:02,000\n大家好"));
+    let bad = s.execute("captions.add", &json!({"cues": [{"start": 10, "end": 5, "text": "x"}]})).unwrap_err();
+    assert!(bad.to_string().contains("cues[0]"), "{bad}");
+    let missing = s.execute("captions.add", &json!({"cues": [{"start": 0, "text": "x"}]})).unwrap_err();
+    assert!(missing.to_string().contains("cues[0]") && missing.to_string().contains("end"), "{missing}");
+}

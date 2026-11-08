@@ -284,3 +284,15 @@ fn browsers_send_media_and_fetch_it_back() {
     let r = agent.get(format!("{base}/v1/media/{other}")).header("Authorization", "Bearer k").call().unwrap();
     assert_eq!(r.status(), 404);
 }
+
+#[test]
+fn transcribing_without_a_model_says_where_to_put_one() {
+    let hub = Hub::new(Session::default()).with_speech_model(temp("no-model"));
+    let err = hub.call("captions.transcribe", &json!({"language": "zh"})).unwrap_err();
+    assert!(matches!(&err, CallError::Failed(m) if m.contains("no speech model") && m.contains("no-model")), "{err}");
+    // lines from elsewhere still go in
+    let out = hub
+        .call("captions.add", &json!({"cues": [{"start": 0, "end": {"seconds": 1}, "text": "你好"}]}))
+        .unwrap();
+    assert!(matches!(out, Output::Json(v) if v["clips"].as_array().unwrap().len() == 1));
+}

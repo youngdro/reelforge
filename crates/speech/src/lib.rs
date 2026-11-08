@@ -14,7 +14,8 @@
 mod mel;
 mod tokens;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use candle_core::{D, Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
@@ -141,8 +142,10 @@ impl Whisper {
                 };
                 for p in pieces {
                     let text = self.vocab.text(&p.tokens).trim().to_string();
-                    if !text.is_empty() && p.end > p.start {
-                        segments.push(Segment { start: at(p.start), end: at(p.end), text });
+                    // the model may stamp past the end of the sound; those pieces are dropped
+                    let (start, end) = (at(p.start), at(p.end));
+                    if !text.is_empty() && end > start {
+                        segments.push(Segment { start, end, text });
                     }
                 }
             }
@@ -243,7 +246,7 @@ fn log_softmax_at(logits: &[f32], i: usize) -> f32 {
 /// [`Whisper::transcribe`]. Offline media are silent.
 pub fn timeline_audio(spec: &RenderSpec, media: &Footage, from: Tick, to: Tick) -> Result<Vec<f32>, String> {
     let at = |t: Tick| (t.0 as i128 * SAMPLE_RATE as i128 / TICKS_PER_SECOND as i128) as i64;
-    let (start, end) = (at(from.max(Tick::ZERO)), at(to.min(spec.duration)));
+    let (start, end) = (at(from.max(Tick::ZERO)), at(to.min(spec.output.duration)));
     let mut out = Vec::with_capacity((end - start).max(0) as usize);
     let chunk = 10 * SAMPLE_RATE as i64;
     let mut s = start;
@@ -255,6 +258,87 @@ pub fn timeline_audio(spec: &RenderSpec, media: &Footage, from: Tick, to: Tick) 
         s += n as i64;
     }
     Ok(out)
+}
+
+/// Where the model is looked for: `$REELFORGE_WHISPER`, else `.reelforge/models/whisper` in the
+/// home folder.
+pub fn default_model_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("REELFORGE_WHISPER") {
+        return dir.into();
+    }
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).unwrap_or_else(|| ".".into());
+    PathBuf::from(home).join(".reelforge").join("models").join("whisper")
+}
+
+/// A model folder, loaded the first time it is needed and kept.
+pub struct Recogniser {
+    dir: PathBuf,
+    model: Mutex<Option<Whisper>>,
+}
+
+impl Recogniser {
+    /// Listens with the model in `dir`.
+    pub fn new(dir: PathBuf) -> Recogniser {
+        Recogniser { dir, model: Mutex::new(None) }
+    }
+
+    /// The model folder.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Whether the model is there; the error says where to put it.
+    pub fn check(&self) -> Result<(), String> {
+        if is_model_dir(&self.dir) {
+            return Ok(());
+        }
+        Err(format!(
+            "no speech model in {}: put a Whisper model's config.json, model.safetensors and tokenizer.json there (for example from huggingface.co/openai/whisper-small), or set REELFORGE_WHISPER",
+            self.dir.display()
+        ))
+    }
+
+    /// What the timeline of `spec` says from `from` to `to` (the whole of it by default). One
+    /// transcription runs at a time.
+    pub fn transcribe(
+        &self,
+        spec: &RenderSpec,
+        media: &Footage,
+        range: (Option<Tick>, Option<Tick>),
+        options: &Options,
+        progress: &mut dyn FnMut(f32) -> bool,
+    ) -> Result<Transcript, String> {
+        let from = range.0.unwrap_or(Tick::ZERO);
+        let mut model = self.model.lock().unwrap_or_else(|e| e.into_inner());
+        if model.is_none() {
+            self.check()?;
+            *model = Some(Whisper::load(&self.dir)?);
+        }
+        let samples = timeline_audio(spec, media, from, range.1.unwrap_or(spec.output.duration))?;
+        let mut out = model.as_mut().expect("loaded above").transcribe(&samples, options, progress)?;
+        for s in &mut out.segments {
+            s.start = s.start + from;
+            s.end = s.end + from;
+        }
+        Ok(out)
+    }
+}
+
+/// `captions.add` parameters placing `segments`, on `track` (a new captions track by default) in
+/// `template`'s look.
+pub fn captions_params(segments: &[Segment], track: Option<&str>, template: Option<&str>) -> serde_json::Value {
+    let cues: Vec<serde_json::Value> = segments
+        .iter()
+        .map(|s| serde_json::json!({"start": s.start.0, "end": s.end.0, "text": s.text}))
+        .collect();
+    let mut out = serde_json::json!({ "cues": cues });
+    if let Some(t) = track {
+        out["track"] = t.into();
+    }
+    if let Some(t) = template {
+        out["template"] = t.into();
+    }
+    out
 }
 
 /// Whether `dir` holds a model's three files.

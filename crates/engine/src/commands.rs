@@ -63,6 +63,15 @@ static REGISTRY: &[CommandSpec] = &[
         run: crate::captions::captions_import,
     },
     CommandSpec {
+        id: "captions.add",
+        label: "Add Captions",
+        params: r#"{"cues": [{"start": time, "end": time, "text": string}], "track"?: id, "template"?: id}"#,
+        doc: "Places timed lines (from speech recognition, a script, a translation) as captions, like captions.import does with SubRip.",
+        edits: true,
+        enabled: always,
+        run: crate::captions::captions_add,
+    },
+    CommandSpec {
         id: "captions.export",
         label: "Export Captions",
         params: r#"{"track"?: id}"#,

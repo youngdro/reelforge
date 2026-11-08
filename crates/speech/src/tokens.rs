@@ -23,8 +23,6 @@ pub struct Vocab {
     pub sot: u32,
     /// `<|transcribe|>`.
     pub transcribe: u32,
-    /// `<|notimestamps|>`.
-    pub no_timestamps: u32,
     /// `<|0.00|>`; every later id is another 0.02 s.
     pub timestamp_begin: u32,
     /// `<|nospeech|>` (or `<|nocaptions|>` in older vocabularies).
@@ -101,7 +99,6 @@ impl Vocab {
             eot,
             sot: special("<|startoftranscript|>")?,
             transcribe: special("<|transcribe|>")?,
-            no_timestamps,
             timestamp_begin: no_timestamps + 1,
             no_speech: specials.get("<|nospeech|>").or(specials.get("<|nocaptions|>")).copied(),
             specials,
@@ -217,32 +214,32 @@ fn words(text: &str) -> Vec<&str> {
 pub fn apply_rules(logits: &mut [f32], sampled: &[u32], v: &Vocab, suppress: &[u32], max_initial: u32) {
     let n = logits.len();
     let tb = (v.timestamp_begin as usize).min(n);
-    let mut forbid = |range: std::ops::Range<usize>| {
+    let forbid = |logits: &mut [f32], range: std::ops::Range<usize>| {
         for l in &mut logits[range.start.min(n)..range.end.min(n)] {
             *l = f32::NEG_INFINITY;
         }
     };
-    forbid(v.eot as usize + 1..tb);
+    forbid(logits, v.eot as usize + 1..tb);
     for &t in suppress {
-        forbid(t as usize..t as usize + 1);
+        forbid(logits, t as usize..t as usize + 1);
     }
     let last_ts = sampled.last().is_some_and(|&t| v.is_timestamp(t));
     let penult_ts = sampled.len() < 2 || v.is_timestamp(sampled[sampled.len() - 2]);
     if last_ts {
         if penult_ts {
-            forbid(tb..n);
+            forbid(logits, tb..n);
         } else {
-            forbid(0..v.eot as usize);
+            forbid(logits, 0..v.eot as usize);
         }
     }
     if let Some(&last) = sampled.iter().rev().find(|&&t| v.is_timestamp(t)) {
         // a closing timestamp may repeat the opening one; otherwise time moves on
         let floor = if last_ts && !penult_ts { last } else { last + 1 };
-        forbid(tb..floor as usize);
+        forbid(logits, tb..floor as usize);
     }
     if sampled.is_empty() {
-        forbid(0..tb);
-        forbid(tb + max_initial as usize + 1..n);
+        forbid(logits, 0..tb);
+        forbid(logits, tb + max_initial as usize + 1..n);
     }
     // when the timestamps together are likelier than any one text token, take a timestamp
     let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
@@ -251,7 +248,7 @@ pub fn apply_rules(logits: &mut [f32], sampled: &[u32], v: &Vocab, suppress: &[u
         let ts = sum(&logits[tb..]);
         let text_max = logits[..tb].iter().copied().fold(f32::NEG_INFINITY, f32::max);
         if ts > 0.0 && ts.ln() as f32 + max > text_max {
-            forbid(0..tb);
+            forbid(logits, 0..tb);
         }
     }
 }
@@ -351,7 +348,7 @@ pub(crate) mod tests {
     #[test]
     fn reads_the_vocabulary_and_decodes_bytes() {
         let v = Vocab::from_json(&tiny_tokenizer()).unwrap();
-        assert_eq!((v.eot, v.sot, v.transcribe, v.no_timestamps, v.timestamp_begin), (5, 6, 10, 14, 15));
+        assert_eq!((v.eot, v.sot, v.transcribe, v.timestamp_begin), (5, 6, 10, 15));
         assert_eq!(v.no_speech, Some(13));
         assert_eq!(v.language("zh"), Some(8));
         assert_eq!(v.languages(), vec![("en".to_string(), 7), ("zh".to_string(), 8)]);
