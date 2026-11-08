@@ -18,6 +18,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("reelforge-render", 2),
     ("reelforge-media", 3),
     ("reelforge-engine", 4),
+    ("reelforge-speech", 4),
     ("reelforge-ui", 5),
     ("reelforge-server", 5),
     ("reelforge", 6),
@@ -44,7 +45,7 @@ const FORBIDDEN: &[(&str, &str, &str)] = &[
 ];
 
 /// Crates below the app layer that never run in the browser (they listen on sockets).
-const NATIVE_ONLY: &[&str] = &["reelforge-server"];
+const NATIVE_ONLY: &[&str] = &["reelforge-server", "reelforge-speech"];
 
 /// External crates allowed only from this layer up.
 const UI_ONLY: &[&str] = &["egui", "eframe", "egui-wgpu", "egui-winit", "winit", "wasm-bindgen", "web-sys"];
