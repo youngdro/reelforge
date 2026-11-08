@@ -285,6 +285,20 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["clip", "slot", "kind"],
         ),
+        "clip.setTransition" => object(
+            vec![
+                clip(),
+                (
+                    "kind",
+                    json!({"description": "Transition from the clip before; null removes it.", "oneOf": [{"enum": ["dissolve", "fadeBlack", "fadeWhite", "pushLeft", "pushRight", "pushUp", "pushDown", "slideLeft", "slideRight", "slideUp", "slideDown", "zoom"]}, {"type": "null"}]}),
+                ),
+                (
+                    "duration",
+                    time("How long it takes, centred on the cut; 0.5 s by default, at most the shorter clip."),
+                ),
+            ],
+            &["clip", "kind"],
+        ),
         "clip.addEffect" => object(
             vec![
                 clip(),

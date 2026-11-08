@@ -1,13 +1,18 @@
-//! Lowering keyframes and in/out animations to RenderSpec keys.
+//! Lowering keyframes, in/out animations and transitions to RenderSpec keys.
 //!
-//! Keyframes pass through as they are, cut at the clip's edges where a trim left some outside. An animation is an eased curve laid over the clip's own
-//! value (added to the position and rotation, multiplying the scale and opacity), which RenderSpec
-//! keys cannot express exactly, so while an animation plays the result is sampled at every output
-//! frame and joined with straight lines. Wherever no animation plays, the clip's own keys and
-//! easing pass through untouched. Two properties lowered together (x and y, which RenderSpec keys
-//! as one position) share key times; where their easings differ, the stretch is sampled per frame.
+//! Keyframes pass through as they are, cut at the layer's edges where a trim left some outside.
+//! Animations and transitions are eased curves laid over the clip's own value (added to the
+//! position and rotation, multiplying the scale and opacity), which RenderSpec keys cannot express
+//! exactly, so while one plays the result is sampled at every output frame and joined with
+//! straight lines. Wherever none plays, the clip's own keys and easing pass through untouched. Two
+//! properties lowered together (x and y, which RenderSpec keys as one position) share key times;
+//! where their easings differ, the stretch is sampled per frame.
+//!
+//! A clip's layer can be longer than the clip: a transition centred on a cut starts the incoming
+//! layer early (its `lead`) and runs the outgoing one on. All times here are from the layer's
+//! start; the clip's keys are shifted by the lead, and animations play over the whole layer.
 
-use reelforge_model::{Animations, Clip, Ease as MEase, Key as MKey, Prop};
+use reelforge_model::{Clip, Ease as MEase, Key as MKey, Offset, Prop, TransitionKind};
 use reelforge_renderspec::{Animated, Ease, Key};
 use reelforge_time::Tick;
 
@@ -24,13 +29,70 @@ fn moves(kind: reelforge_model::AnimKind, p: Prop) -> bool {
     }
 }
 
-/// One property of one clip, as a function of time from the clip's start.
+/// Whether a transition changes `p` on the incoming or outgoing clip.
+fn shifts(kind: TransitionKind, incoming: bool, p: Prop) -> bool {
+    use TransitionKind::*;
+    match p {
+        Prop::Opacity => incoming && matches!(kind, Dissolve | FadeBlack | FadeWhite | Zoom),
+        Prop::X => matches!((kind, incoming), (PushLeft | PushRight, _) | (SlideLeft | SlideRight, true)),
+        Prop::Y => matches!((kind, incoming), (PushUp | PushDown, _) | (SlideUp | SlideDown, true)),
+        Prop::Scale => kind == Zoom,
+        Prop::Rotation | Prop::VolumeDb => false,
+    }
+}
+
+/// A transition over part of a layer.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Overlay {
+    /// Where it starts, from the layer's start.
+    pub from: Tick,
+    /// Where it ends.
+    pub to: Tick,
+    /// Which transition.
+    pub kind: TransitionKind,
+    /// Whether this layer is the clip coming in (or the one going out).
+    pub incoming: bool,
+}
+
+impl Overlay {
+    fn offset(&self, t: Tick) -> Offset {
+        if t <= self.from {
+            return self.kind.offset(0.0, self.incoming);
+        }
+        if t >= self.to {
+            return self.kind.offset(1.0, self.incoming);
+        }
+        self.kind.offset(((t - self.from).0 as f64 / (self.to - self.from).0 as f64) as f32, self.incoming)
+    }
+}
+
+/// How a clip's layer lies against the clip.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shape {
+    /// How long the layer starts before the clip.
+    pub lead: Tick,
+    /// The layer's length.
+    pub len: Tick,
+    /// Transitions over it.
+    pub overlays: Vec<Overlay>,
+}
+
+impl Shape {
+    /// The layer is the clip.
+    pub fn of(clip: &Clip) -> Shape {
+        Shape { lead: Tick::ZERO, len: clip.duration, overlays: vec![] }
+    }
+}
+
+/// One property of one clip, as a function of time from its layer's start.
 struct Curve<'a> {
     prop: Prop,
     clip: &'a Clip,
-    keys: &'a [MKey],
-    anim: Animations,
+    shape: &'a Shape,
+    /// The clip's keys, moved to layer time.
+    keys: Vec<MKey>,
     animated: bool,
+    overlays: Vec<Overlay>,
 }
 
 /// How an interval of a curve can be drawn exactly from its end values.
@@ -45,26 +107,44 @@ enum Fits {
 }
 
 impl Curve<'_> {
-    fn value(&self, t: Tick) -> f32 {
-        let base = self.clip.value_at(self.prop, t);
-        if self.animated { self.anim.offset(t, self.clip.duration).apply(self.prop, base) } else { base }
+    fn new<'a>(clip: &'a Clip, prop: Prop, shape: &'a Shape) -> Curve<'a> {
+        let anim = clip.anim;
+        let animated = [anim.enter, anim.exit].iter().flatten().any(|a| moves(a.kind, prop));
+        let keys =
+            clip.keys.get(&prop).map_or(vec![], |k| k.iter().map(|k| MKey { t: k.t + shape.lead, ..*k }).collect());
+        let overlays = shape.overlays.iter().copied().filter(|o| shifts(o.kind, o.incoming, prop)).collect();
+        Curve { prop, clip, shape, keys, animated, overlays }
     }
 
-    /// The stretches where an animation reshapes this property.
-    fn windows(&self) -> Vec<(Tick, Tick)> {
-        if !self.animated {
-            return vec![];
+    fn still(&self) -> bool {
+        self.keys.is_empty() && !self.animated && self.overlays.is_empty()
+    }
+
+    fn value(&self, t: Tick) -> f32 {
+        let base = self.clip.value_at(self.prop, t - self.shape.lead);
+        let mut o = if self.animated { self.clip.anim.offset(t, self.shape.len) } else { Offset::REST };
+        for ov in &self.overlays {
+            o = o.and(ov.offset(t));
         }
-        let len = self.clip.duration;
-        let (a, b) = self.anim.spans(len);
-        let mut w = vec![];
-        if let Some(x) = self.anim.enter
+        o.apply(self.prop, base)
+    }
+
+    /// The stretches where an animation or transition reshapes this property.
+    fn windows(&self) -> Vec<(Tick, Tick)> {
+        let mut w: Vec<(Tick, Tick)> = self.overlays.iter().map(|o| (o.from, o.to)).collect();
+        if !self.animated {
+            return w;
+        }
+        let len = self.shape.len;
+        let anim = self.clip.anim;
+        let (a, b) = anim.spans(len);
+        if let Some(x) = anim.enter
             && a > Tick::ZERO
             && moves(x.kind, self.prop)
         {
             w.push((Tick::ZERO, a));
         }
-        if let Some(x) = self.anim.exit
+        if let Some(x) = anim.exit
             && b > Tick::ZERO
             && moves(x.kind, self.prop)
         {
@@ -77,7 +157,7 @@ impl Curve<'_> {
         if self.windows().iter().any(|&(a, b)| t0 < b && t1 > a) {
             return Fits::Sample;
         }
-        let k = self.keys;
+        let k = &self.keys;
         if k.len() < 2 || t1 <= k[0].t || t0 >= k[k.len() - 1].t {
             return Fits::Any;
         }
@@ -96,7 +176,7 @@ impl Curve<'_> {
 }
 
 /// Key times and easings that reproduce every curve: their own key times, every frame where an
-/// animation plays or easings disagree, and the clip's ends.
+/// animation or transition plays or easings disagree, and the layer's ends.
 fn plan(curves: &[Curve], step: Tick, len: Tick) -> Vec<(Tick, Ease)> {
     let mut times: Vec<Tick> = curves.iter().flat_map(|c| c.keys.iter().map(|k| k.t)).collect();
     for c in curves {
@@ -127,7 +207,7 @@ fn plan(curves: &[Curve], step: Tick, len: Tick) -> Vec<(Tick, Ease)> {
             Some(Fits::Any) => out.push((t0, Ease::Linear)),
             Some(Fits::Only(e)) => out.push((t0, e)),
             _ => {
-                // every frame boundary between t0 and t1, on the clip's own frame grid
+                // every frame boundary between t0 and t1, on the layer's own frame grid
                 let mut t = t0;
                 while t < t1 {
                     out.push((t, Ease::Linear));
@@ -139,30 +219,24 @@ fn plan(curves: &[Curve], step: Tick, len: Tick) -> Vec<(Tick, Ease)> {
     out
 }
 
-fn curve<'a>(clip: &'a Clip, prop: Prop) -> Curve<'a> {
-    let anim = clip.anim;
-    let animated = [anim.enter, anim.exit].iter().flatten().any(|a| moves(a.kind, prop));
-    Curve { prop, clip, keys: clip.keys.get(&prop).map_or(&[], Vec::as_slice), anim, animated }
-}
-
-/// Property `prop` of `clip`, with time measured from the clip's start; `step` is a frame.
-pub fn lower(clip: &Clip, prop: Prop, step: Tick) -> Animated<f32> {
-    let c = curve(clip, prop);
-    if c.keys.is_empty() && !c.animated {
+/// Property `prop` of `clip`'s layer, laid out as `shape`; `step` is a frame.
+pub fn lower(clip: &Clip, prop: Prop, shape: &Shape, step: Tick) -> Animated<f32> {
+    let c = Curve::new(clip, prop, shape);
+    if c.still() {
         return Animated::Constant(clip.base(prop));
     }
-    let keys = plan(std::slice::from_ref(&c), step, clip.duration);
+    let keys = plan(std::slice::from_ref(&c), step, shape.len);
     Animated::Keys(keys.into_iter().map(|(t, e)| Key { t, v: c.value(t), ease: e }).collect())
 }
 
-/// Position `[x, y]` of `clip`, keyed together.
-pub fn lower_position(clip: &Clip, step: Tick) -> Animated<[f32; 2]> {
-    let (x, y) = (curve(clip, Prop::X), curve(clip, Prop::Y));
-    if x.keys.is_empty() && y.keys.is_empty() && !x.animated && !y.animated {
+/// Position `[x, y]` of `clip`'s layer, keyed together.
+pub fn lower_position(clip: &Clip, shape: &Shape, step: Tick) -> Animated<[f32; 2]> {
+    let curves = [Curve::new(clip, Prop::X, shape), Curve::new(clip, Prop::Y, shape)];
+    if curves.iter().all(Curve::still) {
         return Animated::Constant([clip.base(Prop::X), clip.base(Prop::Y)]);
     }
-    let keys = plan(&[x, y], step, clip.duration);
-    let (x, y) = (curve(clip, Prop::X), curve(clip, Prop::Y));
+    let keys = plan(&curves, step, shape.len);
+    let [x, y] = &curves;
     Animated::Keys(keys.into_iter().map(|(t, e)| Key { t, v: [x.value(t), y.value(t)], ease: e }).collect())
 }
 
@@ -183,6 +257,7 @@ mod tests {
             effects: vec![],
             keys: Default::default(),
             anim: Default::default(),
+            transition: None,
         }
     }
 
@@ -193,29 +268,29 @@ mod tests {
     #[test]
     fn plain_values_stay_constant_and_keys_pass_through() {
         let mut c = clip(1000);
-        assert_eq!(lower(&c, Prop::Opacity, Tick(10)), Animated::Constant(0.8));
+        assert_eq!(lower(&c, Prop::Opacity, &Shape::of(&c), Tick(10)), Animated::Constant(0.8));
         c.keys.insert(Prop::Scale, vec![key(0, 1.0, MEase::InOut), key(500, 2.0, MEase::Linear)]);
-        let Animated::Keys(k) = lower(&c, Prop::Scale, Tick(10)) else { panic!() };
+        let Animated::Keys(k) = lower(&c, Prop::Scale, &Shape::of(&c), Tick(10)) else { panic!() };
         assert_eq!(
             k.iter().map(|k| (k.t.0, k.v, k.ease)).collect::<Vec<_>>(),
             [(0, 1.0, Ease::InOut), (500, 2.0, Ease::Linear), (1000, 2.0, Ease::Linear)]
         );
         // a trim that cuts keys off keeps the values on screen
         c.shift_keys(Tick(-300));
-        let lowered = lower(&c, Prop::Scale, Tick(10));
+        let lowered = lower(&c, Prop::Scale, &Shape::of(&c), Tick(10));
         let Animated::Keys(k) = &lowered else { panic!() };
         assert!(k.iter().all(|k| k.t >= Tick::ZERO && k.t <= c.duration));
         for t in [0, 55, 120, 200, 600] {
             assert!((lowered.sample(Tick(t)) - c.value_at(Prop::Scale, Tick(t))).abs() < 0.01, "{t}");
         }
-        assert_eq!(lower_position(&c, Tick(10)), Animated::Constant([0.1, 0.0]));
+        assert_eq!(lower_position(&c, &Shape::of(&c), Tick(10)), Animated::Constant([0.1, 0.0]));
     }
 
     #[test]
     fn an_animation_is_sampled_only_while_it_plays() {
         let mut c = clip(1000);
         c.anim.enter = Some(Animation { kind: AnimKind::Fade, duration: Tick(100) });
-        let lowered = lower(&c, Prop::Opacity, Tick(10));
+        let lowered = lower(&c, Prop::Opacity, &Shape::of(&c), Tick(10));
         let Animated::Keys(k) = &lowered else { panic!() };
         // 0, 10, …, 100 and the end
         assert_eq!(k.len(), 12);
@@ -223,7 +298,7 @@ mod tests {
         assert!((lowered.sample(Tick(50)) - 0.4).abs() < 1e-6);
         assert_eq!(lowered.sample(Tick(600)), 0.8);
         // a fade does not move the clip
-        assert_eq!(lower_position(&c, Tick(10)), Animated::Constant([0.1, 0.0]));
+        assert_eq!(lower_position(&c, &Shape::of(&c), Tick(10)), Animated::Constant([0.1, 0.0]));
     }
 
     #[test]
@@ -232,7 +307,7 @@ mod tests {
         c.keys.insert(Prop::Y, vec![key(200, 0.0, MEase::InOut), key(800, 0.5, MEase::Linear)]);
         c.keys.insert(Prop::X, vec![key(200, 0.0, MEase::InOut), key(800, 0.4, MEase::Linear)]);
         c.anim.exit = Some(Animation { kind: AnimKind::SlideUp, duration: Tick(100) });
-        let lowered = lower_position(&c, Tick(10));
+        let lowered = lower_position(&c, &Shape::of(&c), Tick(10));
         let Animated::Keys(k) = &lowered else { panic!() };
         // matches the model everywhere it is keyed
         let model = |t: i64| {
