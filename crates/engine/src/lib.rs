@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 pub use captions::{CAPTIONS_TRACK, Cue, format_srt, parse_srt};
-pub use commands::{CommandSpec, registry};
+pub use commands::{CommandSpec, media_uses, registry};
 pub use params::parse_time;
 pub use schema::input_schema;
 pub use shared::{Change, SharedSession};

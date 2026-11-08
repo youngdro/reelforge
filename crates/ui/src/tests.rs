@@ -96,7 +96,7 @@ fn files_go_to_the_server_and_other_editors_fetch_them() {
     let mut app = EditorApp::join(&base, Some("t".into()), "web");
     let remote = app.remote().unwrap().clone();
     until("joined", || remote.joined());
-    remote.upload("绿色.png", png.clone()).unwrap();
+    remote.upload("绿色.png", png.clone(), false).unwrap();
     let mut up = Vec::new();
     until("the server has the file", || {
         up.extend(remote.take_uploaded());

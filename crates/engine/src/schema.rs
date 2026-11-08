@@ -230,6 +230,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["name"],
         ),
+        "media.remove" => object(vec![("media", ident("Media id, such as m1."))], &["media"]),
         "timeline.remove" => object(vec![("timeline", ident("Timeline id; the current one by default."))], &[]),
         "track.add" => object(
             vec![

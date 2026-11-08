@@ -63,6 +63,8 @@ pub struct Uploaded {
     pub import: Value,
     /// The file's name.
     pub name: String,
+    /// Whether it goes on the timeline too (it was dropped), not only into the media (Import).
+    pub place: bool,
 }
 
 /// A connection from an editor to a server's session.
@@ -207,7 +209,7 @@ impl Remote {
 
     /// Hands a file to the mirror's footage and sends it to the server; when it is there, it shows
     /// up in [`take_uploaded`](Self::take_uploaded).
-    pub fn upload(&self, name: &str, bytes: Vec<u8>) -> Result<(), String> {
+    pub fn upload(&self, name: &str, bytes: Vec<u8>, place: bool) -> Result<(), String> {
         use sha2::{Digest, Sha256};
         let sha: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
         let probe = self.inner.media.insert_bytes(&sha, name, bytes.clone())?;
@@ -215,6 +217,7 @@ impl Remote {
         let kind = match probe.kind {
             reelforge_renderspec::AssetKind::Video => "video",
             reelforge_renderspec::AssetKind::Image => "image",
+            reelforge_renderspec::AssetKind::Lut => "lut",
             _ => "audio",
         };
         let mut import = json!({"name": name, "kind": kind, "sha256": sha});
@@ -231,7 +234,7 @@ impl Remote {
             match answer(r) {
                 Ok(v) => {
                     import["path"] = v["path"].clone();
-                    this.state().uploaded.push(Uploaded { import, name });
+                    this.state().uploaded.push(Uploaded { import, name, place });
                 }
                 Err(e) => this.note(Note::Failed(name.clone(), e.to_string())),
             }

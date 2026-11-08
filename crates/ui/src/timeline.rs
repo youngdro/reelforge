@@ -10,6 +10,7 @@ use reelforge_media::Footage;
 use reelforge_model::{ClipContent, MediaKind, Project, TrackKind};
 use reelforge_time::Tick;
 
+use crate::assets::Item;
 use crate::i18n::{Lang, Strings};
 use crate::strips::{Source, Strips};
 use crate::theme::{color, icon};
@@ -62,6 +63,9 @@ pub(crate) struct TimelineOutput {
     pub trimmed: Option<(String, Option<Tick>, Option<Tick>)>,
     /// A track's eye or speaker was clicked: `(track, "hidden" | "muted", new value)`.
     pub toggled: Option<(String, &'static str, bool)>,
+    /// Something from the asset panel was dropped: `(item, start, track)`; no track when it was
+    /// dropped on a row of another kind (the editor finds or makes one).
+    pub dropped: Option<(Item, Tick, Option<String>)>,
 }
 
 /// Where the pointer is over a clip.
@@ -270,8 +274,27 @@ impl TimelineView {
             }
         }
 
+        // Something from the asset panel held over the lanes: where it would land.
+        let incoming = egui::DragAndDrop::payload::<Item>(ui.ctx());
+        let landing: Option<(Tick, Option<usize>)> = match (&incoming, ui.input(|i| i.pointer.latest_pos())) {
+            (Some(item), Some(pos)) if lanes.contains(pos) && pos.y > ruler.bottom() => {
+                let len = item.length(p);
+                let mut start = fps.snap(t_of(pos.x).max(Tick::ZERO));
+                if let Some(s) = snap_to(start) {
+                    snapped_at = Some(s);
+                    start = s;
+                } else if let Some(e) = snap_to(start + len) {
+                    snapped_at = Some(e);
+                    start = (e - len).max(Tick::ZERO);
+                }
+                let kind = item.track_kind(p);
+                Some((start, row_at(pos.y).filter(|&i| p.tracks[i].kind == kind)))
+            }
+            _ => None,
+        };
+
         // Rows.
-        for (row, track) in order.iter().map(|&i| &p.tracks[i]).enumerate() {
+        for (row, (index, track)) in order.iter().map(|&i| (i, &p.tracks[i])).enumerate() {
             let top = rect.top() + RULER + row as f32 * ROW;
             let row_rect = Rect::from_min_size(egui::pos2(lanes.left(), top), vec2(lanes.width(), ROW));
             painter.rect_filled(row_rect, 0.0, if row % 2 == 0 { color::ROW } else { color::ROW_ALT });
@@ -334,6 +357,25 @@ impl TimelineView {
                 let r = Rect::from_min_max(egui::pos2(x_of(*ga), top + 5.0), egui::pos2(x_of(*gb), top + ROW - 5.0));
                 let look = Look { selected: true, dim: false, dragging: true };
                 paint_clip(&lane, r, p, p.tracks[from].kind, clip, *ga, look, words, &mut self.strips, &seconds_of);
+            }
+
+            // what is held over this row
+            if let (Some(item), Some((start, Some(i)))) = (&incoming, landing)
+                && i == index
+            {
+                let r = Rect::from_min_max(
+                    egui::pos2(x_of(start), top + 5.0),
+                    egui::pos2(x_of(start + item.length(p)).max(x_of(start) + 3.0), top + ROW - 5.0),
+                );
+                lane.rect_filled(r, CornerRadius::same(5), color::ACCENT.gamma_multiply(0.25));
+                lane.rect_stroke(r, CornerRadius::same(5), Stroke::new(1.5, color::ACCENT), StrokeKind::Inside);
+                lane.with_clip_rect(r.intersect(row_rect)).text(
+                    r.left_center() + vec2(8.0, 0.0),
+                    Align2::LEFT_CENTER,
+                    item.label(p, words),
+                    FontId::proportional(12.0),
+                    color::TEXT,
+                );
             }
 
             // Header.
@@ -405,6 +447,20 @@ impl TimelineView {
         let corner = Rect::from_min_size(rect.min, vec2(HEADER, RULER));
         painter.rect_filled(corner, 0.0, color::PANEL);
         painter.line_segment([corner.right_top(), corner.right_bottom()], Stroke::new(1.0, color::LINE));
+
+        // Held over a row of another kind: it goes on a track of its own kind, at this time.
+        if let Some((start, None)) = landing {
+            let x = x_of(start);
+            painter.with_clip_rect(lanes).line_segment(
+                [egui::pos2(x, ruler.bottom()), egui::pos2(x, rect.bottom())],
+                Stroke::new(2.0, color::ACCENT),
+            );
+        }
+        if let Some(item) = response.dnd_release_payload::<Item>()
+            && let Some((start, row)) = landing
+        {
+            out.dropped = Some(((*item).clone(), start, row.map(|i| p.tracks[i].id.clone())));
+        }
 
         // Snap guide.
         if let Some(t) = snapped_at {
