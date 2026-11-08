@@ -193,3 +193,19 @@ fn titles_get_the_subtitle_look_and_can_be_restyled() {
     assert!(s.execute("clip.set", &json!({"clip": colour, "weight": 700})).is_err());
     assert_eq!(s.revision(), before + 1, "only the colour clip was added");
 }
+
+#[test]
+fn every_command_has_a_schema_that_names_its_required_fields() {
+    for c in registry() {
+        let schema = crate::input_schema(c.id).unwrap_or_else(|| panic!("{} has no schema", c.id));
+        assert_eq!(schema["type"], "object", "{}", c.id);
+        for r in schema["required"].as_array().expect("required") {
+            assert!(schema["properties"].get(r.as_str().unwrap()).is_some(), "{} requires unknown {r}", c.id);
+        }
+        // every property the informal description names is in the schema, and the other way round
+        for (k, _) in schema["properties"].as_object().unwrap() {
+            assert!(c.params.contains(&format!("\"{k}\"")), "{}: {k} is not in {:?}", c.id, c.params);
+        }
+    }
+    assert!(crate::input_schema("no.such").is_none());
+}

@@ -1,0 +1,335 @@
+//! reelforge as a service.
+//!
+//! A [`Hub`] holds one editing session that any number of clients share: MCP agents (over stdio or
+//! Streamable HTTP, [`mcp`]), scripts and other programs (the plain HTTP API, [`http`]), and the
+//! CLI (`reelforge-cli call`, locally or against a server). They all call the same
+//! [`operations`](ops): every engine command, plus the few things that need media or the disk
+//! (render a frame, export an MP4, save), so an agent and a person see one vocabulary.
+//!
+//! Edits still go through `Session::execute`; this crate only carries them. With a project file,
+//! every edit is saved as it commits, so the file is always the current state.
+
+pub mod http;
+pub mod mcp;
+
+use std::io::Cursor;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
+
+use reelforge_engine::{EngineError, Session, input_schema, parse_time, registry};
+use reelforge_media::{Footage, Renderer};
+use reelforge_model::Project;
+use reelforge_render::{Quality, render_frame};
+use reelforge_time::Tick;
+use serde_json::{Value, json};
+
+/// What an operation returns.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Output {
+    /// A JSON value.
+    Json(Value),
+    /// A PNG picture, and facts about it.
+    Png {
+        /// The encoded file.
+        png: Vec<u8>,
+        /// Size, instant, placeholders.
+        info: Value,
+    },
+}
+
+/// Why an operation did not run.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CallError {
+    /// No operation has this name.
+    Unknown(String),
+    /// The operation ran and refused, or its parameters are wrong; nothing changed.
+    Failed(String),
+}
+
+impl std::fmt::Display for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CallError::Unknown(n) => write!(f, "unknown operation {n:?}"),
+            CallError::Failed(m) => f.write_str(m),
+        }
+    }
+}
+
+impl From<EngineError> for CallError {
+    fn from(e: EngineError) -> CallError {
+        match e {
+            EngineError::Unknown(id) => CallError::Unknown(id),
+            e => CallError::Failed(e.to_string()),
+        }
+    }
+}
+
+/// One operation a client can call.
+#[derive(Clone, Debug)]
+pub struct Op {
+    /// Dotted id, `clip.split`. MCP tools use it with `_` for `.` (`clip_split`); either is accepted.
+    pub name: &'static str,
+    /// Short human title.
+    pub title: &'static str,
+    /// What it does.
+    pub doc: String,
+    /// JSON Schema of its parameters.
+    pub schema: Value,
+    /// It changes nothing.
+    pub read_only: bool,
+    /// It can remove work (a person may want to confirm).
+    pub destructive: bool,
+}
+
+const RENDER_FRAME: &str = "render.frame";
+const RENDER_EXPORT: &str = "render.export";
+const PROJECT_SAVE: &str = "project.save";
+
+/// Every operation: the engine's commands, then the service's own.
+pub fn ops() -> Vec<Op> {
+    let mut out: Vec<Op> = registry()
+        .iter()
+        .map(|c| Op {
+            name: c.id,
+            title: c.label,
+            doc: c.doc.to_string(),
+            schema: input_schema(c.id).unwrap_or_else(|| json!({"type": "object"})),
+            read_only: !c.edits,
+            destructive: matches!(c.id, "clip.remove"),
+        })
+        .collect();
+    let time = input_schema("clip.split").expect("clip.split has a schema")["properties"]["at"].clone();
+    out.push(Op {
+        name: RENDER_FRAME,
+        title: "Render Frame",
+        doc: "Draws the project at one instant and returns it as a PNG, to look at an edit.".into(),
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "at": time,
+                "scale": {"type": "number", "exclusiveMinimum": 0, "maximum": 2, "description": "Size relative to the canvas; 0.5 by default."},
+                "draft": {"type": "boolean", "description": "Draw placeholders for missing media instead of failing; true by default."}
+            },
+            "additionalProperties": false
+        }),
+        read_only: true,
+        destructive: false,
+    });
+    out.push(Op {
+        name: RENDER_EXPORT,
+        title: "Export MP4",
+        doc: "Renders the whole project to an H.264 + AAC MP4 file on the server's disk.".into(),
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Where to write the MP4 on the server; relative paths are beside the project."},
+                "renderer": {"enum": ["auto", "cpu", "gpu"], "description": "What draws the frames; the GPU when there is one by default."}
+            },
+            "required": ["path"],
+            "additionalProperties": false
+        }),
+        read_only: true,
+        destructive: false,
+    });
+    out.push(Op {
+        name: PROJECT_SAVE,
+        title: "Save Project",
+        doc: "Writes the project file (edits already save themselves when the server has one); `path` saves a copy elsewhere.".into(),
+        schema: json!({
+            "type": "object",
+            "properties": {"path": {"type": "string", "description": "Another file to write; the open project by default."}},
+            "additionalProperties": false
+        }),
+        read_only: true,
+        destructive: false,
+    });
+    out
+}
+
+/// Finds an operation by dotted id or MCP tool name.
+pub fn find_op(name: &str) -> Option<Op> {
+    ops().into_iter().find(|o| o.name == name || tool_name(o.name) == name)
+}
+
+/// An operation's MCP tool name: `clip.split` is `clip_split` (many clients refuse dots).
+pub fn tool_name(op: &str) -> String {
+    op.replace('.', "_")
+}
+
+/// One shared session, its media and its file.
+pub struct Hub {
+    session: Mutex<Session>,
+    footage: Footage,
+    file: Option<PathBuf>,
+}
+
+impl Hub {
+    /// A hub on a session kept in memory only.
+    pub fn new(session: Session) -> Hub {
+        Hub { session: Mutex::new(session), footage: Footage::new(), file: None }
+    }
+
+    /// A hub on the project at `path`, created empty when there is no file yet. Every edit is
+    /// written back.
+    pub fn open(path: &Path) -> Result<Hub, String> {
+        let project = if path.exists() {
+            let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            Project::from_json(&text).map_err(|e| format!("{}: {e}", path.display()))?
+        } else {
+            Project::default()
+        };
+        let hub = Hub { session: Mutex::new(Session::new(project)), footage: Footage::new(), file: Some(path.into()) };
+        hub.save_to(path)?;
+        Ok(hub)
+    }
+
+    /// The project file, if there is one.
+    pub fn file(&self) -> Option<&Path> {
+        self.file.as_deref()
+    }
+
+    /// The session, for in-process hosts. Hold the guard briefly: every client waits on it.
+    pub fn session(&self) -> MutexGuard<'_, Session> {
+        self.session.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Runs operation `name` (dotted id or tool name) with `params` (an object or null).
+    pub fn call(&self, name: &str, params: &Value) -> Result<Output, CallError> {
+        let op = find_op(name).ok_or_else(|| CallError::Unknown(name.to_string()))?;
+        let empty = json!({});
+        let params = if params.is_null() { &empty } else { params };
+        if !params.is_object() {
+            return Err(CallError::Failed("parameters must be a JSON object".into()));
+        }
+        match op.name {
+            RENDER_FRAME => self.frame(params),
+            RENDER_EXPORT => self.export(params),
+            PROJECT_SAVE => {
+                let path = match params.get("path").and_then(Value::as_str) {
+                    Some(p) => self.resolve(p),
+                    None => self
+                        .file
+                        .clone()
+                        .ok_or_else(|| CallError::Failed("this server has no project file; pass `path`".into()))?,
+                };
+                self.save_to(&path).map_err(CallError::Failed)?;
+                Ok(Output::Json(json!({"saved": path})))
+            }
+            id => {
+                let mut s = self.session();
+                let before = s.revision();
+                let out = s.execute(id, params)?;
+                if s.revision() != before
+                    && let Some(path) = &self.file
+                {
+                    write_atomic(path, &s.project().to_json()).map_err(CallError::Failed)?;
+                }
+                Ok(Output::Json(out))
+            }
+        }
+    }
+
+    /// A path from a client: relative ones are beside the project file.
+    fn resolve(&self, p: &str) -> PathBuf {
+        let p = Path::new(p);
+        match self.file.as_ref().and_then(|f| f.parent()) {
+            Some(dir) if p.is_relative() => dir.join(p),
+            _ => p.to_path_buf(),
+        }
+    }
+
+    fn save_to(&self, path: &Path) -> Result<(), String> {
+        let json = self.session().project().to_json();
+        write_atomic(path, &json)
+    }
+
+    fn frame(&self, params: &Value) -> Result<Output, CallError> {
+        let project = self.session().project();
+        let fps = project.canvas.fps;
+        let at = match params.get("at") {
+            Some(v) => parse_time(v, fps).map_err(|e| CallError::Failed(format!("`at`: {e}")))?,
+            None => Tick::ZERO,
+        };
+        let scale = params.get("scale").and_then(Value::as_f64).unwrap_or(0.5) as f32;
+        if !(scale > 0.0 && scale <= 2.0) {
+            return Err(CallError::Failed("`scale` must be above 0 and at most 2".into()));
+        }
+        let draft = params.get("draft").and_then(Value::as_bool).unwrap_or(true);
+        let spec = reelforge_compile::compile(&project, &reelforge_compile::CompileOptions { encode: false })
+            .map_err(|e| CallError::Failed(e.to_string()))?;
+        let t = fps.snap(at);
+        let quality = if draft { Quality::Draft } else { Quality::Final };
+        let (img, report) =
+            render_frame(&spec, t, scale, &self.footage, quality).map_err(|e| CallError::Failed(e.to_string()))?;
+        let mut png = Vec::new();
+        image::write_buffer_with_format(
+            &mut Cursor::new(&mut png),
+            &img.to_srgba8(),
+            img.width,
+            img.height,
+            image::ExtendedColorType::Rgba8,
+            image::ImageFormat::Png,
+        )
+        .map_err(|e| CallError::Failed(e.to_string()))?;
+        let placeholders: Vec<Value> =
+            report.placeholders.iter().map(|(l, why)| json!({"layer": l, "reason": why})).collect();
+        Ok(Output::Png {
+            png,
+            info: json!({
+                "width": img.width, "height": img.height, "at": t, "seconds": t.0 as f64 / reelforge_time::TICKS_PER_SECOND as f64,
+                "placeholders": placeholders,
+            }),
+        })
+    }
+
+    fn export(&self, params: &Value) -> Result<Output, CallError> {
+        let path =
+            params.get("path").and_then(Value::as_str).ok_or_else(|| CallError::Failed("`path` is required".into()))?;
+        let renderer = match params.get("renderer").and_then(Value::as_str).unwrap_or("auto") {
+            "auto" => Renderer::Auto,
+            "cpu" => Renderer::Cpu,
+            "gpu" => Renderer::Gpu,
+            other => return Err(CallError::Failed(format!("`renderer` must be auto, cpu or gpu, not {other:?}"))),
+        };
+        let project = self.session().project();
+        let spec = reelforge_compile::compile(&project, &reelforge_compile::CompileOptions { encode: true })
+            .map_err(|e| CallError::Failed(e.to_string()))?;
+        let out = self.resolve(path);
+        let tmp = out.with_extension("mp4.part");
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)
+            .map_err(|e| CallError::Failed(format!("cannot write {}: {e}", tmp.display())))?;
+        let started = std::time::Instant::now();
+        let result = reelforge_media::export_with(&spec, &self.footage, file, renderer, &mut |_| true);
+        let stats = match result {
+            Ok((_, stats)) => stats,
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(CallError::Failed(e.to_string()));
+            }
+        };
+        std::fs::rename(&tmp, &out).map_err(|e| CallError::Failed(format!("cannot write {}: {e}", out.display())))?;
+        Ok(Output::Json(json!({
+            "path": out,
+            "frames": stats.frames,
+            "audioSamples": stats.audio_samples,
+            "renderer": stats.renderer,
+            "seconds": started.elapsed().as_secs_f64(),
+        })))
+    }
+}
+
+/// Writes a sibling file, then renames it over `path`, so readers never see half a file.
+pub fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
+    let tmp = path.with_extension("tmp~");
+    std::fs::write(&tmp, text)
+        .and_then(|_| std::fs::rename(&tmp, path))
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod tests;

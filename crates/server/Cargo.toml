@@ -1,0 +1,26 @@
+[package]
+name = "reelforge-server"
+description = "reelforge as a service: one shared session driven over MCP (stdio or Streamable HTTP) and a plain HTTP API, with the same operations the CLI calls."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+reelforge-time = { workspace = true }
+reelforge-model = { workspace = true }
+reelforge-renderspec = { workspace = true }
+reelforge-compile = { workspace = true }
+reelforge-render = { workspace = true }
+reelforge-media = { workspace = true }
+reelforge-engine = { workspace = true }
+serde_json = { workspace = true }
+image = { workspace = true }
+base64 = { workspace = true }
+tiny_http = { workspace = true }
+
+[dev-dependencies]
+ureq = { workspace = true }

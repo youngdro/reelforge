@@ -217,6 +217,7 @@ fn commands_list(s: &mut Session, _: &Value) -> CmdResult {
             .map(|c| {
                 json!({
                     "id": c.id, "label": c.label, "params": c.params, "doc": c.doc, "edits": c.edits,
+                    "schema": crate::input_schema(c.id),
                     "enabled": (c.enabled)(s).err().map_or(json!(true), |why| json!(why)),
                 })
             })
