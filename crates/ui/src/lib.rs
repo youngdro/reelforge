@@ -8,26 +8,41 @@
 //!
 //! Today the preview is composited on the CPU and uploaded as a texture. The wgpu compositor will
 //! draw into a texture on eframe's own device instead, so the frame never leaves the GPU.
+//!
+//! Files dropped on the window are imported (`media.import`) and placed at the playhead
+//! (`clip.add`). On the desktop, Export writes an MP4 on a background thread.
 
+#[cfg(not(target_arch = "wasm32"))]
+mod export_job;
 mod timeline;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 use reelforge_compile::{CompileOptions, compile};
 use reelforge_engine::Session;
-use reelforge_model::{ClipContent, Project, TrackKind};
-use reelforge_render::{Quality, StillImages, render_frame};
+use reelforge_media::Footage;
+use reelforge_model::{ClipContent, MediaKind, Project, TrackKind};
+use reelforge_render::{Quality, render_frame};
 use reelforge_time::Tick;
 use serde_json::{Value, json};
 
 /// Longest side of the preview render, in pixels.
 const PREVIEW_LONG_SIDE: f32 = 640.0;
 
+/// A file the browser finished reading: its name and bytes.
+type Arrival = (String, Result<Vec<u8>, String>);
+
 /// The editor window's state.
 pub struct EditorApp {
     session: Session,
-    media: StillImages,
+    media: Arc<Footage>,
+    /// Files dropped in the browser, read asynchronously: `(name, bytes)`.
+    arrivals: Arc<Mutex<Vec<Arrival>>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    export: Option<export_job::ExportJob>,
+    #[cfg(not(target_arch = "wasm32"))]
+    export_dir: std::path::PathBuf,
     playhead: Tick,
     playing: bool,
     selected: Option<String>,
@@ -55,7 +70,12 @@ impl EditorApp {
     pub fn new(session: Session) -> EditorApp {
         EditorApp {
             session,
-            media: StillImages::new(),
+            media: Arc::new(Footage::new()),
+            arrivals: Arc::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            export: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            export_dir: std::env::current_dir().unwrap_or_default(),
             playhead: Tick::ZERO,
             playing: false,
             selected: None,
@@ -81,6 +101,13 @@ impl EditorApp {
         EditorApp::new(s)
     }
 
+    /// Where Export writes its files (the desktop app passes the project's folder).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_export_dir(mut self, dir: std::path::PathBuf) -> EditorApp {
+        self.export_dir = dir;
+        self
+    }
+
     /// The session, for hosts that drive the editor (the web page's API, a control channel).
     pub fn session_mut(&mut self) -> &mut Session {
         &mut self.session
@@ -102,6 +129,93 @@ impl EditorApp {
 
     fn project(&self) -> Arc<Project> {
         self.session.project()
+    }
+
+    /// Imports a file on disk and places it at the playhead.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn import_path(&mut self, path: &std::path::Path) {
+        let path = path.to_string_lossy().into_owned();
+        if let Ok(v) = self.execute("media.import", json!({ "path": path })) {
+            self.place(&v);
+        }
+    }
+
+    /// Imports a file the browser handed over and places it at the playhead.
+    fn import_bytes(&mut self, name: &str, bytes: Vec<u8>) {
+        use sha2::{Digest, Sha256};
+        let sha: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+        let probe = match self.media.insert_bytes(&sha, name, bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                self.status = format!("{name}: {e}");
+                return;
+            }
+        };
+        let kind = match probe.kind {
+            reelforge_renderspec::AssetKind::Video => "video",
+            reelforge_renderspec::AssetKind::Image => "image",
+            _ => "audio",
+        };
+        let mut params = json!({ "path": name, "kind": kind, "sha256": sha });
+        if let Some(size) = probe.size {
+            params["size"] = json!(size);
+        }
+        if let Some(d) = probe.duration {
+            params["duration"] = json!(d);
+        }
+        if let Ok(v) = self.execute("media.import", params) {
+            self.place(&v);
+        }
+    }
+
+    /// Puts newly imported media at the playhead, on the lowest track of its kind with room there,
+    /// or on a new track above the others.
+    fn place(&mut self, imported: &Value) {
+        let Ok(m) = serde_json::from_value::<reelforge_model::Media>(imported["media"].clone()) else { return };
+        let want = if m.kind == MediaKind::Audio { TrackKind::Audio } else { TrackKind::Video };
+        let tracks: Vec<String> =
+            self.project().tracks.iter().filter(|t| t.kind == want).map(|t| t.id.clone()).collect();
+        let at = self.playhead;
+        let add = |track: &str| json!({"track": track, "media": m.id, "start": at});
+        // a track with no room refuses the clip and nothing changes, so trying is safe
+        let mut placed = tracks.iter().find_map(|t| self.session.execute("clip.add", &add(t)).ok());
+        if placed.is_none() {
+            let kind = if want == TrackKind::Audio { "audio" } else { "video" };
+            if let Ok(t) = self.execute("track.add", json!({ "kind": kind })) {
+                let id = t["track"].as_str().unwrap_or_default().to_string();
+                placed = self.execute("clip.add", add(&id)).ok();
+            }
+        }
+        if let Some(v) = placed {
+            self.selected = v["clip"].as_str().map(str::to_string);
+            self.status = format!("Imported {}", m.name);
+        }
+    }
+
+    fn take_dropped_files(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
+        for f in dropped {
+            #[cfg(not(target_arch = "wasm32"))]
+            self.import_path(f.path());
+            #[cfg(target_arch = "wasm32")]
+            {
+                let arrivals = self.arrivals.clone();
+                let ctx = ctx.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    let name = f.path().to_string_lossy().into_owned();
+                    let bytes = f.bytes_async().await;
+                    arrivals.lock().expect("arrivals lock").push((name, bytes));
+                    ctx.request_repaint();
+                });
+            }
+        }
+        let arrived = std::mem::take(&mut *self.arrivals.lock().expect("arrivals lock"));
+        for (name, bytes) in arrived {
+            match bytes {
+                Ok(b) => self.import_bytes(&name, b),
+                Err(e) => self.status = format!("{name}: {e}"),
+            }
+        }
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
@@ -137,6 +251,11 @@ impl EditorApp {
                 && self.execute("clip.remove", json!({"clips": sel})).is_ok()
             {
                 self.selected = None;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                ui.separator();
+                self.export_controls(ui, &p);
             }
             ui.separator();
             if ui.button("↶ Undo").clicked() {
@@ -225,7 +344,7 @@ impl EditorApp {
             let scale = (PREVIEW_LONG_SIDE / long).min(1.0);
             let image = match compile(&p, &CompileOptions { encode: false }) {
                 Ok(spec) => {
-                    match render_frame(&spec, p.canvas.fps.snap(self.playhead), scale, &self.media, Quality::Draft) {
+                    match render_frame(&spec, p.canvas.fps.snap(self.playhead), scale, &*self.media, Quality::Draft) {
                         Ok((img, _report)) => Some(img),
                         Err(e) => {
                             self.status = format!("preview: {e}");
@@ -268,6 +387,21 @@ impl EditorApp {
 
 impl eframe::App for EditorApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        self.take_dropped_files(&ctx);
+        if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
+            let screen = ctx.content_rect();
+            let painter = ctx
+                .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("reelforge drop overlay")));
+            painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(160));
+            painter.text(
+                screen.center(),
+                egui::Align2::CENTER_CENTER,
+                "Drop to import at the playhead",
+                egui::FontId::proportional(24.0),
+                egui::Color32::WHITE,
+            );
+        }
         if self.playing {
             let dt = ui.input(|i| i.stable_dt).min(0.1);
             self.playhead += Tick::from_seconds(dt as f64);

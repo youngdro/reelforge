@@ -5,6 +5,7 @@
 //! reelforge-cli exec demo.reel.json clip.split '{"clip": "c4", "at": {"seconds": 2}}' --save
 //! reelforge-cli compile demo.reel.json -o demo.renderspec.json
 //! reelforge-cli frame demo.renderspec.json --seconds 1.5 --out frame.png
+//! reelforge-cli export demo.reel.json -o demo.mp4
 //! ```
 
 use std::io::{BufRead, Read};
@@ -13,8 +14,9 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use reelforge_engine::Session;
+use reelforge_media::Footage;
 use reelforge_model::Project;
-use reelforge_render::{Quality, StillImages, render_frame};
+use reelforge_render::{Quality, render_frame};
 use reelforge_renderspec::RenderSpec;
 use reelforge_time::Tick;
 use serde_json::{Value, json};
@@ -90,6 +92,14 @@ enum Cmd {
         /// Draw placeholders for what this build cannot draw instead of failing.
         #[arg(long)]
         draft: bool,
+    },
+    /// Render a project or a RenderSpec to an MP4 (H.264 + AAC).
+    Export {
+        /// A project, or a RenderSpec (`spec` field) as a render service would receive it.
+        input: PathBuf,
+        /// The MP4 to write.
+        #[arg(short, long)]
+        out: PathBuf,
     },
     /// Print the RenderSpec JSON Schema.
     Schema,
@@ -204,13 +214,56 @@ fn run(cmd: Cmd) -> Result<(), String> {
             }
             let t = spec.output.fps.snap(Tick::from_seconds(seconds));
             let quality = if draft { Quality::Draft } else { Quality::Final };
-            let (img, report) =
-                render_frame(&spec, t, scale, &StillImages::new(), quality).map_err(|e| e.to_string())?;
+            let (img, report) = render_frame(&spec, t, scale, &Footage::new(), quality).map_err(|e| e.to_string())?;
             image::save_buffer(&out, &img.to_srgba8(), img.width, img.height, image::ExtendedColorType::Rgba8)
                 .map_err(|e| e.to_string())?;
             for (layer, why) in report.placeholders {
                 eprintln!("placeholder for {layer}: {why}");
             }
+            Ok(())
+        }
+        Cmd::Export { input, out } => {
+            let text = read(&input)?;
+            let is_spec = serde_json::from_str::<Value>(&text).map_err(|e| e.to_string())?.get("spec").is_some();
+            let spec = if is_spec {
+                RenderSpec::from_json(&text).map_err(|e| e.to_string())?
+            } else {
+                let p = Project::from_json(&text).map_err(|e| e.to_string())?;
+                reelforge_compile::compile(&p, &reelforge_compile::CompileOptions { encode: true })
+                    .map_err(|e| e.to_string())?
+            };
+            let tmp = out.with_extension("mp4.part");
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp)
+                .map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+            let started = std::time::Instant::now();
+            let mut shown = 0;
+            let result = reelforge_media::export(&spec, &Footage::new(), file, &mut |p| {
+                let pct = p.done * 100 / p.total;
+                if pct >= shown + 10 || p.done == p.total {
+                    shown = pct;
+                    eprintln!("{pct:>3}%  frame {}/{}", p.done, p.total);
+                }
+                true
+            });
+            let stats = match result {
+                Ok((_, stats)) => stats,
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(e.to_string());
+                }
+            };
+            std::fs::rename(&tmp, &out).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
+            print(&json!({
+                "out": out,
+                "frames": stats.frames,
+                "audioSamples": stats.audio_samples,
+                "seconds": started.elapsed().as_secs_f64(),
+            }));
             Ok(())
         }
         Cmd::Schema => {

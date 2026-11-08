@@ -5,7 +5,15 @@ and run on the desktop and in the browser (WebAssembly). Every action is a comma
 and AI agents drive the same way, and rendering reads one versioned, self-contained description of the
 edit (RenderSpec), so a render can happen in the editor or on a separate render service.
 
-Status: skeleton. Solid colours, titles (as placeholders until text rendering lands), still images, transforms, opacity, two colour effects, undo, and a CPU preview work; video decoding, text, the wgpu compositor, audio and export are next. See [ARCHITECTURE.md](ARCHITECTURE.md).
+Status: early. Video, still images and sound import (drop files on the editor, or `media.import`) and
+decode in pure Rust on the desktop and in the browser; solid colours, transforms, opacity, two colour
+effects, undo and a CPU preview work; projects export to H.264 + AAC MP4 from the desktop editor and the
+CLI. Titles are placeholders until text rendering lands; the wgpu compositor and audio playback come
+next. See [ARCHITECTURE.md](ARCHITECTURE.md).
+
+Video and audio codecs and containers are FilmCraft's clean-room, pure-Rust crates
+(`filmcraft-codecs`, `filmcraft-h264enc`, `filmcraft-aac`, `filmcraft-isobmff`; MIT OR Apache-2.0):
+no FFmpeg and no C libraries.
 
 ## License
 
@@ -13,11 +21,11 @@ Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT l
 
 ## Build and run
 
-Rust 1.90 or newer.
+Rust 1.95 or newer.
 
 ```sh
 cargo run -p reelforge                      # the editor (opens a demo project)
-cargo run -p reelforge-cli -- --help        # commands, scripts, compile, validate, render a frame
+cargo run -p reelforge-cli -- --help        # commands, scripts, compile, validate, render a frame, export
 cargo xtask ci                              # fmt, clippy, tests, layer rules, wasm build
 ```
 
@@ -40,4 +48,13 @@ cargo run -q -p reelforge-cli -- new demo.reel.json --demo
 cargo run -q -p reelforge-cli -- exec demo.reel.json clip.split '{"clip": "c4", "at": {"seconds": 2}}' --save
 cargo run -q -p reelforge-cli -- compile demo.reel.json -o demo.renderspec.json
 cargo run -q -p reelforge-cli -- frame demo.renderspec.json --seconds 1.5 --out frame.png --draft
+```
+
+With your own footage (export refuses titles until text rendering lands):
+
+```sh
+cargo run -q -p reelforge-cli -- new cut.reel.json
+cargo run -q -p reelforge-cli -- exec cut.reel.json media.import '{"path": "/path/to/clip.mp4"}' --save   # → m4
+cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t1", "media": "m4", "sourceIn": {"seconds": 1}, "duration": {"seconds": 4}}' --save
+cargo run -q -r -p reelforge-cli -- export cut.reel.json -o cut.mp4      # a project, or a RenderSpec
 ```

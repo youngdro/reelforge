@@ -14,8 +14,8 @@ reelforge-time = { workspace = true }
 reelforge-model = { workspace = true }
 reelforge-renderspec = { workspace = true }
 reelforge-compile = { workspace = true }
+reelforge-media = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 sha2 = { workspace = true }
-image = { workspace = true }

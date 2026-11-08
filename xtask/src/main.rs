@@ -15,11 +15,12 @@ const LAYERS: &[(&str, u8)] = &[
     ("reelforge-model", 1),
     ("reelforge-compile", 2),
     ("reelforge-render", 2),
-    ("reelforge-engine", 3),
-    ("reelforge-ui", 4),
-    ("reelforge", 5),
-    ("reelforge-cli", 5),
-    ("reelforge-web", 5),
+    ("reelforge-media", 3),
+    ("reelforge-engine", 4),
+    ("reelforge-ui", 5),
+    ("reelforge", 6),
+    ("reelforge-cli", 6),
+    ("reelforge-web", 6),
     ("xtask", 9),
 ];
 
@@ -27,6 +28,12 @@ const LAYERS: &[(&str, u8)] = &[
 const FORBIDDEN: &[(&str, &str, &str)] = &[
     ("reelforge-render", "reelforge-model", "the renderer reads RenderSpec only, never the project"),
     ("reelforge-render", "reelforge-compile", "the renderer reads RenderSpec only, never the project"),
+    ("reelforge-media", "reelforge-model", "media and export read RenderSpec only, so a render service can ship them"),
+    (
+        "reelforge-media",
+        "reelforge-compile",
+        "media and export read RenderSpec only, so a render service can ship them",
+    ),
     (
         "reelforge-renderspec",
         "reelforge-model",
@@ -36,7 +43,7 @@ const FORBIDDEN: &[(&str, &str, &str)] = &[
 
 /// External crates allowed only from this layer up.
 const UI_ONLY: &[&str] = &["egui", "eframe", "egui-wgpu", "egui-winit", "winit", "wasm-bindgen", "web-sys"];
-const UI_LAYER: u8 = 4;
+const UI_LAYER: u8 = 5;
 
 fn main() -> ExitCode {
     let task = std::env::args().nth(1).unwrap_or_default();
@@ -107,7 +114,7 @@ fn layers() -> bool {
 fn wasm() -> bool {
     let mut args = vec!["check", "--target", "wasm32-unknown-unknown"];
     for (name, layer) in LAYERS {
-        if *layer < 5 || *name == "reelforge-web" {
+        if *layer < 6 || *name == "reelforge-web" {
             args.extend(["-p", name]);
         }
     }

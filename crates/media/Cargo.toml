@@ -1,0 +1,23 @@
+[package]
+name = "reelforge-media"
+description = "Media in and out: probing and decoding footage for the renderer, and encoding a RenderSpec to an H.264 + AAC MP4. Pure Rust, through FilmCraft's codecs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+reelforge-time = { workspace = true }
+reelforge-renderspec = { workspace = true }
+reelforge-render = { workspace = true }
+thiserror = { workspace = true }
+filmcraft-media = { workspace = true }
+filmcraft-codecs = { workspace = true }
+filmcraft-time = { workspace = true }
+filmcraft-frame = { workspace = true }
+filmcraft-h264enc = { workspace = true }
+filmcraft-aac = { workspace = true }
+filmcraft-isobmff = { workspace = true }
