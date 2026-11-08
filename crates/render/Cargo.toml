@@ -1,0 +1,16 @@
+[package]
+name = "reelforge-render"
+description = "Draws a RenderSpec: a pure frame plan and the CPU reference compositor. Reads RenderSpec only, never the project."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+reelforge-time = { workspace = true }
+reelforge-renderspec = { workspace = true }
+thiserror = { workspace = true }
+image = { workspace = true }

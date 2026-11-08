@@ -1,0 +1,16 @@
+[package]
+name = "reelforge-compile"
+description = "Lowers a project into a RenderSpec: every editing meaning resolved, nothing left for the renderer to decide."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+reelforge-time = { workspace = true }
+reelforge-model = { workspace = true }
+reelforge-renderspec = { workspace = true }
+thiserror = { workspace = true }

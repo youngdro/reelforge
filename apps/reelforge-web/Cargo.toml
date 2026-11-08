@@ -1,0 +1,23 @@
+[package]
+name = "reelforge-web"
+description = "The reelforge editor in the browser: the same egui interface on WebGPU (WebGL2 fallback), compiled to wasm32."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+reelforge-ui = { workspace = true }
+reelforge-engine = { workspace = true }
+serde_json = { workspace = true }
+eframe = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true, features = ["Window", "Document", "HtmlCanvasElement"] }

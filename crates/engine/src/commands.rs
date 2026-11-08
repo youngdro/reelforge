@@ -1,0 +1,620 @@
+//! The command registry. Every action in reelforge is one of these.
+
+use reelforge_compile::{CompileOptions, compile};
+use reelforge_model::{Clip, ClipContent, ClipEffect, ClipTransform, Media, MediaKind, Project, Track, TrackKind};
+use reelforge_time::{FrameRate, Tick};
+use serde_json::{Value, json};
+
+use crate::params::P;
+use crate::{CmdResult, EngineError, Session};
+
+/// One command: identity, documentation for people and agents, an enablement check and the work.
+pub struct CommandSpec {
+    /// Stable id, `area.verb`.
+    pub id: &'static str,
+    /// Human label for menus and buttons.
+    pub label: &'static str,
+    /// Parameters, as agents see them. Times accept ticks, `{"seconds": s}` or `{"frame": n}`.
+    pub params: &'static str,
+    /// What it does, in one sentence.
+    pub doc: &'static str,
+    /// Whether it changes the project (false for queries).
+    pub edits: bool,
+    /// `Err(reason)` when the command cannot run now.
+    pub enabled: fn(&Session) -> Result<(), String>,
+    /// The work.
+    pub run: fn(&mut Session, &Value) -> CmdResult,
+}
+
+fn always(_: &Session) -> Result<(), String> {
+    Ok(())
+}
+
+fn can_undo(s: &Session) -> Result<(), String> {
+    if s.undo.is_empty() { Err("nothing to undo".into()) } else { Ok(()) }
+}
+
+fn can_redo(s: &Session) -> Result<(), String> {
+    if s.redo.is_empty() { Err("nothing to redo".into()) } else { Ok(()) }
+}
+
+static REGISTRY: &[CommandSpec] = &[
+    CommandSpec {
+        id: "commands.list",
+        label: "List Commands",
+        params: "{}",
+        doc: "Every command with its parameters.",
+        edits: false,
+        enabled: always,
+        run: commands_list,
+    },
+    CommandSpec {
+        id: "project.inspect",
+        label: "Inspect Project",
+        params: "{}",
+        doc: "The whole project document, its length and the session revision.",
+        edits: false,
+        enabled: always,
+        run: project_inspect,
+    },
+    CommandSpec {
+        id: "project.setCanvas",
+        label: "Canvas Settings",
+        params: r#"{"width"?: u32, "height"?: u32, "fps"?: [num, den], "background"?: [r,g,b,a]}"#,
+        doc: "Changes the output size, frame rate or background.",
+        edits: true,
+        enabled: always,
+        run: project_set_canvas,
+    },
+    CommandSpec {
+        id: "media.import",
+        label: "Import Media",
+        params: r#"{"path": string, "kind"?: "video"|"image"|"audio", "name"?: string, "duration"?: time, "size"?: [w, h], "sha256"?: hex}"#,
+        doc: "Adds a file to the project's media. Hashes the file and reads an image's size when the file is reachable.",
+        edits: true,
+        enabled: always,
+        run: media_import,
+    },
+    CommandSpec {
+        id: "track.add",
+        label: "Add Track",
+        params: r#"{"kind": "video"|"text"|"audio", "name"?: string}"#,
+        doc: "Adds a track on top of the others of its kind.",
+        edits: true,
+        enabled: always,
+        run: track_add,
+    },
+    CommandSpec {
+        id: "clip.add",
+        label: "Add Clip",
+        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "text"?: string, "size"?: px, "color"?: [r,g,b,a]}"#,
+        doc: "Places media, text or a colour on a track; starts at the track's end unless `start` is given.",
+        edits: true,
+        enabled: always,
+        run: clip_add,
+    },
+    CommandSpec {
+        id: "clip.split",
+        label: "Split",
+        params: r#"{"clip": id, "at": time}"#,
+        doc: "Cuts a clip in two at a timeline time inside it.",
+        edits: true,
+        enabled: always,
+        run: clip_split,
+    },
+    CommandSpec {
+        id: "clip.trim",
+        label: "Trim",
+        params: r#"{"clip": id, "start"?: time, "end"?: time}"#,
+        doc: "Moves a clip's start or end edge on the timeline; media keeps its sync.",
+        edits: true,
+        enabled: always,
+        run: clip_trim,
+    },
+    CommandSpec {
+        id: "clip.move",
+        label: "Move",
+        params: r#"{"clip": id, "start": time, "track"?: id}"#,
+        doc: "Moves a clip in time and optionally to another track.",
+        edits: true,
+        enabled: always,
+        run: clip_move,
+    },
+    CommandSpec {
+        id: "clip.remove",
+        label: "Delete",
+        params: r#"{"clips": id | [id]}"#,
+        doc: "Removes clips, leaving gaps.",
+        edits: true,
+        enabled: always,
+        run: clip_remove,
+    },
+    CommandSpec {
+        id: "clip.setSpeed",
+        label: "Speed",
+        params: r#"{"clip": id, "speed": number}"#,
+        doc: "Changes a media clip's speed; its length changes to keep the same source span.",
+        edits: true,
+        enabled: always,
+        run: clip_set_speed,
+    },
+    CommandSpec {
+        id: "clip.set",
+        label: "Clip Properties",
+        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "text"?, "size"?, "color"?}"#,
+        doc: "Sets a clip's placement, opacity, volume or title.",
+        edits: true,
+        enabled: always,
+        run: clip_set,
+    },
+    CommandSpec {
+        id: "clip.addEffect",
+        label: "Add Effect",
+        params: r#"{"clip": id, "effect": "name@version", "params"?: {name: number}}"#,
+        doc: "Appends an effect to a picture clip.",
+        edits: true,
+        enabled: always,
+        run: clip_add_effect,
+    },
+    CommandSpec {
+        id: "edit.undo",
+        label: "Undo",
+        params: "{}",
+        doc: "Undoes the last edit.",
+        edits: true,
+        enabled: can_undo,
+        run: |s, _| s.swap(true),
+    },
+    CommandSpec {
+        id: "edit.redo",
+        label: "Redo",
+        params: "{}",
+        doc: "Redoes the last undone edit.",
+        edits: true,
+        enabled: can_redo,
+        run: |s, _| s.swap(false),
+    },
+    CommandSpec {
+        id: "edit.batch",
+        label: "Batch",
+        params: r#"{"steps": [{"id": string, "params"?: object}], "label"?: string}"#,
+        doc: "Runs several commands as one undo step; if any fails, none applies.",
+        edits: true,
+        enabled: always,
+        run: edit_batch,
+    },
+    CommandSpec {
+        id: "render.compile",
+        label: "Compile RenderSpec",
+        params: r#"{"encode"?: bool}"#,
+        doc: "The project as a RenderSpec, the document any reelforge renderer draws.",
+        edits: false,
+        enabled: always,
+        run: render_compile,
+    },
+];
+
+/// Every command.
+pub fn registry() -> &'static [CommandSpec] {
+    REGISTRY
+}
+
+fn fps(s: &Session) -> FrameRate {
+    s.project.canvas.fps
+}
+
+fn not_found(what: &str, id: &str) -> EngineError {
+    EngineError::Params(format!("no {what} {id:?}"))
+}
+
+fn commands_list(s: &mut Session, _: &Value) -> CmdResult {
+    Ok(Value::Array(
+        REGISTRY
+            .iter()
+            .map(|c| {
+                json!({
+                    "id": c.id, "label": c.label, "params": c.params, "doc": c.doc, "edits": c.edits,
+                    "enabled": (c.enabled)(s).err().map_or(json!(true), |why| json!(why)),
+                })
+            })
+            .collect(),
+    ))
+}
+
+fn project_inspect(s: &mut Session, _: &Value) -> CmdResult {
+    let p = s.project();
+    Ok(
+        json!({ "revision": s.revision, "duration": p.duration(), "project": serde_json::to_value(&*p).expect("serialises") }),
+    )
+}
+
+fn project_set_canvas(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let (w, h, bg) = (p.opt_u32("width")?, p.opt_u32("height")?, p.opt_color("background")?);
+    let rate = match p.opt("fps") {
+        None => None,
+        Some(r) => {
+            let pair: [u32; 2] = serde_json::from_value(r.clone())
+                .map_err(|_| EngineError::Params("`fps` must be [num, den]".into()))?;
+            let rate = FrameRate { num: pair[0], den: pair[1] };
+            if !rate.is_valid() {
+                return Err(EngineError::Params("`fps` is not a supported rate".into()));
+            }
+            Some(rate)
+        }
+    };
+    for d in [w, h].into_iter().flatten() {
+        if d == 0 || d > 8192 || d % 2 != 0 {
+            return Err(EngineError::Params("width and height must be even and between 2 and 8192".into()));
+        }
+    }
+    s.edit("Canvas Settings", |proj| {
+        let c = &mut proj.canvas;
+        if let Some(w) = w {
+            c.width = w;
+        }
+        if let Some(h) = h {
+            c.height = h;
+        }
+        if let Some(r) = rate {
+            c.fps = r;
+        }
+        if let Some(bg) = bg {
+            c.background = bg;
+        }
+        Ok(json!({ "canvas": serde_json::to_value(&*c).expect("serialises") }))
+    })
+}
+
+fn kind_from_path(path: &str) -> Option<MediaKind> {
+    let ext = path.rsplit('.').next()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "mp4" | "mov" | "m4v" | "mkv" | "webm" => Some(MediaKind::Video),
+        "png" | "jpg" | "jpeg" | "webp" | "gif" => Some(MediaKind::Image),
+        "mp3" | "wav" | "m4a" | "aac" | "flac" | "ogg" | "opus" => Some(MediaKind::Audio),
+        _ => None,
+    }
+}
+
+fn media_import(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let path = p.str("path")?.to_string();
+    let kind = match p.opt_str("kind")? {
+        Some(k) => serde_json::from_value(json!(k))
+            .map_err(|_| EngineError::Params("`kind` must be video, image or audio".into()))?,
+        None => kind_from_path(&path)
+            .ok_or_else(|| EngineError::Params("cannot tell the kind from the extension; pass `kind`".into()))?,
+    };
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+    let mut sha256 = p.opt_str("sha256")?.map(str::to_string);
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+    let mut size = match p.opt("size") {
+        Some(v) => Some(
+            serde_json::from_value::<[u32; 2]>(v.clone())
+                .map_err(|_| EngineError::Params("`size` must be [w, h]".into()))?,
+        ),
+        None => None,
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use sha2::{Digest, Sha256};
+        let local = path.strip_prefix("file://").unwrap_or(&path);
+        if sha256.is_none()
+            && let Ok(bytes) = std::fs::read(local)
+        {
+            sha256 = Some(Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect());
+        }
+        if size.is_none() && kind == MediaKind::Image {
+            size = image::image_dimensions(local).ok().map(|(w, h)| [w, h]);
+        }
+    }
+    if let Some(h) = &sha256
+        && (h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        return Err(EngineError::Params("`sha256` must be 64 hex digits".into()));
+    }
+    let sha256 = sha256.map(|h| h.to_ascii_lowercase());
+    let duration = p.opt_time("duration")?;
+    let name = p
+        .opt_str("name")?
+        .map(str::to_string)
+        .unwrap_or_else(|| path.rsplit(['/', '\\']).next().unwrap_or(&path).to_string());
+    s.edit("Import Media", |proj| {
+        let id = proj.mint("m");
+        let m = Media { id: id.clone(), name, uri: path, sha256, kind, duration, size };
+        let out = json!({ "media": serde_json::to_value(&m).expect("serialises") });
+        proj.media.insert(id, m);
+        Ok(out)
+    })
+}
+
+fn track_add(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let kind: TrackKind = serde_json::from_value(json!(p.str("kind")?))
+        .map_err(|_| EngineError::Params("`kind` must be video, text or audio".into()))?;
+    let name = p.opt_str("name")?.map(str::to_string);
+    s.edit("Add Track", |proj| {
+        let id = proj.mint("t");
+        let n = proj.tracks.iter().filter(|t| t.kind == kind).count() + 1;
+        let name = name.unwrap_or_else(|| {
+            format!(
+                "{} {n}",
+                match kind {
+                    TrackKind::Video => "Video",
+                    TrackKind::Text => "Text",
+                    TrackKind::Audio => "Audio",
+                }
+            )
+        });
+        let at = proj.tracks.iter().rposition(|t| t.kind == kind).map_or(proj.tracks.len(), |i| i + 1);
+        proj.tracks.insert(at, Track { id: id.clone(), kind, name, hidden: false, muted: false, clips: vec![] });
+        Ok(json!({ "track": id }))
+    })
+}
+
+const STILL_LENGTH: Tick = Tick(5 * reelforge_time::TICKS_PER_SECOND);
+
+fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let track_id = p.str("track")?.to_string();
+    let start = p.opt_time("start")?;
+    let duration = p.opt_time("duration")?;
+    let source_in = p.opt_time("sourceIn")?.unwrap_or(Tick::ZERO);
+    let media = p.opt_str("media")?.map(str::to_string);
+    let text = p.opt_str("text")?.map(str::to_string);
+    let color = p.opt_color("color")?;
+    let size = p.opt_f64("size")?.unwrap_or(96.0) as f32;
+    s.edit("Add Clip", |proj| {
+        let track = proj.track(&track_id).ok_or_else(|| not_found("track", &track_id))?;
+        let start = start.unwrap_or_else(|| track.clips.last().map_or(Tick::ZERO, Clip::end));
+        let (content, natural) = match (&media, &text) {
+            (Some(m), None) => {
+                let item = proj.media.get(m).ok_or_else(|| not_found("media", m))?;
+                let natural = item.duration.map(|d| d - source_in).filter(|d| *d > Tick::ZERO);
+                (ClipContent::Media { media: m.clone(), source_in, speed: 1.0 }, natural)
+            }
+            (None, Some(t)) => (ClipContent::Text { text: t.clone(), size, color: color.unwrap_or([1.0; 4]) }, None),
+            (None, None) => (
+                ClipContent::Solid {
+                    color: color.ok_or_else(|| EngineError::Params("give `media`, `text` or `color`".into()))?,
+                },
+                None,
+            ),
+            (Some(_), Some(_)) => return Err(EngineError::Params("give either `media` or `text`, not both".into())),
+        };
+        let duration = duration.or(natural).unwrap_or(STILL_LENGTH);
+        let id = proj.mint("c");
+        let clip = Clip {
+            id: id.clone(),
+            start,
+            duration,
+            content,
+            transform: ClipTransform::default(),
+            opacity: 1.0,
+            volume_db: 0.0,
+            effects: vec![],
+        };
+        proj.track_mut(&track_id).expect("found above").clips.push(clip);
+        Ok(json!({ "clip": id, "start": start, "duration": duration }))
+    })
+}
+
+fn clip_split(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let at = p.time("at")?;
+    s.edit("Split", |proj| {
+        let (ti, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        if at <= clip.start || at >= clip.end() {
+            return Err(EngineError::Params("`at` must be strictly inside the clip".into()));
+        }
+        let mut right = clip.clone();
+        let left_len = at - clip.start;
+        right.start = at;
+        right.duration = clip.end() - at;
+        right.id = proj.mint("c");
+        if let ClipContent::Media { source_in, speed, .. } = &mut right.content {
+            *source_in += left_len.scale(*speed);
+        }
+        let right_id = right.id.clone();
+        proj.tracks[ti].clips.push(right);
+        proj.clip_mut(&id).expect("exists").duration = left_len;
+        Ok(json!({ "left": id, "right": right_id }))
+    })
+}
+
+fn clip_trim(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let (new_start, new_end) = (p.opt_time("start")?, p.opt_time("end")?);
+    s.edit("Trim", |proj| {
+        let clip = proj.clip_mut(&id).ok_or_else(|| not_found("clip", &id))?;
+        let start = new_start.unwrap_or(clip.start);
+        let end = new_end.unwrap_or(clip.end());
+        if end <= start {
+            return Err(EngineError::Params("the clip would have no length".into()));
+        }
+        let delta = start - clip.start;
+        if let ClipContent::Media { source_in, speed, .. } = &mut clip.content {
+            let moved = *source_in + delta.scale(*speed);
+            if moved < Tick::ZERO {
+                return Err(EngineError::Refused("the clip cannot start before its media does".into()));
+            }
+            *source_in = moved;
+        }
+        clip.start = start;
+        clip.duration = end - start;
+        Ok(json!({ "clip": id, "start": start, "duration": end - start }))
+    })
+}
+
+fn clip_move(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let start = p.time("start")?;
+    let to = p.opt_str("track")?.map(str::to_string);
+    s.edit("Move", |proj| {
+        let (ti, _) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        let pos = proj.tracks[ti].clips.iter().position(|c| c.id == id).expect("found");
+        let mut clip = proj.tracks[ti].clips.remove(pos);
+        clip.start = start;
+        let dest = match &to {
+            Some(t) => proj.tracks.iter().position(|x| &x.id == t).ok_or_else(|| not_found("track", t))?,
+            None => ti,
+        };
+        proj.tracks[dest].clips.push(clip);
+        Ok(json!({ "clip": id, "start": start, "track": proj.tracks[dest].id }))
+    })
+}
+
+fn clip_remove(s: &mut Session, v: &Value) -> CmdResult {
+    let ids = P::new(v, fps(s)).strings("clips")?;
+    s.edit("Delete", |proj| {
+        for id in &ids {
+            let (ti, _) = proj.clip(id).ok_or_else(|| not_found("clip", id))?;
+            proj.tracks[ti].clips.retain(|c| &c.id != id);
+        }
+        Ok(json!({ "removed": ids }))
+    })
+}
+
+fn clip_set_speed(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let new = p.f64("speed")?;
+    if !(new > 0.0 && new <= 100.0) {
+        return Err(EngineError::Params("`speed` must be above 0 and at most 100".into()));
+    }
+    s.edit("Speed", |proj| {
+        let clip = proj.clip_mut(&id).ok_or_else(|| not_found("clip", &id))?;
+        let ClipContent::Media { speed, .. } = &mut clip.content else {
+            return Err(EngineError::Params("only media clips have a speed".into()));
+        };
+        let source_span = clip.duration.scale(*speed);
+        *speed = new;
+        clip.duration = source_span.scale(1.0 / new).max(Tick(1));
+        Ok(json!({ "clip": id, "duration": clip.duration }))
+    })
+}
+
+fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let f = |name: &str| p.opt_f64(name).map(|o| o.map(|x| x as f32));
+    let (x, y, scale, rotation, opacity, volume) =
+        (f("x")?, f("y")?, f("scale")?, f("rotation")?, f("opacity")?, f("volumeDb")?);
+    let (text, size, color) = (p.opt_str("text")?.map(str::to_string), f("size")?, p.opt_color("color")?);
+    if opacity.is_some_and(|o| !(0.0..=1.0).contains(&o)) {
+        return Err(EngineError::Params("`opacity` must be between 0 and 1".into()));
+    }
+    s.edit("Clip Properties", |proj| {
+        let clip = proj.clip_mut(&id).ok_or_else(|| not_found("clip", &id))?;
+        let t = &mut clip.transform;
+        if let Some(v) = x {
+            t.x = v;
+        }
+        if let Some(v) = y {
+            t.y = v;
+        }
+        if let Some(v) = scale {
+            t.scale = v;
+        }
+        if let Some(v) = rotation {
+            t.rotation = v;
+        }
+        if let Some(v) = opacity {
+            clip.opacity = v;
+        }
+        if let Some(v) = volume {
+            clip.volume_db = v;
+        }
+        match &mut clip.content {
+            ClipContent::Text { text: tt, size: ts, color: tc } => {
+                if let Some(v) = text {
+                    *tt = v;
+                }
+                if let Some(v) = size {
+                    *ts = v;
+                }
+                if let Some(v) = color {
+                    *tc = v;
+                }
+            }
+            ClipContent::Solid { color: sc } => {
+                if let Some(v) = color {
+                    *sc = v;
+                }
+            }
+            ClipContent::Media { .. } if text.is_some() || size.is_some() || color.is_some() => {
+                return Err(EngineError::Params("`text`, `size` and `color` apply to text and colour clips".into()));
+            }
+            ClipContent::Media { .. } => {}
+        }
+        Ok(json!({ "clip": serde_json::to_value(&*clip).expect("serialises") }))
+    })
+}
+
+fn clip_add_effect(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let effect = p.str("effect")?.to_string();
+    let params: std::collections::BTreeMap<String, f32> = match p.opt("params") {
+        Some(v) => serde_json::from_value(v.clone())
+            .map_err(|_| EngineError::Params("`params` must map names to numbers".into()))?,
+        None => Default::default(),
+    };
+    if !effect
+        .split_once('@')
+        .is_some_and(|(n, ver)| !n.is_empty() && !ver.is_empty() && ver.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Err(EngineError::Params("`effect` must look like name@1".into()));
+    }
+    s.edit("Add Effect", |proj| {
+        let clip = proj.clip_mut(&id).ok_or_else(|| not_found("clip", &id))?;
+        clip.effects.push(ClipEffect { id: effect, params });
+        Ok(json!({ "clip": id, "effects": clip.effects.len() }))
+    })
+}
+
+fn edit_batch(s: &mut Session, v: &Value) -> CmdResult {
+    let steps = v
+        .get("steps")
+        .and_then(Value::as_array)
+        .ok_or_else(|| EngineError::Params("`steps` must be a list".into()))?
+        .clone();
+    let label = v.get("label").and_then(Value::as_str).unwrap_or("Batch").to_string();
+    let saved: (std::sync::Arc<Project>, usize, Vec<_>, u64) =
+        (s.project.clone(), s.undo.len(), s.redo.clone(), s.revision);
+    let mut results = Vec::new();
+    for (i, step) in steps.iter().enumerate() {
+        let id = step.get("id").and_then(Value::as_str).unwrap_or_default();
+        let params = step.get("params").cloned().unwrap_or(Value::Null);
+        let r = if id == "edit.undo" || id == "edit.redo" || id == "edit.batch" {
+            Err(EngineError::Params(format!("{id} cannot run inside a batch")))
+        } else {
+            s.execute(id, &params)
+        };
+        match r {
+            Ok(v) => results.push(v),
+            Err(e) => {
+                s.project = saved.0;
+                s.undo.truncate(saved.1);
+                s.redo = saved.2;
+                s.revision = saved.3;
+                return Err(EngineError::Refused(format!("step {i} ({id}) failed, nothing applied: {e}")));
+            }
+        }
+    }
+    if s.undo.len() > saved.1 {
+        let before = s.undo[saved.1].1.clone();
+        s.undo.truncate(saved.1);
+        s.undo.push((label, before));
+    }
+    Ok(json!({ "results": results }))
+}
+
+fn render_compile(s: &mut Session, v: &Value) -> CmdResult {
+    let encode = v.get("encode").and_then(Value::as_bool).unwrap_or(true);
+    let spec = compile(&s.project, &CompileOptions { encode }).map_err(|e| EngineError::Refused(e.to_string()))?;
+    Ok(serde_json::to_value(&spec).expect("serialises"))
+}

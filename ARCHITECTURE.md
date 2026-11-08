@@ -1,0 +1,75 @@
+# Architecture
+
+reelforge is an all-Rust short-video editor. The interface, the engine and the renderer are Rust; the
+interface is egui drawn by wgpu; the same code runs on the desktop and in the browser (wasm32,
+WebGPU with a WebGL2 fallback). Three ideas hold it together:
+
+1. **Everything is a command.** Every change to a project is a registered command with a stable id
+   (`clip.split`), documented parameters and an `enabled` check that explains itself. The interface,
+   the CLI, the browser's `window.reelforge` API and (next) an MCP server all call the same
+   dispatcher, `Session::execute`.
+2. **Rendering reads one document: RenderSpec.** The editor compiles a project into a RenderSpec, a
+   versioned, flat, self-contained description of the finished edit: integer-tick time, assets by
+   SHA-256, layers bottom first, audio clips, effects as versioned ids. The renderer depends on
+   RenderSpec and nothing else, so it renders in the editor's process by default, or on a separate
+   render service from the same JSON.
+3. **Exact time.** All time is `Tick(i64)` at 254,016,000,000 per second, which divides every common
+   frame rate and sample rate, so frames and samples are exact integers and edits never drift.
+
+## Crates and layers
+
+A crate depends only on lower layers; `cargo xtask layers` enforces it, plus two rules the layers
+alone would allow: the renderer never depends on the project model or the compiler, and UI or
+windowing crates (egui, eframe, winit, web-sys…) appear only from L4 up.
+
+| Layer | Crate | Role |
+| --- | --- | --- |
+| L0 | `reelforge-time` | `Tick`, `FrameRate`, `TimeRange` |
+| L1 | `reelforge-renderspec` | RenderSpec types, validation, JSON Schema (`schema/renderspec-1.schema.json`) |
+| L1 | `reelforge-model` | The project document: canvas, media, tracks, clips; invariants |
+| L2 | `reelforge-compile` | Project → RenderSpec: all editing meaning resolved here |
+| L2 | `reelforge-render` | Pure frame plan + CPU reference compositor; `MediaSource` trait |
+| L3 | `reelforge-engine` | `Session`, command registry, copy-on-write undo, batches |
+| L4 | `reelforge-ui` | The egui editor: toolbar, preview, timeline, inspector |
+| L5 | `reelforge` | Desktop app (eframe, wgpu renderer) |
+| L5 | `reelforge-cli` | Commands, scripts, compile, validate, render a frame |
+| L5 | `reelforge-web` | Browser app (eframe web runner) + `window.reelforge.execute` |
+
+```text
+            interface (egui on wgpu)   CLI   browser API   MCP (next)
+                         \              |        |        /
+                          Session::execute  ── command registry, undo
+                                   |
+                               Project ──compile──► RenderSpec (JSON, versioned)
+                                                        |
+                                    plan_frame (pure) ──┴──► compositor: CPU reference │ wgpu (next)
+                                                                   │
+                                          in-process (default)  or  render service (optional)
+```
+
+## RenderSpec rules
+
+- A renderer refuses a `spec` version it does not know.
+- Effects are `name@version`. `RenderSpec::required_features` lists what a spec needs; a final render
+  refuses what the renderer lacks instead of drawing something else. A draft (preview) render draws
+  a placeholder and reports it.
+- Heavy analysis (cut-out masks, stabilisation, speech, TTS) is precomputed by the editor or an
+  analysis worker and arrives as assets (`mask_sequence`, …), so renderers never run models and
+  renders are reproducible.
+- The JSON Schema is generated from the Rust types; a test fails when the checked-in copy is stale
+  (`UPDATE_SCHEMA=1 cargo test -p reelforge-renderspec` refreshes it).
+
+## What is not built yet
+
+In rough priority order for short videos:
+
+1. Video decoding behind `MediaSource` (WebCodecs in the browser, platform/hardware decoders natively)
+   and encoding/muxing for export (H.264 + AAC MP4). Candidates to reuse: FilmCraft's pure-Rust
+   codec and container crates (MIT/Apache).
+2. Text rendering (`text/1`) with bundled fonts including CJK.
+3. The wgpu compositor, sharing eframe's device so preview frames never leave the GPU, tested
+   against the CPU reference.
+4. Audio mixing and playback.
+5. MCP server (stdio and Streamable HTTP) over the same registry; a session service for live,
+   shared editing by people and agents.
+6. A standalone render service that accepts a RenderSpec.

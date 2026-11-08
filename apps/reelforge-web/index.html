@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>reelforge</title>
+  <style>html, body { margin: 0; height: 100%; background: #1b1b1b; } canvas { width: 100%; height: 100%; display: block; }</style>
+</head>
+<body>
+  <canvas id="reelforge"></canvas>
+  <script type="module">
+    import init, { start } from "./reelforge_web.js";
+    await init();
+    window.reelforge = await start("reelforge");
+    // window.reelforge.execute("commands.list", "{}")
+  </script>
+</body>
+</html>
