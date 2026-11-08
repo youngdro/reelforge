@@ -343,8 +343,9 @@ impl Sound {
 
 /// The stereo mix of `frames` samples from output sample `start`.
 ///
-/// A clip at another speed is read resampled (its pitch moves with the speed, as on tape);
-/// pitch-preserving stretch comes with the audio engine.
+/// A clip at another speed is stretched in time keeping its pitch when it asks to
+/// (`keep_pitch`, [`crate::stretch`]), and otherwise read resampled, its pitch moving with the
+/// speed as on tape.
 pub fn mix(
     spec: &RenderSpec,
     media: &Footage,
@@ -363,11 +364,18 @@ pub fn mix(
             continue;
         }
         let speed = clip.time.speed;
-        // the source read at `rate / speed` advances `speed` source seconds per output second
-        let src_rate = ((rate as f64 / speed).round() as u32).max(1);
-        let src_in = (clip.time.source_in.0 as i128 * src_rate as i128 / TICKS_PER_SECOND as i128) as i64;
         let n = (b - a) as usize;
-        let Some(src) = media.audio(asset, src_in + (a - c0), n, src_rate).map_err(ExportError::Media)? else {
+        let src = if clip.keep_pitch && speed != 1.0 {
+            // read at the output rate and stretched in time
+            let src_in = at_sample(clip.time.source_in);
+            crate::stretch::stretched(media, asset, src_in, speed, a - c0, n, rate)
+        } else {
+            // the source read at `rate / speed` advances `speed` source seconds per output second
+            let src_rate = ((rate as f64 / speed).round() as u32).max(1);
+            let src_in = (clip.time.source_in.0 as i128 * src_rate as i128 / TICKS_PER_SECOND as i128) as i64;
+            media.audio(asset, src_in + (a - c0), n, src_rate)
+        };
+        let Some(src) = src.map_err(ExportError::Media)? else {
             continue;
         };
         if src.is_empty() {

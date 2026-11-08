@@ -202,6 +202,7 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                     dur: clip.duration,
                     time: TimeMap { source_in: *source_in, speed: *speed },
                     gain_db: motion::lower(clip, Prop::VolumeDb, &Shape::of(clip), step),
+                    keep_pitch: clip.keep_pitch && *speed != 1.0,
                 });
             }
         }
@@ -265,6 +266,8 @@ mod tests {
             keys: Default::default(),
             anim: Default::default(),
             transition: None,
+            fade: Default::default(),
+            keep_pitch: true,
         }
     }
 

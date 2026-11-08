@@ -173,8 +173,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.setSpeed",
         label: "Speed",
-        params: r#"{"clip": id, "speed": number}"#,
-        doc: "Changes a media clip's speed; its length changes to keep the same source span.",
+        params: r#"{"clip": id, "speed"?: number, "keepPitch"?: bool}"#,
+        doc: "Changes a media clip's speed; its length changes to keep the same source span. Sound keeps its pitch unless `keepPitch` is false.",
         edits: true,
         enabled: always,
         run: clip_set_speed,
@@ -182,8 +182,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.set",
         label: "Clip Properties",
-        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "at"?: time, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "template"?: id}"#,
-        doc: "Sets a clip's placement, opacity, volume or title. A property with keyframes is set at `at` (a timeline time), adding or changing the keyframe there.",
+        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "at"?: time, "fadeIn"?: time, "fadeOut"?: time, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "template"?: id}"#,
+        doc: "Sets a clip's placement, opacity, volume, sound fades or title. A property with keyframes is set at `at` (a timeline time), adding or changing the keyframe there.",
         edits: true,
         enabled: always,
         run: clip_set,
@@ -530,6 +530,8 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
             keys: Default::default(),
             anim: Default::default(),
             transition: None,
+            fade: Default::default(),
+            keep_pitch: true,
         };
         proj.track_mut(&track_id).expect("found above").clips.push(clip);
         Ok(json!({ "clip": id, "start": start, "duration": duration }))
@@ -558,11 +560,13 @@ fn clip_split(s: &mut Session, v: &Value) -> CmdResult {
         right.shift_keys(-left_len);
         right.anim.enter = None;
         right.transition = None;
+        right.fade.fade_in = Tick::ZERO;
         let right_id = right.id.clone();
         proj.tracks[ti].clips.push(right);
         let left = proj.clip_mut(&id).expect("exists");
         left.duration = left_len;
         left.anim.exit = None;
+        left.fade.fade_out = Tick::ZERO;
         Ok(json!({ "left": id, "right": right_id }))
     })
 }
@@ -626,8 +630,12 @@ fn clip_remove(s: &mut Session, v: &Value) -> CmdResult {
 fn clip_set_speed(s: &mut Session, v: &Value) -> CmdResult {
     let p = P::new(v, fps(s));
     let id = p.str("clip")?.to_string();
-    let new = p.f64("speed")?;
-    if !(new > 0.0 && new <= 100.0) {
+    let new = p.opt_f64("speed")?;
+    let keep = p.opt_bool("keepPitch")?;
+    if new.is_none() && keep.is_none() {
+        return Err(EngineError::Params("give `speed` or `keepPitch`".into()));
+    }
+    if new.is_some_and(|n| !(n > 0.0 && n <= 100.0)) {
         return Err(EngineError::Params("`speed` must be above 0 and at most 100".into()));
     }
     s.edit("Speed", |proj| {
@@ -635,13 +643,18 @@ fn clip_set_speed(s: &mut Session, v: &Value) -> CmdResult {
         let ClipContent::Media { speed, .. } = &mut clip.content else {
             return Err(EngineError::Params("only media clips have a speed".into()));
         };
-        let source_span = clip.duration.scale(*speed);
-        let old = *speed;
-        *speed = new;
-        clip.duration = source_span.scale(1.0 / new).max(Tick(1));
-        // keys follow the picture they were set on
-        clip.scale_keys(old / new);
-        Ok(json!({ "clip": id, "duration": clip.duration }))
+        if let Some(new) = new {
+            let source_span = clip.duration.scale(*speed);
+            let old = *speed;
+            *speed = new;
+            clip.duration = source_span.scale(1.0 / new).max(Tick(1));
+            // keys follow the picture they were set on
+            clip.scale_keys(old / new);
+        }
+        if let Some(k) = keep {
+            clip.keep_pitch = k;
+        }
+        Ok(json!({ "clip": id, "duration": clip.duration, "keepPitch": clip.keep_pitch }))
     })
 }
 
@@ -755,6 +768,10 @@ fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
         }
     }
     let at = p.opt_time("at")?;
+    let (fade_in, fade_out) = (p.opt_time("fadeIn")?, p.opt_time("fadeOut")?);
+    if [fade_in, fade_out].iter().flatten().any(|f| *f < Tick::ZERO) {
+        return Err(EngineError::Params("a fade cannot be negative".into()));
+    }
     let (text, size) = (p.opt_str("text")?.map(str::to_string), f("size")?);
     // a template brings its colour unless one is given
     let color = p.opt_color("color")?.or(template(&p)?.map(|t| t.color));
@@ -782,6 +799,12 @@ fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
                 let ease = list.iter().find(|k| k.t == t).map_or(Ease::Linear, |k| k.ease);
                 anim::insert(list, Key { t, v, ease });
             }
+        }
+        if let Some(f) = fade_in {
+            clip.fade.fade_in = f;
+        }
+        if let Some(f) = fade_out {
+            clip.fade.fade_out = f;
         }
         if styled && !matches!(clip.content, ClipContent::Text { .. }) {
             return Err(EngineError::Params("title style applies to text clips".into()));

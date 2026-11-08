@@ -64,10 +64,6 @@ impl<'a> P<'a> {
             .transpose()
     }
 
-    pub fn f64(&self, name: &str) -> Result<f64, EngineError> {
-        self.opt_f64(name)?.ok_or_else(|| Self::missing(name))
-    }
-
     pub fn opt_u32(&self, name: &str) -> Result<Option<u32>, EngineError> {
         self.opt(name)
             .map(|v| {

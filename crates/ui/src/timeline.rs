@@ -590,7 +590,8 @@ fn paint_clip(
     }
 }
 
-/// In and out animations as ramps at the clip's ends, and its keyframes as diamonds along its foot.
+/// In and out animations and sound fades as ramps at the clip's ends, and its keyframes as diamonds
+/// along its foot.
 fn paint_motion(painter: &egui::Painter, r: Rect, clip: &reelforge_model::Clip, selected: bool) {
     let len = clip.duration.0 as f32;
     if len <= 0.0 {
@@ -617,6 +618,28 @@ fn paint_motion(painter: &egui::Painter, r: Rect, clip: &reelforge_model::Clip, 
             Stroke::NONE,
         ));
         on.line_segment([egui::pos2(x, r.top()), r.right_bottom()], Stroke::new(1.0, Color32::from_white_alpha(150)));
+    }
+    // sound fades: the level rising from the left corner and falling to the right one
+    let (fi, fo) = clip.fade.spans(clip.duration);
+    let shade = Color32::from_black_alpha(90);
+    let edge = Stroke::new(1.2, Color32::from_white_alpha(200));
+    if fi > Tick::ZERO {
+        let x = x_of(fi);
+        on.add(egui::Shape::convex_polygon(
+            vec![r.left_top(), egui::pos2(x, r.top()), r.left_bottom()],
+            shade,
+            Stroke::NONE,
+        ));
+        on.line_segment([r.left_bottom(), egui::pos2(x, r.top())], edge);
+    }
+    if fo > Tick::ZERO {
+        let x = x_of(clip.duration - fo);
+        on.add(egui::Shape::convex_polygon(
+            vec![egui::pos2(x, r.top()), r.right_top(), r.right_bottom()],
+            shade,
+            Stroke::NONE,
+        ));
+        on.line_segment([egui::pos2(x, r.top()), r.right_bottom()], edge);
     }
     let mut times: Vec<Tick> =
         clip.keys.values().flatten().map(|k| k.t).filter(|t| *t >= Tick::ZERO && *t <= clip.duration).collect();

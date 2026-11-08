@@ -145,6 +145,10 @@ struct Inspector {
     /// Clips on a video track: the transition into it with its length in seconds, and whether a
     /// clip ends where it starts (so one can play).
     transition: Option<(Option<(TransitionKind, f32)>, bool)>,
+    /// Clips with sound: fade-in and fade-out lengths in seconds.
+    fades: Option<[f32; 2]>,
+    /// Video and sound clips: the speed, and whether sound keeps its pitch.
+    speed: Option<(f32, bool)>,
 }
 
 /// Whether a property has a keyframe at the playhead.
@@ -821,6 +825,15 @@ impl EditorApp {
                 ClipContent::Media { .. } => None,
             },
             volume: has_sound.then(|| clip.value_at(Prop::VolumeDb, local)),
+            fades: has_sound.then(|| [clip.fade.fade_in.seconds() as f32, clip.fade.fade_out.seconds() as f32]),
+            speed: match &clip.content {
+                ClipContent::Media { media, speed, .. }
+                    if p.media.get(media).is_some_and(|m| m.kind != MediaKind::Image) =>
+                {
+                    Some((*speed as f32, clip.keep_pitch))
+                }
+                _ => None,
+            },
             title: match &clip.content {
                 ClipContent::Text { text, size, style, .. } => Some(Title {
                     text: text.clone(),
@@ -1027,6 +1040,33 @@ impl EditorApp {
                             actions.push(toggle(Prop::VolumeDb, mark_of(Prop::VolumeDb)));
                         }
                         ui.end_row();
+                        if let Some(f) = &mut edit.fades {
+                            for (name, v) in [s.fade_in, s.fade_out].into_iter().zip(f.iter_mut()) {
+                                ui.label(egui::RichText::new(name).color(theme::color::WEAK));
+                                let r = ui.add_sized(
+                                    [ui.available_width() - 26.0, 24.0],
+                                    egui::DragValue::new(v).speed(0.02).range(0.0..=10.0).suffix(" s").max_decimals(2),
+                                );
+                                commit |= r.drag_stopped() || (r.changed() && !r.dragged());
+                                ui.label("");
+                                ui.end_row();
+                            }
+                        }
+                    });
+                });
+            }
+            if let Some((speed, keep)) = &mut edit.speed {
+                ui.add_space(6.0);
+                theme::section(ui, s.sec_speed, |ui| {
+                    ui.horizontal(|ui| {
+                        let r = ui
+                            .add(egui::DragValue::new(speed).speed(0.01).range(0.1..=10.0).suffix("×").max_decimals(2));
+                        if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                            actions.push(("clip.setSpeed", json!({"clip": id, "speed": *speed})));
+                        }
+                        if edit.fades.is_some() && ui.toggle_value(keep, s.keep_pitch).changed() {
+                            actions.push(("clip.setSpeed", json!({"clip": id, "keepPitch": *keep})));
+                        }
                     });
                 });
             }
@@ -1160,6 +1200,14 @@ impl EditorApp {
                 && e.volume != current.volume
             {
                 params["volumeDb"] = json!(v);
+            }
+            if let (Some(f), Some(was)) = (e.fades, current.fades) {
+                if f[0] != was[0] {
+                    params["fadeIn"] = json!({"seconds": f[0]});
+                }
+                if f[1] != was[1] {
+                    params["fadeOut"] = json!({"seconds": f[1]});
+                }
             }
             if let Some(t) = &e.title
                 && e.title != current.title

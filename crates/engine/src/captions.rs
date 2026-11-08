@@ -169,6 +169,8 @@ pub(crate) fn place(
             keys: Default::default(),
             anim: Default::default(),
             transition: None,
+            fade: Default::default(),
+            keep_pitch: true,
         });
     }
     let track = proj.tracks.iter_mut().find(|t| t.id == track_id).expect("found or made above");

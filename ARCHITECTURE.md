@@ -69,7 +69,7 @@ In rough priority order for short videos:
 
 1. Faster media: hardware/WebCodecs decoders registered in front of the pure-Rust ones
    (`filmcraft_codecs::register_video_decoder`), decoding at preview size, export in the browser
-   (WebCodecs encoder, or the pure-Rust one in a worker), pitch-preserving speed changes.
+   (WebCodecs encoder, or the pure-Rust one in a worker).
    Pure-Rust decoding and MP4 export (`reelforge-media`) are in place.
 2. Text, next steps: per-line subtitle boxes, shadows, animated titles (typewriter, pop-in),
    importing font files in the editor (specs already take `font` assets), and a smaller web build
@@ -82,9 +82,10 @@ In rough priority order for short videos:
    the CPU). The wgpu compositor itself is in place: the same frame plan, tested against the CPU
    reference to one 8-bit code, drawing the editor's preview on eframe's own device and exports on
    a headless one, with the sRGB and 4:2:0 conversions in shaders.
-4. Audio, next steps: waveforms on the timeline, fades and volume keyframes in the inspector,
-   scrubbing sound, pitch-preserving speed changes, and mixing on a worker thread (in the browser,
-   an AudioWorklet). In place: the export's mix (`reelforge_media::export::mix`) plays in the
+4. Audio, next steps: scrubbing sound, and mixing on a worker thread (in the browser, an
+   AudioWorklet). In place: fades and volume keyframes (lowered to `gain_db` keys), speed changes
+   that keep the pitch (`audio.stretch/1`, WSOLA in `reelforge_media::stretch`, chained in fixed
+   blocks so a mix made in slices matches one made whole), and the export's mix (`reelforge_media::export::mix`) plays in the
    preview (`reelforge-ui`'s `audio`, through cpal: ALSA, CoreAudio, WASAPI, WebAudio), mixed a
    quarter second ahead on the editor's thread; while it plays the device's sample count is the
    playhead, so picture follows sound, and an edit or a seek mixes again from the playhead.
