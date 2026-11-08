@@ -10,7 +10,9 @@ decode in pure Rust on the desktop and in the browser; solid colours, transforms
 effects and undo work; projects export to H.264 + AAC MP4 from the desktop editor and the CLI. Titles
 render with shaping, wrapping, outline and box, Chinese included (a bundled Noto Sans SC subset
 covering GB 2312). Frames are composited on the GPU (wgpu) in the editor's preview and in exports,
-with the CPU compositor as the reference and the fallback; audio playback comes next. See [ARCHITECTURE.md](ARCHITECTURE.md).
+with the CPU compositor as the reference and the fallback. Agents edit through an MCP server (stdio
+or HTTP), and the same operations are an HTTP API and `reelforge-cli call`. Audio playback and live
+shared editing come next. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Video and audio codecs and containers are FilmCraft's clean-room, pure-Rust crates
 (`filmcraft-codecs`, `filmcraft-h264enc`, `filmcraft-aac`, `filmcraft-isobmff`; MIT OR Apache-2.0):
@@ -26,7 +28,7 @@ Rust 1.95 or newer.
 
 ```sh
 cargo run -p reelforge                      # the editor (opens a demo project)
-cargo run -p reelforge-cli -- --help        # commands, scripts, compile, validate, render a frame, export
+cargo run -p reelforge-cli -- --help        # commands, scripts, compile, validate, frame, export, serve, call
 cargo xtask ci                              # fmt, clippy, tests, layer rules, wasm build
 ```
 
@@ -60,4 +62,32 @@ cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t1", "m
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t2", "text": "第一句字幕", "size": 72, "start": {"seconds": 0.5}, "duration": {"seconds": 2}}' --save
 cargo run -q -r -p reelforge-cli -- export cut.reel.json -o cut.mp4      # a project, or a RenderSpec
 # frames are drawn on the GPU when there is one; --renderer cpu|gpu chooses
+```
+
+## Agents (MCP) and the HTTP API
+
+`reelforge-cli serve` puts a project behind the Model Context Protocol: every command is a tool
+(`clip_split`, `clip_add`…, each with a JSON Schema), plus `render_frame` (returns a PNG the agent can
+look at), `render_export` and `project_save`. Every edit is saved to the project file as it commits.
+
+```sh
+cargo build -r -p reelforge-cli
+# a local agent starts it over stdio, e.g. Claude Code:
+claude mcp add reelforge -- ./target/release/reelforge-cli serve /path/to/cut.reel.json --stdio
+# or run it over HTTP (Streamable HTTP at /mcp) for remote agents and other programs:
+./target/release/reelforge-cli serve cut.reel.json --listen 127.0.0.1:7878
+claude mcp add --transport http reelforge http://127.0.0.1:7878/mcp
+```
+
+On anything but loopback the server needs a token (`--token` or `REELFORGE_TOKEN`), sent as
+`Authorization: Bearer …`.
+
+The same operations are a plain HTTP API (`GET /v1/ops`, `POST /v1/ops/clip.split` with the
+parameters as the body) and a shell command, on a file or on a running server:
+
+```sh
+reelforge-cli ops                                                   # every operation and its parameters
+reelforge-cli call clip.split clip=c4 at=2s --project cut.reel.json  # name=value, or one JSON object
+reelforge-cli call render.frame at=1.5s --server http://127.0.0.1:7878 -o frame.png
+export REELFORGE_SERVER=http://127.0.0.1:7878                       # then --server can be left out
 ```

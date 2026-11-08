@@ -6,8 +6,9 @@ WebGPU with a WebGL2 fallback). Three ideas hold it together:
 
 1. **Everything is a command.** Every change to a project is a registered command with a stable id
    (`clip.split`), documented parameters and an `enabled` check that explains itself. The interface,
-   the CLI, the browser's `window.reelforge` API and (next) an MCP server all call the same
-   dispatcher, `Session::execute`.
+   the CLI, the browser's `window.reelforge` API, MCP agents and the HTTP API all call the same
+   dispatcher, `Session::execute`, and every command's parameters have a JSON Schema
+   (`reelforge_engine::input_schema`).
 2. **Rendering reads one document: RenderSpec.** The editor compiles a project into a RenderSpec, a
    versioned, flat, self-contained description of the finished edit: integer-tick time, assets by
    SHA-256, layers bottom first, audio clips, effects as versioned ids. The renderer depends on
@@ -33,12 +34,13 @@ service ships them without the editor.
 | L3 | `reelforge-media` | Probing, video/audio decoding (`Footage`), MP4 export (H.264 + AAC); FilmCraft's pure-Rust codecs |
 | L4 | `reelforge-engine` | `Session`, command registry, copy-on-write undo, batches |
 | L5 | `reelforge-ui` | The egui editor: toolbar, preview, timeline, inspector |
+| L5 | `reelforge-server` | One shared session as a service: MCP (stdio, Streamable HTTP) and a plain HTTP API over the same operations; native only |
 | L6 | `reelforge` | Desktop app (eframe, wgpu renderer) |
-| L6 | `reelforge-cli` | Commands, scripts, compile, validate, render a frame, export |
+| L6 | `reelforge-cli` | Commands, scripts, compile, validate, render a frame, export; `serve`, and `call` on a file or a server |
 | L6 | `reelforge-web` | Browser app (eframe web runner) + `window.reelforge.execute` |
 
 ```text
-            interface (egui on wgpu)   CLI   browser API   MCP (next)
+            interface (egui on wgpu)   CLI   browser API   MCP + HTTP
                          \              |        |        /
                           Session::execute  ── command registry, undo
                                    |
@@ -81,6 +83,9 @@ In rough priority order for short videos:
    reference to one 8-bit code, drawing the editor's preview on eframe's own device and exports on
    a headless one, with the sRGB and 4:2:0 conversions in shaders.
 4. Audio mixing and playback.
-5. MCP server (stdio and Streamable HTTP) over the same registry; a session service for live,
-   shared editing by people and agents.
+5. Live, shared editing: the editor joining a server's session (or hosting one), so a person and
+   an agent edit the same project and each sees the other's changes as they commit; resources and
+   change notifications in MCP. The server itself is in place (`reelforge-server`): every command
+   and render/export/save as MCP tools over stdio and Streamable HTTP, the same operations at
+   `/v1`, and `reelforge-cli call` on a file or a server.
 6. A standalone render service that accepts a RenderSpec.

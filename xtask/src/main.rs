@@ -2,7 +2,8 @@
 //!
 //! - `layers`: every crate has a layer and depends only on lower layers; the renderer never sees
 //!   the project model or the engine; UI and windowing crates stay in the top layers.
-//! - `wasm`: every crate below the apps, and the web app, builds for `wasm32-unknown-unknown`.
+//! - `wasm`: every crate below the apps (except the native-only server), and the web app, builds for
+//!   `wasm32-unknown-unknown`.
 //! - `ci`: fmt, clippy, tests, layers, wasm.
 
 use std::collections::BTreeMap;
@@ -18,6 +19,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("reelforge-media", 3),
     ("reelforge-engine", 4),
     ("reelforge-ui", 5),
+    ("reelforge-server", 5),
     ("reelforge", 6),
     ("reelforge-cli", 6),
     ("reelforge-web", 6),
@@ -40,6 +42,9 @@ const FORBIDDEN: &[(&str, &str, &str)] = &[
         "RenderSpec must stand alone so renderers can be deployed without the editor",
     ),
 ];
+
+/// Crates below the app layer that never run in the browser (they listen on sockets).
+const NATIVE_ONLY: &[&str] = &["reelforge-server"];
 
 /// External crates allowed only from this layer up.
 const UI_ONLY: &[&str] = &["egui", "eframe", "egui-wgpu", "egui-winit", "winit", "wasm-bindgen", "web-sys"];
@@ -114,7 +119,7 @@ fn layers() -> bool {
 fn wasm() -> bool {
     let mut args = vec!["check", "--target", "wasm32-unknown-unknown"];
     for (name, layer) in LAYERS {
-        if *layer < 6 || *name == "reelforge-web" {
+        if (*layer < 6 || *name == "reelforge-web") && !NATIVE_ONLY.contains(name) {
             args.extend(["-p", name]);
         }
     }
