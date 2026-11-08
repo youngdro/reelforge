@@ -11,7 +11,16 @@
   <script type="module">
     import init, { start } from "./reelforge_web.js";
     await init();
-    window.reelforge = await start("reelforge");
+    // Served by a reelforge server (`reelforge-cli serve --web dist`)? Join its session; the token,
+    // if it has one, comes in this page's address: http://host:7878/?token=SECRET.
+    // `?server=http://host:7878` joins another one; anywhere else this is a demo project.
+    const query = new URLSearchParams(location.search);
+    let server = query.get("server");
+    if (!server) {
+      const health = await fetch("health").then(r => r.ok ? r.text() : "", () => "");
+      if (health === "ok") server = location.origin;
+    }
+    window.reelforge = await start("reelforge", server ?? undefined, query.get("token") ?? undefined);
     // window.reelforge.execute("commands.list", "{}")
   </script>
 </body>

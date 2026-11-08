@@ -240,3 +240,28 @@ fn a_shared_session_announces_changes_and_who_made_them() {
     // a wait with nothing new times out with the last change
     assert_eq!(shared.wait_for_change(shared.revision(), std::time::Duration::from_millis(10)).command, "edit.undo");
 }
+
+#[test]
+fn a_mirror_adopts_the_state_it_mirrors_without_history() {
+    let origin = crate::SharedSession::new(Session::default());
+    let mirror = crate::SharedSession::new(Session::default());
+    let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let h = heard.clone();
+    mirror.on_change(move |c, _| h.lock().unwrap().push(format!("{}:{}", c.by, c.command)));
+    let track = origin.project().tracks[0].id.clone();
+    origin.execute("clip.add", &json!({"track": track, "color": [1, 0, 0]}), "agent").unwrap();
+    mirror.execute("track.add", &json!({"kind": "video"}), "editor").unwrap();
+
+    let before = mirror.revision();
+    mirror.adopt((*origin.project()).clone(), "clip.add", "agent");
+    assert_eq!(mirror.project(), origin.project());
+    assert_eq!(mirror.revision(), before + 1);
+    assert_eq!(mirror.last_change().by, "agent");
+    assert_eq!(*heard.lock().unwrap(), ["editor:track.add", "agent:clip.add"]);
+    // the mirror's own history went with its old state
+    assert!(mirror.execute("edit.undo", &json!({}), "editor").is_err());
+    // ids continue from the adopted project, so the same edit mints the same ids on both
+    let a = origin.execute("track.add", &json!({"kind": "text"}), "agent").unwrap();
+    let b = mirror.execute("track.add", &json!({"kind": "text"}), "editor").unwrap();
+    assert_eq!(a, b);
+}

@@ -81,13 +81,30 @@ impl SharedSession {
             (out, change)
         };
         if let Some((change, project)) = change {
-            self.changed.notify_all();
-            // outside the session lock, so a listener may read the session
-            for l in self.listeners.lock().unwrap_or_else(|e| e.into_inner()).iter() {
-                l(&change, &project);
-            }
+            self.announce(&change, &project);
         }
         Ok(out)
+    }
+
+    /// Takes `project` from the session this one mirrors and announces it as a change `command`
+    /// made by `by` there (see [`Session::adopt`]).
+    pub fn adopt(&self, project: Project, command: &str, by: &str) {
+        let (change, project) = {
+            let mut s = self.lock();
+            s.adopt(project);
+            let c = Change { revision: s.revision(), command: command.to_string(), by: by.to_string() };
+            *self.last.lock().unwrap_or_else(|e| e.into_inner()) = c.clone();
+            (c, s.project())
+        };
+        self.announce(&change, &project);
+    }
+
+    fn announce(&self, change: &Change, project: &Arc<Project>) {
+        self.changed.notify_all();
+        // outside the session lock, so a listener may read the session
+        for l in self.listeners.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            l(change, project);
+        }
     }
 
     /// Calls `f` after every change, with the project as it now is. It runs on the thread that made

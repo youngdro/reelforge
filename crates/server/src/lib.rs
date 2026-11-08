@@ -161,6 +161,8 @@ pub struct Hub {
     shared: Arc<SharedSession>,
     footage: Footage,
     file: Option<PathBuf>,
+    /// Where files clients send are kept: `media/` beside the project file, or a temporary folder.
+    media_dir: PathBuf,
 }
 
 impl Hub {
@@ -187,7 +189,52 @@ impl Hub {
                 }
             });
         }
-        Ok(Hub { shared, footage: Footage::new(), file })
+        let media_dir = match file.as_ref().and_then(|f| f.parent()) {
+            Some(dir) => dir.join("media"),
+            None => std::env::temp_dir().join("reelforge-media"),
+        };
+        let media_dir = std::path::absolute(&media_dir).unwrap_or(media_dir);
+        Ok(Hub { shared, footage: Footage::new(), file, media_dir })
+    }
+
+    /// Keeps a file a client sent (a browser has no path the server can read) and says where it is,
+    /// for `media.import`. `sha256` must be the bytes' hash; `name` is the file's name.
+    pub fn upload(&self, sha256: &str, name: &str, bytes: &[u8]) -> Result<Value, CallError> {
+        use sha2::{Digest, Sha256};
+        let sha256 = sha256.to_ascii_lowercase();
+        let actual: String = Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect();
+        if actual != sha256 {
+            return Err(CallError::Failed(format!("the file's SHA-256 is {actual}, not {sha256}")));
+        }
+        // the name only lends the file an extension and a readable stem
+        let clean: String = Path::new(name)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+            .chars()
+            .map(|c| if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+            .collect();
+        let clean = if clean.trim_matches('.').is_empty() { "file".to_string() } else { clean };
+        let path = self.media_dir.join(format!("{}-{clean}", &sha256[..12]));
+        let fail = |e: std::io::Error| CallError::Failed(format!("cannot keep {}: {e}", path.display()));
+        if !path.is_file() {
+            std::fs::create_dir_all(&self.media_dir).map_err(fail)?;
+            let tmp = path.with_extension("part~");
+            std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, &path)).map_err(fail)?;
+        }
+        Ok(json!({"path": path, "sha256": sha256, "bytes": bytes.len()}))
+    }
+
+    /// The bytes of the project's media with this hash, for a client to draw it.
+    pub fn media_bytes(&self, sha256: &str) -> Result<Vec<u8>, CallError> {
+        let project = self.shared.project();
+        let media = project
+            .media
+            .values()
+            .find(|m| m.sha256.as_deref().is_some_and(|h| h.eq_ignore_ascii_case(sha256)))
+            .ok_or_else(|| CallError::Unknown(format!("media {sha256}")))?;
+        let path = self.resolve(media.uri.strip_prefix("file://").unwrap_or(&media.uri));
+        std::fs::read(&path).map_err(|e| CallError::Failed(format!("cannot read {}: {e}", path.display())))
     }
 
     /// The project file, if there is one.

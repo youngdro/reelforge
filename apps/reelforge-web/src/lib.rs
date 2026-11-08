@@ -3,6 +3,10 @@
 //! `index.html` loads the module and calls [`start`] with a canvas id. The page also gets a small
 //! API on `window.reelforge` for agents and tests: `execute(id, paramsJson)` runs any engine
 //! command and returns its JSON result, exactly as the CLI and MCP do.
+//!
+//! Given a server's address, the editor joins the session that server holds (see
+//! `reelforge_ui::remote`): a person in the browser, agents over MCP and other editors edit one
+//! project. A server started with `--web` serves this page, which then joins it by itself.
 
 #[cfg(target_arch = "wasm32")]
 mod web {
@@ -27,17 +31,34 @@ mod web {
             drop(app);
             Ok(out.to_string())
         }
+
+        /// Whether every edit reached the server and the editor holds what the server holds (always,
+        /// without a server).
+        pub fn settled(&self) -> bool {
+            self.runner.app_mut::<EditorApp>().is_some_and(|app| app.remote().is_none_or(|r| r.settled()))
+        }
     }
 
-    /// Starts the editor on the canvas with this id.
+    /// Starts the editor on the canvas with this id: on the session of the server at `server`
+    /// (`http://127.0.0.1:7878`, with its `token` if it has one), or on a demo project.
     #[wasm_bindgen]
-    pub async fn start(canvas_id: &str) -> Result<Handle, JsValue> {
+    pub async fn start(canvas_id: &str, server: Option<String>, token: Option<String>) -> Result<Handle, JsValue> {
         let document = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
         let canvas =
             document.get_element_by_id(canvas_id).ok_or("no such canvas")?.dyn_into::<web_sys::HtmlCanvasElement>()?;
         let runner = eframe::WebRunner::new();
         runner
-            .start(canvas, eframe::WebOptions::default(), Box::new(|cc| Ok(Box::new(EditorApp::demo().with_gpu(cc)))))
+            .start(
+                canvas,
+                eframe::WebOptions::default(),
+                Box::new(move |cc| {
+                    let app = match &server {
+                        Some(base) => EditorApp::join(base, token, "web"),
+                        None => EditorApp::demo(),
+                    };
+                    Ok(Box::new(app.with_gpu(cc)))
+                }),
+            )
             .await?;
         Ok(Handle { runner })
     }

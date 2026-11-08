@@ -18,6 +18,7 @@ reelforge-render = { workspace = true, features = ["gpu"] }
 reelforge-engine = { workspace = true }
 reelforge-media = { workspace = true }
 sha2 = { workspace = true }
+ehttp = { workspace = true }
 serde_json = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true }
@@ -27,3 +28,7 @@ eframe = { workspace = true, features = ["x11", "wayland"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+reelforge-server = { workspace = true }
+image = { workspace = true }

@@ -118,6 +118,16 @@ impl Session {
         Ok(out)
     }
 
+    /// Takes `project` as the current state, from the session this one mirrors (an editor joined
+    /// to a server). Not an edit: it has no undo step, and the history is dropped, since the
+    /// session it came from keeps the real one.
+    pub fn adopt(&mut self, project: Project) {
+        self.project = Arc::new(project);
+        self.undo.clear();
+        self.redo.clear();
+        self.revision += 1;
+    }
+
     fn swap(&mut self, undo: bool) -> CmdResult {
         let (from, to) = if undo { (&mut self.undo, &mut self.redo) } else { (&mut self.redo, &mut self.undo) };
         let Some((label, snapshot)) = from.pop() else {

@@ -13,9 +13,13 @@
 //!
 //! Files dropped on the window are imported (`media.import`) and placed at the playhead
 //! (`clip.add`). On the desktop, Export writes an MP4 on a background thread.
+//!
+//! [`EditorApp::join`] edits a session a server holds instead, with agents and other editors: see
+//! [`remote`].
 
 #[cfg(not(target_arch = "wasm32"))]
 mod export_job;
+pub mod remote;
 mod timeline;
 
 use std::sync::{Arc, Mutex};
@@ -52,12 +56,16 @@ pub struct EditorApp {
     selected: Option<String>,
     status: String,
     preview: Option<egui::TextureHandle>,
-    preview_key: Option<(u64, i64)>,
+    preview_key: Option<(u64, i64, u64)>,
     gpu: Option<GpuPreview>,
     /// Whether the bundled Chinese face has been given to egui.
     fonts: bool,
     timeline: timeline::TimelineView,
     inspector: Option<Inspector>,
+    /// The server whose session this editor mirrors, when it joined one.
+    remote: Option<remote::Remote>,
+    /// The window, once it is known, for a remote's answers to wake it.
+    window: Arc<std::sync::OnceLock<egui::Context>>,
 }
 
 /// The wgpu compositor on eframe's device, and the egui texture showing its frames.
@@ -143,7 +151,29 @@ impl EditorApp {
             fonts: false,
             timeline: timeline::TimelineView::default(),
             inspector: None,
+            remote: None,
+            window: Arc::default(),
         }
+    }
+
+    /// An editor on the session the server at `base` (`http://127.0.0.1:7878`) holds, shared with
+    /// agents and other editors; `client` names it to them (`web`, `desktop`).
+    pub fn join(base: &str, token: Option<String>, client: &str) -> EditorApp {
+        let mut app = EditorApp::new(Session::default());
+        let window = app.window.clone();
+        app.remote =
+            Some(remote::Remote::join(base, token, client, app.session.clone(), app.media.clone(), move || {
+                if let Some(ctx) = window.get() {
+                    ctx.request_repaint();
+                }
+            }));
+        app.status = format!("Joining {base}…");
+        app
+    }
+
+    /// The server this editor joined, if it did.
+    pub fn remote(&self) -> Option<&remote::Remote> {
+        self.remote.as_ref()
     }
 
     /// An editor on a small demo project: a colour background and a title.
@@ -202,7 +232,7 @@ impl EditorApp {
 
     /// Runs a command and reports the outcome in the status bar.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value, String> {
-        match self.session.execute(id, &params, "editor") {
+        match self.run(id, &params) {
             Ok(v) => {
                 self.status = format!("{id}: done");
                 Ok(v)
@@ -212,6 +242,22 @@ impl EditorApp {
                 Err(e.to_string())
             }
         }
+    }
+
+    /// Runs a command on this editor's session and, when it joined a server, sends it there.
+    fn run(&self, id: &str, params: &Value) -> reelforge_engine::CmdResult {
+        let Some(remote) = &self.remote else { return self.session.execute(id, params, "editor") };
+        if matches!(id, "edit.undo" | "edit.redo") {
+            // the server's history holds everyone's edits; what it undoes comes back as a change
+            remote.send(id, params);
+            return Ok(json!({}));
+        }
+        let edits = reelforge_engine::registry().iter().any(|c| c.id == id && c.edits);
+        let out = self.session.execute(id, params, "editor")?;
+        if edits {
+            remote.send(id, params);
+        }
+        Ok(out)
     }
 
     fn project(&self) -> Arc<Project> {
@@ -229,6 +275,14 @@ impl EditorApp {
 
     /// Imports a file the browser handed over and places it at the playhead.
     fn import_bytes(&mut self, name: &str, bytes: Vec<u8>) {
+        if let Some(remote) = &self.remote {
+            // the server keeps the file; it is imported by the server's path when it is there
+            self.status = match remote.upload(name, bytes) {
+                Ok(()) => format!("Sending {name}…"),
+                Err(e) => format!("{name}: {e}"),
+            };
+            return;
+        }
         use sha2::{Digest, Sha256};
         let sha: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
         let probe = match self.media.insert_bytes(&sha, name, bytes) {
@@ -265,7 +319,7 @@ impl EditorApp {
         let at = self.playhead;
         let add = |track: &str| json!({"track": track, "media": m.id, "start": at});
         // a track with no room refuses the clip and nothing changes, so trying is safe
-        let mut placed = tracks.iter().find_map(|t| self.session.execute("clip.add", &add(t), "editor").ok());
+        let mut placed = tracks.iter().find_map(|t| self.run("clip.add", &add(t)).ok());
         if placed.is_none() {
             let kind = if want == TrackKind::Audio { "audio" } else { "video" };
             if let Ok(t) = self.execute("track.add", json!({ "kind": kind })) {
@@ -283,7 +337,16 @@ impl EditorApp {
         let dropped = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
         for f in dropped {
             #[cfg(not(target_arch = "wasm32"))]
-            self.import_path(f.path());
+            if self.remote.is_some() {
+                // the server may be another machine: send the file's bytes
+                let name = f.path().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                match std::fs::read(f.path()) {
+                    Ok(bytes) => self.import_bytes(&name, bytes),
+                    Err(e) => self.status = format!("{name}: {e}"),
+                }
+            } else {
+                self.import_path(f.path());
+            }
             #[cfg(target_arch = "wasm32")]
             {
                 let arrivals = self.arrivals.clone();
@@ -447,7 +510,7 @@ impl EditorApp {
     fn preview(&mut self, ui: &mut egui::Ui) {
         let p = self.project();
         let frame = p.canvas.fps.frame_at(self.playhead);
-        let key = (self.session.revision(), frame);
+        let key = (self.session.revision(), frame, self.remote.as_ref().map_or(0, remote::Remote::media_epoch));
         let changed = self.preview_key != Some(key);
         self.preview_key = Some(key);
         let long = p.canvas.width.max(p.canvas.height) as f32;
@@ -521,6 +584,7 @@ impl eframe::App for EditorApp {
         let ctx = ui.ctx().clone();
         if !self.fonts {
             self.fonts = true;
+            let _ = self.window.set(ctx.clone());
             // another client's edit wakes the window, which otherwise sleeps until input
             let repaint = ctx.clone();
             self.session.on_change(move |c, _| {
@@ -553,6 +617,20 @@ impl eframe::App for EditorApp {
                     self.selected = None;
                     self.inspector = None;
                 }
+            }
+        }
+        if let Some(remote) = self.remote.clone() {
+            if let Some(wait) = remote.tick(ui.input(|i| i.time)) {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait.max(0.05)));
+            }
+            for up in remote.take_uploaded() {
+                if let Ok(v) = self.execute("media.import", up.import) {
+                    self.place(&v);
+                    self.status = format!("Imported {}", up.name);
+                }
+            }
+            if let Some(note) = remote.take_notes().pop() {
+                self.status = note;
             }
         }
         self.take_dropped_files(&ctx);
@@ -611,3 +689,6 @@ impl eframe::App for EditorApp {
         Some(&mut *self)
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;

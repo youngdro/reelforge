@@ -46,6 +46,7 @@ clap = { version = "4", features = ["derive", "env"] }
 tiny_http = "0.12"
 ureq = "3"
 base64 = "0.22"
+ehttp = "0.7"
 
 # ui (L4 and up only; `cargo xtask layers` enforces it)
 egui = "0.37"
