@@ -13,7 +13,9 @@ covering GB 2312). Frames are composited on the GPU (wgpu) in the editor's previ
 with the CPU compositor as the reference and the fallback. Agents edit through an MCP server (stdio
 or HTTP), and the same operations are an HTTP API and `reelforge-cli call`. People in a browser or on
 another machine join a server's session and edit live alongside agents. The preview plays sound,
-mixed as the export mixes it, with the picture following the sound. See [ARCHITECTURE.md](ARCHITECTURE.md).
+mixed as the export mixes it, with the picture following the sound. The editor speaks English and
+Chinese: it follows the system (or browser) language, and the switch in the top bar is remembered.
+See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Video and audio codecs and containers are FilmCraft's clean-room, pure-Rust crates
 (`filmcraft-codecs`, `filmcraft-h264enc`, `filmcraft-aac`, `filmcraft-isobmff`; MIT OR Apache-2.0):

@@ -129,7 +129,7 @@ fn a_wrong_token_is_reported_and_nothing_is_joined() {
         notes.extend(remote.take_notes());
         !notes.is_empty()
     });
-    assert!(notes[0].contains("token"), "{notes:?}");
+    assert!(notes[0].text(crate::i18n::Lang::En).contains("token"), "{notes:?}");
     assert!(!remote.joined());
 }
 
