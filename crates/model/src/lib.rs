@@ -17,6 +17,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod anim;
+
+pub use anim::{AnimKind, Animation, Animations, Ease, Key, Keys, Prop};
+
 /// The document version this build writes. Older documents keep loading.
 pub const DOCUMENT_VERSION: u32 = 1;
 
@@ -142,6 +146,12 @@ pub struct Clip {
     /// Effects, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<ClipEffect>,
+    /// Keyframes; a keyed property ignores its constant value above.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub keys: Keys,
+    /// In and out animations.
+    #[serde(default, skip_serializing_if = "Animations::is_empty")]
+    pub anim: Animations,
 }
 
 fn one() -> f32 {
@@ -313,6 +323,9 @@ pub enum ModelError {
     /// A title style value out of range.
     #[error("title {0:?}: {1}")]
     BadStyle(String, &'static str),
+    /// Keyframes or animations that cannot be played.
+    #[error("clip {0:?}: {1}")]
+    BadMotion(String, &'static str),
 }
 
 impl Default for Project {
@@ -393,6 +406,18 @@ impl Project {
                 if clip.start < Tick::ZERO || clip.duration <= Tick::ZERO {
                     return Err(ModelError::BadSpan(clip.id.clone()));
                 }
+                let motion = |why| Err(ModelError::BadMotion(clip.id.clone(), why));
+                for list in clip.keys.values() {
+                    if list.iter().any(|k| !k.v.is_finite()) {
+                        return motion("a keyframe value is not a number");
+                    }
+                    if list.windows(2).any(|w| w[1].t <= w[0].t) {
+                        return motion("keyframes must be in time order, one per instant");
+                    }
+                }
+                if [clip.anim.enter, clip.anim.exit].iter().flatten().any(|a| a.duration <= Tick::ZERO) {
+                    return motion("an animation must have a positive length");
+                }
                 let fits = match &clip.content {
                     ClipContent::Media { media, speed, .. } => {
                         let Some(m) = self.media.get(media) else {
@@ -468,6 +493,8 @@ mod tests {
             opacity: 1.0,
             volume_db: 0.0,
             effects: vec![],
+            keys: Default::default(),
+            anim: Default::default(),
         }
     }
 

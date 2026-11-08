@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use reelforge_model::{ClipContent, MediaKind, Project, TitleAlign, TrackKind};
+use reelforge_model::{ClipContent, MediaKind, Project, Prop, TitleAlign, TrackKind};
 use reelforge_renderspec::{
     Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Blend, Color, Effect, Fit, Layer, LayerContent,
     Output, Probe, RenderSpec, TextAlign, TextBackground, TextContent, TextStroke, TimeMap, Transform, VideoCodec,
@@ -16,6 +16,8 @@ use reelforge_renderspec::{
 };
 use reelforge_time::Tick;
 use thiserror::Error;
+
+mod motion;
 
 /// Why a project could not be lowered.
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -69,6 +71,7 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
         }),
     });
 
+    let step = c.fps.frame_duration();
     let mut assets: BTreeMap<String, Asset> = BTreeMap::new();
     let mut asset_for = |media_id: &str| -> Result<String, CompileError> {
         let m = &project.media[media_id];
@@ -130,11 +133,11 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                     dur: clip.duration,
                     content,
                     transform: Transform {
-                        position: Animated::Constant([clip.transform.x, clip.transform.y]),
-                        scale: Animated::Constant(clip.transform.scale),
-                        rotation: Animated::Constant(clip.transform.rotation),
+                        position: motion::lower_position(clip, step),
+                        scale: motion::lower(clip, Prop::Scale, step),
+                        rotation: motion::lower(clip, Prop::Rotation, step),
                     },
-                    opacity: Animated::Constant(clip.opacity),
+                    opacity: motion::lower(clip, Prop::Opacity, step),
                     blend: Blend::Normal,
                     mask: None,
                     fx: clip
@@ -159,7 +162,7 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                     at: clip.start,
                     dur: clip.duration,
                     time: TimeMap { source_in: *source_in, speed: *speed },
-                    gain_db: Animated::Constant(clip.volume_db),
+                    gain_db: motion::lower(clip, Prop::VolumeDb, step),
                 });
             }
         }
@@ -185,6 +188,8 @@ mod tests {
             opacity: 1.0,
             volume_db: -3.0,
             effects: vec![],
+            keys: Default::default(),
+            anim: Default::default(),
         }
     }
 

@@ -2,7 +2,8 @@
 
 use reelforge_compile::{CompileOptions, compile};
 use reelforge_model::{
-    Clip, ClipContent, ClipEffect, ClipTransform, Media, MediaKind, Outline, Project, TitleStyle, Track, TrackKind,
+    AnimKind, Animation, Clip, ClipContent, ClipEffect, ClipTransform, Ease, Key, Media, MediaKind, Outline, Project,
+    Prop, TitleStyle, Track, TrackKind, anim,
 };
 use reelforge_renderspec::AssetKind;
 use reelforge_time::{FrameRate, Tick};
@@ -153,8 +154,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.set",
         label: "Clip Properties",
-        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null}"#,
-        doc: "Sets a clip's placement, opacity, volume or title.",
+        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "at"?: time, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null}"#,
+        doc: "Sets a clip's placement, opacity, volume or title. A property with keyframes is set at `at` (a timeline time), adding or changing the keyframe there.",
         edits: true,
         enabled: always,
         run: clip_set,
@@ -167,6 +168,42 @@ static REGISTRY: &[CommandSpec] = &[
         edits: true,
         enabled: always,
         run: clip_add_effect,
+    },
+    CommandSpec {
+        id: "clip.setKey",
+        label: "Add Keyframe",
+        params: r#"{"clip": id, "prop": "x"|"y"|"scale"|"rotation"|"opacity"|"volumeDb", "at": time, "value"?: number, "ease"?: "linear"|"hold"|"inOut"}"#,
+        doc: "Sets a keyframe at a timeline time; without `value`, keeps the value the property has there. Once a property has keyframes, its value follows them.",
+        edits: true,
+        enabled: always,
+        run: clip_set_key,
+    },
+    CommandSpec {
+        id: "clip.removeKey",
+        label: "Remove Keyframe",
+        params: r#"{"clip": id, "prop": string, "at": time}"#,
+        doc: "Removes the keyframe within half a frame of a timeline time; the last one leaves its value behind.",
+        edits: true,
+        enabled: always,
+        run: clip_remove_key,
+    },
+    CommandSpec {
+        id: "clip.clearKeys",
+        label: "Clear Keyframes",
+        params: r#"{"clip": id, "prop"?: string, "at"?: time}"#,
+        doc: "Removes a property's keyframes (every property's without `prop`), keeping the value each had at `at` (the clip's start by default).",
+        edits: true,
+        enabled: always,
+        run: clip_clear_keys,
+    },
+    CommandSpec {
+        id: "clip.setAnimation",
+        label: "Animation",
+        params: r#"{"clip": id, "slot": "in"|"out", "kind": "fade"|"slideUp"|"slideDown"|"slideLeft"|"slideRight"|"zoomIn"|"zoomOut"|"pop"|"spin"|null, "duration"?: time}"#,
+        doc: "Puts an in or out animation on a picture clip (null removes it); 0.5 s unless `duration` is given.",
+        edits: true,
+        enabled: always,
+        run: clip_set_animation,
     },
     CommandSpec {
         id: "edit.undo",
@@ -453,6 +490,8 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
             opacity: 1.0,
             volume_db: 0.0,
             effects: vec![],
+            keys: Default::default(),
+            anim: Default::default(),
         };
         proj.track_mut(&track_id).expect("found above").clips.push(clip);
         Ok(json!({ "clip": id, "start": start, "duration": duration }))
@@ -476,9 +515,15 @@ fn clip_split(s: &mut Session, v: &Value) -> CmdResult {
         if let ClipContent::Media { source_in, speed, .. } = &mut right.content {
             *source_in += left_len.scale(*speed);
         }
+        // keys stay where they were on the timeline; the in animation stays on the left half and
+        // the out animation on the right
+        right.shift_keys(-left_len);
+        right.anim.enter = None;
         let right_id = right.id.clone();
         proj.tracks[ti].clips.push(right);
-        proj.clip_mut(&id).expect("exists").duration = left_len;
+        let left = proj.clip_mut(&id).expect("exists");
+        left.duration = left_len;
+        left.anim.exit = None;
         Ok(json!({ "left": id, "right": right_id }))
     })
 }
@@ -502,6 +547,7 @@ fn clip_trim(s: &mut Session, v: &Value) -> CmdResult {
             }
             *source_in = moved;
         }
+        clip.shift_keys(-delta);
         clip.start = start;
         clip.duration = end - start;
         Ok(json!({ "clip": id, "start": start, "duration": end - start }))
@@ -551,8 +597,11 @@ fn clip_set_speed(s: &mut Session, v: &Value) -> CmdResult {
             return Err(EngineError::Params("only media clips have a speed".into()));
         };
         let source_span = clip.duration.scale(*speed);
+        let old = *speed;
         *speed = new;
         clip.duration = source_span.scale(1.0 / new).max(Tick(1));
+        // keys follow the picture they were set on
+        clip.scale_keys(old / new);
         Ok(json!({ "clip": id, "duration": clip.duration }))
     })
 }
@@ -596,33 +645,38 @@ fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
     let p = P::new(v, fps(s));
     let id = p.str("clip")?.to_string();
     let f = |name: &str| p.opt_f64(name).map(|o| o.map(|x| x as f32));
-    let (x, y, scale, rotation, opacity, volume) =
-        (f("x")?, f("y")?, f("scale")?, f("rotation")?, f("opacity")?, f("volumeDb")?);
+    let mut values = vec![];
+    for prop in Prop::ALL {
+        if let Some(v) = f(prop.name())? {
+            values.push((prop, v));
+        }
+    }
+    let at = p.opt_time("at")?;
     let (text, size, color) = (p.opt_str("text")?.map(str::to_string), f("size")?, p.opt_color("color")?);
     let styled = STYLE_KEYS.iter().any(|k| p.v.get(k).is_some());
-    if opacity.is_some_and(|o| !(0.0..=1.0).contains(&o)) {
+    if values.iter().any(|&(p, v)| p == Prop::Opacity && !(0.0..=1.0).contains(&v)) {
         return Err(EngineError::Params("`opacity` must be between 0 and 1".into()));
     }
     s.edit("Clip Properties", |proj| {
         let clip = proj.clip_mut(&id).ok_or_else(|| not_found("clip", &id))?;
-        let t = &mut clip.transform;
-        if let Some(v) = x {
-            t.x = v;
-        }
-        if let Some(v) = y {
-            t.y = v;
-        }
-        if let Some(v) = scale {
-            t.scale = v;
-        }
-        if let Some(v) = rotation {
-            t.rotation = v;
-        }
-        if let Some(v) = opacity {
-            clip.opacity = v;
-        }
-        if let Some(v) = volume {
-            clip.volume_db = v;
+        for (prop, v) in values {
+            if !clip.keyed(prop) {
+                clip.set_base(prop, v);
+                continue;
+            }
+            // a keyframed property is set where the playhead is: that key changes or a new one is made
+            let Some(at) = at else {
+                return Err(EngineError::Params(format!(
+                    "`{}` has keyframes; pass `at` to set it at that time (clip.clearKeys drops them)",
+                    prop.name()
+                )));
+            };
+            let t = at - clip.start;
+            if clip.value_at(prop, t) != v {
+                let list = clip.keys.get_mut(&prop).expect("keyed");
+                let ease = list.iter().find(|k| k.t == t).map_or(Ease::Linear, |k| k.ease);
+                anim::insert(list, Key { t, v, ease });
+            }
         }
         if styled && !matches!(clip.content, ClipContent::Text { .. }) {
             return Err(EngineError::Params("title style applies to text clips".into()));
@@ -673,6 +727,125 @@ fn clip_add_effect(s: &mut Session, v: &Value) -> CmdResult {
         let clip = proj.clip_mut(&id).ok_or_else(|| not_found("clip", &id))?;
         clip.effects.push(ClipEffect { id: effect, params });
         Ok(json!({ "clip": id, "effects": clip.effects.len() }))
+    })
+}
+
+fn prop(p: &P) -> Result<Prop, EngineError> {
+    let name = p.str("prop")?;
+    Prop::parse(name)
+        .ok_or_else(|| EngineError::Params(format!("`prop` must be one of {}", Prop::ALL.map(Prop::name).join(", "))))
+}
+
+fn clip_set_key(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let prop = prop(&p)?;
+    let at = p.time("at")?;
+    let value = p.opt_f64("value")?.map(|x| x as f32);
+    let ease: Option<Ease> = match p.opt_str("ease")? {
+        Some(e) => Some(
+            serde_json::from_value(json!(e))
+                .map_err(|_| EngineError::Params("`ease` must be linear, hold or inOut".into()))?,
+        ),
+        None => None,
+    };
+    if value.is_some_and(|v| !v.is_finite() || (prop == Prop::Opacity && !(0.0..=1.0).contains(&v))) {
+        return Err(EngineError::Params("`value` is out of range".into()));
+    }
+    s.edit("Add Keyframe", |proj| {
+        let clip = proj.clip_mut(&id).ok_or_else(|| not_found("clip", &id))?;
+        let t = at - clip.start;
+        let v = value.unwrap_or_else(|| clip.value_at(prop, t));
+        let list = clip.keys.entry(prop).or_default();
+        let ease = ease.or_else(|| list.iter().find(|k| k.t == t).map(|k| k.ease)).unwrap_or_default();
+        anim::insert(list, Key { t, v, ease });
+        Ok(json!({ "clip": id, "prop": prop.name(), "keys": list.len() }))
+    })
+}
+
+fn clip_remove_key(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let prop = prop(&p)?;
+    let at = p.time("at")?;
+    let half = Tick(fps(s).frame_duration().0 / 2);
+    s.edit("Remove Keyframe", |proj| {
+        let clip = proj.clip_mut(&id).ok_or_else(|| not_found("clip", &id))?;
+        let t = at - clip.start;
+        let list = clip
+            .keys
+            .get_mut(&prop)
+            .filter(|l| !l.is_empty())
+            .ok_or_else(|| EngineError::Refused(format!("`{}` has no keyframes", prop.name())))?;
+        let i = list
+            .iter()
+            .enumerate()
+            .filter(|(_, k)| (k.t - t).0.abs() <= half.0)
+            .min_by_key(|(_, k)| (k.t - t).0.abs())
+            .map(|(i, _)| i)
+            .ok_or_else(|| EngineError::Refused(format!("no `{}` keyframe at that time", prop.name())))?;
+        let gone = list.remove(i);
+        let left = list.len();
+        if left == 0 {
+            clip.keys.remove(&prop);
+            clip.set_base(prop, gone.v);
+        }
+        Ok(json!({ "clip": id, "prop": prop.name(), "keys": left }))
+    })
+}
+
+fn clip_clear_keys(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let only = if p.opt("prop").is_some() { Some(prop(&p)?) } else { None };
+    let at = p.opt_time("at")?;
+    s.edit("Clear Keyframes", |proj| {
+        let clip = proj.clip_mut(&id).ok_or_else(|| not_found("clip", &id))?;
+        let t = at.map_or(Tick::ZERO, |a| a - clip.start);
+        let props: Vec<Prop> = clip.keys.keys().copied().filter(|k| only.is_none_or(|o| o == *k)).collect();
+        for prop in &props {
+            let v = clip.value_at(*prop, t);
+            clip.keys.remove(prop);
+            clip.set_base(*prop, v);
+        }
+        Ok(json!({ "clip": id, "cleared": props.iter().map(|p| p.name()).collect::<Vec<_>>() }))
+    })
+}
+
+const ANIMATION_LENGTH: Tick = Tick(reelforge_time::TICKS_PER_SECOND / 2);
+
+fn clip_set_animation(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let slot = p.str("slot")?.to_string();
+    if slot != "in" && slot != "out" {
+        return Err(EngineError::Params("`slot` must be in or out".into()));
+    }
+    let kind = match p.opt_str("kind")? {
+        None => None,
+        Some(k) => Some(AnimKind::parse(k).ok_or_else(|| {
+            EngineError::Params(format!(
+                "`kind` must be null or one of {}",
+                AnimKind::ALL.map(AnimKind::name).join(", ")
+            ))
+        })?),
+    };
+    let duration = p.opt_time("duration")?;
+    if duration.is_some_and(|d| d <= Tick::ZERO) {
+        return Err(EngineError::Params("`duration` must be positive".into()));
+    }
+    s.edit("Animation", |proj| {
+        let (ti, _) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        if proj.tracks[ti].kind == TrackKind::Audio {
+            return Err(EngineError::Params("animations apply to picture and title clips".into()));
+        }
+        let clip = proj.clip_mut(&id).expect("found above");
+        let slot_ref = if slot == "in" { &mut clip.anim.enter } else { &mut clip.anim.exit };
+        *slot_ref = kind.map(|kind| Animation {
+            kind,
+            duration: duration.or(slot_ref.map(|a| a.duration)).unwrap_or(ANIMATION_LENGTH),
+        });
+        Ok(json!({ "clip": id, "anim": serde_json::to_value(clip.anim).expect("serialises") }))
     })
 }
 
