@@ -210,6 +210,34 @@ pub struct TitleStyle {
     /// A box behind the title, straight sRGB colour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<[f32; 4]>,
+    /// The box's corner radius, in ems.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub radius: f32,
+    /// The fill fades from the title's colour at the top to this at the bottom (straight sRGB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gradient: Option<[f32; 4]>,
+    /// A second outline outside the first (its width counts from the first's edge).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outer: Option<Outline>,
+    /// A shadow beneath the glyphs and outlines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<Shadow>,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
+/// A title's shadow.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Shadow {
+    /// Straight sRGB colour.
+    pub color: [f32; 4],
+    /// Offset `[right, down]` in ems.
+    pub offset: [f32; 2],
+    /// Softness in ems; 0 is a hard edge.
+    #[serde(default)]
+    pub blur: f32,
 }
 
 fn bold() -> u16 {
@@ -223,7 +251,17 @@ fn wrap() -> f32 {
 impl Default for TitleStyle {
     /// Bold, centred, wrapping at 90 % of the canvas, no outline or box.
     fn default() -> TitleStyle {
-        TitleStyle { weight: bold(), align: TitleAlign::Center, wrap: wrap(), outline: None, background: None }
+        TitleStyle {
+            weight: bold(),
+            align: TitleAlign::Center,
+            wrap: wrap(),
+            outline: None,
+            background: None,
+            radius: 0.0,
+            gradient: None,
+            outer: None,
+            shadow: None,
+        }
     }
 }
 

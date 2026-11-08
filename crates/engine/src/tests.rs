@@ -281,3 +281,83 @@ fn tracks_are_renamed_hidden_and_muted() {
     s.execute("edit.undo", &json!({})).unwrap();
     assert!(!s.project().tracks[0].muted);
 }
+
+#[test]
+fn title_templates_restyle_a_title_in_one_step() {
+    let mut s = Session::default();
+    let text = s.project().tracks.iter().find(|t| t.kind == TrackKind::Text).unwrap().id.clone();
+    let list = s.execute("title.templates", &json!({})).unwrap();
+    let ids: Vec<&str> = list["templates"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap()).collect();
+    assert!(ids.len() >= 8 && ids.contains(&"candy") && ids.contains(&"classic"), "{ids:?}");
+
+    // added with a template: its colour and look
+    let c =
+        s.execute("clip.add", &json!({"track": text, "text": "花字", "template": "candy", "align": "left"})).unwrap();
+    let id = c["clip"].as_str().unwrap().to_string();
+    let look = |s: &Session| match &s.project().clip(&id).unwrap().1.content {
+        ClipContent::Text { color, style, .. } => (*color, style.clone()),
+        _ => unreachable!(),
+    };
+    let candy = crate::title_template("candy").unwrap();
+    let (color, style) = look(&s);
+    assert_eq!(color, candy.color);
+    assert_eq!((style.gradient, style.outer.clone()), (candy.style.gradient, candy.style.outer.clone()));
+    assert_eq!(style.align, reelforge_model::TitleAlign::Left, "given parameters still apply");
+
+    // switched to another; where it wraps and lines up stays, other parameters override
+    s.execute("clip.set", &json!({"clip": id, "template": "label", "radius": 0.5})).unwrap();
+    let (color, style) = look(&s);
+    let label = crate::title_template("label").unwrap();
+    assert_eq!(color, label.color);
+    assert_eq!((style.gradient, style.background, style.radius), (None, label.style.background, 0.5));
+    assert_eq!(style.align, reelforge_model::TitleAlign::Left);
+
+    // the looks reach the renderer as text/2
+    s.execute(
+        "clip.set",
+        &json!({"clip": id, "shadow": {"color": [0, 0, 0, 1], "offset": [0.1, 0.1], "blur": 0.2}, "gradient": [1, 0, 0, 1]}),
+    )
+    .unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let content = &spec["layers"][0]["content"];
+    assert!((content["shadow"]["offset"][1].as_f64().unwrap() - 0.1).abs() < 1e-6);
+    assert_eq!(content["background"]["radius"].as_f64(), Some(0.5));
+    assert!(s.execute("clip.set", &json!({"clip": id, "template": "nope"})).unwrap_err().to_string().contains("candy"));
+}
+
+#[test]
+fn captions_come_in_and_go_out_as_subrip() {
+    let mut s = Session::default();
+    let srt = "1\n00:00:00,500 --> 00:00:02,000\n大家好\n\n2\n00:00:01,800 --> 00:00:03,000\n欢迎来到 reelforge\n";
+    let r = s.execute("captions.import", &json!({"srt": srt, "template": "variety"})).unwrap();
+    let track = r["track"].as_str().unwrap().to_string();
+    assert_eq!(r["clips"].as_array().unwrap().len(), 2);
+    let p = s.project();
+    let t = p.track(&track).unwrap();
+    assert_eq!((t.name.as_str(), t.kind), (crate::CAPTIONS_TRACK, TrackKind::Text));
+    // the overlap is cut where the next cue begins; captions sit low on the frame
+    assert_eq!(t.clips[0].end(), Tick::from_seconds(1.8));
+    assert!((t.clips[0].transform.y - 0.32).abs() < 1e-6);
+    match &t.clips[1].content {
+        ClipContent::Text { color, .. } => assert_eq!(*color, crate::title_template("variety").unwrap().color),
+        _ => unreachable!(),
+    }
+    // one undo step takes them all away
+    let out = s.execute("captions.export", &json!({})).unwrap();
+    assert_eq!(out["count"], 2);
+    assert!(out["srt"].as_str().unwrap().contains("00:00:00,500 --> 00:00:01,800\n大家好"));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.project().track(&track).is_none());
+    // a second import onto the same track adds to it
+    s.execute("captions.import", &json!({"srt": srt})).unwrap();
+    let again = s
+        .execute(
+            "captions.import",
+            &json!({"srt": "1\n00:00:05,000 --> 00:00:06,000\n再见\n", "track": crate::captions_track_for_tests(&s)}),
+        )
+        .unwrap();
+    assert_eq!(s.project().track(again["track"].as_str().unwrap()).unwrap().clips.len(), 3);
+    assert!(
+        s.execute("captions.import", &json!({"srt": "1\nnot a time\n"})).unwrap_err().to_string().contains("line 1")
+    );
+}

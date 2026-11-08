@@ -39,7 +39,7 @@ pub use media::{MediaSource, NoMedia, StillImages};
 pub use plan::{FramePlan, PlannedLayer, PlannedSource, plan_frame};
 
 /// Feature ids this renderer implements; see `RenderSpec::required_features`.
-pub const SUPPORTED_FEATURES: &[&str] = &["color.brightness@1", "color.saturation@1", "text/1"];
+pub const SUPPORTED_FEATURES: &[&str] = &["color.brightness@1", "color.saturation@1", "text/1", "text/2"];
 
 /// Why a frame could not be rendered.
 #[derive(Debug, Clone, PartialEq, Error)]

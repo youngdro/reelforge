@@ -66,6 +66,9 @@ impl Lang {
             "edit.undo" => ("Undo", "撤销"),
             "edit.redo" => ("Redo", "重做"),
             "edit.batch" => ("Several edits", "批量编辑"),
+            "captions.import" => ("Import captions", "导入字幕"),
+            "captions.export" => ("Export captions", "导出字幕"),
+            "title.templates" => ("Title templates", "花字模板"),
             "sync" => ("Sync", "同步"),
             _ => return "",
         };
@@ -77,6 +80,9 @@ impl Lang {
     pub fn track_name(self, name: &str) -> String {
         if self == Lang::En {
             return name.to_string();
+        }
+        if name == reelforge_engine::CAPTIONS_TRACK {
+            return "字幕".into();
         }
         let Some((word, n)) = name.split_once(' ') else { return name.to_string() };
         if !n.chars().all(|c| c.is_ascii_digit()) {
@@ -162,6 +168,8 @@ pub(crate) struct Strings {
     pub(crate) kind_title: &'static str,
     pub(crate) kind_colour: &'static str,
     pub(crate) sec_text: &'static str,
+    pub(crate) sec_templates: &'static str,
+    pub(crate) captions_imported: &'static str,
     pub(crate) sec_colour: &'static str,
     pub(crate) sec_transform: &'static str,
     pub(crate) sec_sound: &'static str,
@@ -249,6 +257,8 @@ static EN: Strings = Strings {
     kind_title: "Title",
     kind_colour: "Colour",
     sec_text: "TEXT",
+    sec_templates: "TEMPLATES",
+    captions_imported: "{} captions from {}",
     sec_colour: "COLOUR",
     sec_transform: "TRANSFORM",
     sec_sound: "SOUND",
@@ -336,6 +346,8 @@ static ZH: Strings = Strings {
     kind_title: "文字",
     kind_colour: "纯色",
     sec_text: "文字",
+    sec_templates: "花字",
+    captions_imported: "已导入 {} 条字幕（{}）",
     sec_colour: "颜色",
     sec_transform: "变换",
     sec_sound: "声音",
