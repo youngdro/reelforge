@@ -14,9 +14,9 @@ pub mod mcp;
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Arc;
 
-use reelforge_engine::{EngineError, Session, input_schema, parse_time, registry};
+use reelforge_engine::{EngineError, Session, SharedSession, input_schema, parse_time, registry};
 use reelforge_media::{Footage, Renderer};
 use reelforge_model::Project;
 use reelforge_render::{Quality, render_frame};
@@ -158,7 +158,7 @@ pub fn tool_name(op: &str) -> String {
 
 /// One shared session, its media and its file.
 pub struct Hub {
-    session: Mutex<Session>,
+    shared: Arc<SharedSession>,
     footage: Footage,
     file: Option<PathBuf>,
 }
@@ -166,21 +166,28 @@ pub struct Hub {
 impl Hub {
     /// A hub on a session kept in memory only.
     pub fn new(session: Session) -> Hub {
-        Hub { session: Mutex::new(session), footage: Footage::new(), file: None }
+        Hub::shared(SharedSession::new(session), None).expect("nothing to write")
     }
 
     /// A hub on the project at `path`, created empty when there is no file yet. Every edit is
     /// written back.
     pub fn open(path: &Path) -> Result<Hub, String> {
-        let project = if path.exists() {
-            let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-            Project::from_json(&text).map_err(|e| format!("{}: {e}", path.display()))?
-        } else {
-            Project::default()
-        };
-        let hub = Hub { session: Mutex::new(Session::new(project)), footage: Footage::new(), file: Some(path.into()) };
-        hub.save_to(path)?;
-        Ok(hub)
+        Hub::shared(SharedSession::new(Session::new(load(path)?)), Some(path.into()))
+    }
+
+    /// A hub on a session someone else also holds (the editor, when it hosts a server). With
+    /// `file`, every change is written there, whoever made it.
+    pub fn shared(shared: Arc<SharedSession>, file: Option<PathBuf>) -> Result<Hub, String> {
+        if let Some(path) = &file {
+            write_atomic(path, &shared.project().to_json())?;
+            let path = path.clone();
+            shared.on_change(move |_, project| {
+                if let Err(e) = write_atomic(&path, &project.to_json()) {
+                    eprintln!("reelforge: {e}");
+                }
+            });
+        }
+        Ok(Hub { shared, footage: Footage::new(), file })
     }
 
     /// The project file, if there is one.
@@ -188,13 +195,18 @@ impl Hub {
         self.file.as_deref()
     }
 
-    /// The session, for in-process hosts. Hold the guard briefly: every client waits on it.
-    pub fn session(&self) -> MutexGuard<'_, Session> {
-        self.session.lock().unwrap_or_else(|e| e.into_inner())
+    /// The shared session.
+    pub fn session(&self) -> &Arc<SharedSession> {
+        &self.shared
     }
 
-    /// Runs operation `name` (dotted id or tool name) with `params` (an object or null).
+    /// Runs operation `name` (dotted id or tool name) with `params` (an object or null), as `cli`.
     pub fn call(&self, name: &str, params: &Value) -> Result<Output, CallError> {
+        self.call_as("cli", name, params)
+    }
+
+    /// Runs operation `name` for client `by`, whose name goes with any change it makes.
+    pub fn call_as(&self, by: &str, name: &str, params: &Value) -> Result<Output, CallError> {
         let op = find_op(name).ok_or_else(|| CallError::Unknown(name.to_string()))?;
         let empty = json!({});
         let params = if params.is_null() { &empty } else { params };
@@ -215,17 +227,7 @@ impl Hub {
                 self.save_to(&path).map_err(CallError::Failed)?;
                 Ok(Output::Json(json!({"saved": path})))
             }
-            id => {
-                let mut s = self.session();
-                let before = s.revision();
-                let out = s.execute(id, params)?;
-                if s.revision() != before
-                    && let Some(path) = &self.file
-                {
-                    write_atomic(path, &s.project().to_json()).map_err(CallError::Failed)?;
-                }
-                Ok(Output::Json(out))
-            }
+            id => Ok(Output::Json(self.shared.execute(id, params, by)?)),
         }
     }
 
@@ -239,12 +241,11 @@ impl Hub {
     }
 
     fn save_to(&self, path: &Path) -> Result<(), String> {
-        let json = self.session().project().to_json();
-        write_atomic(path, &json)
+        write_atomic(path, &self.shared.project().to_json())
     }
 
     fn frame(&self, params: &Value) -> Result<Output, CallError> {
-        let project = self.session().project();
+        let project = self.shared.project();
         let fps = project.canvas.fps;
         let at = match params.get("at") {
             Some(v) => parse_time(v, fps).map_err(|e| CallError::Failed(format!("`at`: {e}")))?,
@@ -291,7 +292,7 @@ impl Hub {
             "gpu" => Renderer::Gpu,
             other => return Err(CallError::Failed(format!("`renderer` must be auto, cpu or gpu, not {other:?}"))),
         };
-        let project = self.session().project();
+        let project = self.shared.project();
         let spec = reelforge_compile::compile(&project, &reelforge_compile::CompileOptions { encode: true })
             .map_err(|e| CallError::Failed(e.to_string()))?;
         let out = self.resolve(path);
@@ -321,6 +322,15 @@ impl Hub {
             "seconds": started.elapsed().as_secs_f64(),
         })))
     }
+}
+
+/// Reads a project file, or an empty project when there is none yet.
+pub fn load(path: &Path) -> Result<Project, String> {
+    if !path.exists() {
+        return Ok(Project::default());
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    Project::from_json(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Writes a sibling file, then renames it over `path`, so readers never see half a file.

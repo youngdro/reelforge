@@ -8,13 +8,14 @@
 //! | `GET /v1/ops` | Every operation with its parameter schema. |
 //! | `POST /v1/ops/{name}` | Runs one; the body is its parameters. JSON back, or `image/png` (with `X-Reelforge-Info`). |
 //! | `GET /v1/project` | `project.inspect`. |
+//! | `GET /v1/events?since=N` | Waits (up to `timeout` s, 25 by default) for a revision after `N`: `{revision, command, by}`. |
 //! | `GET /health` | `ok`, without a token. |
 //!
 //! Safety: a server on a loopback address checks that browser requests come from a local page
 //! (`Origin`), against DNS rebinding. Anywhere else it needs a token, sent as
 //! `Authorization: Bearer <token>`; it refuses to start without one.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -28,7 +29,8 @@ pub struct HttpServer {
     server: Server,
     hub: Arc<Hub>,
     token: Option<String>,
-    sessions: Mutex<HashSet<String>>,
+    /// MCP sessions and their clients' names.
+    sessions: Mutex<HashMap<String, String>>,
 }
 
 impl HttpServer {
@@ -59,7 +61,8 @@ impl HttpServer {
     }
 
     fn answer(&self, mut req: Request) {
-        let url = req.url().split('?').next().unwrap_or("").trim_end_matches('/').to_string();
+        let (url, query) = req.url().split_once('?').unwrap_or((req.url(), ""));
+        let (url, query) = (url.trim_end_matches('/').to_string(), query.to_string());
         let method = req.method().clone();
         let header = |name: &str| {
             req.headers()
@@ -87,7 +90,7 @@ impl HttpServer {
         let response = match (method, url.as_str()) {
             (Method::Post, "/mcp") => self.mcp(&body, session),
             (Method::Delete, "/mcp") => {
-                let known = session.is_some_and(|s| self.sessions.lock().expect("sessions").remove(&s));
+                let known = session.is_some_and(|s| self.sessions.lock().expect("sessions").remove(&s).is_some());
                 text(if known { 200 } else { 404 }, "")
             }
             (Method::Get, "/mcp") => {
@@ -104,6 +107,14 @@ impl HttpServer {
                 json_response(200, &Value::Array(list))
             }
             (Method::Get, "/v1/project") => self.op("project.inspect", "{}"),
+            (Method::Get, "/v1/events") => {
+                let arg = |k: &str| {
+                    query.split('&').find_map(|kv| kv.strip_prefix(k)?.strip_prefix('=')?.parse::<u64>().ok())
+                };
+                let wait = std::time::Duration::from_secs(arg("timeout").unwrap_or(25).min(60));
+                let c = self.hub.session().wait_for_change(arg("since").unwrap_or(0), wait);
+                json_response(200, &json!({"revision": c.revision, "command": c.command, "by": c.by}))
+            }
             (Method::Post, path) if path.starts_with("/v1/ops/") => self.op(&path["/v1/ops/".len()..], &body),
             _ => json_response(404, &json!({"error": format!("no route {url}")})),
         };
@@ -111,21 +122,25 @@ impl HttpServer {
     }
 
     fn mcp(&self, body: &str, session: Option<String>) -> Response<std::io::Cursor<Vec<u8>>> {
-        if let Some(s) = &session
-            && !self.sessions.lock().expect("sessions").contains(s)
-        {
-            return json_response(404, &json!({"error": "unknown or ended MCP session; initialize again"}));
-        }
-        let initializing = serde_json::from_str::<Value>(body)
-            .ok()
-            .is_some_and(|v| v.get("method").and_then(Value::as_str) == Some("initialize"));
-        match mcp::handle_text(&self.hub, body) {
+        let by = match &session {
+            Some(s) => match self.sessions.lock().expect("sessions").get(s) {
+                Some(name) => name.clone(),
+                None => {
+                    return json_response(404, &json!({"error": "unknown or ended MCP session; initialize again"}));
+                }
+            },
+            None => "agent".to_string(),
+        };
+        let msg = serde_json::from_str::<Value>(body).ok();
+        let initializing = msg.as_ref().is_some_and(|v| v.get("method").and_then(Value::as_str) == Some("initialize"));
+        match mcp::handle_text(&self.hub, body, &by) {
             None => text(202, ""),
             Some(answer) => {
                 let mut r = json_response(200, &answer);
                 if initializing && answer.get("result").is_some() {
                     let id = new_session_id();
-                    self.sessions.lock().expect("sessions").insert(id.clone());
+                    let name = msg.as_ref().and_then(mcp::client_name).unwrap_or_else(|| "agent".into());
+                    self.sessions.lock().expect("sessions").insert(id.clone(), name);
                     r = r.with_header(h("Mcp-Session-Id", &id));
                 }
                 r
@@ -142,7 +157,7 @@ impl HttpServer {
                 Err(e) => return json_response(400, &json!({"error": format!("the body is not JSON: {e}")})),
             }
         };
-        match self.hub.call(name, &params) {
+        match self.hub.call_as("http", name, &params) {
             Ok(Output::Json(v)) => json_response(200, &json!({"result": v})),
             Ok(Output::Png { png, info }) => Response::from_data(png)
                 .with_status_code(200)

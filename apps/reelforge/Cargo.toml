@@ -16,3 +16,4 @@ reelforge-model = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 eframe = { workspace = true, features = ["x11", "wayland"] }
+reelforge-server = { workspace = true }
