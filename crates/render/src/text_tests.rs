@@ -119,7 +119,7 @@ fn outline_and_box_draw_behind_the_fill() {
     assert!(o[0] + 4 <= p[0] && o[2] >= p[2] + 4, "the outline reaches beyond the glyphs");
 
     t.stroke = None;
-    t.background = Some(TextBackground { color: Color([0.0, 1.0, 0.0, 1.0]), padding: 0.25 });
+    t.background = Some(TextBackground { color: Color([0.0, 1.0, 0.0, 1.0]), padding: 0.25, radius: 0.0 });
     let boxed = draw(&spec_with(t), 1.0).to_srgba8();
     let at = |x: u32, y: u32| {
         let i = ((y * W + x) * 4) as usize;
@@ -132,7 +132,7 @@ fn outline_and_box_draw_behind_the_fill() {
     // with a wrap width far wider than the words, the box still hugs them
     let mut t = white("字幕", 72.0);
     t.width = Some(460.0);
-    t.background = Some(TextBackground { color: Color([0.0, 1.0, 0.0, 1.0]), padding: 0.25 });
+    t.background = Some(TextBackground { color: Color([0.0, 1.0, 0.0, 1.0]), padding: 0.25, radius: 0.0 });
     let wide = draw(&spec_with(t), 1.0).to_srgba8();
     let green = |x: u32| wide[((H / 2 * W + x) * 4) as usize + 1] == 255 && wide[((H / 2 * W + x) * 4) as usize] == 0;
     assert!(!green(30) && !green(W - 30), "no box far from the words");
@@ -191,4 +191,69 @@ fn a_font_asset_replaces_the_default_face() {
     let (_, report) = render_frame(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Draft).expect("draft");
     assert_eq!(report.placeholders.len(), 1);
     assert!(matches!(render_frame(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Final), Err(RenderError::Missing { .. })));
+}
+
+#[test]
+fn second_outlines_shadows_gradients_and_round_boxes() {
+    let px = |img: &Image, x: u32, y: u32| {
+        let p = img.pixels[(y * img.width + x) as usize];
+        // linear values of the pure colours these tests use are 0 or 1: enough to tell them apart
+        p.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)[..3].try_into().unwrap_or([0; 3])
+    };
+    let count = |img: &Image, c: [u8; 3]| img.to_srgba8().chunks(4).filter(|p| p[..3] == c).count();
+    let mut t = white("花字", 80.0);
+    t.stroke = Some(TextStroke { color: Color([1.0, 0.0, 0.0, 1.0]), width: 4.0 });
+    let single = draw(&spec_with(t.clone()), 1.0);
+    // a green outline beyond the red one
+    t.outer = Some(TextStroke { color: Color([0.0, 1.0, 0.0, 1.0]), width: 6.0 });
+    let spec = spec_with(t.clone());
+    assert_eq!(spec.required_features().into_iter().collect::<Vec<_>>(), ["text/1", "text/2"]);
+    let double = draw(&spec, 1.0);
+    assert!(count(&double, [0, 255, 0]) > 500, "the second outline is drawn");
+    assert!(count(&double, [255, 0, 0]) > 300, "the first one is still there");
+    // everything not the blue background
+    let drawn = |img: &Image| {
+        let mut b = [u32::MAX, u32::MAX, 0, 0];
+        for y in 0..img.height {
+            for x in 0..img.width {
+                if px(img, x, y) != [0, 0, 255] {
+                    b = [b[0].min(x), b[1].min(y), b[2].max(x + 1), b[3].max(y + 1)];
+                }
+            }
+        }
+        b
+    };
+    let (s, d) = (drawn(&single), drawn(&double));
+    assert!(d[0] + 4 <= s[0] && d[2] >= s[2] + 4, "it reaches beyond the first");
+
+    // a hard black shadow down and right: dark pixels appear below-right of the glyphs only
+    let mut t = white("花字", 80.0);
+    t.shadow = Some(TextShadow { color: Color([0.0, 0.0, 0.0, 1.0]), offset: [0.1, 0.1], blur: 0.0 });
+    let shadowed = draw(&spec_with(t), 1.0);
+    let b = ink_box(&shadowed);
+    assert!(count(&shadowed, [0, 0, 0]) > 300, "the shadow is drawn");
+    assert_eq!(px(&shadowed, b[0] - 2, b[1] - 2), [0, 0, 255], "nothing above-left");
+
+    // a vertical gradient: red at the top of the glyphs, green at the bottom
+    let mut t = TextContent::new("一", 120.0, Color([1.0, 0.0, 0.0, 1.0]));
+    t.text = "工".into();
+    t.gradient = Some(Color([0.0, 1.0, 0.0, 1.0]));
+    let faded = draw(&spec_with(t), 1.0);
+    let rows: Vec<(u32, [u8; 3])> = (0..H)
+        .filter_map(|y| {
+            let x = W / 2;
+            let c = px(&faded, x, y);
+            (c != [0, 0, 255]).then_some((y, c))
+        })
+        .collect();
+    let (top, bottom) = (rows.first().expect("ink").1, rows.last().expect("ink").1);
+    assert!(top[0] > top[1] && bottom[1] > bottom[0], "top {top:?} bottom {bottom:?}");
+
+    // a round box leaves its corners to the background
+    let mut t = white("花字", 80.0);
+    t.background = Some(TextBackground { color: Color([0.0, 1.0, 0.0, 1.0]), padding: 0.3, radius: 0.5 });
+    let rounded = draw(&spec_with(t.clone()), 1.0);
+    t.background.as_mut().expect("set").radius = 0.0;
+    let square = draw(&spec_with(t), 1.0);
+    assert!(count(&rounded, [0, 255, 0]) + 200 < count(&square, [0, 255, 0]), "the corners are cut");
 }

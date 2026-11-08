@@ -10,10 +10,12 @@
 //! checks the invariants and only then commits, pushing the old snapshot onto the undo stack. A
 //! reader (a preview, an export) holds a snapshot and never blocks an edit.
 
+mod captions;
 mod commands;
 mod params;
 mod schema;
 mod shared;
+mod templates;
 
 use std::sync::Arc;
 
@@ -21,10 +23,12 @@ use reelforge_model::Project;
 use serde_json::{Value, json};
 use thiserror::Error;
 
+pub use captions::{CAPTIONS_TRACK, Cue, format_srt, parse_srt};
 pub use commands::{CommandSpec, registry};
 pub use params::parse_time;
 pub use schema::input_schema;
 pub use shared::{Change, SharedSession};
+pub use templates::{TitleTemplate, title_template, title_templates};
 
 /// How many undo steps a session keeps.
 pub const UNDO_DEPTH: usize = 200;
@@ -138,6 +142,12 @@ impl Session {
         self.revision += 1;
         Ok(json!({ "label": label }))
     }
+}
+
+/// The captions track, for tests.
+#[cfg(test)]
+fn captions_track_for_tests(s: &Session) -> String {
+    captions::captions_track(&s.project()).expect("a text track")
 }
 
 #[cfg(test)]

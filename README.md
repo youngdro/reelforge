@@ -8,8 +8,10 @@ edit (RenderSpec), so a render can happen in the editor or on a separate render 
 Status: early. Video, still images and sound import (drop files on the editor, or `media.import`) and
 decode in pure Rust on the desktop and in the browser; solid colours, transforms, opacity, two colour
 effects and undo work; projects export to H.264 + AAC MP4 from the desktop editor and the CLI. Titles
-render with shaping, wrapping, outline and box, Chinese included (a bundled Noto Sans SC subset
-covering GB 2312). Frames are composited on the GPU (wgpu) in the editor's preview and in exports,
+render with shaping, wrapping, outlines, shadows, gradients and boxes, Chinese included (a bundled
+Noto Sans SC subset covering GB 2312), and ten title templates (花字) apply a look in one step
+(`title.templates`, `"template"` on `clip.add` / `clip.set`). SubRip captions come in by dropping a
+`.srt` on the editor or `captions.import`, and go out with `captions.export`. Frames are composited on the GPU (wgpu) in the editor's preview and in exports,
 with the CPU compositor as the reference and the fallback. Agents edit through an MCP server (stdio
 or HTTP), and the same operations are an HTTP API and `reelforge-cli call`. People in a browser or on
 another machine join a server's session and edit live alongside agents. The preview plays sound,

@@ -69,6 +69,32 @@ fn title_props() -> Vec<(&'static str, Value)> {
             })),
         ),
         ("background", nullable(color("Box behind the title."))),
+        ("radius", num("Corner radius of the box, in em.")),
+        ("gradient", nullable(color("The fill fades from `color` at the top to this at the bottom."))),
+        (
+            "outer",
+            nullable(json!({
+                "description": "A second outline outside the first.",
+                "type": "object",
+                "properties": {"color": color("Outline colour."), "width": num("Width in em beyond the first outline.")},
+            })),
+        ),
+        (
+            "shadow",
+            nullable(json!({
+                "description": "A shadow beneath the title.",
+                "type": "object",
+                "properties": {
+                    "color": color("Shadow colour."),
+                    "offset": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "[right, down] in em."},
+                    "blur": num("Softness in em; 0 is a hard edge.")
+                },
+            })),
+        ),
+        (
+            "template",
+            json!({"type": "string", "description": "A title template id from title.templates (classic, variety, sticker, candy, fire, neon, retro, soft, boxed, label); other parameters given override it."}),
+        ),
     ]
 }
 
@@ -98,7 +124,7 @@ fn object(props: Vec<(&'static str, Value)>, required: &[&str]) -> Value {
 pub fn input_schema(id: &str) -> Option<Value> {
     let clip = || ("clip", ident("Clip id, such as c4."));
     Some(match id {
-        "commands.list" | "project.inspect" | "edit.undo" | "edit.redo" => object(vec![], &[]),
+        "commands.list" | "project.inspect" | "edit.undo" | "edit.redo" | "title.templates" => object(vec![], &[]),
         "project.setCanvas" => object(
             vec![
                 ("width", json!({"type": "integer", "minimum": 16, "description": "Output width in pixels."})),
@@ -164,6 +190,21 @@ pub fn input_schema(id: &str) -> Option<Value> {
             props.extend(title_props());
             object(props, &["track"])
         }
+        "captions.import" => object(
+            vec![
+                (
+                    "srt",
+                    json!({"type": "string", "description": "The SubRip text: numbered cues with `hh:mm:ss,mmm --> hh:mm:ss,mmm` times."}),
+                ),
+                ("track", ident("A text track to put them on; a new Captions track by default.")),
+                (
+                    "template",
+                    json!({"type": "string", "description": "Title template id (title.templates); classic by default."}),
+                ),
+            ],
+            &["srt"],
+        ),
+        "captions.export" => object(vec![("track", ident("A text track; the Captions track by default."))], &[]),
         "clip.split" => object(vec![clip(), ("at", time("Timeline time inside the clip."))], &["clip", "at"]),
         "clip.trim" => {
             object(vec![clip(), ("start", time("New start edge.")), ("end", time("New end edge."))], &["clip"])

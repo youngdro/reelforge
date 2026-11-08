@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use filmcraft_text::fonts;
 use filmcraft_text::layout::{Align, ParagraphStyle, TextStyle};
-use filmcraft_text::mask::{StrokeKind, stroke};
+use filmcraft_text::mask::{StrokeKind, blur, offset, stroke};
 use filmcraft_text::raster::{Mask, Path, Xform, compose, fill_into};
 use filmcraft_text::render::{device_bounds, draw};
 use reelforge_renderspec::{TextAlign, TextContent};
@@ -160,15 +160,22 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
     let m = compose(&place, &centre);
 
     let stroke_px = text.stroke.as_ref().map_or(0.0, |st| st.width * s);
+    let outer_px = text.outer.as_ref().map_or(0.0, |st| st.width * s);
+    // the shadow's offset (on the frame) and softness, in target pixels
+    let shadow = text.shadow.as_ref().map(|sh| {
+        let em = text.size * s;
+        ((sh.offset[0] * em).round() as i32, (sh.offset[1] * em).round() as i32, sh.blur * em)
+    });
     let backing = text.background.as_ref().map(|bg| {
         // the box hugs the inked lines, not the wrap width
         let pad = bg.padding * text.size;
         let (x0, x1) = l.lines.iter().fold((f32::MAX, f32::MIN), |(a, z), ln| (a.min(ln.x), z.max(ln.x + ln.width)));
         let (x0, x1) = if x0 <= x1 { (x0, x1) } else { (b[0], b[2]) };
-        Path::rect(x0 - pad, b[1] - pad, x1 + pad, b[3] + pad).transformed(&m)
+        Path::round_rect(x0 - pad, b[1] - pad, x1 + pad, b[3] + pad, bg.radius * text.size).transformed(&m)
     });
     let mut d = device_bounds(&l, &m);
-    let grow = stroke_px.ceil() + 2.0;
+    let reach = shadow.map_or(0.0, |(dx, dy, sigma)| dx.abs().max(dy.abs()) as f32 + 3.0 * sigma);
+    let grow = (stroke_px + outer_px + reach).ceil() + 2.0;
     d = [d[0] - grow, d[1] - grow, d[2] + grow, d[3] + grow];
     if let Some((x0, y0, x1, y1)) = backing.as_ref().and_then(Path::bounds) {
         d = [d[0].min(x0), d[1].min(y0), d[2].max(x1), d[3].max(y1)];
@@ -186,6 +193,14 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
     let mut fill = Mask::new(r.w, r.h);
     draw(&l, &m, &mut fill, (r.x, r.y));
     let outline = (stroke_px > 0.0).then(|| stroke(&fill, stroke_px, StrokeKind::Outer));
+    let outer = (outer_px > 0.0).then(|| stroke(&fill, stroke_px + outer_px, StrokeKind::Outer));
+    let shade = shadow.map(|(dx, dy, sigma)| {
+        let mut shape = fill.clone();
+        for m in [&outline, &outer].into_iter().flatten() {
+            shape.max_with(m);
+        }
+        blur(&offset(&shape, dx, dy), sigma)
+    });
     let behind = backing.map(|p| {
         let mut mk = Mask::new(r.w, r.h);
         fill_into(&p, &mut mk, -r.x as f32, -r.y as f32);
@@ -193,6 +208,21 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
     });
 
     let fill_c = premultiply_srgb(text.color.0);
+    // with a gradient, the fill's colour follows the block's height
+    let fade = text.gradient.as_ref().map(|g| {
+        let bottom = premultiply_srgb(g.0);
+        let det = m[0] * m[3] - m[1] * m[2];
+        let (top_y, height) = (b[1], (b[3] - b[1]).max(1e-3));
+        move |x: f32, y: f32| -> [f32; 4] {
+            // the text-space height of a target pixel
+            let (px, py) = (x - m[4], y - m[5]);
+            let ty = if det.abs() > 1e-9 { (m[0] * py - m[1] * px) / det } else { top_y };
+            let t = ((ty - top_y) / height).clamp(0.0, 1.0);
+            std::array::from_fn(|i| fill_c[i] + (bottom[i] - fill_c[i]) * t)
+        }
+    });
+    let outer_c = text.outer.as_ref().map(|st| premultiply_srgb(st.color.0));
+    let shadow_c = text.shadow.as_ref().map(|sh| premultiply_srgb(sh.color.0));
     let stroke_c = text.stroke.as_ref().map(|st| premultiply_srgb(st.color.0));
     let back_c = text.background.as_ref().map(|bg| premultiply_srgb(bg.color.0));
     let over = |top: [f32; 4], cov: f32, under: [f32; 4]| -> [f32; 4] {
@@ -204,10 +234,22 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
         if let (Some(mk), Some(c)) = (&behind, back_c) {
             *px = over(c, mk.a[i].clamp(0.0, 1.0), *px);
         }
+        if let (Some(mk), Some(c)) = (&shade, shadow_c) {
+            *px = over(c, mk.a[i].clamp(0.0, 1.0), *px);
+        }
+        if let (Some(mk), Some(c)) = (&outer, outer_c) {
+            *px = over(c, mk.a[i].clamp(0.0, 1.0), *px);
+        }
         if let (Some(mk), Some(c)) = (&outline, stroke_c) {
             *px = over(c, mk.a[i].clamp(0.0, 1.0), *px);
         }
-        *px = over(fill_c, fill.a[i].clamp(0.0, 1.0), *px);
+        let c = match &fade {
+            Some(f) if fill.a[i] > 0.0 => {
+                f((r.x + (i % r.w) as i32) as f32 + 0.5, (r.y + (i / r.w) as i32) as f32 + 0.5)
+            }
+            _ => fill_c,
+        };
+        *px = over(c, fill.a[i].clamp(0.0, 1.0), *px);
     }
     Some(Sprite { x: r.x, y: r.y, image: Arc::new(image) })
 }

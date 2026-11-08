@@ -331,6 +331,15 @@ pub struct TextContent {
     /// A box behind the block.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<TextBackground>,
+    /// With `text/2`: the fill fades from `color` at the block's top to this at its bottom.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gradient: Option<Color>,
+    /// With `text/2`: a second outline, outside `stroke` (its width counts from `stroke`'s edge).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outer: Option<TextStroke>,
+    /// With `text/2`: a soft shadow of the glyphs and their outlines, beneath them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<TextShadow>,
 }
 
 fn regular() -> u16 {
@@ -350,6 +359,9 @@ impl TextContent {
             width: None,
             stroke: None,
             background: None,
+            gradient: None,
+            outer: None,
+            shadow: None,
         }
     }
 }
@@ -386,6 +398,36 @@ pub struct TextBackground {
     /// Space between the text and the box edge, in ems.
     #[serde(default = "quarter")]
     pub padding: f32,
+    /// With `text/2`: corner radius, in ems.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub radius: f32,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
+/// A shadow beneath text.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TextShadow {
+    /// Colour.
+    pub color: Color,
+    /// Offset `[right, down]` in ems, on the frame (it does not turn with the text).
+    pub offset: [f32; 2],
+    /// Softness: the blur's standard deviation, in ems.
+    #[serde(default)]
+    pub blur: f32,
+}
+
+impl TextContent {
+    /// Whether it uses anything beyond `text/1`.
+    pub fn needs_v2(&self) -> bool {
+        self.gradient.is_some()
+            || self.outer.is_some()
+            || self.shadow.is_some()
+            || self.background.as_ref().is_some_and(|b| b.radius != 0.0)
+    }
 }
 
 fn quarter() -> f32 {
@@ -570,8 +612,11 @@ impl RenderSpec {
     pub fn required_features(&self) -> BTreeSet<String> {
         let mut out: BTreeSet<String> = self.engine.features.iter().cloned().collect();
         for layer in &self.layers {
-            if matches!(layer.content, LayerContent::Text(_)) {
+            if let LayerContent::Text(t) = &layer.content {
                 out.insert("text/1".to_string());
+                if t.needs_v2() {
+                    out.insert("text/2".to_string());
+                }
             }
             if layer.mask.is_some() {
                 out.insert("mask/1".to_string());

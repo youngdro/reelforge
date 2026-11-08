@@ -103,6 +103,24 @@ pub fn validate(spec: &RenderSpec) -> Result<(), ValidationError> {
                     if !(bg.padding >= 0.0 && bg.padding <= 4.0) {
                         return Err(bad(format!("{path}.content.background.padding"), "must be 0 to 4 ems"));
                     }
+                    if !(bg.radius >= 0.0 && bg.radius <= 4.0) {
+                        return Err(bad(format!("{path}.content.background.radius"), "must be 0 to 4 ems"));
+                    }
+                }
+                if let Some(g) = &text.gradient {
+                    color_ok(&format!("{path}.content.gradient"), g.0)?;
+                }
+                if let Some(st) = &text.outer {
+                    color_ok(&format!("{path}.content.outer.color"), st.color.0)?;
+                    if !(st.width >= 0.0 && st.width <= text.size) {
+                        return Err(bad(format!("{path}.content.outer.width"), "must be 0 to the text size"));
+                    }
+                }
+                if let Some(sh) = &text.shadow {
+                    color_ok(&format!("{path}.content.shadow.color"), sh.color.0)?;
+                    if !(sh.offset.iter().all(|o| o.abs() <= 4.0) && (0.0..=4.0).contains(&sh.blur)) {
+                        return Err(bad(format!("{path}.content.shadow"), "offset and blur must be within 4 ems"));
+                    }
                 }
                 if let Some(font) = &text.font {
                     asset_of_kind(spec, &format!("{path}.content.font"), font, &[AssetKind::Font])?;
@@ -253,7 +271,7 @@ mod tests {
         text.weight = 700;
         text.width = Some(900.0);
         text.stroke = Some(TextStroke { color: Color([0.0, 0.0, 0.0, 1.0]), width: 6.0 });
-        text.background = Some(TextBackground { color: Color([0.0, 0.0, 0.0, 0.5]), padding: 0.25 });
+        text.background = Some(TextBackground { color: Color([0.0, 0.0, 0.0, 0.5]), padding: 0.25, radius: 0.0 });
         s.layers[0].content = LayerContent::Text(text.clone());
         assert_eq!(RenderSpec::from_json(&s.to_json()).unwrap(), s);
         // the optional styling has defaults, so a minimal text layer still reads

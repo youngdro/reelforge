@@ -21,6 +21,7 @@ mod audio;
 #[cfg(not(target_arch = "wasm32"))]
 mod export_job;
 pub mod i18n;
+mod looks;
 pub mod remote;
 mod stage;
 mod strips;
@@ -78,6 +79,8 @@ pub struct EditorApp {
     inspector: Option<Inspector>,
     /// The project revision and playhead the inspector's values were read at.
     inspector_seen: (u64, Tick),
+    /// Pictures of the title templates, made when first shown.
+    looks: Option<Vec<(&'static str, egui::TextureHandle)>>,
     /// The server whose session this editor mirrors, when it joined one.
     remote: Option<remote::Remote>,
     /// The interface's language.
@@ -195,6 +198,7 @@ impl EditorApp {
             timeline: timeline::TimelineView::default(),
             inspector: None,
             inspector_seen: (0, Tick::ZERO),
+            looks: None,
             remote: None,
             lang: Lang::detect(),
             lang_chosen: false,
@@ -376,6 +380,14 @@ impl EditorApp {
     /// Imports a file on disk and places it at the playhead.
     #[cfg(not(target_arch = "wasm32"))]
     fn import_path(&mut self, path: &std::path::Path) {
+        if is_subrip(&path.to_string_lossy()) {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            match std::fs::read(path) {
+                Ok(bytes) => self.import_captions(&name, &bytes),
+                Err(e) => self.status = format!("{name}: {e}"),
+            }
+            return;
+        }
         let path = path.to_string_lossy().into_owned();
         if let Ok(v) = self.execute("media.import", json!({ "path": path })) {
             self.place(&v);
@@ -384,6 +396,10 @@ impl EditorApp {
 
     /// Imports a file the browser handed over and places it at the playhead.
     fn import_bytes(&mut self, name: &str, bytes: Vec<u8>) {
+        if is_subrip(name) {
+            self.import_captions(name, &bytes);
+            return;
+        }
         if let Some(remote) = &self.remote {
             // the server keeps the file; it is imported by the server's path when it is there
             self.status = match remote.upload(name, bytes) {
@@ -415,6 +431,15 @@ impl EditorApp {
         }
         if let Ok(v) = self.execute("media.import", params) {
             self.place(&v);
+        }
+    }
+
+    /// Places SubRip captions on a captions track (a command, so a joined editor shares them).
+    fn import_captions(&mut self, name: &str, bytes: &[u8]) {
+        let text = String::from_utf8_lossy(bytes);
+        if let Ok(v) = self.execute("captions.import", json!({ "srt": text })) {
+            let n = v["clips"].as_array().map_or(0, Vec::len);
+            self.status = fill(self.s().captions_imported, &[&n, &name]);
         }
     }
 
@@ -840,6 +865,25 @@ impl EditorApp {
             .color(theme::color::WEAK),
         );
         ui.add_space(6.0);
+        // the template the title wears, if it wears one unchanged
+        let worn = match &clip.content {
+            ClipContent::Text { color, style, .. } => reelforge_engine::title_templates()
+                .into_iter()
+                .find(|t| {
+                    t.color == *color
+                        && reelforge_model::TitleStyle { align: style.align, wrap: style.wrap, ..t.style.clone() }
+                            == *style
+                })
+                .map(|t| t.id),
+            _ => None,
+        };
+        let edit_is_title = matches!(clip.content, ClipContent::Text { .. });
+        let lang = self.lang;
+        if edit_is_title && self.looks.is_none() {
+            self.looks = Some(looks::previews(ui.ctx()));
+        }
+        let mut wear: Option<&'static str> = None;
+        let looks = self.looks.as_deref().unwrap_or_default();
         let edit = self.inspector.as_mut().expect("set above");
         let mut commit = false;
         // commands the panel asks for beyond the values above
@@ -889,6 +933,41 @@ impl EditorApp {
                         commit |= ui.toggle_value(&mut t.bold, s.bold).changed();
                         commit |= ui.toggle_value(&mut t.outline, s.outline).changed();
                         commit |= ui.toggle_value(&mut t.boxed, s.boxed).changed();
+                    });
+                });
+                ui.add_space(6.0);
+                theme::section(ui, s.sec_templates, |ui| {
+                    let names: std::collections::HashMap<&str, (&str, &str)> =
+                        reelforge_engine::title_templates().into_iter().map(|t| (t.id, (t.name, t.name_zh))).collect();
+                    let width = (ui.available_width() - 8.0) / 2.0;
+                    let size = egui::vec2(width, width * looks::SIZE[1] as f32 / looks::SIZE[0] as f32);
+                    egui::Grid::new("looks").num_columns(2).spacing([8.0, 8.0]).show(ui, |ui| {
+                        for (i, (id, texture)) in looks.iter().enumerate() {
+                            let on = worn == Some(*id);
+                            let (rect, r) = ui.allocate_exact_size(size, egui::Sense::click());
+                            ui.painter().image(
+                                texture.id(),
+                                rect,
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                egui::Color32::WHITE,
+                            );
+                            let stroke = if on {
+                                egui::Stroke::new(2.0, theme::color::ACCENT)
+                            } else if r.hovered() {
+                                egui::Stroke::new(1.0, theme::color::WEAK)
+                            } else {
+                                egui::Stroke::new(1.0, theme::color::LINE)
+                            };
+                            ui.painter().rect_stroke(rect, 6.0, stroke, egui::StrokeKind::Inside);
+                            let (en, zh) = names.get(id).copied().unwrap_or((id, id));
+                            let r = r.on_hover_text(if lang == Lang::Zh { zh } else { en });
+                            if r.clicked() && !on {
+                                wear = Some(id);
+                            }
+                            if i % 2 == 1 {
+                                ui.end_row();
+                            }
+                        }
                     });
                 });
                 ui.add_space(6.0);
@@ -1051,6 +1130,9 @@ impl EditorApp {
                 self.inspector = Some(current);
             }
         }
+        if let Some(t) = wear {
+            let _ = self.execute("clip.set", json!({"clip": id, "template": t}));
+        }
     }
 
     fn preview(&mut self, ui: &mut egui::Ui) {
@@ -1181,6 +1263,11 @@ fn placement_at(c: &reelforge_model::Clip, at: Tick) -> ClipTransform {
         scale: c.value_at(Prop::Scale, t),
         rotation: c.value_at(Prop::Rotation, t),
     }
+}
+
+/// Whether a file name is a SubRip caption file.
+fn is_subrip(name: &str) -> bool {
+    name.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("srt"))
 }
 
 /// Where the picked language is kept between runs.
