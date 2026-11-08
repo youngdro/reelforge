@@ -546,6 +546,39 @@
                 "null"
               ]
             },
+            "gradient": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Color"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `text/2`: the fill fades from `color` at the block's top to this at its bottom."
+            },
+            "outer": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TextStroke"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `text/2`: a second outline, outside `stroke` (its width counts from `stroke`'s edge)."
+            },
+            "shadow": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TextShadow"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `text/2`: a soft shadow of the glyphs and their outlines, beneath them."
+            },
             "size": {
               "description": "Size of the em in output pixels.",
               "format": "float",
@@ -731,10 +764,46 @@
           "description": "Space between the text and the box edge, in ems.",
           "format": "float",
           "type": "number"
+        },
+        "radius": {
+          "description": "With `text/2`: corner radius, in ems.",
+          "format": "float",
+          "type": "number"
         }
       },
       "required": [
         "color"
+      ],
+      "type": "object"
+    },
+    "TextShadow": {
+      "additionalProperties": false,
+      "description": "A shadow beneath text.",
+      "properties": {
+        "blur": {
+          "default": 0.0,
+          "description": "Softness: the blur's standard deviation, in ems.",
+          "format": "float",
+          "type": "number"
+        },
+        "color": {
+          "$ref": "#/$defs/Color",
+          "description": "Colour."
+        },
+        "offset": {
+          "description": "Offset `[right, down]` in ems, on the frame (it does not turn with the text).",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "color",
+        "offset"
       ],
       "type": "object"
     },

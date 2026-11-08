@@ -165,7 +165,7 @@ fn text_with_outline_and_box_over_a_multiplied_picture() {
     let mut t = TextContent::new("字幕 Subtitle", 40.0, Color([1.0, 0.95, 0.2, 1.0]));
     t.weight = 700;
     t.stroke = Some(TextStroke { color: Color([0.0, 0.0, 0.0, 1.0]), width: 4.0 });
-    t.background = Some(TextBackground { color: Color([0.0, 0.0, 0.0, 0.5]), padding: 0.25 });
+    t.background = Some(TextBackground { color: Color([0.0, 0.0, 0.0, 0.5]), padding: 0.25, radius: 0.0 });
     let mut l = layer("title", LayerContent::Text(t));
     l.transform.rotation = Animated::Constant(-8.0);
     l.transform.position = Animated::Constant([0.0, 0.3]);

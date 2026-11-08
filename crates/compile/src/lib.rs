@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use reelforge_model::{ClipContent, MediaKind, Project, TitleAlign, TrackKind};
 use reelforge_renderspec::{
     Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Blend, Color, Effect, Fit, Layer, LayerContent,
-    Output, Probe, RenderSpec, TextAlign, TextBackground, TextContent, TextStroke, TimeMap, Transform, VideoCodec,
-    VideoEncoding, validate,
+    Output, Probe, RenderSpec, TextAlign, TextBackground, TextContent, TextShadow, TextStroke, TimeMap, Transform,
+    VideoCodec, VideoEncoding, validate,
 };
 use reelforge_time::Tick;
 use thiserror::Error;
@@ -120,7 +120,22 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                             .as_ref()
                             .filter(|o| o.width > 0.0)
                             .map(|o| TextStroke { color: Color(o.color), width: o.width * size }),
-                        background: style.background.map(|c| TextBackground { color: Color(c), padding: 0.25 }),
+                        background: style.background.map(|c| TextBackground {
+                            color: Color(c),
+                            padding: 0.25,
+                            radius: style.radius,
+                        }),
+                        gradient: style.gradient.map(Color),
+                        outer: style
+                            .outer
+                            .as_ref()
+                            .filter(|o| o.width > 0.0)
+                            .map(|o| TextStroke { color: Color(o.color), width: o.width * size }),
+                        shadow: style.shadow.as_ref().map(|sh| TextShadow {
+                            color: Color(sh.color),
+                            offset: sh.offset,
+                            blur: sh.blur,
+                        }),
                         ..TextContent::new(text.clone(), *size, Color(*color))
                     }),
                 };

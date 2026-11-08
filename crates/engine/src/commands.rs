@@ -2,13 +2,15 @@
 
 use reelforge_compile::{CompileOptions, compile};
 use reelforge_model::{
-    Clip, ClipContent, ClipEffect, ClipTransform, Media, MediaKind, Outline, Project, TitleStyle, Track, TrackKind,
+    Clip, ClipContent, ClipEffect, ClipTransform, Media, MediaKind, Outline, Project, Shadow, TitleStyle, Track,
+    TrackKind,
 };
 use reelforge_renderspec::AssetKind;
 use reelforge_time::{FrameRate, Tick};
 use serde_json::{Value, json};
 
 use crate::params::P;
+use crate::templates::{TitleTemplate, title_template, title_templates};
 use crate::{CmdResult, EngineError, Session};
 
 /// One command: identity, documentation for people and agents, an enablement check and the work.
@@ -50,6 +52,33 @@ static REGISTRY: &[CommandSpec] = &[
         edits: false,
         enabled: always,
         run: commands_list,
+    },
+    CommandSpec {
+        id: "captions.import",
+        label: "Import Captions",
+        params: r#"{"srt": string, "track"?: id, "template"?: id}"#,
+        doc: "Places SubRip (.srt) captions as titles, low on the frame, on a new Captions track unless `track` names a text track; `template` sets their look (classic by default).",
+        edits: true,
+        enabled: always,
+        run: crate::captions::captions_import,
+    },
+    CommandSpec {
+        id: "captions.export",
+        label: "Export Captions",
+        params: r#"{"track"?: id}"#,
+        doc: "The titles on a text track (the Captions track by default) as SubRip (.srt) text.",
+        edits: false,
+        enabled: always,
+        run: crate::captions::captions_export,
+    },
+    CommandSpec {
+        id: "title.templates",
+        label: "Title Templates",
+        params: "{}",
+        doc: "The ready-made title looks (花字): pass an id as `template` to clip.add or clip.set.",
+        edits: false,
+        enabled: always,
+        run: title_templates_list,
     },
     CommandSpec {
         id: "project.inspect",
@@ -99,7 +128,7 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.add",
         label: "Add Clip",
-        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null}"#,
+        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "template"?: id}"#,
         doc: "Places media, text or a colour on a track; starts at the track's end unless `start` is given. Titles default to bold white with a black outline, wrapping at 90 % of the canvas.",
         edits: true,
         enabled: always,
@@ -153,7 +182,7 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.set",
         label: "Clip Properties",
-        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null}"#,
+        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "template"?: id}"#,
         doc: "Sets a clip's placement, opacity, volume or title.",
         edits: true,
         enabled: always,
@@ -211,11 +240,11 @@ pub fn registry() -> &'static [CommandSpec] {
     REGISTRY
 }
 
-fn fps(s: &Session) -> FrameRate {
+pub(crate) fn fps(s: &Session) -> FrameRate {
     s.project.canvas.fps
 }
 
-fn not_found(what: &str, id: &str) -> EngineError {
+pub(crate) fn not_found(what: &str, id: &str) -> EngineError {
     EngineError::Params(format!("no {what} {id:?}"))
 }
 
@@ -414,7 +443,7 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
     let source_in = p.opt_time("sourceIn")?.unwrap_or(Tick::ZERO);
     let media = p.opt_str("media")?.map(str::to_string);
     let text = p.opt_str("text")?.map(str::to_string);
-    let color = p.opt_color("color")?;
+    let color = p.opt_color("color")?.or(template(&p)?.map(|t| t.color));
     let size = p.opt_f64("size")?.unwrap_or(96.0) as f32;
     s.edit("Add Clip", |proj| {
         let track = proj.track(&track_id).ok_or_else(|| not_found("track", &track_id))?;
@@ -557,11 +586,16 @@ fn clip_set_speed(s: &mut Session, v: &Value) -> CmdResult {
     })
 }
 
-const STYLE_KEYS: [&str; 5] = ["weight", "align", "wrap", "outline", "background"];
+const STYLE_KEYS: [&str; 10] =
+    ["weight", "align", "wrap", "outline", "background", "radius", "gradient", "outer", "shadow", "template"];
 
 /// `base` with the title style parameters in `p` applied (`null` removes an outline or box).
 fn title_style(p: &P, base: TitleStyle) -> Result<TitleStyle, EngineError> {
     let mut st = base;
+    if let Some(t) = template(p)? {
+        // a template brings its look; where the lines wrap and how they line up stay
+        st = TitleStyle { align: st.align, wrap: st.wrap, ..t.style };
+    }
     if let Some(w) = p.opt_u32("weight")? {
         st.weight = u16::try_from(w).map_err(|_| EngineError::Params("`weight` must be 100 to 900".into()))?;
     }
@@ -589,7 +623,66 @@ fn title_style(p: &P, base: TitleStyle) -> Result<TitleStyle, EngineError> {
         Some(_) => st.background = p.opt_color("background")?,
         None => {}
     }
+    if let Some(r) = p.opt_f64("radius")? {
+        st.radius = (r as f32).clamp(0.0, 4.0);
+    }
+    match p.v.get("gradient") {
+        Some(Value::Null) => st.gradient = None,
+        Some(_) => st.gradient = p.opt_color("gradient")?,
+        None => {}
+    }
+    match p.v.get("outer") {
+        Some(Value::Null) => st.outer = None,
+        Some(v) => {
+            let o = P::new(v, p.fps);
+            let current = st.outer.clone().unwrap_or(Outline { color: [1.0; 4], width: 0.08 });
+            st.outer = Some(Outline {
+                color: o.opt_color("color")?.unwrap_or(current.color),
+                width: o.opt_f64("width")?.map_or(current.width, |w| w as f32),
+            });
+        }
+        None => {}
+    }
+    match p.v.get("shadow") {
+        Some(Value::Null) => st.shadow = None,
+        Some(v) => {
+            let o = P::new(v, p.fps);
+            let current =
+                st.shadow.clone().unwrap_or(Shadow { color: [0.0, 0.0, 0.0, 0.6], offset: [0.0, 0.05], blur: 0.08 });
+            let offset = match o.opt("offset") {
+                Some(v) => serde_json::from_value::<[f32; 2]>(v.clone())
+                    .map_err(|_| EngineError::Params("`shadow.offset` must be [right, down] in ems".into()))?,
+                None => current.offset,
+            };
+            if offset.iter().any(|v| v.abs() > 4.0) {
+                return Err(EngineError::Params("`shadow.offset` must be within 4 ems".into()));
+            }
+            st.shadow = Some(Shadow {
+                color: o.opt_color("color")?.unwrap_or(current.color),
+                offset,
+                blur: o.opt_f64("blur")?.map_or(current.blur, |b| (b as f32).clamp(0.0, 4.0)),
+            });
+        }
+        None => {}
+    }
     Ok(st)
+}
+
+/// The template the `template` parameter names, if any.
+fn template(p: &P) -> Result<Option<TitleTemplate>, EngineError> {
+    let Some(id) = p.opt_str("template")? else { return Ok(None) };
+    let known = || title_templates().iter().map(|t| t.id).collect::<Vec<_>>().join(", ");
+    title_template(id)
+        .map(Some)
+        .ok_or_else(|| EngineError::Params(format!("no title template {id:?}; there are {}", known())))
+}
+
+fn title_templates_list(_: &mut Session, _: &Value) -> CmdResult {
+    let list: Vec<Value> = title_templates()
+        .into_iter()
+        .map(|t| json!({"id": t.id, "name": t.name, "nameZh": t.name_zh, "color": t.color, "style": t.style}))
+        .collect();
+    Ok(json!({ "templates": list }))
 }
 
 fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
@@ -598,7 +691,9 @@ fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
     let f = |name: &str| p.opt_f64(name).map(|o| o.map(|x| x as f32));
     let (x, y, scale, rotation, opacity, volume) =
         (f("x")?, f("y")?, f("scale")?, f("rotation")?, f("opacity")?, f("volumeDb")?);
-    let (text, size, color) = (p.opt_str("text")?.map(str::to_string), f("size")?, p.opt_color("color")?);
+    let (text, size) = (p.opt_str("text")?.map(str::to_string), f("size")?);
+    // a template brings its colour unless one is given
+    let color = p.opt_color("color")?.or(template(&p)?.map(|t| t.color));
     let styled = STYLE_KEYS.iter().any(|k| p.v.get(k).is_some());
     if opacity.is_some_and(|o| !(0.0..=1.0).contains(&o)) {
         return Err(EngineError::Params("`opacity` must be between 0 and 1".into()));
