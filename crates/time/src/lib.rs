@@ -31,6 +31,11 @@ impl Tick {
         Tick((seconds * TICKS_PER_SECOND as f64).round() as i64)
     }
 
+    /// Whether this is no time at all.
+    pub fn is_zero(&self) -> bool {
+        self.0 == 0
+    }
+
     /// This time in seconds, for display and user input only.
     pub fn seconds(self) -> f64 {
         self.0 as f64 / TICKS_PER_SECOND as f64

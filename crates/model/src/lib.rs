@@ -157,6 +157,61 @@ pub struct Clip {
     /// A transition from the clip before it, when that clip ends where this one starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transition: Option<Transition>,
+    /// Sound fading in from the clip's start and out to its end.
+    #[serde(default, skip_serializing_if = "Fades::is_empty")]
+    pub fade: Fades,
+    /// Whether sound at another speed keeps its pitch (rather than rising and falling like tape).
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub keep_pitch: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_yes(b: &bool) -> bool {
+    *b
+}
+
+/// A clip's sound fades.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Fades {
+    /// Fade-in length from the clip's start.
+    #[serde(default, rename = "in", skip_serializing_if = "Tick::is_zero")]
+    pub fade_in: Tick,
+    /// Fade-out length up to the clip's end.
+    #[serde(default, rename = "out", skip_serializing_if = "Tick::is_zero")]
+    pub fade_out: Tick,
+}
+
+impl Fades {
+    /// No fades.
+    pub fn is_empty(&self) -> bool {
+        self.fade_in == Tick::ZERO && self.fade_out == Tick::ZERO
+    }
+
+    /// The fades on a clip `len` long, shortened in proportion when together they would not fit.
+    pub fn spans(&self, len: Tick) -> (Tick, Tick) {
+        let (a, b) = (self.fade_in, self.fade_out);
+        if a + b <= len || a + b <= Tick::ZERO {
+            return (a, b);
+        }
+        let a2 = Tick((a.0 as i128 * len.0 as i128 / (a + b).0 as i128) as i64);
+        (a2, len - a2)
+    }
+
+    /// The amplitude the fades leave at `t` from the start of a clip `len` long, 0 to 1.
+    pub fn gain(&self, t: Tick, len: Tick) -> f32 {
+        let (a, b) = self.spans(len);
+        let mut g = 1.0f32;
+        if a > Tick::ZERO && t < a {
+            g *= (t.0.max(0) as f64 / a.0 as f64) as f32;
+        }
+        if b > Tick::ZERO && t > len - b {
+            g *= ((len - t).0.max(0) as f64 / b.0 as f64) as f32;
+        }
+        g
+    }
 }
 
 fn one() -> f32 {
@@ -461,6 +516,9 @@ impl Project {
                 if [clip.anim.enter, clip.anim.exit].iter().flatten().any(|a| a.duration <= Tick::ZERO) {
                     return motion("an animation must have a positive length");
                 }
+                if clip.fade.fade_in < Tick::ZERO || clip.fade.fade_out < Tick::ZERO {
+                    return motion("a fade cannot be negative");
+                }
                 if clip.transition.is_some_and(|t| t.duration <= Tick::ZERO) {
                     return motion("a transition must have a positive length");
                 }
@@ -542,6 +600,8 @@ mod tests {
             keys: Default::default(),
             anim: Default::default(),
             transition: None,
+            fade: Default::default(),
+            keep_pitch: true,
         }
     }
 

@@ -12,7 +12,7 @@
 //! layer early (its `lead`) and runs the outgoing one on. All times here are from the layer's
 //! start; the clip's keys are shifted by the lead, and animations play over the whole layer.
 
-use reelforge_model::{Clip, Ease as MEase, Key as MKey, Offset, Prop, TransitionKind};
+use reelforge_model::{Clip, Ease as MEase, Fades, Key as MKey, Offset, Prop, TransitionKind};
 use reelforge_renderspec::{Animated, Ease, Key};
 use reelforge_time::Tick;
 
@@ -93,6 +93,8 @@ struct Curve<'a> {
     keys: Vec<MKey>,
     animated: bool,
     overlays: Vec<Overlay>,
+    /// Sound fades (volume only).
+    fades: Fades,
 }
 
 /// How an interval of a curve can be drawn exactly from its end values.
@@ -113,11 +115,12 @@ impl Curve<'_> {
         let keys =
             clip.keys.get(&prop).map_or(vec![], |k| k.iter().map(|k| MKey { t: k.t + shape.lead, ..*k }).collect());
         let overlays = shape.overlays.iter().copied().filter(|o| shifts(o.kind, o.incoming, prop)).collect();
-        Curve { prop, clip, shape, keys, animated, overlays }
+        let fades = if prop == Prop::VolumeDb { clip.fade } else { Fades::default() };
+        Curve { prop, clip, shape, keys, animated, overlays, fades }
     }
 
     fn still(&self) -> bool {
-        self.keys.is_empty() && !self.animated && self.overlays.is_empty()
+        self.keys.is_empty() && !self.animated && self.overlays.is_empty() && self.fades.is_empty()
     }
 
     fn value(&self, t: Tick) -> f32 {
@@ -126,12 +129,26 @@ impl Curve<'_> {
         for ov in &self.overlays {
             o = o.and(ov.offset(t));
         }
-        o.apply(self.prop, base)
+        let v = o.apply(self.prop, base);
+        if self.fades.is_empty() {
+            return v;
+        }
+        // a fade multiplies the amplitude; silence is held at -80 dB
+        let g = self.fades.gain(t - self.shape.lead, self.clip.duration).max(1e-4);
+        v + 20.0 * g.log10()
     }
 
     /// The stretches where an animation or transition reshapes this property.
     fn windows(&self) -> Vec<(Tick, Tick)> {
         let mut w: Vec<(Tick, Tick)> = self.overlays.iter().map(|o| (o.from, o.to)).collect();
+        let (fi, fo) = self.fades.spans(self.clip.duration);
+        let lead = self.shape.lead;
+        if fi > Tick::ZERO {
+            w.push((lead, lead + fi));
+        }
+        if fo > Tick::ZERO {
+            w.push((lead + self.clip.duration - fo, lead + self.clip.duration));
+        }
         if !self.animated {
             return w;
         }
@@ -258,6 +275,8 @@ mod tests {
             keys: Default::default(),
             anim: Default::default(),
             transition: None,
+            fade: Default::default(),
+            keep_pitch: true,
         }
     }
 
@@ -322,5 +341,20 @@ mod tests {
         let at = lowered.sample(Tick(500));
         assert!((at[0] - model(500)[0]).abs() < 1e-6 && (at[1] - model(500)[1]).abs() < 1e-6);
         assert!(k.len() < 20, "only the exit is sampled: {}", k.len());
+    }
+
+    #[test]
+    fn fades_shape_the_volume_in_decibels() {
+        let mut c = clip(1000);
+        c.volume_db = -6.0;
+        c.fade = Fades { fade_in: Tick(100), fade_out: Tick(200) };
+        let lowered = lower(&c, Prop::VolumeDb, &Shape::of(&c), Tick(10));
+        assert!((lowered.sample(Tick(0)) - -86.0).abs() < 1e-3);
+        assert_eq!(lowered.sample(Tick(500)), -6.0);
+        let half = lowered.sample(Tick(50));
+        assert!((half - (-6.0 + 20.0 * 0.5f32.log10())).abs() < 1e-3, "{half}");
+        assert!((lowered.sample(Tick(1000)) - -86.0).abs() < 1e-3);
+        // the picture is untouched
+        assert_eq!(lower(&c, Prop::Opacity, &Shape::of(&c), Tick(10)), Animated::Constant(0.8));
     }
 }

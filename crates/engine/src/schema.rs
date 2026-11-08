@@ -231,8 +231,12 @@ pub fn input_schema(id: &str) -> Option<Value> {
                     "speed",
                     json!({"type": "number", "exclusiveMinimum": 0, "description": "Playback speed; 2 is twice as fast."}),
                 ),
+                (
+                    "keepPitch",
+                    json!({"type": "boolean", "description": "Sound keeps its pitch at another speed (default); false lets it rise and fall like tape."}),
+                ),
             ],
-            &["clip", "speed"],
+            &["clip"],
         ),
         "clip.set" => {
             let mut props = vec![
@@ -244,6 +248,8 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ("opacity", json!({"type": "number", "minimum": 0, "maximum": 1, "description": "Opacity."})),
                 ("volumeDb", num("Gain in dB; 0 is unchanged.")),
                 ("at", time("Timeline time at which keyframed properties are set.")),
+                ("fadeIn", time("Sound fade-in from the clip's start; 0 removes it.")),
+                ("fadeOut", time("Sound fade-out up to the clip's end; 0 removes it.")),
             ];
             props.extend(title_props());
             object(props, &["clip"])

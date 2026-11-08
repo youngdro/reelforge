@@ -188,6 +188,10 @@ pub(crate) struct Strings {
     /// The same presets as they leave.
     pub(crate) anim_out_kinds: [&'static str; 9],
     pub(crate) sec_transition: &'static str,
+    pub(crate) sec_speed: &'static str,
+    pub(crate) keep_pitch: &'static str,
+    pub(crate) fade_in: &'static str,
+    pub(crate) fade_out: &'static str,
     /// In [`reelforge_model::TransitionKind::ALL`] order.
     pub(crate) transition_kinds: [&'static str; 12],
     pub(crate) transition_needs_neighbour: &'static str,
@@ -300,6 +304,10 @@ static EN: Strings = Strings {
         "Spin out",
     ],
     sec_transition: "TRANSITION IN",
+    sec_speed: "SPEED",
+    keep_pitch: "Keep pitch",
+    fade_in: "Fade in",
+    fade_out: "Fade out",
     transition_kinds: [
         "Dissolve",
         "Dip to black",
@@ -424,6 +432,10 @@ static ZH: Strings = Strings {
         "旋转消失",
     ],
     sec_transition: "入场转场",
+    sec_speed: "变速",
+    keep_pitch: "声调不变",
+    fade_in: "淡入",
+    fade_out: "淡出",
     transition_kinds: [
         "叠化",
         "黑场过渡",

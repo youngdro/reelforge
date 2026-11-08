@@ -141,6 +141,10 @@
           "description": "Id, unique among audio clips.",
           "type": "string"
         },
+        "keep_pitch": {
+          "description": "At a speed other than 1, stretch the sound in time keeping its pitch (feature\n`audio.stretch/1`) instead of resampling it, which moves the pitch with the speed.",
+          "type": "boolean"
+        },
         "time": {
           "$ref": "#/$defs/TimeMap",
           "default": {

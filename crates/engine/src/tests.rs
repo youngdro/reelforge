@@ -453,3 +453,37 @@ fn captions_come_in_and_go_out_as_subrip() {
         s.execute("captions.import", &json!({"srt": "1\nnot a time\n"})).unwrap_err().to_string().contains("line 1")
     );
 }
+
+#[test]
+fn sound_fades_and_keeps_its_pitch_at_another_speed() {
+    let mut s = Session::default();
+    let m = s
+        .execute(
+            "media.import",
+            &json!({"path": "/nowhere/a.wav", "duration": {"seconds": 10}, "sha256": "cd".repeat(32)}),
+        )
+        .unwrap()["media"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let audio = s.project().tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().id.clone();
+    let c = s.execute("clip.add", &json!({"track": audio, "media": m})).unwrap()["clip"].as_str().unwrap().to_string();
+    s.execute("clip.set", &json!({"clip": c, "fadeIn": {"seconds": 1}, "fadeOut": {"seconds": 2}})).unwrap();
+    s.execute("clip.setSpeed", &json!({"clip": c, "speed": 2})).unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert_eq!(spec["audio"][0]["keep_pitch"], json!(true));
+    assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("audio.stretch/1")));
+    assert!(spec["audio"][0]["gain_db"][0]["v"].as_f64().unwrap() < -60.0);
+
+    s.execute("clip.setSpeed", &json!({"clip": c, "keepPitch": false})).unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert!(spec["audio"][0].get("keep_pitch").is_none());
+    assert!(s.execute("clip.setSpeed", &json!({"clip": c})).is_err());
+
+    // a split keeps the fade-in on the left and the fade-out on the right
+    let r = s.execute("clip.split", &json!({"clip": c, "at": {"seconds": 2}})).unwrap();
+    let p = s.project();
+    let (l, rt) = (p.clip(&c).unwrap().1, p.clip(r["right"].as_str().unwrap()).unwrap().1);
+    assert_eq!((l.fade.fade_in, l.fade.fade_out), (Tick::SECOND, Tick::ZERO));
+    assert_eq!((rt.fade.fade_in, rt.fade.fade_out), (Tick::ZERO, Tick::SECOND * 2));
+}

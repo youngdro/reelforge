@@ -210,6 +210,7 @@ fn sound_is_mixed_with_gain_and_written_as_aac() {
         dur: Tick::SECOND,
         time: TimeMap::default(),
         gain_db: Animated::Constant(-6.0),
+        keep_pitch: false,
     });
     let footage = Footage::new();
     let m = export::mix(&spec, &footage, 48_000, 0, 96_000).expect("mix");
@@ -289,4 +290,50 @@ fn cpu_and_gpu_exports_decode_to_the_same_pictures() {
             assert!(near(centre(&pic), want), "renderer {i} at {t}s: {:?}", centre(&pic));
         }
     }
+}
+
+#[test]
+fn faster_sound_keeps_its_pitch_when_asked() {
+    let wav = temp("tone-stretch.wav");
+    std::fs::write(&wav, tone_wav(48_000, 3.0)).expect("write wav");
+    let mut spec = two_colours();
+    spec.assets.insert(
+        "a".into(),
+        Asset {
+            kind: AssetKind::Audio,
+            sha256: sha(5),
+            uri: wav.to_string_lossy().into_owned(),
+            of: None,
+            probe: None,
+        },
+    );
+    let clip = |keep_pitch| AudioClip {
+        id: "tone".into(),
+        asset: "a".into(),
+        at: Tick::ZERO,
+        dur: Tick::SECOND,
+        time: TimeMap { source_in: Tick::ZERO, speed: 2.0 },
+        gain_db: Animated::Constant(0.0),
+        keep_pitch,
+    };
+    let crossings = |x: &[f32]| x.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
+    let footage = Footage::new();
+    spec.audio = vec![clip(false)];
+    let tape = export::mix(&spec, &footage, 48_000, 0, 48_000).expect("mix");
+    spec.audio = vec![clip(true)];
+    let kept = export::mix(&spec, &footage, 48_000, 0, 48_000).expect("mix");
+    // half a second of a 440 Hz tone: 220 rises through zero; on tape twice the speed doubles it
+    let (t, k) = (crossings(&tape[0][12_000..36_000]), crossings(&kept[0][12_000..36_000]));
+    assert!((t as i64 - 440).abs() <= 4, "tape {t}");
+    assert!((k as i64 - 220).abs() <= 4, "kept {k}");
+    // and the level holds through the grains
+    let expected = 16000.0 / 32768.0 / 2f32.sqrt();
+    assert!((rms(&kept[0][4_800..43_200]) - expected).abs() < 0.04, "{}", rms(&kept[0]));
+    // made in slices, the same sound
+    let mut sliced = vec![];
+    for i in 0..4 {
+        sliced.extend(export::mix(&spec, &footage, 48_000, i * 12_000, 12_000).expect("mix")[0].clone());
+    }
+    let worst = sliced.iter().zip(&kept[0]).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    assert!(worst < 1e-4, "{worst}");
 }

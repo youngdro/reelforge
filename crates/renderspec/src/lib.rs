@@ -508,6 +508,14 @@ pub struct AudioClip {
     /// Gain in dB; keyframe times are relative to the clip's start.
     #[serde(default = "zero")]
     pub gain_db: Animated<f32>,
+    /// At a speed other than 1, stretch the sound in time keeping its pitch (feature
+    /// `audio.stretch/1`) instead of resampling it, which moves the pitch with the speed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub keep_pitch: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// A value that is either constant or keyframed.
@@ -624,6 +632,9 @@ impl RenderSpec {
             for fx in &layer.fx {
                 out.insert(fx.id.clone());
             }
+        }
+        if self.audio.iter().any(|a| a.keep_pitch && a.time.speed != 1.0) {
+            out.insert("audio.stretch/1".to_string());
         }
         out
     }

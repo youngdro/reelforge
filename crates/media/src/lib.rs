@@ -12,6 +12,7 @@
 //! file bytes over with [`Footage::insert_bytes`]; natively a `file:` URI is read on demand.
 
 pub mod export;
+pub mod stretch;
 mod yuv;
 
 use std::collections::HashMap;
