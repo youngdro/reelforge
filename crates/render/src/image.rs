@@ -20,7 +20,9 @@ impl Image {
     /// Reads straight sRGB 8-bit RGBA, as decoders and PNG files give it.
     pub fn from_srgba8(width: u32, height: u32, bytes: &[u8]) -> Image {
         let pixels = bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|p| {
                 premultiply_srgb([p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0, p[3] as f32 / 255.0])
             })
