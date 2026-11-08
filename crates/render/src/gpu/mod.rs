@@ -17,13 +17,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use reelforge_renderspec::{Blend, Fit, RenderSpec};
+use reelforge_renderspec::{Blend, Fit, RenderSpec, effects};
 use reelforge_time::Tick;
 use wgpu::util::DeviceExt;
 
-use crate::cpu::{Resolved, resolve};
+use crate::cpu::{Resolved, resolve, resolve_lut};
 use crate::plan::{Affine, FramePlan, PlannedLayer, invert, plan_frame};
-use crate::{FrameReport, Image, MediaSource, Quality, RenderError, unsupported_features};
+use crate::{FrameReport, Image, Lut, MediaSource, Quality, RenderError, unsupported_features};
 
 /// The working picture's format.
 const WORK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -32,7 +32,9 @@ const PICTURE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 /// The display picture: straight sRGB, 8 bits.
 const DISPLAY: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// Effects one layer can carry on the GPU (the uniform's array length).
-const MAX_FX: usize = 8;
+const MAX_FX: usize = 16;
+/// The `Layer` uniform's length in 32-bit words.
+const UNIFORM: usize = 24 + MAX_FX * 4;
 
 /// Why the GPU could not be used.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -81,11 +83,20 @@ pub struct GpuCompositor {
     chroma_pipeline: Option<wgpu::ComputePipeline>,
     no_picture: wgpu::TextureView,
     no_under: wgpu::TextureView,
+    no_lut: wgpu::TextureView,
     frame: Option<Frame>,
     /// Uploaded pictures by `Arc` address, kept while frames keep using them (stills, a paused
     /// video).
     pictures: HashMap<usize, Cached>,
+    /// Uploaded lookup tables by `Arc` address, kept the same way.
+    luts: HashMap<usize, CachedLut>,
     count: u64,
+}
+
+struct CachedLut {
+    _lut: Arc<Lut>,
+    view: wgpu::TextureView,
+    used: u64,
 }
 
 fn blend_index(b: Blend) -> usize {
@@ -151,6 +162,16 @@ impl GpuCompositor {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: unfilterable,
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
                     count: None,
                 },
             ],
@@ -257,6 +278,7 @@ impl GpuCompositor {
         let usage = wgpu::TextureUsages::TEXTURE_BINDING;
         let no_picture = texture(&device, "no picture", 1, 1, PICTURE, usage).create_view(&Default::default());
         let no_under = texture(&device, "no under", 1, 1, WORK, usage).create_view(&Default::default());
+        let no_lut = lut_texture(&device, "no lut", 1, usage).create_view(&Default::default());
         GpuCompositor {
             device,
             queue,
@@ -268,8 +290,10 @@ impl GpuCompositor {
             chroma_pipeline,
             no_picture,
             no_under,
+            no_lut,
             frame: None,
             pictures: HashMap::new(),
+            luts: HashMap::new(),
             count: 0,
         }
     }
@@ -333,14 +357,15 @@ impl GpuCompositor {
         let mut report = FrameReport::default();
         let mut resolved = Vec::with_capacity(plan.layers.len());
         for layer in &plan.layers {
-            resolved.push(resolve(spec, plan, layer, media, quality, &mut report)?);
+            let what = resolve(spec, plan, layer, media, quality, &mut report)?;
+            resolved.push((what, resolve_lut(spec, layer, media, quality, &mut report)?));
         }
         self.ensure_frame(plan.width, plan.height);
         let target = [plan.width as f32, plan.height as f32];
 
         // every layer's uniforms and textures, before any pass borrows them
         let mut draws = Vec::new();
-        for (layer, what) in plan.layers.iter().zip(resolved) {
+        for (layer, (what, lut)) in plan.layers.iter().zip(resolved) {
             let (m, size, mode, color, picture) = match what {
                 Resolved::Nothing => continue,
                 Resolved::Flat(color, None) => {
@@ -362,7 +387,8 @@ impl GpuCompositor {
                     ([1.0, 0.0, sp.x as f32, 0.0, 1.0, sp.y as f32], [w, h], 0, [0.0; 4], Some(view))
                 }
             };
-            let Some(uniform) = layer_uniform(layer, m, size, mode, color, target) else { continue };
+            let Some(uniform) = layer_uniform(layer, m, size, mode, color, target, lut.as_deref()) else { continue };
+            let lut_view = lut.as_ref().map(|l| self.lut(l));
             let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("layer"),
                 contents: bytemuck::cast_slice(&uniform),
@@ -386,6 +412,10 @@ impl GpuCompositor {
                         } else {
                             &self.no_under
                         }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(lut_view.as_ref().unwrap_or(&self.no_lut)),
                     },
                 ],
             });
@@ -429,6 +459,7 @@ impl GpuCompositor {
         self.queue.submit([enc.finish()]);
         let count = self.count;
         self.pictures.retain(|_, c| c.used == count);
+        self.luts.retain(|_, c| c.used == count);
         Ok(report)
     }
 
@@ -632,6 +663,28 @@ impl GpuCompositor {
         view
     }
 
+    /// The 3-D texture of a lookup table, uploaded once while frames keep using it.
+    fn lut(&mut self, lut: &Arc<Lut>) -> wgpu::TextureView {
+        let key = Arc::as_ptr(lut) as usize;
+        if let Some(c) = self.luts.get_mut(&key) {
+            c.used = self.count;
+            return c.view.clone();
+        }
+        let n = lut.size as u32;
+        let tex =
+            lut_texture(&self.device, "lut", n, wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST);
+        let texels: Vec<[f32; 4]> = lut.data.iter().map(|c| [c[0], c[1], c[2], 1.0]).collect();
+        self.queue.write_texture(
+            tex.as_image_copy(),
+            bytemuck::cast_slice(texels.as_flattened()),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(n * 16), rows_per_image: Some(n) },
+            wgpu::Extent3d { width: n, height: n, depth_or_array_layers: n },
+        );
+        let view = tex.create_view(&Default::default());
+        self.luts.insert(key, CachedLut { _lut: lut.clone(), view: view.clone(), used: self.count });
+        view
+    }
+
     fn upload(&self, img: &Image, label: &str) -> wgpu::TextureView {
         let (w, h) = (img.width.max(1), img.height.max(1));
         let tex = texture(
@@ -654,6 +707,19 @@ impl GpuCompositor {
     }
 }
 
+fn lut_texture(device: &wgpu::Device, label: &str, n: u32, usage: wgpu::TextureUsages) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d { width: n, height: n, depth_or_array_layers: n },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D3,
+        format: PICTURE,
+        usage,
+        view_formats: &[],
+    })
+}
+
 fn adapter_has_compute(device: &wgpu::Device) -> bool {
     device.limits().max_compute_workgroups_per_dimension > 0
 }
@@ -667,7 +733,8 @@ fn layer_uniform(
     mode: u32,
     color: [f32; 4],
     target: [f32; 2],
-) -> Option<[u32; 56]> {
+    lut: Option<&Lut>,
+) -> Option<[u32; UNIFORM]> {
     let inv = invert(m)?;
     let corners = [(0.0, 0.0), (size[0], 0.0), (0.0, size[1]), (size[0], size[1])]
         .map(|(x, y)| (m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5]));
@@ -684,18 +751,32 @@ fn layer_uniform(
     let mut n = 0;
     for (id, params) in &layer.fx {
         let get = |name: &str, default: f32| params.iter().find(|(k, _)| k == name).map_or(default, |(_, v)| *v);
-        let entry = match id.as_str() {
-            "color.brightness@1" => [1.0, get("amount", 0.0), 0.0, 0.0],
-            "color.saturation@1" => [2.0, get("amount", 1.0), 0.0, 0.0],
+        let entries = match id.as_str() {
+            effects::BRIGHTNESS => vec![[1.0, get("amount", 0.0), 0.0, 0.0]],
+            effects::SATURATION => vec![[2.0, get("amount", 1.0), 0.0, 0.0]],
+            effects::GRADE => {
+                let g = effects::GRADE_PARAMS.map(|n| get(n, 0.0));
+                vec![[3.0, g[0], g[1], g[2]], [g[3], g[4], g[5], g[6]], [g[7], g[8], 0.0, 0.0]]
+            }
+            effects::LUT => match lut {
+                Some(l) => vec![
+                    [6.0, get("amount", 1.0), l.size as f32, 0.0],
+                    [l.min[0], l.min[1], l.min[2], 0.0],
+                    [l.max[0], l.max[1], l.max[2], 0.0],
+                ],
+                None => continue,
+            },
             _ => continue,
         };
-        if n < MAX_FX {
-            fx[n] = entry;
-            n += 1;
+        if n + entries.len() <= MAX_FX {
+            for e in entries {
+                fx[n] = e;
+                n += 1;
+            }
         }
     }
     let f = |v: f32| v.to_bits();
-    let mut u = [0u32; 56];
+    let mut u = [0u32; UNIFORM];
     u[..16].copy_from_slice(
         &[
             inv[0], inv[1], inv[2], inv[3], inv[4], inv[5], size[0], size[1], x0, y0, x1, y1, color[0], color[1],

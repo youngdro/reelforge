@@ -600,3 +600,39 @@ fn freeze_holds_a_frame_and_pushes_the_rest_along() {
     assert!(s.execute("clip.freeze", &json!({"clip": still, "at": {"seconds": 2}})).is_err());
     assert!(s.execute("clip.freeze", &json!({"clip": after, "at": {"seconds": 8.5}})).is_err());
 }
+
+#[test]
+fn colour_is_a_filter_a_lookup_table_and_adjustments() {
+    let mut s = Session::default();
+    let c = add_red(&mut s, 0.0, 2.0);
+    let lut =
+        s.execute("media.import", &json!({"path": "/nowhere/teal.cube", "sha256": "cd".repeat(32)})).unwrap()["media"]
+            ["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+    assert_eq!(s.project().media[&lut].kind, reelforge_model::MediaKind::Lut);
+    s.execute("clip.setColor", &json!({"clip": c, "filter": "vintage", "filterStrength": 0.5})).unwrap();
+    s.execute("clip.setColor", &json!({"clip": c, "lut": lut, "lutStrength": 0.7, "exposure": 0.5, "vignette": 0.3}))
+        .unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let fx = spec["layers"][0]["fx"].as_array().unwrap();
+    assert_eq!(fx.len(), 3);
+    assert_eq!(fx[0]["id"], json!("color.grade@1"));
+    assert_eq!(fx[0]["params"]["fade"], json!(0.3f32));
+    assert_eq!(fx[1]["id"], json!("color.lut@1"));
+    assert_eq!(fx[1]["asset"], json!(lut));
+    assert_eq!(fx[1]["params"]["amount"], json!(0.7f32));
+    assert_eq!(fx[2]["params"], json!({"exposure": 0.5, "vignette": 0.3f32}));
+    let features = spec["engine"]["features"].as_array().unwrap();
+    assert!(features.contains(&json!("color.grade@1")) && features.contains(&json!("color.lut@1")));
+    // out of range, an unknown look, a lut that is not one, a clip with no picture
+    assert!(s.execute("clip.setColor", &json!({"clip": c, "exposure": 9})).is_err());
+    assert!(s.execute("clip.setColor", &json!({"clip": c, "filter": "sepia"})).is_err());
+    assert!(s.execute("clip.setColor", &json!({"clip": c, "lut": c})).is_err());
+    // a lookup table cannot be placed as a clip
+    let t = video_track(&s);
+    assert!(s.execute("clip.add", &json!({"track": t, "media": lut, "start": {"seconds": 5}})).is_err());
+    s.execute("clip.setColor", &json!({"clip": c, "reset": true})).unwrap();
+    assert!(s.project().clip(&c).unwrap().1.color.is_empty());
+}

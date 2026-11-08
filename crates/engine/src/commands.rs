@@ -2,8 +2,9 @@
 
 use reelforge_compile::{CompileOptions, compile};
 use reelforge_model::{
-    AnimKind, Animation, Clip, ClipContent, ClipEffect, ClipTransform, CurvePoint, CurvePreset, Ease, Key, Media,
-    MediaKind, Outline, Project, Prop, Shadow, TitleStyle, Track, TrackKind, Transition, TransitionKind, anim, timing,
+    Adjust, AnimKind, Animation, Clip, ClipContent, ClipEffect, ClipTransform, CurvePoint, CurvePreset, Ease, Filter,
+    FilterKind, Key, LutUse, Media, MediaKind, Outline, Project, Prop, Shadow, TitleStyle, Track, TrackKind,
+    Transition, TransitionKind, anim, timing,
 };
 use reelforge_renderspec::AssetKind;
 use reelforge_time::{FrameRate, Tick};
@@ -101,7 +102,7 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "media.import",
         label: "Import Media",
-        params: r#"{"path": string, "kind"?: "video"|"image"|"audio", "name"?: string, "duration"?: time, "size"?: [w, h], "sha256"?: hex}"#,
+        params: r#"{"path": string, "kind"?: "video"|"image"|"audio"|"lut", "name"?: string, "duration"?: time, "size"?: [w, h], "sha256"?: hex}"#,
         doc: "Adds a file to the project's media. When the file is reachable, hashes it and measures its kind, picture size and length (any value passed wins).",
         edits: true,
         enabled: always,
@@ -214,6 +215,15 @@ static REGISTRY: &[CommandSpec] = &[
         edits: true,
         enabled: always,
         run: clip_set,
+    },
+    CommandSpec {
+        id: "clip.setColor",
+        label: "Colour",
+        params: r#"{"clip": id, "filter"?: "fresh"|"warm"|"cool"|"mono"|"vintage"|"film"|"vivid"|"dusk"|null, "filterStrength"?: 0-1, "lut"?: media id | null, "lutStrength"?: 0-1, "exposure"?: -3..3, "contrast"?, "saturation"?, "temperature"?, "tint"?, "highlights"?, "shadows"?: -1..1, "fade"?, "vignette"?: 0..1, "reset"?: bool}"#,
+        doc: "Sets a picture clip's colour: a filter at a strength, a lookup table (a `lut` media, from a .cube file) at a strength, and adjustments, applied in that order. `reset` clears all three first.",
+        edits: true,
+        enabled: always,
+        run: clip_set_color,
     },
     CommandSpec {
         id: "clip.addEffect",
@@ -386,6 +396,7 @@ fn kind_from_path(path: &str) -> Option<MediaKind> {
         "mp4" | "mov" | "m4v" | "mkv" | "webm" => Some(MediaKind::Video),
         "png" | "jpg" | "jpeg" | "webp" | "gif" => Some(MediaKind::Image),
         "mp3" | "wav" | "m4a" | "aac" | "flac" | "ogg" | "opus" => Some(MediaKind::Audio),
+        "cube" => Some(MediaKind::Lut),
         _ => None,
     }
 }
@@ -396,7 +407,7 @@ fn media_import(s: &mut Session, v: &Value) -> CmdResult {
     let asked: Option<MediaKind> = match p.opt_str("kind")? {
         Some(k) => Some(
             serde_json::from_value(json!(k))
-                .map_err(|_| EngineError::Params("`kind` must be video, image or audio".into()))?,
+                .map_err(|_| EngineError::Params("`kind` must be video, image, audio or lut".into()))?,
         ),
         None => None,
     };
@@ -423,7 +434,8 @@ fn media_import(s: &mut Session, v: &Value) -> CmdResult {
         {
             sha256 = Some(Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect());
         }
-        if local.is_file() {
+        // a lookup table is text, read when a frame needs it
+        if local.is_file() && asked.or(kind_from_path(&path)) != Some(MediaKind::Lut) {
             probed = Some(
                 reelforge_media::probe_path(local)
                     .map_err(|e| EngineError::Refused(format!("cannot read {path}: {e}")))?,
@@ -435,6 +447,7 @@ fn media_import(s: &mut Session, v: &Value) -> CmdResult {
         (None, Some(pr)) => match pr.kind {
             AssetKind::Video => MediaKind::Video,
             AssetKind::Image => MediaKind::Image,
+            AssetKind::Lut => MediaKind::Lut,
             _ => MediaKind::Audio,
         },
         (None, None) => kind_from_path(&path)
@@ -564,6 +577,7 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
             transition: None,
             fade: Default::default(),
             keep_pitch: true,
+            color: Default::default(),
         };
         proj.track_mut(&track_id).expect("found above").clips.push(clip);
         Ok(json!({ "clip": id, "start": start, "duration": duration }))
@@ -1101,6 +1115,94 @@ fn clip_set_transition(s: &mut Session, v: &Value) -> CmdResult {
             duration: duration.or(clip.transition.map(|t| t.duration)).unwrap_or(ANIMATION_LENGTH),
         });
         Ok(json!({ "clip": id, "transition": serde_json::to_value(clip.transition).expect("serialises") }))
+    })
+}
+
+fn clip_set_color(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let reset = p.opt_bool("reset")?.unwrap_or(false);
+    let filter = match p.v.get("filter") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(Value::String(k)) => Some(Some(FilterKind::parse(k).ok_or_else(|| {
+            EngineError::Params(format!(
+                "`filter` must be null or one of {}",
+                FilterKind::ALL.map(FilterKind::name).join(", ")
+            ))
+        })?)),
+        Some(_) => return Err(EngineError::Params("`filter` must be a name or null".into())),
+    };
+    let lut = match p.v.get("lut") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(Value::String(m)) => Some(Some(m.clone())),
+        Some(_) => return Err(EngineError::Params("`lut` must be a media id or null".into())),
+    };
+    let unit = |name: &str| -> Result<Option<f32>, EngineError> {
+        match p.opt_f64(name)? {
+            Some(x) if !(0.0..=1.0).contains(&x) => Err(EngineError::Params(format!("`{name}` must be 0 to 1"))),
+            x => Ok(x.map(|x| x as f32)),
+        }
+    };
+    let (filter_strength, lut_strength) = (unit("filterStrength")?, unit("lutStrength")?);
+    let mut changes = Vec::new();
+    for (name, lo, hi) in Adjust::RANGES {
+        if let Some(x) = p.opt_f64(name)? {
+            if !(lo as f64..=hi as f64).contains(&x) {
+                return Err(EngineError::Params(format!("`{name}` must be {lo} to {hi}")));
+            }
+            changes.push((name, x as f32));
+        }
+    }
+    s.edit("Colour", |proj| {
+        let (ti, _) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        if proj.tracks[ti].kind == TrackKind::Audio {
+            return Err(EngineError::Params("only picture clips have colour".into()));
+        }
+        if let Some(Some(m)) = &lut {
+            match proj.media.get(m) {
+                Some(media) if media.kind == MediaKind::Lut => {}
+                Some(_) => return Err(EngineError::Params(format!("media {m} is not a lookup table"))),
+                None => return Err(not_found("media", m)),
+            }
+        }
+        let clip = proj.clip_mut(&id).expect("found above");
+        let c = &mut clip.color;
+        if reset {
+            *c = Default::default();
+        }
+        match filter {
+            Some(None) => c.filter = None,
+            Some(Some(kind)) => {
+                c.filter = Some(Filter { kind, strength: c.filter.map_or(1.0, |f| f.strength) });
+            }
+            None => {}
+        }
+        if let Some(st) = filter_strength {
+            let f = c.filter.as_mut().ok_or_else(|| EngineError::Params("there is no filter to strengthen".into()))?;
+            f.strength = st;
+        }
+        match lut {
+            Some(None) => c.lut = None,
+            Some(Some(media)) => {
+                let strength = c.lut.as_ref().map_or(1.0, |l| l.strength);
+                c.lut = Some(LutUse { media, strength });
+            }
+            None => {}
+        }
+        if let Some(st) = lut_strength {
+            let l =
+                c.lut.as_mut().ok_or_else(|| EngineError::Params("there is no lookup table to strengthen".into()))?;
+            l.strength = st;
+        }
+        let mut values = c.adjust.values();
+        for (name, x) in &changes {
+            let i = Adjust::RANGES.iter().position(|(n, ..)| n == name).expect("a known name");
+            values[i] = *x;
+        }
+        c.adjust = Adjust::from_values(values);
+        Ok(json!({ "clip": id, "color": serde_json::to_value(&clip.color).expect("serialises") }))
     })
 }
 

@@ -247,7 +247,7 @@ fn a_cancelled_export_stops_and_says_so() {
 #[test]
 fn a_spec_this_renderer_cannot_draw_is_refused_before_any_work() {
     let mut spec = two_colours();
-    spec.layers[0].fx.push(Effect { id: "blur.gaussian@1".into(), params: Default::default() });
+    spec.layers[0].fx.push(Effect { id: "blur.gaussian@1".into(), params: Default::default(), asset: None });
     let r = export(&spec, &Footage::new(), Cursor::new(Vec::new()), &mut |_| panic!("no frame is drawn"));
     assert!(matches!(r, Err(ExportError::Render(RenderError::Unsupported(_)))), "{r:?}");
 }
@@ -392,4 +392,21 @@ fn sound_plays_backwards_ramps_and_holds() {
     spec.audio = vec![clip(TimeMap::new(Tick::SECOND, 0.0), true)];
     let held = export::mix(&spec, &footage, 48_000, 0, 48_000).expect("mix");
     assert!(held[0].iter().all(|s| *s == 0.0));
+}
+
+#[test]
+fn lookup_tables_load_from_files_and_bytes() {
+    let cube = "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";
+    let path = temp("look.cube");
+    std::fs::write(&path, cube).expect("write cube");
+    let footage = Footage::new();
+    let asset =
+        Asset { kind: AssetKind::Lut, sha256: sha(7), uri: path.to_string_lossy().into_owned(), of: None, probe: None };
+    let lut = footage.lut("l", &asset).expect("reads").expect("online");
+    assert_eq!(lut.size, 2);
+    let probe = footage.insert_bytes(&sha(8), "Teal.CUBE", cube.as_bytes().to_vec()).expect("parses");
+    assert_eq!(probe.kind, AssetKind::Lut);
+    let offline = Asset { sha256: sha(8), uri: "https://example.com/teal.cube".into(), ..asset };
+    assert!(footage.lut("l", &offline).expect("reads").is_some());
+    assert!(footage.insert_bytes(&sha(9), "bad.cube", b"LUT_3D_SIZE 2\n".to_vec()).is_err());
 }

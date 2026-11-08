@@ -145,6 +145,15 @@ pub fn validate(spec: &RenderSpec) -> Result<(), ValidationError> {
             for (name, value) in &fx.params {
                 keys_ok(&format!("{fx_path}.params.{name}"), value, layer.dur)?;
             }
+            match (&fx.asset, fx.id == crate::effects::LUT) {
+                (Some(a), true) => asset_of_kind(spec, &format!("{fx_path}.asset"), a, &[AssetKind::Lut])?,
+                (None, true) => return Err(bad(format!("{fx_path}.asset"), "a lookup table needs its `lut` asset")),
+                (Some(_), false) => return Err(bad(format!("{fx_path}.asset"), "this effect reads no asset")),
+                (None, false) => {}
+            }
+        }
+        if layer.fx.iter().filter(|f| f.id == crate::effects::LUT).count() > 1 {
+            return Err(bad(format!("{path}.fx"), "one lookup table per layer"));
         }
     }
 
@@ -270,7 +279,7 @@ mod tests {
         );
 
         let mut s = base();
-        s.layers[0].fx.push(Effect { id: "blur".into(), params: Default::default() });
+        s.layers[0].fx.push(Effect { id: "blur".into(), params: Default::default(), asset: None });
         assert!(validate(&s).is_err());
 
         let mut s = base();

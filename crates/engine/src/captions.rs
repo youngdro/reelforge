@@ -172,6 +172,7 @@ pub(crate) fn place(
             transition: None,
             fade: Default::default(),
             keep_pitch: true,
+            color: Default::default(),
         });
     }
     let track = proj.tracks.iter_mut().find(|t| t.id == track_id).expect("found or made above");
