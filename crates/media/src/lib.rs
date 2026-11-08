@@ -117,6 +117,11 @@ pub struct Footage {
     luts: Mutex<HashMap<String, Arc<Lut>>>,
     /// Counts files handed over and clears, so callers know when offline footage may be back.
     generation: std::sync::atomic::AtomicU64,
+    /// The bytes of video files handed over, by asset key, for a decoder outside this crate.
+    raw: Mutex<HashMap<String, Arc<[u8]>>>,
+    /// Pictures decoded elsewhere (the browser's decoder), by asset key and source instant: a
+    /// [`picture`](MediaSource::picture) asking for exactly that instant gets them.
+    prepared: Mutex<HashMap<String, HashMap<Tick, Arc<Image>>>>,
 }
 
 /// Whether a file name is a lookup table (`.cube`).
@@ -150,6 +155,9 @@ impl Footage {
             self.stills.insert_bytes(sha256, &bytes)?;
         } else {
             self.sources.lock().expect("sources lock").insert(sha256.to_string(), Some(src));
+            if probe.kind == AssetKind::Video {
+                self.raw.lock().expect("raw lock").insert(sha256.to_string(), bytes);
+            }
         }
         self.bump();
         Ok(probe)
@@ -160,8 +168,30 @@ impl Footage {
         self.fonts.lock().expect("fonts lock").insert(sha256.to_string(), bytes.into());
     }
 
+    /// The bytes of a video file handed over with [`insert_bytes`](Self::insert_bytes).
+    pub fn video_bytes(&self, asset: &Asset) -> Option<Arc<[u8]>> {
+        self.raw.lock().expect("raw lock").get(&key(asset)).cloned()
+    }
+
+    /// Hands over `asset`'s picture at source instant `at`, decoded elsewhere; it is used for
+    /// exactly that instant until [`unprepare`](Self::unprepare).
+    pub fn prepare(&self, asset: &Asset, at: Tick, picture: Arc<Image>) {
+        self.prepared.lock().expect("prepared lock").entry(key(asset)).or_default().insert(at, picture);
+    }
+
+    /// Drops the pictures handed over for `asset`.
+    pub fn unprepare(&self, asset: &Asset) {
+        self.prepared.lock().expect("prepared lock").remove(&key(asset));
+    }
+
+    /// Forgets every picture handed over with [`prepare`](Self::prepare).
+    pub fn clear_prepared(&self) {
+        self.prepared.lock().expect("prepared lock").clear();
+    }
+
     /// Forgets everything decoded so far (files changed on disk).
     pub fn clear(&self) {
+        self.prepared.lock().expect("prepared lock").clear();
         self.sources.lock().expect("sources lock").clear();
         self.last.lock().expect("frame lock").clear();
         self.fonts.lock().expect("fonts lock").clear();
@@ -337,6 +367,11 @@ impl MediaSource for Footage {
         match asset.kind {
             AssetKind::Image => self.stills.picture(asset_id, asset, at),
             AssetKind::Video => {
+                if let Some(img) =
+                    self.prepared.lock().expect("prepared lock").get(&key(asset)).and_then(|m| m.get(&at))
+                {
+                    return Ok(Some(img.clone()));
+                }
                 let Some(src) = self.source(asset) else { return Ok(None) };
                 let duration = from_ft(src.info().duration);
                 // past the end the last frame holds

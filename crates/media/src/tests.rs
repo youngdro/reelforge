@@ -516,3 +516,37 @@ fn library_sounds_play_without_a_file() {
     assert_eq!(sound.len(), 2);
     assert!(rms(&sound[0]) > 0.01);
 }
+
+#[test]
+fn h264_files_open_for_the_browser_decoder_and_prepared_pictures_win() {
+    let (path, _) = export_to_file(&two_colours(), &Footage::new(), "for-webcodecs.mp4");
+    let bytes = std::fs::read(&path).expect("read");
+    let v = crate::webcodecs::DecodableVideo::open(bytes.clone().into()).expect("H.264 in MP4");
+    assert!(v.codec.starts_with("avc1."), "{}", v.codec);
+    assert_eq!(v.size, [64, 48]);
+    assert_eq!(v.len(), 60);
+    assert_eq!(v.description[0], 1, "an avcC record");
+    let (data, pts, dur, key) = v.sample(0).expect("first sample");
+    assert!(key && !data.is_empty());
+    assert_eq!((pts, dur), (0, 33_333));
+    // the frame shown at a time (samples are in decode order), the last one past the end
+    let shown = |t: Tick| v.sample(v.sample_at(t)).expect("sample").1;
+    assert_eq!(shown(Tick::SECOND), 1_000_000);
+    assert_eq!(shown(Tick::SECOND * 9), (0..v.len()).map(|i| v.sample(i).unwrap().1).max().unwrap());
+    assert!(v.sync_before(30) <= 30);
+    assert!(crate::webcodecs::DecodableVideo::open(b"not a video".to_vec().into()).is_none());
+
+    let media = Footage::new();
+    media.insert_bytes(&sha(7), "v.mp4", bytes).expect("insert");
+    let asset = Asset { kind: AssetKind::Video, sha256: sha(7), uri: "v.mp4".into(), of: None, probe: None };
+    assert!(media.video_bytes(&asset).is_some());
+    let marker = Arc::new(Image::from_srgba8(2, 2, &[9; 16]));
+    media.prepare(&asset, Tick::SECOND, marker.clone());
+    let got = media.picture("a", &asset, Tick::SECOND).expect("picture").expect("some");
+    assert!(Arc::ptr_eq(&got, &marker));
+    let other = media.picture("a", &asset, Tick::ZERO).expect("picture").expect("some");
+    assert!(!Arc::ptr_eq(&other, &marker));
+    media.unprepare(&asset);
+    let again = media.picture("a", &asset, Tick::SECOND).expect("picture").expect("some");
+    assert!(!Arc::ptr_eq(&again, &marker));
+}

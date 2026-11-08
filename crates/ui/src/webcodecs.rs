@@ -1,11 +1,19 @@
-//! The browser's video encoders (WebCodecs), usually in hardware: H.264, HEVC and AV1. Frames go
-//! in as I420 and come back asynchronously; [`WebEncoder`] is a [`VideoEncoder`] an
-//! [`ExportWriter`](reelforge_media::ExportWriter) drives, its backlog above 0 until the last frames
-//! are back.
+//! The browser's video codecs (WebCodecs), usually in hardware.
+//!
+//! Encoding: H.264, HEVC and AV1. Frames go in as I420 and come back asynchronously;
+//! [`WebEncoder`] is a [`VideoEncoder`] an [`ExportWriter`](reelforge_media::ExportWriter) drives,
+//! its backlog above 0 until the last frames are back.
+//!
+//! Decoding: [`WebDecoder`] decodes the H.264 footage of one clip ahead of an export, so that the
+//! frames are ready before the renderer asks for them.
+
+use std::sync::Arc;
 
 use js_sys::{Promise, Uint8Array};
+use reelforge_media::webcodecs::DecodableVideo;
+use reelforge_render::Image;
 use reelforge_renderspec::VideoCodec;
-use reelforge_time::FrameRate;
+use reelforge_time::{FrameRate, Tick};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
@@ -70,6 +78,56 @@ export class RfEncoder {
   }
   close() { try { this.enc.close(); } catch (e) {} }
 }
+export async function rf_decodable(codec, width, height, description) {
+  if (typeof VideoDecoder === 'undefined' || typeof OffscreenCanvas === 'undefined') return false;
+  try {
+    const r = await VideoDecoder.isConfigSupported({ codec, codedWidth: width, codedHeight: height, description });
+    return !!r.supported;
+  } catch (e) { return false; }
+}
+export class RfDecoder {
+  constructor(codec, width, height, description) {
+    this.cfg = { codec, codedWidth: width, codedHeight: height, description: description.slice(), hardwareAcceleration: 'no-preference' };
+    this.frames = new Map(); this.err = null; this.flushing = false; this.gen = 0; this.cx = null;
+    this.dec = new VideoDecoder({
+      output: (f) => this.got(f),
+      error: (e) => { this.err = String((e && e.message) || e); },
+    });
+    this.dec.configure(this.cfg);
+  }
+  got(f) {
+    try {
+      const w = f.displayWidth, h = f.displayHeight;
+      if (!this.cx || this.cx.canvas.width !== w || this.cx.canvas.height !== h) {
+        this.cx = new OffscreenCanvas(w, h).getContext('2d', { willReadFrequently: true });
+      }
+      this.cx.drawImage(f, 0, 0, w, h);
+      this.frames.set(f.timestamp, { w, h, data: this.cx.getImageData(0, 0, w, h).data });
+    } catch (e) { this.err = String((e && e.message) || e); } finally { f.close(); }
+  }
+  decode(data, ts, dur, key) {
+    this.dec.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: ts, duration: dur, data }));
+  }
+  queue() { return this.dec.decodeQueueSize + (this.flushing ? 1 : 0); }
+  startFlush() {
+    const gen = this.gen;
+    this.flushing = true;
+    this.dec.flush().then(() => { if (gen === this.gen) this.flushing = false; },
+      (e) => { if (gen === this.gen) { this.err = String((e && e.message) || e); this.flushing = false; } });
+  }
+  reset() {
+    this.gen++; this.flushing = false; this.frames.clear();
+    this.dec.reset(); this.dec.configure(this.cfg);
+  }
+  has(ts) { return this.frames.has(ts); }
+  count() { return this.frames.size; }
+  width(ts) { return this.frames.get(ts).w; }
+  height(ts) { return this.frames.get(ts).h; }
+  pixels(ts) { const d = this.frames.get(ts).data; return new Uint8Array(d.buffer, d.byteOffset, d.byteLength); }
+  dropBelow(ts) { for (const k of [...this.frames.keys()]) if (k < ts) this.frames.delete(k); }
+  error() { return this.err; }
+  close() { try { this.dec.close(); } catch (e) {} this.frames.clear(); }
+}
 "#)]
 extern "C" {
     fn rf_supported(codec: &str, width: u32, height: u32, bitrate: f64, fps: f64) -> Promise;
@@ -107,6 +165,36 @@ extern "C" {
     fn start_flush(this: &RfEncoder);
     #[wasm_bindgen(method)]
     fn close(this: &RfEncoder);
+
+    fn rf_decodable(codec: &str, width: u32, height: u32, description: &[u8]) -> Promise;
+
+    type RfDecoder;
+    #[wasm_bindgen(constructor, catch)]
+    fn new(codec: &str, width: u32, height: u32, description: &[u8]) -> Result<RfDecoder, JsValue>;
+    #[wasm_bindgen(method, catch)]
+    fn decode(this: &RfDecoder, data: &[u8], ts: f64, dur: f64, key: bool) -> Result<(), JsValue>;
+    #[wasm_bindgen(method)]
+    fn queue(this: &RfDecoder) -> u32;
+    #[wasm_bindgen(method, js_name = startFlush)]
+    fn start_flush(this: &RfDecoder);
+    #[wasm_bindgen(method, catch)]
+    fn reset(this: &RfDecoder) -> Result<(), JsValue>;
+    #[wasm_bindgen(method)]
+    fn has(this: &RfDecoder, ts: f64) -> bool;
+    #[wasm_bindgen(method)]
+    fn count(this: &RfDecoder) -> u32;
+    #[wasm_bindgen(method)]
+    fn width(this: &RfDecoder, ts: f64) -> u32;
+    #[wasm_bindgen(method)]
+    fn height(this: &RfDecoder, ts: f64) -> u32;
+    #[wasm_bindgen(method)]
+    fn pixels(this: &RfDecoder, ts: f64) -> Uint8Array;
+    #[wasm_bindgen(method, js_name = dropBelow)]
+    fn drop_below(this: &RfDecoder, ts: f64);
+    #[wasm_bindgen(method)]
+    fn error(this: &RfDecoder) -> Option<String>;
+    #[wasm_bindgen(method)]
+    fn close(this: &RfDecoder);
 }
 
 /// A WebCodecs video encoder.
@@ -226,5 +314,103 @@ impl VideoEncoder for WebEncoder {
 
     fn name(&self) -> String {
         format!("{} ({})", self.codec_string, if self.hardware { "hardware" } else { "browser" })
+    }
+}
+
+/// The browser decoding one clip's footage, for an export that walks it forwards.
+pub struct WebDecoder {
+    video: DecodableVideo,
+    dec: RfDecoder,
+    /// Samples fed so far: from `base` up to `next`, in decode order.
+    base: usize,
+    next: usize,
+    /// Pictures before this were let go.
+    floor: i64,
+    flushed: bool,
+    /// Restarts from a key frame; a clip that keeps going backwards is left to the software decoder.
+    resets: u32,
+}
+
+impl WebDecoder {
+    /// A decoder for these file bytes, if they hold H.264 the browser can decode.
+    pub async fn open(bytes: Arc<[u8]>) -> Option<WebDecoder> {
+        let video = DecodableVideo::open(bytes)?;
+        let [w, h] = video.size;
+        let ok = JsFuture::from(rf_decodable(&video.codec, w, h, &video.description)).await.ok()?;
+        if ok.as_bool() != Some(true) {
+            return None;
+        }
+        let dec = RfDecoder::new(&video.codec, w, h, &video.description).ok()?;
+        Some(WebDecoder { video, dec, base: 0, next: 0, floor: i64::MIN, flushed: false, resets: 0 })
+    }
+
+    /// The picture shown at `at` in the footage; `None` when the browser fails at it, and the
+    /// software decoder should draw it.
+    pub async fn picture(&mut self, at: Tick) -> Option<Arc<Image>> {
+        const PATIENCE: u32 = 8;
+        /// Samples in the browser's queue at most, and twice as many pictures waiting.
+        const AHEAD: u32 = 4;
+        if self.resets > PATIENCE || self.video.is_empty() {
+            return None;
+        }
+        let target = self.video.sample_at(at);
+        let pts = self.video.sample(target)?.1;
+        let ts = pts as f64;
+        if !self.dec.has(ts) {
+            let start = self.video.sync_before(target);
+            // behind what was decoded, or past a key frame further on
+            if pts < self.floor || target < self.base || start > self.next {
+                self.resets += 1;
+                if self.resets > PATIENCE {
+                    return None;
+                }
+                self.dec.reset().ok()?;
+                (self.base, self.next, self.floor, self.flushed) = (start, start, i64::MIN, false);
+            }
+        }
+        while !self.dec.has(ts) {
+            if self.dec.error().is_some() {
+                self.resets = PATIENCE + 1;
+                return None;
+            }
+            if self.next < self.video.len() && self.dec.queue() < AHEAD {
+                self.feed()?;
+                continue;
+            }
+            if self.next >= self.video.len() {
+                if !self.flushed {
+                    self.dec.start_flush();
+                    self.flushed = true;
+                } else if self.dec.queue() == 0 {
+                    // everything is out, and not this picture
+                    return None;
+                }
+            }
+            sleep(0).await;
+        }
+        self.dec.drop_below(ts);
+        self.floor = pts;
+        // keep the browser decoding while this frame is drawn
+        while self.next < self.video.len() && self.dec.queue() < AHEAD && self.dec.count() < 2 * AHEAD {
+            self.feed()?;
+        }
+        let (w, h) = (self.dec.width(ts), self.dec.height(ts));
+        Some(Arc::new(Image::from_srgba8(w, h, &self.dec.pixels(ts).to_vec())))
+    }
+}
+
+impl WebDecoder {
+    /// Hands the browser the next sample.
+    fn feed(&mut self) -> Option<()> {
+        let (data, pts, dur, key) = self.video.sample(self.next)?;
+        self.dec.decode(data, pts as f64, dur as f64, key).ok()?;
+        self.next += 1;
+        Some(())
+    }
+}
+
+impl Drop for WebDecoder {
+    fn drop(&mut self) {
+        self.dec.close();
     }
 }
