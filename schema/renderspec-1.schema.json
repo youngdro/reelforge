@@ -1122,7 +1122,7 @@
       "description": "Video encoding settings.",
       "properties": {
         "bitrate_kbps": {
-          "description": "Target bitrate in kbit/s, when no `crf` is given.",
+          "description": "Target bitrate in kbit/s: used when no `crf` is given, or by encoders without a\nconstant-quality mode (hardware ones).",
           "format": "uint32",
           "minimum": 0,
           "type": [
@@ -1141,6 +1141,20 @@
           "minimum": 0,
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "size": {
+          "description": "Encode at this size instead of the output's (feature `encode.size/1`): the frame is drawn\n`width ÷ output.width` times the output size. Both even, and the height must be\n`round(output.height × width ÷ output.width)`, so the picture is not stretched.",
+          "items": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": [
+            "array",
             "null"
           ]
         }

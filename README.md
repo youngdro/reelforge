@@ -7,7 +7,9 @@ edit (RenderSpec), so a render can happen in the editor or on a separate render 
 
 Status: early. Video, still images and sound import (drop files on the editor, or `media.import`) and
 decode in pure Rust on the desktop and in the browser; solid colours, transforms, opacity, two colour
-effects and undo work; projects export to H.264 + AAC MP4 from the desktop editor and the CLI. Titles
+effects and undo work; projects export to MP4 from the desktop editor and the CLI (H.264 + AAC) and from the
+browser (H.264, HEVC or AV1 through the browser's hardware encoder, WebCodecs), at a chosen
+resolution (720p to 4K), frame rate and quality, or one of four presets (`project.setExport`). Titles
 render with shaping, wrapping, outlines, shadows, gradients and boxes, Chinese included (a bundled
 Noto Sans SC subset covering GB 2312), and ten title templates (花字) apply a look in one step
 (`title.templates`, `"template"` on `clip.add` / `clip.set`). SubRip captions come in by dropping a

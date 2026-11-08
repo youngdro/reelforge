@@ -237,7 +237,12 @@ fn static_file(dir: &std::path::Path, url: &str) -> Response<std::io::Cursor<Vec
         "" => "index.html",
         n => n,
     };
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) || name.starts_with('.') {
+    // plain names in plain folders (wasm-bindgen puts inline scripts under `snippets/`): no `..`,
+    // nothing hidden
+    let plain = |seg: &str| {
+        !seg.is_empty() && !seg.starts_with('.') && seg.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+    };
+    if !name.split('/').all(plain) {
         return text(404, "not found");
     }
     let kind = match name.rsplit_once('.').map(|(_, e)| e) {

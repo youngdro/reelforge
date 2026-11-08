@@ -2,9 +2,10 @@
 
 use reelforge_compile::{CompileOptions, compile};
 use reelforge_model::{
-    Adjust, AnimKind, Animation, BlendMode, Clip, ClipContent, ClipEffect, ClipTransform, CurvePoint, CurvePreset,
-    Ease, Filter, FilterKind, Key, LutUse, Mask, MaskKind, Media, MediaKind, Outline, Project, Prop, Shadow,
-    TitleStyle, Track, TrackKind, Transition, TransitionKind, anim, timing,
+    Adjust, AnimKind, Animation, BlendMode, Clip, ClipContent, ClipEffect, ClipTransform, Codec, CurvePoint,
+    CurvePreset, Ease, ExportSettings, Filter, FilterKind, Key, LutUse, Mask, MaskKind, Media, MediaKind, Outline,
+    Project, Prop, Quality, Resolution, Shadow, TitleStyle, Track, TrackKind, Transition, TransitionKind, anim, export,
+    timing,
 };
 use reelforge_renderspec::AssetKind;
 use reelforge_time::{FrameRate, Tick};
@@ -98,6 +99,15 @@ static REGISTRY: &[CommandSpec] = &[
         edits: true,
         enabled: always,
         run: project_set_canvas,
+    },
+    CommandSpec {
+        id: "project.setExport",
+        label: "Export Settings",
+        params: r#"{"preset"?: "draft"|"standard"|"smooth"|"4k", "resolution"?: "canvas"|"720p"|"1080p"|"2k"|"4k", "fps"?: 0|24|25|30|50|60, "quality"?: "low"|"recommended"|"high", "codec"?: "h264"|"hevc"|"av1"}"#,
+        doc: "Sets how the project exports: a preset, then any of picture size (by the shorter side; `canvas` keeps the canvas's), frame rate (0 keeps the canvas's), quality and codec. HEVC and AV1 are encoded by the browser's (hardware) encoder; the desktop and CLI write H.264.",
+        edits: true,
+        enabled: always,
+        run: project_set_export,
     },
     CommandSpec {
         id: "media.import",
@@ -377,6 +387,49 @@ fn project_inspect(s: &mut Session, _: &Value) -> CmdResult {
     Ok(
         json!({ "revision": s.revision, "duration": p.duration(), "project": serde_json::to_value(&*p).expect("serialises") }),
     )
+}
+
+fn project_set_export(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    fn pick<T>(p: &P, name: &str, parse: fn(&str) -> Option<T>, ids: &[&str]) -> Result<Option<T>, EngineError> {
+        match p.opt_str(name)? {
+            None => Ok(None),
+            Some(x) => parse(x)
+                .map(Some)
+                .ok_or_else(|| EngineError::Params(format!("`{name}` must be one of {}", ids.join(", ")))),
+        }
+    }
+    let presets: Vec<&str> = export::PRESETS.iter().map(|(id, _)| *id).collect();
+    let preset = pick(&p, "preset", ExportSettings::of_preset, &presets)?;
+    let resolution = pick(&p, "resolution", Resolution::parse, &Resolution::ALL.map(Resolution::name))?;
+    let quality = pick(&p, "quality", Quality::parse, &Quality::ALL.map(Quality::name))?;
+    let codec = pick(&p, "codec", Codec::parse, &Codec::ALL.map(Codec::name))?;
+    let rate = match p.opt_u32("fps")? {
+        Some(r) if r != 0 && !export::FRAME_RATES.contains(&r) => {
+            return Err(EngineError::Params(format!("`fps` must be 0 or one of {:?}", export::FRAME_RATES)));
+        }
+        r => r,
+    };
+    s.edit("Export Settings", |proj| {
+        let e = &mut proj.export;
+        if let Some(p) = preset {
+            *e = p;
+        }
+        e.resolution = resolution.unwrap_or(e.resolution);
+        e.quality = quality.unwrap_or(e.quality);
+        e.codec = codec.unwrap_or(e.codec);
+        e.fps = rate.unwrap_or(e.fps);
+        let c = &proj.canvas;
+        let [w, h] = e.size(c);
+        Ok(json!({
+            "export": serde_json::to_value(*e).expect("serialises"),
+            "preset": e.preset(),
+            "width": w,
+            "height": h,
+            "fps": e.frame_rate(c).fps(),
+            "bitrateKbps": e.bitrate_kbps(c),
+        }))
+    })
 }
 
 fn project_set_canvas(s: &mut Session, v: &Value) -> CmdResult {

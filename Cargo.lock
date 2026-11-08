@@ -2941,6 +2941,7 @@ dependencies = [
  "egui",
  "ehttp",
  "image",
+ "js-sys",
  "reelforge-compile",
  "reelforge-engine",
  "reelforge-media",
@@ -2952,6 +2953,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sys-locale",
+ "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-time",
 ]

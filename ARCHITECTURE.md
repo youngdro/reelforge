@@ -31,7 +31,7 @@ service ships them without the editor.
 | L1 | `reelforge-model` | The project document: canvas, media, tracks (magnetic or not), clips and their colour (filters, LUTs, adjustments; `color`), their crop, mirror, blend mode and shape mask (`look`), keyframes and in/out animations (`anim`), transitions (`transition`), speed curves, reverse and freeze frames (`timing`); invariants |
 | L2 | `reelforge-compile` | Project → RenderSpec: all editing meaning resolved here (keyframes, animations and transitions become RenderSpec keys and overlapping layers, `motion`) |
 | L2 | `reelforge-render` | Pure frame plan, CPU reference compositor, wgpu compositor (feature `gpu`); `MediaSource` trait |
-| L3 | `reelforge-media` | Probing, video/audio decoding (`Footage`), MP4 export (H.264 + AAC); FilmCraft's pure-Rust codecs |
+| L3 | `reelforge-media` | Probing, video/audio decoding (`Footage`), MP4 export (`ExportWriter` over any `VideoEncoder`, AAC sound); FilmCraft's pure-Rust codecs |
 | L4 | `reelforge-engine` | `Session`, command registry, copy-on-write undo, batches; title templates (`templates`); SubRip captions (`captions`) |
 | L5 | `reelforge-ui` | The egui editor: top bar, preview and transport, direct manipulation in the preview (select, move, scale, turn; `stage`), timeline (move, trim, snap; pictures along video clips and waveforms of sound, `strips`), inspector, shortcuts; its own dark theme and Phosphor icon subset (`theme`); preview sound (`audio`); English and Chinese, following the system and switched in the top bar (`i18n`); joins a server's session (`remote`); pictures of the title templates (`looks`) |
 | L5 | `reelforge-server` | One shared session as a service: MCP (stdio, Streamable HTTP) and a plain HTTP API over the same operations; native only |
@@ -68,9 +68,14 @@ service ships them without the editor.
 In rough priority order for short videos:
 
 1. Faster media: hardware/WebCodecs decoders registered in front of the pure-Rust ones
-   (`filmcraft_codecs::register_video_decoder`), decoding at preview size, export in the browser
-   (WebCodecs encoder, or the pure-Rust one in a worker).
-   Pure-Rust decoding and MP4 export (`reelforge-media`) are in place.
+   (`filmcraft_codecs::register_video_decoder`), decoding at preview size, drawing browser exports
+   on the GPU (today the CPU draws them), and native hardware encoders (VideoToolbox, NVENC,
+   VA-API) behind `reelforge_media::VideoEncoder`.
+   In place: pure-Rust decoding, MP4 export through `ExportWriter`, which takes any
+   `VideoEncoder` (FilmCraft's H.264 on the desktop and CLI; WebCodecs H.264, HEVC and AV1 in the
+   browser, usually in hardware, with an `av1C` built from the sequence header when the browser
+   gives none), and export settings kept with the project (`ExportSettings`: size by the shorter
+   side, frame rate, quality, codec, presets), lowered to `output.video` (`encode.size/1`).
 2. Text, next steps: per-line subtitle boxes, shadows, animated titles (typewriter, pop-in),
    importing font files in the editor (specs already take `font` assets), and a smaller web build
    (the two bundled CJK faces add 5 MB to the wasm). `text/1` itself is in place: FilmCraft's

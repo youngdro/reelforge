@@ -677,3 +677,30 @@ fn crops_flips_blends_and_masks_reach_the_spec() {
     s.execute("clip.setMask", &json!({"clip": v, "shape": null})).unwrap();
     assert!(s.project().clip(&v).unwrap().1.look.mask.is_none());
 }
+
+#[test]
+fn export_settings_shape_the_compiled_output() {
+    let mut s = Session::default();
+    add_red(&mut s, 0.0, 2.0);
+    let r = s.execute("project.setExport", &json!({"preset": "standard"})).unwrap();
+    assert_eq!(
+        (r["preset"].clone(), r["width"].clone(), r["height"].clone()),
+        (json!("standard"), json!(1080), json!(1920))
+    );
+    let r = s.execute("project.setExport", &json!({"resolution": "720p", "fps": 60, "codec": "hevc"})).unwrap();
+    assert_eq!(r["preset"], json!(null));
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let o = &spec["output"];
+    assert_eq!(o["fps"], json!({"num": 60, "den": 1}));
+    assert_eq!(o["video"]["codec"], json!("hevc"));
+    assert_eq!(o["video"]["size"], json!([720, 1280]));
+    assert!(o["video"]["bitrate_kbps"].as_u64().unwrap() > 1000);
+    assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("encode.size/1")));
+    // the settings travel with the project and undo like any edit
+    assert_eq!(s.project().export.resolution, reelforge_model::Resolution::P720);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.project().export.preset(), Some("standard"));
+    assert!(s.execute("project.setExport", &json!({"fps": 29})).is_err());
+    assert!(s.execute("project.setExport", &json!({"codec": "vp8"})).is_err());
+    assert!(s.execute("project.setExport", &json!({"preset": "cinema"})).is_err());
+}
