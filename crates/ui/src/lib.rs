@@ -66,6 +66,9 @@ pub struct EditorApp {
     export_open: bool,
     /// The sound library is showing.
     sounds_open: bool,
+    /// The timelines window is showing, and the name being typed for the current timeline.
+    timelines_open: bool,
+    timeline_name: String,
     /// A voice-over being recorded, and how many were.
     recorder: Option<record::Recorder>,
     takes: u32,
@@ -241,6 +244,8 @@ impl EditorApp {
             export: None,
             export_open: false,
             sounds_open: false,
+            timelines_open: false,
+            timeline_name: String::new(),
             recorder: None,
             takes: 0,
             #[cfg(not(target_arch = "wasm32"))]
@@ -860,10 +865,122 @@ impl EditorApp {
         }
     }
 
+    /// A timeline's name as shown: the engine's English defaults ("Timeline 2", "… copy") in the
+    /// interface language.
+    fn timeline_label(&self, name: &str, index: usize) -> String {
+        let s = self.s();
+        if let Some(original) = name.strip_suffix(" copy") {
+            return fill(s.timeline_copy, &[&self.timeline_label(original, index)]);
+        }
+        match name.strip_prefix("Timeline ").and_then(|n| n.parse::<u32>().ok()) {
+            Some(n) => fill(s.timeline_n, &[&n.to_string()]),
+            None if name.is_empty() => fill(s.timeline_n, &[&(index + 1).to_string()]),
+            None => name.to_string(),
+        }
+    }
+
+    /// Switches to another timeline: the selection belonged to the old one.
+    fn timeline_command(&mut self, id: &str, params: Value) {
+        if self.execute(id, params).is_ok() {
+            self.selected = None;
+            self.playhead = self.playhead.min(self.project().duration());
+            self.timeline_name.clear();
+        }
+    }
+
+    /// The project's timelines, while open: switch, add, copy, rename, delete.
+    fn timelines_window(&mut self, ctx: &egui::Context) {
+        if !self.timelines_open {
+            return;
+        }
+        let s = self.s();
+        let p = self.project();
+        let list = p.timeline_list();
+        let current = list.iter().position(|t| t.current).unwrap_or(0);
+        if self.timeline_name.is_empty() {
+            self.timeline_name = self.timeline_label(&list[current].name, current);
+        }
+        let mut open = true;
+        let mut todo: Option<(&str, Value)> = None;
+        egui::Window::new(s.timelines)
+            .open(&mut open)
+            .anchor(egui::Align2::LEFT_TOP, [12.0, 48.0])
+            .collapsible(false)
+            .resizable(false)
+            .default_width(280.0)
+            .show(ctx, |ui| {
+                for (i, t) in list.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        let name = self.timeline_label(&t.name, i);
+                        let r = ui.selectable_label(t.current, format!("{}  {name}", icon::FILM));
+                        if r.clicked() && !t.current {
+                            todo = Some(("timeline.switch", json!({"timeline": t.id})));
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new(theme::timecode(t.duration.seconds()))
+                                    .small()
+                                    .color(theme::color::WEAK),
+                            );
+                        });
+                    });
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let edit = ui.add(egui::TextEdit::singleline(&mut self.timeline_name).desired_width(150.0));
+                    let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let name = self.timeline_name.trim().to_string();
+                    let changed = name != self.timeline_label(&list[current].name, current);
+                    if (ui.add_enabled(changed && !name.is_empty(), egui::Button::new(s.timeline_rename)).clicked()
+                        || (enter && changed && !name.is_empty()))
+                        && todo.is_none()
+                    {
+                        todo = Some(("timeline.rename", json!({"name": name})));
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui.button(format!("{}  {}", icon::ADD, s.timeline_new)).clicked() {
+                        let name = fill(s.timeline_n, &[&(list.len() + 1).to_string()]);
+                        todo = Some(("timeline.add", json!({"name": name})));
+                    }
+                    if ui.button(s.timeline_duplicate).clicked() {
+                        let name = fill(s.timeline_copy, &[&self.timeline_label(&list[current].name, current)]);
+                        todo = Some(("timeline.add", json!({"copy": true, "name": name})));
+                    }
+                    if ui
+                        .add_enabled(
+                            list.len() > 1,
+                            egui::Button::new(format!("{}  {}", icon::DELETE, s.timeline_delete)),
+                        )
+                        .clicked()
+                    {
+                        todo = Some(("timeline.remove", json!({})));
+                    }
+                });
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(s.timeline_hint).small().color(theme::color::WEAK));
+            });
+        self.timelines_open = open;
+        if let Some((id, params)) = todo {
+            self.timeline_command(id, params);
+        }
+    }
+
     fn timeline_bar(&mut self, ui: &mut egui::Ui) {
         let sel = self.selected.is_some();
         let s = self.s();
+        let p = self.project();
+        let list = p.timeline_list();
+        let current = list.iter().position(|t| t.current).unwrap_or(0);
+        let shown = self.timeline_label(&list[current].name, current);
         ui.horizontal(|ui| {
+            let label = if list.len() > 1 { format!("{shown}  ({}/{})", current + 1, list.len()) } else { shown };
+            if theme::tool(ui, icon::FILM, &label, s.timelines_tip, true).clicked() {
+                self.timelines_open = !self.timelines_open;
+                self.sounds_open &= !self.timelines_open;
+                self.timeline_name.clear();
+            }
+            ui.separator();
             if theme::tool(ui, icon::SPLIT, s.split, s.split_tip, sel).clicked() {
                 self.split();
             }
@@ -882,6 +999,7 @@ impl EditorApp {
             }
             if theme::tool(ui, icon::MUSIC, s.sounds, s.sounds_tip, true).clicked() {
                 self.sounds_open = !self.sounds_open;
+                self.timelines_open &= !self.sounds_open;
             }
             self.record_button(ui);
             ui.label(
@@ -1876,6 +1994,7 @@ impl eframe::App for EditorApp {
         self.take_dropped_files(&ctx);
         self.export_window(&ctx);
         self.sounds_window(&ctx);
+        self.timelines_window(&ctx);
         if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
             let screen = ctx.content_rect();
             let painter = ctx

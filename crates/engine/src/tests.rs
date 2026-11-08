@@ -737,3 +737,48 @@ fn a_sound_that_does_not_fit_gets_its_own_track() {
     let t = a["track"].as_str().unwrap();
     assert!(s.execute("sound.add", &json!({"sound": "pop", "at": {"seconds": 0.5}, "track": t})).is_err());
 }
+
+#[test]
+fn timelines_are_added_copied_switched_renamed_and_removed() {
+    let mut s = Session::default();
+    let c = add_red(&mut s, 0.0, 4.0);
+    let list = s.execute("timeline.list", &json!({})).unwrap();
+    assert_eq!(list["timelines"].as_array().unwrap().len(), 1);
+    assert!(s.execute("timeline.remove", &json!({})).is_err());
+
+    // a copy has the same clips under new ids and becomes the current timeline
+    let copy = s.execute("timeline.add", &json!({"copy": true})).unwrap()["timeline"].as_str().unwrap().to_string();
+    let p = s.project();
+    assert_eq!(p.timeline, copy);
+    assert_eq!(p.timelines.len(), 2);
+    assert_eq!(p.timelines[1].name, "Timeline 1 copy");
+    assert_eq!(p.duration(), Tick::SECOND * 4);
+    assert!(p.clip(&c).is_none());
+    let first = p.timelines[0].id.clone();
+
+    // edits land on the current timeline only
+    add_red(&mut s, 4.0, 2.0);
+    assert_eq!(s.project().duration(), Tick::SECOND * 6);
+    let empty =
+        s.execute("timeline.add", &json!({"name": "B-roll"})).unwrap()["timeline"].as_str().unwrap().to_string();
+    assert_eq!(s.project().duration(), Tick::ZERO);
+    assert_eq!(s.project().timelines[2].name, "B-roll");
+
+    s.execute("timeline.switch", &json!({"timeline": first})).unwrap();
+    assert!(s.project().clip(&c).is_some());
+    assert_eq!(s.project().duration(), Tick::SECOND * 4);
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert!(spec.to_string().contains("1, 0, 0") || spec.to_string().contains("solid"));
+
+    s.execute("timeline.rename", &json!({"timeline": empty, "name": "Spare"})).unwrap();
+    s.execute("timeline.remove", &json!({"timeline": empty})).unwrap();
+    s.execute("timeline.remove", &json!({})).unwrap();
+    let p = s.project();
+    assert_eq!(p.timeline, copy, "removing the current one moves to its neighbour");
+    assert_eq!(p.timelines.len(), 1);
+    assert_eq!(p.duration(), Tick::SECOND * 6);
+    assert!(s.execute("timeline.switch", &json!({"timeline": "s999"})).is_err());
+
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.project().clip(&c).is_some());
+}

@@ -12,7 +12,8 @@ browser (H.264, HEVC or AV1 through the browser's hardware encoder, WebCodecs), 
 resolution (720p to 4K), frame rate and quality, or one of four presets (`project.setExport`). A built-in
 sound library (twelve effects and four music beds, synthesised by reelforge itself, so free to
 use) adds with `sound.add`, and voice-overs record from the microphone on the desktop and in the
-browser. Titles
+browser. A project can hold several timelines (cuts) that share its media: `timeline.add` (empty or a
+copy), `timeline.switch`, `timeline.rename`, `timeline.remove`. Titles
 render with shaping, wrapping, outlines, shadows, gradients and boxes, Chinese included (a bundled
 Noto Sans SC subset covering GB 2312), and ten title templates (花字) apply a look in one step
 (`title.templates`, `"template"` on `clip.add` / `clip.set`). SubRip captions come in by dropping a
