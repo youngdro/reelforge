@@ -299,19 +299,97 @@ pub enum Fit {
     Stretch,
 }
 
-/// Text content.
+/// Text content (`text/1`).
+///
+/// The block is laid out, then its centre is placed by the layer's transform; `size` and `width`
+/// are in output pixels, before the layer's scale.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TextContent {
     /// The words; `\n` breaks a line.
     pub text: String,
-    /// A `font` asset; absent means the renderer's bundled default face.
+    /// A `font` asset; absent means the renderer's bundled default face (Noto Sans SC, which also
+    /// covers Latin). Characters the face lacks fall back to the other faces the renderer has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font: Option<String>,
     /// Size of the em in output pixels.
     pub size: f32,
     /// Fill colour.
     pub color: Color,
+    /// Weight, 100 (thin) to 900 (black); 400 is regular, 700 bold.
+    #[serde(default = "regular")]
+    pub weight: u16,
+    /// Alignment of the lines within the block.
+    #[serde(default)]
+    pub align: TextAlign,
+    /// Wrap width in output pixels; absent, lines break only at `\n`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f32>,
+    /// An outline around the glyphs, drawn beneath the fill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke: Option<TextStroke>,
+    /// A box behind the block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<TextBackground>,
+}
+
+fn regular() -> u16 {
+    400
+}
+
+impl TextContent {
+    /// Plain text: the default face, regular, centred, no wrapping, outline or box.
+    pub fn new(text: impl Into<String>, size: f32, color: Color) -> TextContent {
+        TextContent {
+            text: text.into(),
+            font: None,
+            size,
+            color,
+            weight: regular(),
+            align: TextAlign::Center,
+            width: None,
+            stroke: None,
+            background: None,
+        }
+    }
+}
+
+/// How lines line up within a text block.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum TextAlign {
+    /// Left edges line up.
+    Left,
+    /// Centred.
+    #[default]
+    Center,
+    /// Right edges line up.
+    Right,
+}
+
+/// An outline around text.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TextStroke {
+    /// Colour.
+    pub color: Color,
+    /// Width outside the glyph edge, in output pixels.
+    pub width: f32,
+}
+
+/// A box behind text.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TextBackground {
+    /// Colour.
+    pub color: Color,
+    /// Space between the text and the box edge, in ems.
+    #[serde(default = "quarter")]
+    pub padding: f32,
+}
+
+fn quarter() -> f32 {
+    0.25
 }
 
 /// A layer's placement, about the frame's centre.

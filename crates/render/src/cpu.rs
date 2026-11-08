@@ -10,8 +10,6 @@ use crate::{FrameReport, Image, MediaSource, Quality, RenderError};
 
 /// Offline slate colour: a dark red, so a missing picture is obvious.
 const SLATE: [f32; 4] = [0.18, 0.02, 0.03, 1.0];
-/// Placeholder for content this build cannot draw (text): translucent grey.
-const PLACEHOLDER: [f32; 4] = [0.25, 0.25, 0.25, 0.5];
 
 /// Draws `plan`. Media pictures come from `media`.
 pub fn composite(
@@ -54,13 +52,23 @@ pub fn composite(
                 }
             }
             PlannedSource::Text(text) => {
-                placeholder("text rendering is not implemented yet")?;
-                let lines = text.text.lines().count().max(1) as f32;
-                let chars = text.text.lines().map(|l| l.chars().count()).max().unwrap_or(1).max(1) as f32;
-                let (w, h) = ((text.size * 0.6 * chars).max(1.0), (text.size * 1.2 * lines).max(1.0));
-                // Text is sized in output pixels: scale the box by the plan's scale, not a fit.
                 let k = plan.width as f32 / spec.output.width as f32;
-                draw_sized(&mut out, layer, &Image::filled(1, 1, PLACEHOLDER), [w * k, h * k]);
+                let family = match &text.font {
+                    None => crate::text::DEFAULT_FAMILY.to_string(),
+                    Some(font) => {
+                        let Some(def) = spec.assets.get(font) else {
+                            return Err(RenderError::Media(format!("unknown asset {font:?}")));
+                        };
+                        match media.font(font, def).map_err(RenderError::Media)? {
+                            Some(bytes) => crate::text::font_family(&def.sha256, &bytes).map_err(RenderError::Media)?,
+                            None => {
+                                placeholder("font offline; drawn with the default face")?;
+                                crate::text::DEFAULT_FAMILY.to_string()
+                            }
+                        }
+                    }
+                };
+                crate::text::draw_text(&mut out, layer, text, &family, k);
             }
         }
     }
@@ -115,7 +123,7 @@ fn blit(out: &mut Image, layer: &PlannedLayer, pic: &Image, m: [f32; 6], flat: b
     }
 }
 
-fn apply_fx(p: &mut [f32; 4], fx: &[(String, Vec<(String, f32)>)]) {
+pub(crate) fn apply_fx(p: &mut [f32; 4], fx: &[(String, Vec<(String, f32)>)]) {
     for (id, params) in fx {
         let get = |name: &str, default: f32| params.iter().find(|(k, _)| k == name).map_or(default, |(_, v)| *v);
         match id.as_str() {
@@ -138,7 +146,7 @@ fn apply_fx(p: &mut [f32; 4], fx: &[(String, Vec<(String, f32)>)]) {
     }
 }
 
-fn blend(mode: Blend, s: [f32; 4], d: [f32; 4]) -> [f32; 4] {
+pub(crate) fn blend(mode: Blend, s: [f32; 4], d: [f32; 4]) -> [f32; 4] {
     let mut o = [0.0; 4];
     for i in 0..4 {
         o[i] = match mode {

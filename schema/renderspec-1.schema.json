@@ -519,12 +519,28 @@
           "additionalProperties": false,
           "description": "Set text (feature `text/1`).",
           "properties": {
+            "align": {
+              "$ref": "#/$defs/TextAlign",
+              "default": "center",
+              "description": "Alignment of the lines within the block."
+            },
+            "background": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TextBackground"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A box behind the block."
+            },
             "color": {
               "$ref": "#/$defs/Color",
               "description": "Fill colour."
             },
             "font": {
-              "description": "A `font` asset; absent means the renderer's bundled default face.",
+              "description": "A `font` asset; absent means the renderer's bundled default face (Noto Sans SC, which also\ncovers Latin). Characters the face lacks fall back to the other faces the renderer has.",
               "type": [
                 "string",
                 "null"
@@ -535,6 +551,17 @@
               "format": "float",
               "type": "number"
             },
+            "stroke": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TextStroke"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An outline around the glyphs, drawn beneath the fill."
+            },
             "text": {
               "description": "The words; `\\n` breaks a line.",
               "type": "string"
@@ -542,6 +569,22 @@
             "type": {
               "const": "text",
               "type": "string"
+            },
+            "weight": {
+              "default": 400,
+              "description": "Weight, 100 (thin) to 900 (black); 400 is regular, 700 bold.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "description": "Wrap width in output pixels; absent, lines break only at `\\n`.",
+              "format": "float",
+              "type": [
+                "number",
+                "null"
+              ]
             }
           },
           "required": [
@@ -653,6 +696,66 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "TextAlign": {
+      "description": "How lines line up within a text block.",
+      "oneOf": [
+        {
+          "const": "left",
+          "description": "Left edges line up.",
+          "type": "string"
+        },
+        {
+          "const": "center",
+          "description": "Centred.",
+          "type": "string"
+        },
+        {
+          "const": "right",
+          "description": "Right edges line up.",
+          "type": "string"
+        }
+      ]
+    },
+    "TextBackground": {
+      "additionalProperties": false,
+      "description": "A box behind text.",
+      "properties": {
+        "color": {
+          "$ref": "#/$defs/Color",
+          "description": "Colour."
+        },
+        "padding": {
+          "default": 0.25,
+          "description": "Space between the text and the box edge, in ems.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "color"
+      ],
+      "type": "object"
+    },
+    "TextStroke": {
+      "additionalProperties": false,
+      "description": "An outline around text.",
+      "properties": {
+        "color": {
+          "$ref": "#/$defs/Color",
+          "description": "Colour."
+        },
+        "width": {
+          "description": "Width outside the glyph edge, in output pixels.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "color",
+        "width"
+      ],
       "type": "object"
     },
     "Tick": {

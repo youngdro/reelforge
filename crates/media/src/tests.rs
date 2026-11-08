@@ -227,8 +227,7 @@ fn a_cancelled_export_stops_and_says_so() {
 #[test]
 fn a_spec_this_renderer_cannot_draw_is_refused_before_any_work() {
     let mut spec = two_colours();
-    spec.layers[0].content =
-        LayerContent::Text(TextContent { text: "hi".into(), font: None, size: 40.0, color: Color([1.0; 4]) });
+    spec.layers[0].fx.push(Effect { id: "blur.gaussian@1".into(), params: Default::default() });
     let r = export(&spec, &Footage::new(), Cursor::new(Vec::new()), &mut |_| panic!("no frame is drawn"));
     assert!(matches!(r, Err(ExportError::Render(RenderError::Unsupported(_)))), "{r:?}");
 }
