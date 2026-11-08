@@ -97,8 +97,9 @@ pub(crate) fn draw_sprite(out: &mut Image, layer: &PlannedLayer, sp: &Sprite, lu
         let mut px = *px;
         let uv = [((i as i32 % w) as f32 + 0.5) / w as f32, ((i as i32 / w) as f32 + 0.5) / h];
         apply_fx(&mut px, &layer.fx, uv, lut);
+        let k = layer.opacity * layer.shape.map_or(1.0, |m| m.coverage(uv, w as f32, h));
         for c in &mut px {
-            *c *= layer.opacity;
+            *c *= k;
         }
         let o = (y as u32 * out.width + x as u32) as usize;
         out.pixels[o] = blend(layer.blend, px, out.pixels[o]);

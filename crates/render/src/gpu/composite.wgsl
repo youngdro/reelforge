@@ -12,12 +12,21 @@ struct Layer {
     opacity: f32,
     // 0: the bound picture, bilinear; 1: flat colour; 2: a picture filled with `color`, bilinear
     mode: u32,
-    // 0 normal, 1 add, 2 multiply, 3 screen (only multiply is blended here; the rest are fixed
-    // function)
+    // 0 normal, 1 add, 2 multiply, 3 screen, 4 overlay, 5 darken, 6 lighten, 7 soft light,
+    // 8 hard light, 9 difference, 10 colour dodge, 11 colour burn (normal, add and screen are
+    // fixed function; the rest are blended here)
     blend: u32,
     nfx: u32,
     _pad0: u32,
     _pad1: u32,
+    // the whole picture's size; the size a mask is shaped on
+    pic: vec4<f32>,
+    // crop offset in picture pixels; mirrored x, y (1 or 0)
+    geo: vec4<f32>,
+    // mask: kind (0 none, 1 linear, 2 mirror, 3 circle, 4 rectangle), centre x, y, feather
+    mask0: vec4<f32>,
+    // mask: width, height, rotation (degrees), inverted (1 or 0)
+    mask1: vec4<f32>,
     // x: 1 brightness, 2 saturation (y: amount); 3 grade, over three slots (exposure, contrast,
     // saturation | temperature, tint, highlights, shadows | fade, vignette); 6 lookup table over
     // three slots (amount, size | domain min | domain max)
@@ -41,7 +50,7 @@ fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
 }
 
 fn texel(x: i32, y: i32) -> vec4<f32> {
-    let size = vec2<i32>(L.inv1.zw);
+    let size = vec2<i32>(L.pic.xy);
     if x < 0 || y < 0 || x >= size.x || y >= size.y {
         return vec4(0.0);
     }
@@ -153,6 +162,103 @@ fn effects(p0: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
     return p;
 }
 
+// `ShapeMask::coverage`
+fn coverage(uv: vec2<f32>) -> f32 {
+    let kind = L.mask0.x;
+    if kind == 0.0 {
+        return 1.0;
+    }
+    let w = L.pic.z;
+    let h = L.pic.w;
+    let unit = max(min(w, h), 1e-6);
+    let dx = (uv.x - L.mask0.y) * w / unit;
+    let dy = (uv.y - L.mask0.z) * h / unit;
+    let a = -radians(L.mask1.z);
+    let sn = sin(a);
+    let cs = cos(a);
+    let x = dx * cs - dy * sn;
+    let y = dx * sn + dy * cs;
+    let hw = max(L.mask1.x, 0.0) / 2.0;
+    let hh = max(L.mask1.y, 0.0) / 2.0;
+    var d: f32;
+    if kind == 1.0 {
+        d = y;
+    } else if kind == 2.0 {
+        d = abs(y) - hh;
+    } else if kind == 3.0 {
+        let rx = max(hw, 1e-6);
+        let ry = max(hh, 1e-6);
+        d = (sqrt((x / rx) * (x / rx) + (y / ry) * (y / ry)) - 1.0) * min(rx, ry);
+    } else {
+        let qx = abs(x) - hw;
+        let qy = abs(y) - hh;
+        d = sqrt(max(qx, 0.0) * max(qx, 0.0) + max(qy, 0.0) * max(qy, 0.0)) + min(max(qx, qy), 0.0);
+    }
+    var m: f32;
+    let feather = L.mask0.w;
+    if feather > 0.0 {
+        m = clamp(0.5 - d / feather, 0.0, 1.0);
+    } else if d <= 0.0 {
+        m = 1.0;
+    } else {
+        m = 0.0;
+    }
+    if L.mask1.w > 0.5 {
+        return 1.0 - m;
+    }
+    return m;
+}
+
+fn hard_light(s: f32, d: f32) -> f32 {
+    if s <= 0.5 {
+        return 2.0 * s * d;
+    }
+    let t = 2.0 * s - 1.0;
+    return d + t - d * t;
+}
+
+// `Blend::mix`: the mode's function of straight colours
+fn mix1(s: f32, d: f32) -> f32 {
+    switch L.blend {
+        case 4u: { return hard_light(d, s); }
+        case 5u: { return min(s, d); }
+        case 6u: { return max(s, d); }
+        case 7u: {
+            if s <= 0.5 {
+                return d - (1.0 - 2.0 * s) * d * (1.0 - d);
+            }
+            var g: f32;
+            if d <= 0.25 {
+                g = ((16.0 * d - 12.0) * d + 4.0) * d;
+            } else {
+                g = sqrt(d);
+            }
+            return d + (2.0 * s - 1.0) * (g - d);
+        }
+        case 8u: { return hard_light(s, d); }
+        case 9u: { return abs(s - d); }
+        case 10u: {
+            if d <= 0.0 {
+                return 0.0;
+            }
+            if s >= 1.0 {
+                return 1.0;
+            }
+            return min(d / (1.0 - s), 1.0);
+        }
+        case 11u: {
+            if d >= 1.0 {
+                return 1.0;
+            }
+            if s <= 0.0 {
+                return 0.0;
+            }
+            return 1.0 - min((1.0 - d) / s, 1.0);
+        }
+        default: { return s; }
+    }
+}
+
 @fragment
 fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let sx = L.inv0.x * pos.x + L.inv0.y * pos.y + L.inv0.z;
@@ -164,12 +270,36 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     if L.mode == 1u {
         s = L.color;
     } else {
-        s = bilinear(sx, sy);
+        // mirrored, then moved past the crop
+        var px = sx;
+        var py = sy;
+        if L.geo.z > 0.5 {
+            px = L.inv1.z - sx;
+        }
+        if L.geo.w > 0.5 {
+            py = L.inv1.w - sy;
+        }
+        s = bilinear(px + L.geo.x, py + L.geo.y);
     }
-    s = effects(s, vec2(sx / L.inv1.z, sy / L.inv1.w)) * L.opacity;
+    let uv = vec2(sx / L.inv1.z, sy / L.inv1.w);
+    s = effects(s, uv) * (L.opacity * coverage(uv));
     if L.blend == 2u {
         let d = textureLoad(dst, vec2<i32>(pos.xy), 0);
         let rgb = s.rgb * d.rgb + s.rgb * (1.0 - d.a) + d.rgb * (1.0 - s.a);
+        return vec4(rgb, s.a + d.a * (1.0 - s.a));
+    }
+    if L.blend >= 4u {
+        let d = textureLoad(dst, vec2<i32>(pos.xy), 0);
+        var cs = vec3(0.0);
+        var cd = vec3(0.0);
+        if s.a > 0.0 {
+            cs = s.rgb / s.a;
+        }
+        if d.a > 0.0 {
+            cd = d.rgb / d.a;
+        }
+        let b = vec3(mix1(cs.r, cd.r), mix1(cs.g, cd.g), mix1(cs.b, cd.b));
+        let rgb = s.rgb * (1.0 - d.a) + d.rgb * (1.0 - s.a) + s.a * d.a * b;
         return vec4(rgb, s.a + d.a * (1.0 - s.a));
     }
     return s;

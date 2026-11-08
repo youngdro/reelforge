@@ -330,6 +330,54 @@ pub fn input_schema(id: &str) -> Option<Value> {
             }
             object(props, &["clip"])
         }
+        "clip.setCrop" => {
+            let mut props = vec![clip()];
+            for edge in ["left", "top", "right", "bottom"] {
+                props.push((
+                    edge,
+                    json!({"type": "number", "minimum": 0, "exclusiveMaximum": 1, "description": "Fraction cut off this edge; at least 1 % of the picture must stay."}),
+                ));
+            }
+            props.push(("flipX", json!({"type": "boolean", "description": "Mirrored left to right."})));
+            props.push(("flipY", json!({"type": "boolean", "description": "Mirrored top to bottom."})));
+            object(props, &["clip"])
+        }
+        "clip.setBlend" => object(
+            vec![
+                clip(),
+                (
+                    "mode",
+                    json!({"enum": reelforge_model::BlendMode::ALL.map(reelforge_model::BlendMode::name), "description": "How the clip combines with the tracks below."}),
+                ),
+            ],
+            &["clip", "mode"],
+        ),
+        "clip.setMask" => object(
+            vec![
+                clip(),
+                (
+                    "shape",
+                    json!({"description": "The shape; a new one starts in the middle. null removes the mask.", "oneOf": [{"enum": reelforge_model::MaskKind::ALL.map(reelforge_model::MaskKind::name)}, {"type": "null"}]}),
+                ),
+                ("x", json!({"type": "number", "description": "Centre, as a fraction of the picture's width."})),
+                ("y", json!({"type": "number", "description": "Centre, as a fraction of the picture's height."})),
+                (
+                    "width",
+                    json!({"type": "number", "minimum": 0, "description": "In units of the picture's shorter side."}),
+                ),
+                (
+                    "height",
+                    json!({"type": "number", "minimum": 0, "description": "In units of the shorter side; a mirror's band thickness."}),
+                ),
+                ("rotation", json!({"type": "number", "description": "Clockwise turn, degrees."})),
+                (
+                    "feather",
+                    json!({"type": "number", "minimum": 0, "description": "Soft edge, in units of the shorter side; 0 is hard."}),
+                ),
+                ("invert", json!({"type": "boolean", "description": "Show the outside instead."})),
+            ],
+            &["clip"],
+        ),
         "clip.setReverse" => object(
             vec![
                 clip(),

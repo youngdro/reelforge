@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use reelforge_renderspec::{Blend, Fit, RenderSpec, effects};
+use reelforge_renderspec::{Blend, Fit, MaskShape, RenderSpec, effects};
 use reelforge_time::Tick;
 use wgpu::util::DeviceExt;
 
@@ -34,7 +34,7 @@ const DISPLAY: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// Effects one layer can carry on the GPU (the uniform's array length).
 const MAX_FX: usize = 16;
 /// The `Layer` uniform's length in 32-bit words.
-const UNIFORM: usize = 24 + MAX_FX * 4;
+const UNIFORM: usize = 40 + MAX_FX * 4;
 
 /// Why the GPU could not be used.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -99,12 +99,32 @@ struct CachedLut {
     used: u64,
 }
 
+/// The pipeline a blend mode draws with: fixed-function blending for normal, add and screen; the
+/// rest read the picture underneath and blend in the shader.
 fn blend_index(b: Blend) -> usize {
+    match b {
+        Blend::Normal => 0,
+        Blend::Add => 1,
+        Blend::Screen => 3,
+        _ => 2,
+    }
+}
+
+/// The blend mode as `composite.wgsl` numbers it.
+fn blend_code(b: Blend) -> u32 {
     match b {
         Blend::Normal => 0,
         Blend::Add => 1,
         Blend::Multiply => 2,
         Blend::Screen => 3,
+        Blend::Overlay => 4,
+        Blend::Darken => 5,
+        Blend::Lighten => 6,
+        Blend::SoftLight => 7,
+        Blend::HardLight => 8,
+        Blend::Difference => 9,
+        Blend::ColorDodge => 10,
+        Blend::ColorBurn => 11,
     }
 }
 
@@ -366,28 +386,33 @@ impl GpuCompositor {
         // every layer's uniforms and textures, before any pass borrows them
         let mut draws = Vec::new();
         for (layer, (what, lut)) in plan.layers.iter().zip(resolved) {
-            let (m, size, mode, color, picture) = match what {
+            // the map from the visible part, its size, the whole picture's size, the size a mask is
+            // shaped on
+            let (m, size, whole, shaped, mode, color, picture) = match what {
                 Resolved::Nothing => continue,
                 Resolved::Flat(color, None) => {
                     let mut l = layer.clone();
                     l.fit = Fit::Stretch;
-                    (l.matrix(1.0, 1.0, target), [1.0, 1.0], 1, color, None)
+                    (l.matrix(1.0, 1.0, target), [1.0, 1.0], [1.0, 1.0], target, 1, color, None)
                 }
                 Resolved::Flat(color, Some((w, h))) => {
-                    (layer.matrix(w as f32, h as f32, target), [w as f32, h as f32], 2, color, None)
+                    let (cw, ch) = layer.visible(w as f32, h as f32);
+                    (layer.matrix(cw, ch, target), [cw, ch], [w as f32, h as f32], [cw, ch], 2, color, None)
                 }
                 Resolved::Picture(pic) => {
                     let (w, h) = (pic.width as f32, pic.height as f32);
+                    let (cw, ch) = layer.visible(w, h);
                     let view = self.picture(&pic);
-                    (layer.matrix(w, h, target), [w, h], 0, [0.0; 4], Some(view))
+                    (layer.matrix(cw, ch, target), [cw, ch], [w, h], [cw, ch], 0, [0.0; 4], Some(view))
                 }
                 Resolved::Sprite(sp) => {
                     let (w, h) = (sp.image.width as f32, sp.image.height as f32);
                     let view = self.picture(&sp.image);
-                    ([1.0, 0.0, sp.x as f32, 0.0, 1.0, sp.y as f32], [w, h], 0, [0.0; 4], Some(view))
+                    ([1.0, 0.0, sp.x as f32, 0.0, 1.0, sp.y as f32], [w, h], [w, h], [w, h], 0, [0.0; 4], Some(view))
                 }
             };
-            let Some(uniform) = layer_uniform(layer, m, size, mode, color, target, lut.as_deref()) else { continue };
+            let sizes = Sizes { visible: size, whole, shaped };
+            let Some(uniform) = layer_uniform(layer, m, sizes, mode, color, target, lut.as_deref()) else { continue };
             let lut_view = lut.as_ref().map(|l| self.lut(l));
             let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("layer"),
@@ -395,7 +420,7 @@ impl GpuCompositor {
                 usage: wgpu::BufferUsages::UNIFORM,
             });
             let frame = self.frame.as_ref().expect("sized above");
-            let multiply = layer.blend == Blend::Multiply;
+            let multiply = blend_index(layer.blend) == 2;
             let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("layer"),
                 layout: &self.layer_layout,
@@ -441,7 +466,7 @@ impl GpuCompositor {
         };
         let mut pass = begin(&mut enc, clear);
         for (blend, bind) in &draws {
-            if *blend == blend_index(Blend::Multiply) {
+            if *blend == 2 {
                 // a pass cannot read what it draws to: copy what is underneath, then go on
                 drop(pass);
                 enc.copy_texture_to_texture(
@@ -724,17 +749,28 @@ fn adapter_has_compute(device: &wgpu::Device) -> bool {
     device.limits().max_compute_workgroups_per_dimension > 0
 }
 
+/// A layer's picture sizes, in its own pixels.
+struct Sizes {
+    /// What shows, after the crop: the box `m` maps.
+    visible: [f32; 2],
+    /// The whole picture.
+    whole: [f32; 2],
+    /// The box a mask is shaped on.
+    shaped: [f32; 2],
+}
+
 /// The `Layer` uniform of `composite.wgsl`, or `None` when the layer covers no pixel. `m` maps
-/// content pixels (a `size` box) to target pixels.
+/// the visible part of the picture to target pixels.
 fn layer_uniform(
     layer: &PlannedLayer,
     m: Affine,
-    size: [f32; 2],
+    sizes: Sizes,
     mode: u32,
     color: [f32; 4],
     target: [f32; 2],
     lut: Option<&Lut>,
 ) -> Option<[u32; UNIFORM]> {
+    let size = sizes.visible;
     let inv = invert(m)?;
     let corners = [(0.0, 0.0), (size[0], 0.0), (0.0, size[1]), (size[0], size[1])]
         .map(|(x, y)| (m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5]));
@@ -785,8 +821,43 @@ fn layer_uniform(
         .map(f),
     );
     u[16..20].copy_from_slice(&[f(target[0]), f(target[1]), f(layer.opacity), mode]);
-    u[20..24].copy_from_slice(&[blend_index(layer.blend) as u32, n as u32, 0, 0]);
-    for (slot, v) in u[24..].iter_mut().zip(fx.as_flattened()) {
+    u[20..24].copy_from_slice(&[blend_code(layer.blend), n as u32, 0, 0]);
+    let [w, h] = sizes.whole;
+    let flag = |b: bool| if b { 1.0 } else { 0.0 };
+    let (kind, mask) = match layer.shape {
+        None => (0.0, [0.0; 7]),
+        Some(sm) => (
+            match sm.shape {
+                MaskShape::Linear => 1.0,
+                MaskShape::Mirror => 2.0,
+                MaskShape::Circle => 3.0,
+                MaskShape::Rectangle => 4.0,
+            },
+            [sm.center[0], sm.center[1], sm.feather, sm.size[0], sm.size[1], sm.rotation, flag(sm.invert)],
+        ),
+    };
+    u[24..40].copy_from_slice(
+        &[
+            w,
+            h,
+            sizes.shaped[0],
+            sizes.shaped[1],
+            layer.crop[0] * w,
+            layer.crop[1] * h,
+            flag(layer.flip[0]),
+            flag(layer.flip[1]),
+            kind,
+            mask[0],
+            mask[1],
+            mask[2],
+            mask[3],
+            mask[4],
+            mask[5],
+            mask[6],
+        ]
+        .map(f),
+    );
+    for (slot, v) in u[40..].iter_mut().zip(fx.as_flattened()) {
         *slot = f(*v);
     }
     Some(u)

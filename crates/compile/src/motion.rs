@@ -278,6 +278,7 @@ mod tests {
             fade: Default::default(),
             keep_pitch: true,
             color: Default::default(),
+            look: Default::default(),
         }
     }
 

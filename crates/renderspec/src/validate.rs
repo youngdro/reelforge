@@ -127,6 +127,27 @@ pub fn validate(spec: &RenderSpec) -> Result<(), ValidationError> {
                 }
             }
         }
+        if let Some(c) = &layer.crop {
+            let v = [c.left, c.top, c.right, c.bottom];
+            if !matches!(layer.content, LayerContent::Media { .. }) {
+                return Err(bad(format!("{path}.crop"), "only media layers are cropped"));
+            }
+            if v.iter().any(|x| !(0.0..1.0).contains(x)) || c.left + c.right > 0.99 || c.top + c.bottom > 0.99 {
+                return Err(bad(
+                    format!("{path}.crop"),
+                    "each edge must be 0 to 1, leaving at least 1 % of the picture",
+                ));
+            }
+        }
+        if (layer.flip_x || layer.flip_y) && !matches!(layer.content, LayerContent::Media { .. }) {
+            return Err(bad(format!("{path}.flip_x"), "only media layers are mirrored"));
+        }
+        if let Some(m) = &layer.shape_mask {
+            let v = [m.center[0], m.center[1], m.size[0], m.size[1], m.rotation, m.feather];
+            if v.iter().any(|x| !x.is_finite()) || m.size.iter().any(|x| *x < 0.0) || m.feather < 0.0 {
+                return Err(bad(format!("{path}.shape_mask"), "needs finite values, a size and feather of 0 or more"));
+            }
+        }
         if let Some(mask) = &layer.mask {
             asset_of_kind(spec, &format!("{path}.mask"), mask, &[AssetKind::MaskSequence])?;
         }
@@ -255,6 +276,10 @@ mod tests {
             blend: Blend::Normal,
             mask: None,
             fx: vec![],
+            crop: None,
+            flip_x: false,
+            flip_y: false,
+            shape_mask: None,
         });
         s
     }

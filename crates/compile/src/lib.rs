@@ -9,12 +9,13 @@
 use std::collections::BTreeMap;
 
 use reelforge_model::{
-    Adjust, Clip, ClipContent, MediaKind, Project, Prop, Timing, TitleAlign, Track, TrackKind, TransitionKind,
+    Adjust, BlendMode, Clip, ClipContent, Mask, MaskKind, MediaKind, Project, Prop, Timing, TitleAlign, Track,
+    TrackKind, TransitionKind,
 };
 use reelforge_renderspec::{
-    Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Blend, Color, Ease, Effect, Fit, Key, Layer,
-    LayerContent, Output, Probe, RenderSpec, SpeedKey, TextAlign, TextBackground, TextContent, TextShadow, TextStroke,
-    TimeMap, Transform, VideoCodec, VideoEncoding, effects, validate,
+    Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Blend, Color, Crop, Ease, Effect, Fit, Key,
+    Layer, LayerContent, MaskShape, Output, Probe, RenderSpec, ShapeMask, SpeedKey, TextAlign, TextBackground,
+    TextContent, TextShadow, TextStroke, TimeMap, Transform, VideoCodec, VideoEncoding, effects, validate,
 };
 use reelforge_time::Tick;
 use thiserror::Error;
@@ -22,6 +23,41 @@ use thiserror::Error;
 mod motion;
 
 use motion::{Overlay, Shape};
+
+/// A clip's blend mode as RenderSpec spells it.
+fn blend(m: BlendMode) -> Blend {
+    match m {
+        BlendMode::Normal => Blend::Normal,
+        BlendMode::Add => Blend::Add,
+        BlendMode::Multiply => Blend::Multiply,
+        BlendMode::Screen => Blend::Screen,
+        BlendMode::Overlay => Blend::Overlay,
+        BlendMode::Darken => Blend::Darken,
+        BlendMode::Lighten => Blend::Lighten,
+        BlendMode::SoftLight => Blend::SoftLight,
+        BlendMode::HardLight => Blend::HardLight,
+        BlendMode::Difference => Blend::Difference,
+        BlendMode::ColorDodge => Blend::ColorDodge,
+        BlendMode::ColorBurn => Blend::ColorBurn,
+    }
+}
+
+/// A clip's mask as RenderSpec spells it.
+fn shape_mask(m: Mask) -> ShapeMask {
+    ShapeMask {
+        shape: match m.kind {
+            MaskKind::Linear => MaskShape::Linear,
+            MaskKind::Mirror => MaskShape::Mirror,
+            MaskKind::Circle => MaskShape::Circle,
+            MaskKind::Rectangle => MaskShape::Rectangle,
+        },
+        center: m.center,
+        size: m.size,
+        rotation: m.rotation,
+        feather: m.feather,
+        invert: m.invert,
+    }
+}
 
 /// Why a project could not be lowered.
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -110,6 +146,7 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
             let picture = track.kind != TrackKind::Audio && !track.hidden;
             if picture {
                 let shape = shape(clip, cuts[i], cuts.get(i + 1).copied().flatten());
+                let media = matches!(clip.content, ClipContent::Media { .. });
                 let content = match &clip.content {
                     ClipContent::Media { media, .. } => LayerContent::Media {
                         asset: asset_for(media)?,
@@ -160,8 +197,15 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                         rotation: motion::lower(clip, Prop::Rotation, &shape, step),
                     },
                     opacity: motion::lower(clip, Prop::Opacity, &shape, step),
-                    blend: Blend::Normal,
+                    blend: blend(clip.look.blend),
                     mask: None,
+                    crop: (media && !clip.look.crop.is_zero()).then(|| {
+                        let c = clip.look.crop;
+                        Crop { left: c.left, top: c.top, right: c.right, bottom: c.bottom }
+                    }),
+                    flip_x: media && clip.look.flip_x,
+                    flip_y: media && clip.look.flip_y,
+                    shape_mask: clip.look.mask.map(shape_mask),
                     fx: {
                         let mut fx = color_fx(clip, &mut asset_for)?;
                         fx.extend(clip.effects.iter().map(|e| Effect {
@@ -190,6 +234,10 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                         blend: Blend::Normal,
                         mask: None,
                         fx: vec![],
+                        crop: None,
+                        flip_x: false,
+                        flip_y: false,
+                        shape_mask: None,
                     });
                 }
             }
@@ -321,6 +369,7 @@ mod tests {
             fade: Default::default(),
             keep_pitch: true,
             color: Default::default(),
+            look: Default::default(),
         }
     }
 

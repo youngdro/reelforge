@@ -30,6 +30,10 @@ fn spec_with(text: TextContent) -> RenderSpec {
         blend: Blend::Normal,
         mask: None,
         fx: vec![],
+        crop: None,
+        flip_x: false,
+        flip_y: false,
+        shape_mask: None,
     });
     s
 }

@@ -2,9 +2,9 @@
 
 use reelforge_compile::{CompileOptions, compile};
 use reelforge_model::{
-    Adjust, AnimKind, Animation, Clip, ClipContent, ClipEffect, ClipTransform, CurvePoint, CurvePreset, Ease, Filter,
-    FilterKind, Key, LutUse, Media, MediaKind, Outline, Project, Prop, Shadow, TitleStyle, Track, TrackKind,
-    Transition, TransitionKind, anim, timing,
+    Adjust, AnimKind, Animation, BlendMode, Clip, ClipContent, ClipEffect, ClipTransform, CurvePoint, CurvePreset,
+    Ease, Filter, FilterKind, Key, LutUse, Mask, MaskKind, Media, MediaKind, Outline, Project, Prop, Shadow,
+    TitleStyle, Track, TrackKind, Transition, TransitionKind, anim, timing,
 };
 use reelforge_renderspec::AssetKind;
 use reelforge_time::{FrameRate, Tick};
@@ -224,6 +224,33 @@ static REGISTRY: &[CommandSpec] = &[
         edits: true,
         enabled: always,
         run: clip_set_color,
+    },
+    CommandSpec {
+        id: "clip.setCrop",
+        label: "Crop",
+        params: r#"{"clip": id, "left"?: 0-1, "top"?: 0-1, "right"?: 0-1, "bottom"?: 0-1, "flipX"?: bool, "flipY"?: bool}"#,
+        doc: "Cuts edges off a video or picture clip (fractions of its width or height) and mirrors it. At least 1 % must stay.",
+        edits: true,
+        enabled: always,
+        run: clip_set_crop,
+    },
+    CommandSpec {
+        id: "clip.setBlend",
+        label: "Blend Mode",
+        params: r#"{"clip": id, "mode": "normal"|"add"|"multiply"|"screen"|"overlay"|"darken"|"lighten"|"softLight"|"hardLight"|"difference"|"colorDodge"|"colorBurn"}"#,
+        doc: "Sets how a picture clip combines with the tracks below it.",
+        edits: true,
+        enabled: always,
+        run: clip_set_blend,
+    },
+    CommandSpec {
+        id: "clip.setMask",
+        label: "Mask",
+        params: r#"{"clip": id, "shape"?: "linear"|"mirror"|"circle"|"rectangle"|null, "x"?: 0-1, "y"?: 0-1, "width"?, "height"?, "rotation"?: degrees, "feather"?, "invert"?: bool}"#,
+        doc: "Shows only part of a picture clip: inside a shape placed on the picture (centre `x`, `y` as fractions of it; `width`, `height` and `feather` in units of its shorter side). A new shape starts in the middle; null removes the mask.",
+        edits: true,
+        enabled: always,
+        run: clip_set_mask,
     },
     CommandSpec {
         id: "clip.addEffect",
@@ -578,6 +605,7 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
             fade: Default::default(),
             keep_pitch: true,
             color: Default::default(),
+            look: Default::default(),
         };
         proj.track_mut(&track_id).expect("found above").clips.push(clip);
         Ok(json!({ "clip": id, "start": start, "duration": duration }))
@@ -1204,6 +1232,123 @@ fn clip_set_color(s: &mut Session, v: &Value) -> CmdResult {
         c.adjust = Adjust::from_values(values);
         Ok(json!({ "clip": id, "color": serde_json::to_value(&clip.color).expect("serialises") }))
     })
+}
+
+fn clip_set_crop(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let mut edges = [None; 4];
+    for (i, name) in ["left", "top", "right", "bottom"].into_iter().enumerate() {
+        if let Some(x) = p.opt_f64(name)? {
+            if !(0.0..1.0).contains(&x) {
+                return Err(EngineError::Params(format!("`{name}` must be 0 to below 1")));
+            }
+            edges[i] = Some(x as f32);
+        }
+    }
+    let (flip_x, flip_y) = (p.opt_bool("flipX")?, p.opt_bool("flipY")?);
+    s.edit("Crop", |proj| {
+        let (_, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        let picture = match &clip.content {
+            ClipContent::Media { media, .. } => proj.media.get(media).is_some_and(|m| m.kind != MediaKind::Audio),
+            _ => false,
+        };
+        if !picture {
+            return Err(EngineError::Params("only video and picture clips can be cropped or mirrored".into()));
+        }
+        let clip = proj.clip_mut(&id).expect("found above");
+        let look = &mut clip.look;
+        let c = &mut look.crop;
+        for (slot, x) in [&mut c.left, &mut c.top, &mut c.right, &mut c.bottom].into_iter().zip(edges) {
+            if let Some(x) = x {
+                *slot = x;
+            }
+        }
+        look.flip_x = flip_x.unwrap_or(look.flip_x);
+        look.flip_y = flip_y.unwrap_or(look.flip_y);
+        if let Some(why) = look.problem() {
+            return Err(EngineError::Params(why.into()));
+        }
+        Ok(json!({ "clip": id, "look": serde_json::to_value(&clip.look).expect("serialises") }))
+    })
+}
+
+fn clip_set_blend(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let mode = BlendMode::parse(p.str("mode")?).ok_or_else(|| {
+        EngineError::Params(format!("`mode` must be one of {}", BlendMode::ALL.map(BlendMode::name).join(", ")))
+    })?;
+    s.edit("Blend Mode", |proj| {
+        let clip = picture_clip(proj, &id, "blend")?;
+        clip.look.blend = mode;
+        Ok(json!({ "clip": id, "blend": mode.name() }))
+    })
+}
+
+fn clip_set_mask(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let shape = match p.v.get("shape") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(Value::String(k)) => Some(Some(MaskKind::parse(k).ok_or_else(|| {
+            EngineError::Params(format!(
+                "`shape` must be null or one of {}",
+                MaskKind::ALL.map(MaskKind::name).join(", ")
+            ))
+        })?)),
+        Some(_) => return Err(EngineError::Params("`shape` must be a name or null".into())),
+    };
+    let num = |name: &str| -> Result<Option<f32>, EngineError> {
+        match p.opt_f64(name)? {
+            Some(x) if !x.is_finite() => Err(EngineError::Params(format!("`{name}` must be a number"))),
+            x => Ok(x.map(|x| x as f32)),
+        }
+    };
+    let (x, y, w, h, rotation, feather) =
+        (num("x")?, num("y")?, num("width")?, num("height")?, num("rotation")?, num("feather")?);
+    let invert = p.opt_bool("invert")?;
+    s.edit("Mask", |proj| {
+        let clip = picture_clip(proj, &id, "have a mask")?;
+        match shape {
+            Some(None) => clip.look.mask = None,
+            Some(Some(kind)) => match &mut clip.look.mask {
+                Some(m) => m.kind = kind,
+                None => clip.look.mask = Some(Mask::new(kind)),
+            },
+            None => {}
+        }
+        let tweaks = [x, y, w, h, rotation, feather].iter().any(Option::is_some) || invert.is_some();
+        match &mut clip.look.mask {
+            Some(m) => {
+                let [cx, cy] = &mut m.center;
+                let [sw, sh] = &mut m.size;
+                let slots = [cx, cy, sw, sh, &mut m.rotation, &mut m.feather];
+                for (slot, v) in slots.into_iter().zip([x, y, w, h, rotation, feather]) {
+                    if let Some(v) = v {
+                        *slot = v;
+                    }
+                }
+                m.invert = invert.unwrap_or(m.invert);
+            }
+            None if tweaks => return Err(EngineError::Params("the clip has no mask; give a `shape`".into())),
+            None => {}
+        }
+        if let Some(why) = clip.look.problem() {
+            return Err(EngineError::Params(why.into()));
+        }
+        Ok(json!({ "clip": id, "mask": serde_json::to_value(clip.look.mask).expect("serialises") }))
+    })
+}
+
+/// The clip `id` on a picture track, for what `what` needs.
+fn picture_clip<'a>(proj: &'a mut Project, id: &str, what: &str) -> Result<&'a mut Clip, EngineError> {
+    let (ti, _) = proj.clip(id).ok_or_else(|| not_found("clip", id))?;
+    if proj.tracks[ti].kind == TrackKind::Audio {
+        return Err(EngineError::Params(format!("only picture clips can {what}")));
+    }
+    Ok(proj.clip_mut(id).expect("found above"))
 }
 
 /// The media clip `id`, refusing freeze frames and stills for what `what` needs.

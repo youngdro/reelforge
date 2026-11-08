@@ -79,6 +79,10 @@ fn layer(id: &str, content: LayerContent) -> Layer {
         blend: Blend::Normal,
         mask: None,
         fx: vec![],
+        crop: None,
+        flip_x: false,
+        flip_y: false,
+        shape_mask: None,
     }
 }
 
@@ -299,4 +303,59 @@ fn cpu_yuv(img: &Image) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         }
     }
     (y, u, v)
+}
+
+#[test]
+fn crops_flips_masks_and_every_blend_match() {
+    let pic = picture(60, 40);
+    for (k, shape) in
+        [MaskShape::Linear, MaskShape::Mirror, MaskShape::Circle, MaskShape::Rectangle].into_iter().enumerate()
+    {
+        let mut s = base(64, 96);
+        // a backdrop for the blends to work on
+        s.layers.push(layer("under", LayerContent::Solid { color: Color([0.2, 0.5, 0.8, 1.0]) }));
+        let i = with_picture(&mut s, Fit::Contain);
+        s.layers[i].crop = Some(Crop { left: 0.1, top: 0.2, right: 0.25, bottom: 0.05 });
+        s.layers[i].flip_x = k % 2 == 0;
+        s.layers[i].flip_y = k >= 2;
+        s.layers[i].transform.rotation = Animated::Constant(12.0);
+        s.layers[i].shape_mask = Some(ShapeMask {
+            shape,
+            center: [0.45, 0.55],
+            size: [0.5, 0.3],
+            rotation: 20.0,
+            feather: 0.08 * k as f32,
+            invert: k == 1,
+        });
+        same(&s, Tick::ZERO, 1.0, &Pictures(pic.clone()), Quality::Final);
+    }
+    for blend in [
+        Blend::Overlay,
+        Blend::Darken,
+        Blend::Lighten,
+        Blend::SoftLight,
+        Blend::HardLight,
+        Blend::Difference,
+        Blend::ColorDodge,
+        Blend::ColorBurn,
+    ] {
+        let mut s = base(48, 48);
+        s.layers.push(layer("under", LayerContent::Solid { color: Color([0.3, 0.6, 0.45, 0.9]) }));
+        let i = with_picture(&mut s, Fit::Cover);
+        s.layers[i].blend = blend;
+        s.layers[i].opacity = Animated::Constant(0.8);
+        // a solid masked by a circle on top, blended too
+        let mut dot = layer("dot", LayerContent::Solid { color: Color([0.9, 0.4, 0.1, 1.0]) });
+        dot.blend = blend;
+        dot.shape_mask = Some(ShapeMask {
+            shape: MaskShape::Circle,
+            center: [0.5, 0.5],
+            size: [0.6, 0.6],
+            rotation: 0.0,
+            feather: 0.1,
+            invert: false,
+        });
+        s.layers.push(dot);
+        same(&s, Tick::ZERO, 1.0, &Pictures(picture(48, 48)), Quality::Final);
+    }
 }

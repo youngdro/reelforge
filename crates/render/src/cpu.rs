@@ -147,8 +147,9 @@ fn draw(out: &mut Image, layer: &PlannedLayer, pic: &Image, target: [f32; 2], fi
         draw_sized(out, layer, pic, target, lut);
         return;
     }
-    let m = layer.matrix(pic.width as f32, pic.height as f32, target);
-    blit(out, layer, pic, m, false, lut);
+    let (cw, ch) = layer.visible(pic.width as f32, pic.height as f32);
+    let m = layer.matrix(cw, ch, target);
+    blit(out, layer, pic, m, None, lut);
 }
 
 /// Draws a flat picture as a box of `size` target pixels placed by the layer.
@@ -157,13 +158,16 @@ fn draw_sized(out: &mut Image, layer: &PlannedLayer, pic: &Image, size: [f32; 2]
     l.fit = reelforge_renderspec::Fit::Stretch;
     // A 1x1 picture stretched to `size`: matrix for a `size` box, then scale content down.
     let m = l.matrix(1.0, 1.0, size);
-    blit(out, &l, pic, m, true, lut);
+    blit(out, &l, pic, m, Some(size), lut);
 }
 
-fn blit(out: &mut Image, layer: &PlannedLayer, pic: &Image, m: [f32; 6], flat: bool, lut: Option<&Lut>) {
+/// Draws `pic` mapped by `m`. `flat` is a 1-pixel picture stretched over a box of that size.
+fn blit(out: &mut Image, layer: &PlannedLayer, pic: &Image, m: [f32; 6], flat: Option<[f32; 2]>, lut: Option<&Lut>) {
     let Some(inv) = invert(m) else { return };
     let (pw, ph) = (pic.width as f32, pic.height as f32);
-    let (cw, ch) = if flat { (1.0, 1.0) } else { (pw, ph) };
+    let (cw, ch) = if flat.is_some() { (1.0, 1.0) } else { layer.visible(pw, ph) };
+    // a mask is shaped on the picture as it is seen
+    let [mw, mh] = flat.unwrap_or([cw, ch]);
     // Bounding box of the placed content.
     let corners = [(0.0, 0.0), (cw, 0.0), (0.0, ch), (cw, ch)]
         .map(|(x, y)| (m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5]));
@@ -178,10 +182,17 @@ fn blit(out: &mut Image, layer: &PlannedLayer, pic: &Image, m: [f32; 6], flat: b
             if sx < 0.0 || sy < 0.0 || sx >= cw || sy >= ch {
                 continue;
             }
-            let mut s = if flat { pic.pixels[0] } else { pic.sample(sx, sy) };
-            apply_fx(&mut s, &layer.fx, [sx / cw, sy / ch], lut);
+            let mut s = if flat.is_some() {
+                pic.pixels[0]
+            } else {
+                let (px, py) = layer.in_picture(sx, sy, cw, ch, pw, ph);
+                pic.sample(px, py)
+            };
+            let uv = [sx / cw, sy / ch];
+            apply_fx(&mut s, &layer.fx, uv, lut);
+            let k = layer.opacity * layer.shape.map_or(1.0, |m| m.coverage(uv, mw, mh));
             for c in &mut s {
-                *c *= layer.opacity;
+                *c *= k;
             }
             let i = (y * out.width + x) as usize;
             out.pixels[i] = blend(layer.blend, s, out.pixels[i]);
@@ -265,6 +276,18 @@ pub(crate) fn grade(p: &mut [f32; 4], g: [f32; 9], uv: [f32; 2]) {
 }
 
 pub(crate) fn blend(mode: Blend, s: [f32; 4], d: [f32; 4]) -> [f32; 4] {
+    if mode.is_v2() {
+        // the W3C separable blend on straight colours, composited premultiplied
+        let (sa, da) = (s[3], d[3]);
+        let mut o = [0.0; 4];
+        for i in 0..3 {
+            let cs = if sa > 0.0 { s[i] / sa } else { 0.0 };
+            let cd = if da > 0.0 { d[i] / da } else { 0.0 };
+            o[i] = s[i] * (1.0 - da) + d[i] * (1.0 - sa) + sa * da * mode.mix(cs, cd);
+        }
+        o[3] = sa + da * (1.0 - sa);
+        return o;
+    }
     let mut o = [0.0; 4];
     for i in 0..4 {
         o[i] = match mode {

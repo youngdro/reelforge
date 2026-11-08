@@ -26,6 +26,10 @@ fn layer(id: &str, at: Tick, dur: Tick, content: LayerContent) -> Layer {
         blend: Blend::Normal,
         mask: None,
         fx: vec![],
+        crop: None,
+        flip_x: false,
+        flip_y: false,
+        shape_mask: None,
     }
 }
 
