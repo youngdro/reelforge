@@ -35,7 +35,7 @@ use i18n::{Lang, Strings, fill};
 use reelforge_compile::{CompileOptions, compile};
 use reelforge_engine::{Session, SharedSession};
 use reelforge_media::Footage;
-use reelforge_model::{AnimKind, ClipContent, ClipTransform, MediaKind, Project, Prop, TrackKind};
+use reelforge_model::{AnimKind, ClipContent, ClipTransform, MediaKind, Project, Prop, TrackKind, TransitionKind};
 use reelforge_render::{Quality, render_frame};
 use reelforge_time::Tick;
 use serde_json::{Value, json};
@@ -142,6 +142,9 @@ struct Inspector {
     title: Option<Title>,
     /// Picture clips: the in and out animations, with their lengths in seconds.
     anim: Option<[Option<(AnimKind, f32)>; 2]>,
+    /// Clips on a video track: the transition into it with its length in seconds, and whether a
+    /// clip ends where it starts (so one can play).
+    transition: Option<(Option<(TransitionKind, f32)>, bool)>,
 }
 
 /// Whether a property has a keyframe at the playhead.
@@ -829,6 +832,10 @@ impl EditorApp {
                 _ => None,
             },
             anim: picture.then(|| [anim_of(clip.anim.enter), anim_of(clip.anim.exit)]),
+            transition: p.clip(&id).filter(|(ti, _)| p.tracks[*ti].kind == TrackKind::Video).map(|(ti, _)| {
+                let touching = p.tracks[ti].clips.iter().any(|c| c.end() == clip.start);
+                (clip.transition.map(|t| (t.kind, t.duration.seconds() as f32)), touching)
+            }),
         };
         // reloaded when the project changes (a drag in the preview, undo, another editor) or the
         // playhead moves
@@ -1080,6 +1087,48 @@ impl EditorApp {
                     });
                 });
             }
+            if let Some((current_t, touching)) = &mut edit.transition {
+                ui.add_space(6.0);
+                theme::section(ui, s.sec_transition, |ui| {
+                    if !*touching {
+                        ui.label(egui::RichText::new(s.transition_needs_neighbour).small().color(theme::color::WEAK));
+                        return;
+                    }
+                    ui.horizontal(|ui| {
+                        let shown = current_t.map_or(s.anim_none, |(k, _)| {
+                            s.transition_kinds[TransitionKind::ALL.iter().position(|x| *x == k).unwrap_or(0)]
+                        });
+                        let mut picked = current_t.map(|(k, _)| k);
+                        egui::ComboBox::from_id_salt("transition").selected_text(shown).width(130.0).show_ui(
+                            ui,
+                            |ui| {
+                                ui.selectable_value(&mut picked, None, s.anim_none);
+                                for (k, name) in TransitionKind::ALL.into_iter().zip(s.transition_kinds.iter()) {
+                                    ui.selectable_value(&mut picked, Some(k), *name);
+                                }
+                            },
+                        );
+                        if picked != current_t.map(|(k, _)| k) {
+                            actions.push((
+                                "clip.setTransition",
+                                json!({"clip": id, "kind": picked.map(TransitionKind::name)}),
+                            ));
+                        }
+                        if let Some((kind, secs)) = current_t {
+                            let r = ui.add(
+                                egui::DragValue::new(secs).speed(0.02).range(0.1..=3.0).suffix(" s").max_decimals(2),
+                            );
+                            if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                                actions.push((
+                                    "clip.setTransition",
+                                    json!({"clip": id, "kind": kind.name(), "duration": {"seconds": *secs}}),
+                                ));
+                            }
+                            r.on_hover_text(s.anim_length);
+                        }
+                    });
+                });
+            }
         });
         // a colour is committed once the pointer lets go of the picker
         let picked = self.inspector.as_ref().is_some_and(|e| e.color != current.color);
@@ -1157,8 +1206,14 @@ impl EditorApp {
         // an empty timeline does not compile: the background is drawn alone
         let spec = if changed { compile(&p, &CompileOptions { encode: false }).ok() } else { None };
         if changed {
-            self.outlines =
-                spec.as_ref().map(|spec| reelforge_render::layer_outlines(spec, at, &*self.media)).unwrap_or_default();
+            // layers that are not clips (a transition's colour dip) cannot be picked
+            self.outlines = spec
+                .as_ref()
+                .map(|spec| reelforge_render::layer_outlines(spec, at, &*self.media))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(id, _)| !id.contains('~'))
+                .collect();
         }
         if changed && let Some(g) = &mut self.gpu {
             g.texture = None;

@@ -311,6 +311,18 @@ impl TimelineView {
                     &seconds_of,
                 );
             }
+            // transitions on the cuts they play on
+            if track.kind == TrackKind::Video && ghost.is_none() {
+                for pair in track.clips.windows(2) {
+                    if let Some(t) = pair[1].transition
+                        && pair[0].end() == pair[1].start
+                    {
+                        let len = t.duration.min(pair[0].duration).min(pair[1].duration);
+                        let w = x_of(pair[1].start + len) - x_of(pair[1].start);
+                        paint_cut(&lane, x_of(pair[1].start), top + ROW / 2.0, w);
+                    }
+                }
+            }
             // a clip dragged here from another track
             if let Some((g, ga, gb, gt)) = &ghost
                 && *gt == track.id
@@ -619,6 +631,22 @@ fn paint_motion(painter: &egui::Painter, r: Rect, clip: &reelforge_model::Clip, 
             fill,
             Stroke::new(1.0, Color32::from_black_alpha(160)),
         );
+    }
+}
+
+/// A transition's mark on a cut: a bow tie in a small badge, `w` wide where the transition plays.
+pub(crate) fn paint_cut(painter: &egui::Painter, x: f32, mid: f32, w: f32) {
+    let w = w.clamp(14.0, 40.0);
+    let badge = Rect::from_center_size(egui::pos2(x, mid), vec2(w, 14.0));
+    painter.rect_filled(badge, CornerRadius::same(4), Color32::from_black_alpha(170));
+    painter.rect_stroke(badge, CornerRadius::same(4), Stroke::new(1.0, color::ACCENT), StrokeKind::Inside);
+    let c = badge.center();
+    for s in [-1.0f32, 1.0] {
+        painter.add(egui::Shape::convex_polygon(
+            vec![c, c + vec2(4.0 * s, -4.0), c + vec2(4.0 * s, 4.0)],
+            color::ACCENT,
+            Stroke::NONE,
+        ));
     }
 }
 

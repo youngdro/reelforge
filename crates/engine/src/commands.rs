@@ -3,7 +3,7 @@
 use reelforge_compile::{CompileOptions, compile};
 use reelforge_model::{
     AnimKind, Animation, Clip, ClipContent, ClipEffect, ClipTransform, Ease, Key, Media, MediaKind, Outline, Project,
-    Prop, Shadow, TitleStyle, Track, TrackKind, anim,
+    Prop, Shadow, TitleStyle, Track, TrackKind, Transition, TransitionKind, anim,
 };
 use reelforge_renderspec::AssetKind;
 use reelforge_time::{FrameRate, Tick};
@@ -232,6 +232,15 @@ static REGISTRY: &[CommandSpec] = &[
         edits: true,
         enabled: always,
         run: clip_set_animation,
+    },
+    CommandSpec {
+        id: "clip.setTransition",
+        label: "Transition",
+        params: r#"{"clip": id, "kind": "dissolve"|"fadeBlack"|"fadeWhite"|"pushLeft"|"pushRight"|"pushUp"|"pushDown"|"slideLeft"|"slideRight"|"slideUp"|"slideDown"|"zoom"|null, "duration"?: time}"#,
+        doc: "Puts a transition from the clip before on a video track into this one, centred on the cut (null removes it); 0.5 s unless `duration` is given. It plays while the two clips touch.",
+        edits: true,
+        enabled: always,
+        run: clip_set_transition,
     },
     CommandSpec {
         id: "edit.undo",
@@ -520,6 +529,7 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
             effects: vec![],
             keys: Default::default(),
             anim: Default::default(),
+            transition: None,
         };
         proj.track_mut(&track_id).expect("found above").clips.push(clip);
         Ok(json!({ "clip": id, "start": start, "duration": duration }))
@@ -547,6 +557,7 @@ fn clip_split(s: &mut Session, v: &Value) -> CmdResult {
         // the out animation on the right
         right.shift_keys(-left_len);
         right.anim.enter = None;
+        right.transition = None;
         let right_id = right.id.clone();
         proj.tracks[ti].clips.push(right);
         let left = proj.clip_mut(&id).expect("exists");
@@ -940,6 +951,44 @@ fn clip_set_animation(s: &mut Session, v: &Value) -> CmdResult {
             duration: duration.or(slot_ref.map(|a| a.duration)).unwrap_or(ANIMATION_LENGTH),
         });
         Ok(json!({ "clip": id, "anim": serde_json::to_value(clip.anim).expect("serialises") }))
+    })
+}
+
+fn clip_set_transition(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let kind = match p.opt_str("kind")? {
+        None => None,
+        Some(k) => Some(TransitionKind::parse(k).ok_or_else(|| {
+            EngineError::Params(format!(
+                "`kind` must be null or one of {}",
+                TransitionKind::ALL.map(TransitionKind::name).join(", ")
+            ))
+        })?),
+    };
+    let duration = p.opt_time("duration")?;
+    if duration.is_some_and(|d| d <= Tick::ZERO) {
+        return Err(EngineError::Params("`duration` must be positive".into()));
+    }
+    s.edit("Transition", |proj| {
+        let (ti, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        let track = &proj.tracks[ti];
+        if kind.is_some() {
+            if track.kind != TrackKind::Video {
+                return Err(EngineError::Params("transitions go between clips on a video track".into()));
+            }
+            if !track.clips.iter().any(|c| c.end() == clip.start) {
+                return Err(EngineError::Refused(
+                    "no clip ends where this one starts; move them together first".into(),
+                ));
+            }
+        }
+        let clip = proj.clip_mut(&id).expect("found above");
+        clip.transition = kind.map(|kind| Transition {
+            kind,
+            duration: duration.or(clip.transition.map(|t| t.duration)).unwrap_or(ANIMATION_LENGTH),
+        });
+        Ok(json!({ "clip": id, "transition": serde_json::to_value(clip.transition).expect("serialises") }))
     })
 }
 

@@ -18,8 +18,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod anim;
+pub mod transition;
 
-pub use anim::{AnimKind, Animation, Animations, Ease, Key, Keys, Prop};
+pub use anim::{AnimKind, Animation, Animations, Ease, Key, Keys, Offset, Prop};
+pub use transition::{Transition, TransitionKind};
 
 /// The document version this build writes. Older documents keep loading.
 pub const DOCUMENT_VERSION: u32 = 1;
@@ -152,6 +154,9 @@ pub struct Clip {
     /// In and out animations.
     #[serde(default, skip_serializing_if = "Animations::is_empty")]
     pub anim: Animations,
+    /// A transition from the clip before it, when that clip ends where this one starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<Transition>,
 }
 
 fn one() -> f32 {
@@ -456,6 +461,9 @@ impl Project {
                 if [clip.anim.enter, clip.anim.exit].iter().flatten().any(|a| a.duration <= Tick::ZERO) {
                     return motion("an animation must have a positive length");
                 }
+                if clip.transition.is_some_and(|t| t.duration <= Tick::ZERO) {
+                    return motion("a transition must have a positive length");
+                }
                 let fits = match &clip.content {
                     ClipContent::Media { media, speed, .. } => {
                         let Some(m) = self.media.get(media) else {
@@ -533,6 +541,7 @@ mod tests {
             effects: vec![],
             keys: Default::default(),
             anim: Default::default(),
+            transition: None,
         }
     }
 

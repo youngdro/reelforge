@@ -354,6 +354,27 @@ fn animations_are_set_kept_apart_by_a_split_and_compiled() {
 }
 
 #[test]
+fn transitions_need_touching_clips_on_a_video_track() {
+    let mut s = Session::default();
+    let a = add_red(&mut s, 0.0, 2.0);
+    let b = add_red(&mut s, 3.0, 2.0);
+    let e = s.execute("clip.setTransition", &json!({"clip": b, "kind": "dissolve"})).unwrap_err().to_string();
+    assert!(e.contains("move them together"), "{e}");
+    s.execute("clip.move", &json!({"clip": b, "start": {"seconds": 2}})).unwrap();
+    s.execute("clip.setTransition", &json!({"clip": b, "kind": "pushLeft", "duration": {"seconds": 0.8}})).unwrap();
+    assert!(s.execute("clip.setTransition", &json!({"clip": a, "kind": "zoom"})).is_err());
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert_eq!(spec["layers"][1]["at"], json!(Tick::from_seconds(1.6).0));
+    // splitting the incoming clip keeps the transition on its left half
+    let r = s.execute("clip.split", &json!({"clip": b, "at": {"seconds": 3}})).unwrap();
+    let p = s.project();
+    assert!(p.clip(&b).unwrap().1.transition.is_some());
+    assert!(p.clip(r["right"].as_str().unwrap()).unwrap().1.transition.is_none());
+    s.execute("clip.setTransition", &json!({"clip": b, "kind": null})).unwrap();
+    assert!(s.project().clip(&b).unwrap().1.transition.is_none());
+}
+
+#[test]
 fn title_templates_restyle_a_title_in_one_step() {
     let mut s = Session::default();
     let text = s.project().tracks.iter().find(|t| t.kind == TrackKind::Text).unwrap().id.clone();
