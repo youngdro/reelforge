@@ -83,7 +83,7 @@ impl Playback {
             self.device = match self.open() {
                 Ok(stream) => Device::Open(stream),
                 Err(e) => {
-                    self.problem = Some(format!("no sound: {e}"));
+                    self.problem = Some(e);
                     Device::None
                 }
             };
@@ -113,7 +113,7 @@ impl Playback {
         self.lock().running
     }
 
-    /// Why there is no sound, once (for the status bar).
+    /// Why there is no sound, once (for the status bar, which says that there is none).
     pub fn take_problem(&mut self) -> Option<String> {
         self.problem.take()
     }
@@ -129,7 +129,7 @@ impl Playback {
             let planar = match reelforge_media::export::mix(spec, media, self.rate, self.cursor, CHUNK) {
                 Ok(p) => p,
                 Err(e) => {
-                    self.problem.get_or_insert_with(|| format!("sound: {e}"));
+                    self.problem.get_or_insert_with(|| e.to_string());
                     vec![vec![0.0; CHUNK]; 2]
                 }
             };

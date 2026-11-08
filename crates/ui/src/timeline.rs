@@ -9,6 +9,7 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sens
 use reelforge_model::{ClipContent, MediaKind, Project, TrackKind};
 use reelforge_time::Tick;
 
+use crate::i18n::{Lang, Strings};
 use crate::theme::{color, icon};
 
 const RULER: f32 = 26.0;
@@ -92,7 +93,9 @@ impl TimelineView {
         playhead: Tick,
         selected: Option<&str>,
         playing: bool,
+        lang: Lang,
     ) -> TimelineOutput {
+        let words = lang.strings();
         let mut out = TimelineOutput::default();
         // only what the rows need: taking all the panel offers would make a resizable panel grow every frame
         let height = RULER + ROW * p.tracks.len() as f32 + 6.0;
@@ -290,6 +293,7 @@ impl TimelineView {
                     selected == Some(clip.id.as_str()),
                     dim,
                     ghost.as_ref().is_some_and(|g| g.0 == clip.id),
+                    words,
                 );
             }
             // a clip dragged here from another track
@@ -299,7 +303,7 @@ impl TimelineView {
                 && let Some((from, clip)) = p.clip(g)
             {
                 let r = Rect::from_min_max(egui::pos2(x_of(*ga), top + 5.0), egui::pos2(x_of(*gb), top + ROW - 5.0));
-                paint_clip(&lane, r, p, p.tracks[from].kind, clip, true, false, true);
+                paint_clip(&lane, r, p, p.tracks[from].kind, clip, true, false, true, words);
             }
 
             // Header.
@@ -322,14 +326,14 @@ impl TimelineView {
             painter.with_clip_rect(head.shrink(2.0)).text(
                 head.left_center() + vec2(34.0, 0.0),
                 Align2::LEFT_CENTER,
-                &track.name,
+                lang.track_name(&track.name),
                 FontId::proportional(12.5),
                 if dim { color::WEAK } else { color::TEXT },
             );
             let (key, on, glyph_on, glyph_off, tip) = if track.kind == TrackKind::Audio {
-                ("muted", track.muted, icon::MUTED, icon::SOUND, if track.muted { "Unmute" } else { "Mute" })
+                ("muted", track.muted, icon::MUTED, icon::SOUND, if track.muted { words.unmute } else { words.mute })
             } else {
-                ("hidden", track.hidden, icon::HIDDEN, icon::SHOWN, if track.hidden { "Show" } else { "Hide" })
+                ("hidden", track.hidden, icon::HIDDEN, icon::SHOWN, if track.hidden { words.show } else { words.hide })
             };
             let toggle = Rect::from_center_size(egui::pos2(head.right() - 20.0, head.center().y), vec2(26.0, 26.0));
             let r = ui
@@ -450,6 +454,7 @@ fn paint_clip(
     selected: bool,
     dim: bool,
     dragging: bool,
+    words: &Strings,
 ) {
     let radius = CornerRadius::same(5);
     let (glyph, label, mut fill) = match &clip.content {
@@ -466,7 +471,7 @@ fn paint_clip(
         ClipContent::Text { text, .. } => (icon::TEXT, text.replace('\n', " "), color::TEXT_CLIP),
         ClipContent::Solid { color: c, .. } => {
             let swatch = Color32::from_rgb((c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8);
-            (icon::COLOUR, "Colour".to_string(), swatch.lerp_to_gamma(color::VIDEO, 0.35))
+            (icon::COLOUR, words.kind_colour.to_string(), swatch.lerp_to_gamma(color::VIDEO, 0.35))
         }
     };
     if dim {

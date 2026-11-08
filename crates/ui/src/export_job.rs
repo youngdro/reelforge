@@ -12,6 +12,10 @@ use reelforge_media::{ExportError, Footage};
 use reelforge_model::Project;
 
 use crate::EditorApp;
+use crate::i18n::fill;
+
+/// What a cancelled export reports.
+const CANCELLED: &str = "cancelled";
 
 /// An export in progress.
 pub(crate) struct ExportJob {
@@ -60,7 +64,7 @@ impl ExportJob {
                     !cancel.load(Ordering::Relaxed)
                 })
                 .map_err(|e| match e {
-                    ExportError::Cancelled => "cancelled".to_string(),
+                    ExportError::Cancelled => CANCELLED.to_string(),
                     e => e.to_string(),
                 })?;
                 std::fs::rename(&part, &out).map_err(|e| format!("cannot write {}: {e}", out.display()))
@@ -81,11 +85,15 @@ impl EditorApp {
             let finished = job.result.lock().expect("result lock").take();
             match finished {
                 Some(Ok(())) => {
-                    self.status = format!("Exported {}", job.out.display());
+                    self.status = fill(self.s().exported, &[&job.out.display()]);
+                    self.export = None;
+                }
+                Some(Err(e)) if e == CANCELLED => {
+                    self.status = self.s().export_cancelled.to_string();
                     self.export = None;
                 }
                 Some(Err(e)) => {
-                    self.status = format!("export: {e}");
+                    self.status = fill(self.s().export_failed, &[&e]);
                     self.export = None;
                 }
                 None => {
@@ -93,9 +101,9 @@ impl EditorApp {
                     ui.add(
                         egui::ProgressBar::new(done as f32 / total as f32)
                             .desired_width(140.0)
-                            .text(format!("Exporting {done}/{total}")),
+                            .text(fill(self.s().exporting, &[&done, &total])),
                     );
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(self.s().cancel).clicked() {
                         job.cancel.store(true, Ordering::Relaxed);
                     }
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
@@ -104,13 +112,13 @@ impl EditorApp {
             }
         }
         let can = !p.tracks.iter().all(|t| t.clips.is_empty());
-        if crate::theme::primary(ui, crate::theme::icon::EXPORT, "Export", can)
-            .on_hover_text(format!("Write an MP4 to {}", self.export_dir.display()))
+        if crate::theme::primary(ui, crate::theme::icon::EXPORT, self.s().export, can)
+            .on_hover_text(fill(self.s().export_tip, &[&self.export_dir.display()]))
             .clicked()
         {
             match ExportJob::start(p, &self.export_dir) {
                 Ok(job) => self.export = Some(job),
-                Err(e) => self.status = format!("export: {e}"),
+                Err(e) => self.status = fill(self.s().export_failed, &[&e]),
             }
         }
     }

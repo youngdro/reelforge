@@ -28,6 +28,34 @@ const POLL_SECONDS: u64 = 25;
 /// How long to wait before trying again after the server could not be reached, in seconds.
 const RETRY_SECONDS: f64 = 2.0;
 
+/// Something for the status bar.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Note {
+    /// The server's project arrived.
+    Joined(String),
+    /// The server could not be reached: its address, and why.
+    Unreachable(String, String),
+    /// Something the server refused or that failed: what (a command, a file; may be empty), why.
+    Failed(String, String),
+    /// A file the project uses that the server has no copy of: its name, and the HTTP status.
+    NoCopy(String, String),
+}
+
+impl Note {
+    /// The note in `lang`.
+    pub fn text(&self, lang: crate::i18n::Lang) -> String {
+        use crate::i18n::fill;
+        let s = lang.strings();
+        match self {
+            Note::Joined(base) => fill(s.joined, &[base]),
+            Note::Unreachable(base, why) => fill(s.unreachable, &[base, why]),
+            Note::Failed(what, why) if what.is_empty() => why.clone(),
+            Note::Failed(what, why) => format!("{what}: {why}"),
+            Note::NoCopy(name, status) => fill(s.no_copy, &[name, status]),
+        }
+    }
+}
+
 /// A file sent to the server, ready to import.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Uploaded {
@@ -79,7 +107,7 @@ struct State {
     media_epoch: u64,
     uploaded: Vec<Uploaded>,
     /// Messages for the status bar.
-    notes: Vec<String>,
+    notes: Vec<Note>,
 }
 
 impl Remote {
@@ -131,7 +159,7 @@ impl Remote {
     }
 
     /// Status bar messages since the last call.
-    pub fn take_notes(&self) -> Vec<String> {
+    pub fn take_notes(&self) -> Vec<Note> {
         std::mem::take(&mut self.state().notes)
     }
 
@@ -205,7 +233,7 @@ impl Remote {
                     import["path"] = v["path"].clone();
                     this.state().uploaded.push(Uploaded { import, name });
                 }
-                Err(e) => this.note(format!("{name}: {e}")),
+                Err(e) => this.note(Note::Failed(name.clone(), e.to_string())),
             }
             (this.inner.wake)();
         });
@@ -216,7 +244,7 @@ impl Remote {
         self.inner.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn note(&self, msg: String) {
+    fn note(&self, msg: Note) {
         self.state().notes.push(msg);
     }
 
@@ -238,7 +266,7 @@ impl Remote {
             first
         };
         if first {
-            self.note(format!("cannot reach {}: {e}", self.inner.base));
+            self.note(Note::Unreachable(self.inner.base.clone(), e.to_string()));
         }
         (self.inner.wake)();
     }
@@ -266,7 +294,7 @@ impl Remote {
                 Err(Answer::Unreachable(e)) => Some((id, params, e)),
                 Err(e) => {
                     // refused there: what the server holds replaces it when the queue drains
-                    this.note(format!("{id}: {e}"));
+                    this.note(Note::Failed(id.clone(), e.to_string()));
                     None
                 }
             };
@@ -327,7 +355,7 @@ impl Remote {
                     }
                     match e {
                         Answer::Unreachable(e) => this.unreachable(&e),
-                        e => this.note(e.to_string()),
+                        e => this.note(Note::Failed(String::new(), e.to_string())),
                     }
                     return;
                 }
@@ -348,7 +376,7 @@ impl Remote {
             }
             this.fetch_media();
             if first {
-                this.note(format!("Joined {}", this.inner.base));
+                this.note(Note::Joined(this.inner.base.clone()));
                 this.poll();
                 this.pump();
             }
@@ -390,7 +418,7 @@ impl Remote {
                 }
                 Err(Answer::Unreachable(e)) => this.unreachable(&e),
                 Err(e) => {
-                    this.note(e.to_string());
+                    this.note(Note::Failed(String::new(), e.to_string()));
                     this.unreachable("the change feed failed");
                 }
             }
@@ -416,15 +444,13 @@ impl Remote {
                 match r {
                     Ok(r) if r.ok => match this.inner.media.insert_bytes(&sha, &name, r.bytes) {
                         Ok(_) => this.state().media_epoch += 1,
-                        Err(e) => this.note(format!("{name}: {e}")),
+                        Err(e) => this.note(Note::Failed(name.clone(), e)),
                     },
-                    Ok(r) => {
-                        this.note(format!("{name}: the server has no copy ({} {})", r.status, r.status_text));
-                    }
+                    Ok(r) => this.note(Note::NoCopy(name.clone(), format!("{} {}", r.status, r.status_text))),
                     Err(e) => {
                         // try again with the next change
                         this.state().have.remove(&sha);
-                        this.note(format!("{name}: {e}"));
+                        this.note(Note::Failed(name.clone(), e));
                     }
                 }
                 (this.inner.wake)();
