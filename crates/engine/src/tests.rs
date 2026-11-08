@@ -271,7 +271,7 @@ fn tracks_are_renamed_hidden_and_muted() {
     let mut s = Session::default();
     let t = s.project().tracks[0].id.clone();
     let out = s.execute("track.set", &json!({"track": t, "hidden": true, "name": "B-roll"})).unwrap();
-    assert_eq!(out, json!({"track": t, "name": "B-roll", "hidden": true, "muted": false}));
+    assert_eq!(out, json!({"track": t, "name": "B-roll", "hidden": true, "muted": false, "magnetic": false}));
     s.execute("track.set", &json!({"track": t, "muted": true})).unwrap();
     let track = s.project().tracks[0].clone();
     assert!(track.hidden && track.muted && track.name == "B-roll");
@@ -486,4 +486,117 @@ fn sound_fades_and_keeps_its_pitch_at_another_speed() {
     let (l, rt) = (p.clip(&c).unwrap().1, p.clip(r["right"].as_str().unwrap()).unwrap().1);
     assert_eq!((l.fade.fade_in, l.fade.fade_out), (Tick::SECOND, Tick::ZERO));
     assert_eq!((rt.fade.fade_in, rt.fade.fade_out), (Tick::ZERO, Tick::SECOND * 2));
+}
+
+fn add_video(s: &mut Session, secs: f64) -> String {
+    let m = s
+        .execute(
+            "media.import",
+            &json!({"path": "/nowhere/v.mp4", "kind": "video", "duration": {"seconds": secs}, "sha256": "ef".repeat(32)}),
+        )
+        .unwrap()["media"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let t = video_track(s);
+    s.execute("clip.add", &json!({"track": t, "media": m})).unwrap()["clip"].as_str().unwrap().to_string()
+}
+
+fn source_at(s: &Session, clip: &str, t: f64) -> Tick {
+    let p = s.project();
+    let c = p.clip(clip).unwrap().1;
+    c.timing().unwrap().source_at(Tick::from_seconds(t) - c.start)
+}
+
+#[test]
+fn ripple_delete_closes_the_gap_and_magnetic_tracks_stay_packed() {
+    let mut s = Session::default();
+    let (a, b, c) = (add_red(&mut s, 0.0, 2.0), add_red(&mut s, 2.0, 3.0), add_red(&mut s, 6.0, 1.0));
+    s.execute("clip.remove", &json!({"clips": b, "ripple": true})).unwrap();
+    assert_eq!(s.project().clip(&c).unwrap().1.start, Tick::SECOND * 3);
+    s.execute("edit.undo", &json!({})).unwrap();
+
+    let t = video_track(&s);
+    s.execute("track.set", &json!({"track": t, "magnetic": true})).unwrap();
+    let starts = |s: &Session| [&a, &b, &c].map(|id| s.project().clip(id).unwrap().1.start.seconds());
+    // the gap before c closes as soon as the track is magnetic
+    assert_eq!(starts(&s), [0.0, 2.0, 5.0]);
+    // a plain delete closes up too, and a move reorders
+    s.execute("clip.remove", &json!({"clips": b})).unwrap();
+    assert_eq!(s.project().clip(&c).unwrap().1.start, Tick::SECOND * 2);
+    s.execute("clip.move", &json!({"clip": a, "start": {"seconds": 2.5}})).unwrap();
+    assert_eq!(s.project().clip(&c).unwrap().1.start, Tick::ZERO);
+    assert_eq!(s.project().clip(&a).unwrap().1.start, Tick::SECOND);
+}
+
+#[test]
+fn reverse_plays_the_same_span_backwards_and_splits_in_order() {
+    let mut s = Session::default();
+    let c = add_video(&mut s, 4.0);
+    s.execute("clip.setReverse", &json!({"clip": c, "reversed": true})).unwrap();
+    assert_eq!(source_at(&s, &c, 0.0), Tick::SECOND * 4 - Tick(1));
+    assert_eq!(source_at(&s, &c, 3.0), Tick::SECOND - Tick(1));
+    let r = s.execute("clip.split", &json!({"clip": c, "at": {"seconds": 1}})).unwrap();
+    let right = r["right"].as_str().unwrap().to_string();
+    // each half shows what the whole showed there
+    assert_eq!(source_at(&s, &c, 0.5), Tick::from_seconds(3.5) - Tick(1));
+    assert_eq!(source_at(&s, &right, 3.0), Tick::SECOND - Tick(1));
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("time.reverse/1")));
+    assert_eq!(spec["layers"][0]["content"]["time"]["speed"], json!(-1.0));
+}
+
+#[test]
+fn speed_curves_reshape_the_speed_and_keep_the_span() {
+    let mut s = Session::default();
+    let c = add_video(&mut s, 4.0);
+    let out = s.execute("clip.setSpeedCurve", &json!({"clip": c, "curve": "bullet"})).unwrap();
+    assert_eq!(out["preset"], json!("bullet"));
+    assert_eq!(s.project().clip(&c).unwrap().1.duration, Tick::SECOND * 4);
+    assert!((source_at(&s, &c, 4.0) - Tick::SECOND * 4).0.abs() < 1000);
+    // the slow middle covers less source than the fast start
+    let first = source_at(&s, &c, 1.0);
+    let middle = source_at(&s, &c, 2.5) - source_at(&s, &c, 1.5);
+    assert!(first > middle * 3);
+    // a split keeps the motion
+    let before = source_at(&s, &c, 3.0);
+    let right = s.execute("clip.split", &json!({"clip": c, "at": {"seconds": 2}})).unwrap()["right"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!((source_at(&s, &right, 3.0) - before).0.abs() < 1000);
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("time.ramp/1")));
+    s.execute("clip.setSpeedCurve", &json!({"clip": c, "curve": [[0, 1], [1, 3]]})).unwrap();
+    assert!(s.execute("clip.setSpeedCurve", &json!({"clip": c, "curve": [[0.5, 1], [0.2, 3]]})).is_err());
+    assert!(s.execute("clip.setSpeedCurve", &json!({"clip": c, "curve": "wobble"})).is_err());
+    s.execute("clip.setSpeedCurve", &json!({"clip": c, "curve": null})).unwrap();
+}
+
+#[test]
+fn freeze_holds_a_frame_and_pushes_the_rest_along() {
+    let mut s = Session::default();
+    let c = add_video(&mut s, 4.0);
+    let after = add_red(&mut s, 5.0, 1.0);
+    s.execute("clip.set", &json!({"clip": c, "scale": 2.0, "at": {"seconds": 0}})).unwrap();
+    let out = s.execute("clip.freeze", &json!({"clip": c, "at": {"seconds": 1.5}})).unwrap();
+    let still = out["clip"].as_str().unwrap().to_string();
+    let right = out["right"].as_str().unwrap().to_string();
+    let p = s.project();
+    let st = p.clip(&still).unwrap().1;
+    assert_eq!((st.start, st.duration), (Tick::from_seconds(1.5), Tick::SECOND * 3));
+    assert_eq!(st.transform.scale, 2.0);
+    let ClipContent::Media { source_in, speed, .. } = st.content else { panic!() };
+    assert_eq!((source_in, speed), (Tick::from_seconds(1.5), 0.0));
+    assert_eq!(p.clip(&right).unwrap().1.start, Tick::from_seconds(4.5));
+    assert_eq!(source_at(&s, &right, 4.5), Tick::from_seconds(1.5));
+    assert_eq!(p.clip(&after).unwrap().1.start, Tick::SECOND * 8);
+    // a still is silent, cannot change speed and cannot freeze again
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert!(spec["audio"].as_array().unwrap().iter().all(|a| a["id"] != json!(still)));
+    assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("time.hold/1")));
+    assert!(s.execute("clip.setSpeed", &json!({"clip": still, "speed": 2})).is_err());
+    assert!(s.execute("clip.setReverse", &json!({"clip": still, "reversed": true})).is_err());
+    assert!(s.execute("clip.freeze", &json!({"clip": still, "at": {"seconds": 2}})).is_err());
+    assert!(s.execute("clip.freeze", &json!({"clip": after, "at": {"seconds": 8.5}})).is_err());
 }

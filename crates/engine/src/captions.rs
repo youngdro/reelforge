@@ -134,6 +134,7 @@ pub(crate) fn place(
                 name: CAPTIONS_TRACK.into(),
                 hidden: false,
                 muted: false,
+                magnetic: false,
                 clips: vec![],
             };
             proj.tracks.insert(at, track);

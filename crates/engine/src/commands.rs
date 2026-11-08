@@ -2,8 +2,8 @@
 
 use reelforge_compile::{CompileOptions, compile};
 use reelforge_model::{
-    AnimKind, Animation, Clip, ClipContent, ClipEffect, ClipTransform, Ease, Key, Media, MediaKind, Outline, Project,
-    Prop, Shadow, TitleStyle, Track, TrackKind, Transition, TransitionKind, anim,
+    AnimKind, Animation, Clip, ClipContent, ClipEffect, ClipTransform, CurvePoint, CurvePreset, Ease, Key, Media,
+    MediaKind, Outline, Project, Prop, Shadow, TitleStyle, Track, TrackKind, Transition, TransitionKind, anim, timing,
 };
 use reelforge_renderspec::AssetKind;
 use reelforge_time::{FrameRate, Tick};
@@ -119,8 +119,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "track.set",
         label: "Track Settings",
-        params: r#"{"track": id, "name"?: string, "hidden"?: bool, "muted"?: bool}"#,
-        doc: "Renames a track, hides its picture or mutes its sound.",
+        params: r#"{"track": id, "name"?: string, "hidden"?: bool, "muted"?: bool, "magnetic"?: bool}"#,
+        doc: "Renames a track, hides its picture, mutes its sound or makes it magnetic (clips kept end to end from the start, so removing or trimming closes the gap and moving reorders).",
         edits: true,
         enabled: always,
         run: track_set,
@@ -164,8 +164,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.remove",
         label: "Delete",
-        params: r#"{"clips": id | [id]}"#,
-        doc: "Removes clips, leaving gaps.",
+        params: r#"{"clips": id | [id], "ripple"?: bool}"#,
+        doc: "Removes clips, leaving gaps; with `ripple`, later clips on the same track move up to close them.",
         edits: true,
         enabled: always,
         run: clip_remove,
@@ -178,6 +178,33 @@ static REGISTRY: &[CommandSpec] = &[
         edits: true,
         enabled: always,
         run: clip_set_speed,
+    },
+    CommandSpec {
+        id: "clip.setReverse",
+        label: "Reverse",
+        params: r#"{"clip": id, "reversed": bool}"#,
+        doc: "Plays a video or sound clip backwards (or forwards again) over the same source span.",
+        edits: true,
+        enabled: always,
+        run: clip_set_reverse,
+    },
+    CommandSpec {
+        id: "clip.setSpeedCurve",
+        label: "Speed Curve",
+        params: r#"{"clip": id, "curve": "montage"|"hero"|"bullet"|"jumpCut"|"flashIn"|"flashOut"|[[x, m], ...]|null}"#,
+        doc: "Shapes a media clip's speed across its length: a preset or points of (fraction of the clip 0-1, multiple of the average speed 0.1-10). The clip keeps its length and source span. null makes the speed steady again.",
+        edits: true,
+        enabled: always,
+        run: clip_set_speed_curve,
+    },
+    CommandSpec {
+        id: "clip.freeze",
+        label: "Freeze Frame",
+        params: r#"{"clip": id, "at": time, "duration"?: time}"#,
+        doc: "Holds the frame a video clip shows at a timeline time for `duration` (3 s by default): the clip is split there, the still goes between, and later clips on the track move along.",
+        edits: true,
+        enabled: always,
+        run: clip_freeze,
     },
     CommandSpec {
         id: "clip.set",
@@ -440,6 +467,7 @@ fn track_set(s: &mut Session, v: &Value) -> CmdResult {
     let p = P::new(v, fps(s));
     let id = p.str("track")?.to_string();
     let (name, hidden, muted) = (p.opt_str("name")?.map(str::to_string), p.opt_bool("hidden")?, p.opt_bool("muted")?);
+    let magnetic = p.opt_bool("magnetic")?;
     if name.as_deref().is_some_and(|n| n.trim().is_empty()) {
         return Err(EngineError::Params("`name` must not be empty".into()));
     }
@@ -450,7 +478,8 @@ fn track_set(s: &mut Session, v: &Value) -> CmdResult {
         }
         t.hidden = hidden.unwrap_or(t.hidden);
         t.muted = muted.unwrap_or(t.muted);
-        Ok(json!({ "track": id, "name": t.name, "hidden": t.hidden, "muted": t.muted }))
+        t.magnetic = magnetic.unwrap_or(t.magnetic);
+        Ok(json!({ "track": id, "name": t.name, "hidden": t.hidden, "muted": t.muted, "magnetic": t.magnetic }))
     })
 }
 
@@ -473,7 +502,10 @@ fn track_add(s: &mut Session, v: &Value) -> CmdResult {
             )
         });
         let at = proj.tracks.iter().rposition(|t| t.kind == kind).map_or(proj.tracks.len(), |i| i + 1);
-        proj.tracks.insert(at, Track { id: id.clone(), kind, name, hidden: false, muted: false, clips: vec![] });
+        proj.tracks.insert(
+            at,
+            Track { id: id.clone(), kind, name, hidden: false, muted: false, magnetic: false, clips: vec![] },
+        );
         Ok(json!({ "track": id }))
     })
 }
@@ -497,7 +529,7 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
             (Some(m), None) => {
                 let item = proj.media.get(m).ok_or_else(|| not_found("media", m))?;
                 let natural = item.duration.map(|d| d - source_in).filter(|d| *d > Tick::ZERO);
-                (ClipContent::Media { media: m.clone(), source_in, speed: 1.0 }, natural)
+                (ClipContent::media(m.clone(), source_in), natural)
             }
             (None, Some(t)) => (
                 ClipContent::Text {
@@ -543,32 +575,70 @@ fn clip_split(s: &mut Session, v: &Value) -> CmdResult {
     let id = p.str("clip")?.to_string();
     let at = p.time("at")?;
     s.edit("Split", |proj| {
-        let (ti, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
-        if at <= clip.start || at >= clip.end() {
-            return Err(EngineError::Params("`at` must be strictly inside the clip".into()));
-        }
-        let mut right = clip.clone();
-        let left_len = at - clip.start;
-        right.start = at;
-        right.duration = clip.end() - at;
-        right.id = proj.mint("c");
-        if let ClipContent::Media { source_in, speed, .. } = &mut right.content {
-            *source_in += left_len.scale(*speed);
-        }
-        // keys stay where they were on the timeline; the in animation stays on the left half and
-        // the out animation on the right
-        right.shift_keys(-left_len);
-        right.anim.enter = None;
-        right.transition = None;
-        right.fade.fade_in = Tick::ZERO;
-        let right_id = right.id.clone();
-        proj.tracks[ti].clips.push(right);
-        let left = proj.clip_mut(&id).expect("exists");
-        left.duration = left_len;
-        left.anim.exit = None;
-        left.fade.fade_out = Tick::ZERO;
-        Ok(json!({ "left": id, "right": right_id }))
+        let right = split(proj, &id, at)?;
+        Ok(json!({ "left": id, "right": right }))
     })
+}
+
+/// Cuts clip `id` at timeline time `at`, strictly inside it; returns the right half's id.
+fn split(proj: &mut Project, id: &str, at: Tick) -> Result<String, EngineError> {
+    let (ti, clip) = proj.clip(id).ok_or_else(|| not_found("clip", id))?;
+    if at <= clip.start || at >= clip.end() {
+        return Err(EngineError::Params("`at` must be strictly inside the clip".into()));
+    }
+    let mut right = clip.clone();
+    let left_len = at - clip.start;
+    // where each half starts in the source, and how fast each runs so that together they play
+    // exactly as the whole did
+    let halves = match (&clip.content, clip.timing()) {
+        (ClipContent::Media { source_in, speed, reversed, curve, .. }, Some(t)) => {
+            let f = left_len.0 as f64 / clip.duration.0 as f64;
+            let travel = Tick(t.travel(left_len).0.abs());
+            let span = clip.duration.scale(*speed);
+            let whole = timing::curve_mean(curve, 0.0, 1.0);
+            let part = |a: f64, b: f64| {
+                if curve.is_empty() {
+                    (*speed, vec![])
+                } else {
+                    (*speed * timing::curve_mean(curve, a, b) / whole, timing::curve_part(curve, a, b))
+                }
+            };
+            let (left, right) = (part(0.0, f), part(f, 1.0));
+            // backwards, the left half plays the end of the span
+            let (lin, rin) =
+                if *reversed { (*source_in + span - travel, *source_in) } else { (*source_in, *source_in + travel) };
+            Some(((lin, left), (rin, right)))
+        }
+        _ => None,
+    };
+    right.start = at;
+    right.duration = clip.end() - at;
+    right.id = proj.mint("c");
+    // keys stay where they were on the timeline; the in animation stays on the left half and
+    // the out animation on the right
+    right.shift_keys(-left_len);
+    right.anim.enter = None;
+    right.transition = None;
+    right.fade.fade_in = Tick::ZERO;
+    let set = |c: &mut Clip, (from, (v, pts)): (Tick, (f64, Vec<CurvePoint>))| {
+        if let ClipContent::Media { source_in, speed, curve, .. } = &mut c.content {
+            (*source_in, *speed, *curve) = (from, v, pts);
+        }
+    };
+    let halves = halves.map(|(l, r)| {
+        set(&mut right, r);
+        l
+    });
+    let right_id = right.id.clone();
+    proj.tracks[ti].clips.push(right);
+    let left = proj.clip_mut(id).expect("exists");
+    left.duration = left_len;
+    left.anim.exit = None;
+    left.fade.fade_out = Tick::ZERO;
+    if let Some(l) = halves {
+        set(left, l);
+    }
+    Ok(right_id)
 }
 
 fn clip_trim(s: &mut Session, v: &Value) -> CmdResult {
@@ -583,8 +653,11 @@ fn clip_trim(s: &mut Session, v: &Value) -> CmdResult {
             return Err(EngineError::Params("the clip would have no length".into()));
         }
         let delta = start - clip.start;
-        if let ClipContent::Media { source_in, speed, .. } = &mut clip.content {
-            let moved = *source_in + delta.scale(*speed);
+        let old_end = clip.end();
+        if let ClipContent::Media { source_in, speed, reversed, .. } = &mut clip.content {
+            // the source runs from the clip's start, or backwards from its end
+            let moved =
+                if *reversed { *source_in - (end - old_end).scale(*speed) } else { *source_in + delta.scale(*speed) };
             if moved < Tick::ZERO {
                 return Err(EngineError::Refused("the clip cannot start before its media does".into()));
             }
@@ -617,11 +690,24 @@ fn clip_move(s: &mut Session, v: &Value) -> CmdResult {
 }
 
 fn clip_remove(s: &mut Session, v: &Value) -> CmdResult {
-    let ids = P::new(v, fps(s)).strings("clips")?;
+    let p = P::new(v, fps(s));
+    let ids = p.strings("clips")?;
+    let ripple = p.opt_bool("ripple")?.unwrap_or(false);
     s.edit("Delete", |proj| {
+        let mut gone = Vec::new();
         for id in &ids {
-            let (ti, _) = proj.clip(id).ok_or_else(|| not_found("clip", id))?;
+            let (ti, c) = proj.clip(id).ok_or_else(|| not_found("clip", id))?;
+            gone.push((ti, c.start, c.duration));
             proj.tracks[ti].clips.retain(|c| &c.id != id);
+        }
+        if ripple {
+            // latest first, so each gap closes from where it was
+            gone.sort_by_key(|g| std::cmp::Reverse(g.1));
+            for (ti, start, len) in gone {
+                for c in proj.tracks[ti].clips.iter_mut().filter(|c| c.start >= start) {
+                    c.start -= len;
+                }
+            }
         }
         Ok(json!({ "removed": ids }))
     })
@@ -643,6 +729,9 @@ fn clip_set_speed(s: &mut Session, v: &Value) -> CmdResult {
         let ClipContent::Media { speed, .. } = &mut clip.content else {
             return Err(EngineError::Params("only media clips have a speed".into()));
         };
+        if new.is_some() && *speed == 0.0 {
+            return Err(EngineError::Refused("a freeze frame has no speed; change its length instead".into()));
+        }
         if let Some(new) = new {
             let source_span = clip.duration.scale(*speed);
             let old = *speed;
@@ -1012,6 +1101,142 @@ fn clip_set_transition(s: &mut Session, v: &Value) -> CmdResult {
             duration: duration.or(clip.transition.map(|t| t.duration)).unwrap_or(ANIMATION_LENGTH),
         });
         Ok(json!({ "clip": id, "transition": serde_json::to_value(clip.transition).expect("serialises") }))
+    })
+}
+
+/// The media clip `id`, refusing freeze frames and stills for what `what` needs.
+fn moving_media<'a>(proj: &'a mut Project, id: &str, what: &str) -> Result<&'a mut Clip, EngineError> {
+    let (_, clip) = proj.clip(id).ok_or_else(|| not_found("clip", id))?;
+    let kind = match &clip.content {
+        ClipContent::Media { media, .. } => proj.media.get(media).map(|m| m.kind),
+        _ => None,
+    };
+    match kind {
+        None => return Err(EngineError::Params(format!("only video and sound clips can {what}"))),
+        Some(MediaKind::Image) => return Err(EngineError::Params(format!("a picture cannot {what}"))),
+        Some(_) => {}
+    }
+    let clip = proj.clip_mut(id).expect("found above");
+    if matches!(clip.content, ClipContent::Media { speed, .. } if speed == 0.0) {
+        return Err(EngineError::Refused(format!("a freeze frame cannot {what}")));
+    }
+    Ok(clip)
+}
+
+fn clip_set_reverse(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let on = p.opt_bool("reversed")?.ok_or_else(|| EngineError::Params("give `reversed`".into()))?;
+    s.edit("Reverse", |proj| {
+        let clip = moving_media(proj, &id, "play backwards")?;
+        if let ClipContent::Media { reversed, .. } = &mut clip.content {
+            *reversed = on;
+        }
+        Ok(json!({ "clip": id, "reversed": on }))
+    })
+}
+
+fn clip_set_speed_curve(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let bad = || {
+        EngineError::Params(format!(
+            "`curve` must be null, one of {}, or [[x, m], ...] with x from 0 to 1 in order and m from 0.1 to 10",
+            CurvePreset::ALL.map(CurvePreset::name).join(", ")
+        ))
+    };
+    let points = match p.v.get("curve") {
+        None => return Err(EngineError::Params("give `curve`".into())),
+        Some(Value::Null) => vec![],
+        Some(Value::String(name)) => CurvePreset::parse(name).ok_or_else(bad)?.points(),
+        Some(Value::Array(list)) => {
+            let pts = list
+                .iter()
+                .map(|pt| match pt.as_array().map(Vec::as_slice) {
+                    Some([x, m]) => Some(CurvePoint { x: x.as_f64()?, m: m.as_f64()? }),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(bad)?;
+            let (lo, hi) = timing::CURVE_RANGE;
+            if pts.len() < 2
+                || pts.iter().any(|p| !(0.0..=1.0).contains(&p.x) || !(lo..=hi).contains(&p.m))
+                || pts.windows(2).any(|w| w[1].x <= w[0].x)
+            {
+                return Err(bad());
+            }
+            pts
+        }
+        Some(_) => return Err(bad()),
+    };
+    s.edit("Speed Curve", |proj| {
+        let clip = moving_media(proj, &id, "follow a speed curve")?;
+        if let ClipContent::Media { curve, .. } = &mut clip.content {
+            *curve = points;
+        }
+        let preset = match &clip.content {
+            ClipContent::Media { curve, .. } => CurvePreset::of(curve).map(CurvePreset::name),
+            _ => None,
+        };
+        Ok(json!({ "clip": id, "preset": preset }))
+    })
+}
+
+/// How long a freeze frame holds unless told.
+pub const FREEZE_LENGTH: Tick = Tick(3 * reelforge_time::TICKS_PER_SECOND);
+
+fn clip_freeze(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let at = p.time("at")?;
+    let duration = p.opt_time("duration")?.unwrap_or(FREEZE_LENGTH);
+    if duration <= Tick::ZERO {
+        return Err(EngineError::Params("`duration` must be positive".into()));
+    }
+    s.edit("Freeze Frame", |proj| {
+        let (ti, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        let clip = clip.clone();
+        if proj.tracks[ti].kind != TrackKind::Video {
+            return Err(EngineError::Params("freeze frames are made from clips on a video track".into()));
+        }
+        let is_video = matches!(&clip.content, ClipContent::Media { media, .. }
+            if proj.media.get(media).is_some_and(|m| m.kind == MediaKind::Video));
+        let Some(timing) = clip.timing().filter(|_| is_video) else {
+            return Err(EngineError::Params("only video clips can freeze".into()));
+        };
+        if timing.speed == 0.0 {
+            return Err(EngineError::Refused("this clip is already a freeze frame".into()));
+        }
+        if at < clip.start || at > clip.end() {
+            return Err(EngineError::Params("`at` must be within the clip".into()));
+        }
+        // the frame on screen at `at`: the clip's last when `at` is its end
+        let into = (at - clip.start).min(clip.duration - Tick(1));
+        let held = timing.source_at(into).max(Tick::ZERO);
+        let mut still = clip.clone();
+        still.id = proj.mint("c");
+        still.start = at;
+        still.duration = duration;
+        if let ClipContent::Media { source_in, speed, reversed, curve, .. } = &mut still.content {
+            (*source_in, *speed, *reversed) = (held, 0.0, false);
+            curve.clear();
+        }
+        // the placement it had at that instant, held
+        for prop in Prop::ALL {
+            let v = clip.value_at(prop, into);
+            still.set_base(prop, v);
+        }
+        still.keys.clear();
+        still.anim = Default::default();
+        still.transition = None;
+        still.fade = Default::default();
+        let right = if at > clip.start && at < clip.end() { Some(split(proj, &id, at)?) } else { None };
+        for c in proj.tracks[ti].clips.iter_mut().filter(|c| c.start >= at) {
+            c.start += duration;
+        }
+        let still_id = still.id.clone();
+        proj.tracks[ti].clips.push(still);
+        Ok(json!({ "clip": still_id, "right": right, "duration": duration }))
     })
 }
 

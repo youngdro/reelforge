@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use reelforge_time::Tick;
 use thiserror::Error;
 
-use crate::{Animated, AssetKind, LayerContent, RenderSpec, SPEC_VERSION};
+use crate::{Animated, AssetKind, LayerContent, RenderSpec, SPEC_VERSION, TimeMap};
 
 /// Why a spec was refused. The message names the field.
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -76,7 +76,7 @@ pub fn validate(spec: &RenderSpec) -> Result<(), ValidationError> {
         match &layer.content {
             LayerContent::Media { asset, time, .. } => {
                 asset_of_kind(spec, &format!("{path}.content.asset"), asset, &[AssetKind::Video, AssetKind::Image])?;
-                speed_ok(&format!("{path}.content.time.speed"), time.speed)?;
+                time_ok(&format!("{path}.content.time"), time, layer.dur)?;
             }
             LayerContent::Solid { color } => color_ok(&format!("{path}.content.color"), color.0)?,
             LayerContent::Text(text) => {
@@ -158,7 +158,7 @@ pub fn validate(spec: &RenderSpec) -> Result<(), ValidationError> {
             return Err(bad(format!("{path}.dur"), "must be positive"));
         }
         asset_of_kind(spec, &format!("{path}.asset"), &clip.asset, &[AssetKind::Video, AssetKind::Audio])?;
-        speed_ok(&format!("{path}.time.speed"), clip.time.speed)?;
+        time_ok(&format!("{path}.time"), &clip.time, clip.dur)?;
         keys_ok(&format!("{path}.gain_db"), &clip.gain_db, clip.dur)?;
     }
     Ok(())
@@ -175,11 +175,25 @@ fn asset_of_kind(spec: &RenderSpec, path: &str, id: &str, kinds: &[AssetKind]) -
 }
 
 fn speed_ok(path: &str, speed: f64) -> Result<(), ValidationError> {
-    if speed > 0.0 && speed.is_finite() && speed <= 100.0 {
+    if speed.is_finite() && (-100.0..=100.0).contains(&speed) {
         Ok(())
     } else {
-        Err(bad(path, "must be above 0 and at most 100"))
+        Err(bad(path, "must be a number from -100 to 100"))
     }
+}
+
+fn time_ok(path: &str, time: &TimeMap, dur: Tick) -> Result<(), ValidationError> {
+    speed_ok(&format!("{path}.speed"), time.speed)?;
+    for (i, k) in time.ramp.iter().enumerate() {
+        speed_ok(&format!("{path}.ramp[{i}].speed"), k.speed)?;
+        if k.t < Tick::ZERO || k.t > dur {
+            return Err(bad(format!("{path}.ramp[{i}].t"), "must lie within the owner's duration"));
+        }
+    }
+    if time.ramp.windows(2).any(|w| w[1].t <= w[0].t) {
+        return Err(bad(format!("{path}.ramp"), "keys must be in strictly increasing time"));
+    }
+    Ok(())
 }
 
 fn color_ok(path: &str, c: [f32; 4]) -> Result<(), ValidationError> {

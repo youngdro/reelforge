@@ -341,11 +341,52 @@ impl Sound {
     }
 }
 
+/// `frames` samples from `from` samples after a clip's start, read like tape wherever `source(i)`
+/// puts the clip `i` samples in: backwards, or at a changing speed, its pitch moving with it.
+fn tape(
+    media: &Footage,
+    asset: &reelforge_renderspec::Asset,
+    source: impl Fn(i64) -> Tick,
+    from: i64,
+    frames: usize,
+    rate: u32,
+) -> Result<Option<Vec<Vec<f32>>>, String> {
+    let at: Vec<f64> =
+        (0..frames as i64).map(|i| source(from + i).0 as f64 * rate as f64 / TICKS_PER_SECOND as f64).collect();
+    let (lo, hi) = at.iter().fold((f64::MAX, f64::MIN), |(lo, hi), &p| (lo.min(p), hi.max(p)));
+    let lo = (lo.floor() as i64).max(0);
+    let hi = hi.ceil() as i64 + 2;
+    if hi <= lo {
+        return Ok(Some(vec![vec![0.0; frames]; CHANNELS]));
+    }
+    let Some(src) = media.audio(asset, lo, (hi - lo) as usize, rate)? else { return Ok(None) };
+    if src.is_empty() {
+        return Ok(Some(src));
+    }
+    let out = src
+        .iter()
+        .map(|ch| {
+            at.iter()
+                .map(|&p| {
+                    if p < 0.0 {
+                        return 0.0;
+                    }
+                    let j = p - lo as f64;
+                    let (i, f) = (j.floor() as usize, (j - j.floor()) as f32);
+                    let (x0, x1) = (ch.get(i).copied().unwrap_or(0.0), ch.get(i + 1).copied().unwrap_or(0.0));
+                    x0 + (x1 - x0) * f
+                })
+                .collect()
+        })
+        .collect();
+    Ok(Some(out))
+}
+
 /// The stereo mix of `frames` samples from output sample `start`.
 ///
 /// A clip at another speed is stretched in time keeping its pitch when it asks to
 /// (`keep_pitch`, [`crate::stretch`]), and otherwise read resampled, its pitch moving with the
-/// speed as on tape.
+/// speed as on tape; played backwards it is always read like tape. A freeze frame is silent.
 pub fn mix(
     spec: &RenderSpec,
     media: &Footage,
@@ -363,17 +404,32 @@ pub fn mix(
         if a >= b {
             continue;
         }
-        let speed = clip.time.speed;
+        let time = &clip.time;
+        if time.holds() {
+            // a freeze frame is silent
+            continue;
+        }
+        let speed = time.speed;
         let n = (b - a) as usize;
-        let src = if clip.keep_pitch && speed != 1.0 {
+        let offset = |i: i64| Tick((i as i128 * TICKS_PER_SECOND as i128 / rate as i128) as i64);
+        let src = if clip.keep_pitch && !time.reverses() && (speed != 1.0 || !time.ramp.is_empty()) {
             // read at the output rate and stretched in time
-            let src_in = at_sample(clip.time.source_in);
-            crate::stretch::stretched(media, asset, src_in, speed, a - c0, n, rate)
-        } else {
+            let src_in = at_sample(time.source_in);
+            let position = |i: i64| {
+                if time.ramp.is_empty() {
+                    src_in + (i as f64 * speed).round() as i64
+                } else {
+                    at_sample(time.source_at(offset(i)))
+                }
+            };
+            crate::stretch::stretched(media, asset, position, a - c0, n, rate)
+        } else if time.ramp.is_empty() && speed > 0.0 {
             // the source read at `rate / speed` advances `speed` source seconds per output second
             let src_rate = ((rate as f64 / speed).round() as u32).max(1);
-            let src_in = (clip.time.source_in.0 as i128 * src_rate as i128 / TICKS_PER_SECOND as i128) as i64;
+            let src_in = (time.source_in.0 as i128 * src_rate as i128 / TICKS_PER_SECOND as i128) as i64;
             media.audio(asset, src_in + (a - c0), n, src_rate)
+        } else {
+            tape(media, asset, |i| time.source_at(offset(i)), a - c0, n, rate)
         };
         let Some(src) = src.map_err(ExportError::Media)? else {
             continue;

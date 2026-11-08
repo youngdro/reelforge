@@ -23,13 +23,13 @@ const FIT: usize = 256;
 /// Grains per chain.
 const BLOCK: i64 = 32;
 
-/// `frames` output samples of `asset` played at `speed` with its pitch kept, starting `from`
-/// samples after the clip's start, whose first sample is source sample `source_in`; all at `rate`.
+/// `frames` output samples of `asset` with its pitch kept, starting `from` samples after the
+/// clip's start; `position(i)` is the source sample the clip plays `i` samples after its start
+/// (rising: a speed above 0, steady or not). All at `rate`.
 pub fn stretched(
     media: &Footage,
     asset: &Asset,
-    source_in: i64,
-    speed: f64,
+    position: impl Fn(i64) -> i64,
     from: i64,
     frames: usize,
     rate: u32,
@@ -38,7 +38,7 @@ pub fn stretched(
     let (k0, k1) = (from.div_euclid(HOP), (to - 1).div_euclid(HOP) + 1);
     // the chain starts at its block's first grain
     let first = k0.div_euclid(BLOCK) * BLOCK;
-    let natural = |k: i64| source_in + (k as f64 * HOP as f64 * speed).round() as i64 - HOP;
+    let natural = |k: i64| position(k * HOP) - HOP;
     // the source this stretch reads: every grain with room to move, and the grain before the first
     let lo = natural(first - 1) - SEARCH;
     let hi = natural(k1) + GRAIN + SEARCH;

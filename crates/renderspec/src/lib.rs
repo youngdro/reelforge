@@ -257,15 +257,31 @@ pub enum LayerContent {
     Text(TextContent),
 }
 
-/// Source time for a media layer: `source = source_in + (t - at) * speed`.
+/// Source time for a media layer or audio clip: `source = source_in + ∫ speed dt` from the owner's
+/// start. With no `ramp` the speed is constant, so `source = source_in + (t - at) * speed`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TimeMap {
-    /// Source instant shown at the layer's start.
+    /// Source instant shown at the owner's start.
     #[serde(default)]
     pub source_in: Tick,
-    /// Playback speed; positive. Speed curves arrive with a later feature.
+    /// Playback speed, -100 to 100. 0 holds `source_in` (a freeze frame, feature `time.hold/1`);
+    /// below 0 plays backwards (feature `time.reverse/1`). Ignored when `ramp` is given.
     #[serde(default = "unit_speed")]
+    pub speed: f64,
+    /// A speed that changes over time (feature `time.ramp/1`): straight lines between keys, held
+    /// before the first and after the last. Key times are from the owner's start.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ramp: Vec<SpeedKey>,
+}
+
+/// One point of a speed ramp.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SpeedKey {
+    /// Time from the owner's start.
+    pub t: Tick,
+    /// Speed there, -100 to 100.
     pub speed: f64,
 }
 
@@ -275,14 +291,68 @@ fn unit_speed() -> f64 {
 
 impl Default for TimeMap {
     fn default() -> TimeMap {
-        TimeMap { source_in: Tick::ZERO, speed: 1.0 }
+        TimeMap { source_in: Tick::ZERO, speed: 1.0, ramp: vec![] }
     }
 }
 
 impl TimeMap {
-    /// The source instant for an offset into the layer.
+    /// A constant speed from `source_in`.
+    pub fn new(source_in: Tick, speed: f64) -> TimeMap {
+        TimeMap { source_in, speed, ramp: vec![] }
+    }
+
+    /// The source instant for an offset into the owner.
     pub fn source_at(&self, offset: Tick) -> Tick {
-        self.source_in + offset.scale(self.speed)
+        if self.ramp.is_empty() {
+            return self.source_in + offset.scale(self.speed);
+        }
+        self.source_in + Tick(self.travel(offset).round() as i64)
+    }
+
+    /// Source ticks covered from the owner's start to `offset`: the area under the ramp.
+    fn travel(&self, offset: Tick) -> f64 {
+        let r = &self.ramp;
+        let at = |t: Tick| -> f64 {
+            // the ramp's speed at t
+            if t <= r[0].t {
+                return r[0].speed;
+            }
+            for w in r.windows(2) {
+                if t < w[1].t {
+                    let f = (t - w[0].t).0 as f64 / (w[1].t - w[0].t).0 as f64;
+                    return w[0].speed + (w[1].speed - w[0].speed) * f;
+                }
+            }
+            r[r.len() - 1].speed
+        };
+        let (lo, hi, sign) = if offset >= Tick::ZERO { (Tick::ZERO, offset, 1.0) } else { (offset, Tick::ZERO, -1.0) };
+        // the speed is a straight line between these instants, so each piece is a trapezoid
+        let mut cuts = vec![lo, hi];
+        cuts.extend(r.iter().map(|k| k.t).filter(|t| *t > lo && *t < hi));
+        cuts.sort();
+        let area: f64 = cuts.windows(2).map(|w| (w[1] - w[0]).0 as f64 * (at(w[0]) + at(w[1])) / 2.0).sum();
+        sign * area
+    }
+
+    /// Whether any part of the map plays backwards.
+    pub fn reverses(&self) -> bool {
+        if self.ramp.is_empty() { self.speed < 0.0 } else { self.ramp.iter().any(|k| k.speed < 0.0) }
+    }
+
+    /// Whether the map holds one instant (a freeze frame).
+    pub fn holds(&self) -> bool {
+        self.ramp.is_empty() && self.speed == 0.0
+    }
+
+    /// The feature ids the map needs beyond a constant forward speed.
+    pub fn features(&self) -> impl Iterator<Item = &'static str> {
+        [
+            self.holds().then_some("time.hold/1"),
+            self.reverses().then_some("time.reverse/1"),
+            (!self.ramp.is_empty()).then_some("time.ramp/1"),
+        ]
+        .into_iter()
+        .flatten()
     }
 }
 
@@ -626,6 +696,9 @@ impl RenderSpec {
                     out.insert("text/2".to_string());
                 }
             }
+            if let LayerContent::Media { time, .. } = &layer.content {
+                out.extend(time.features().map(str::to_string));
+            }
             if layer.mask.is_some() {
                 out.insert("mask/1".to_string());
             }
@@ -633,8 +706,11 @@ impl RenderSpec {
                 out.insert(fx.id.clone());
             }
         }
-        if self.audio.iter().any(|a| a.keep_pitch && a.time.speed != 1.0) {
-            out.insert("audio.stretch/1".to_string());
+        for a in &self.audio {
+            out.extend(a.time.features().map(str::to_string));
+            if a.keep_pitch && (a.time.speed != 1.0 || !a.time.ramp.is_empty()) {
+                out.insert("audio.stretch/1".to_string());
+            }
         }
         out
     }
@@ -672,6 +748,24 @@ mod tests {
         assert_eq!(a.sample(Tick(50)), 0.5);
         assert_eq!(a.sample(Tick(150)), 1.0);
         assert_eq!(a.sample(Tick(250)), 3.0);
+    }
+
+    #[test]
+    fn ramps_integrate_and_constant_speeds_scale() {
+        assert_eq!(TimeMap::new(Tick(10), 2.0).source_at(Tick(5)), Tick(20));
+        assert_eq!(TimeMap::new(Tick(100), -1.0).source_at(Tick(30)), Tick(70));
+        assert_eq!(TimeMap::new(Tick(100), 0.0).source_at(Tick(30)), Tick(100));
+        // 1 rising to 3 over 100 ticks, then held: 200 ticks of source, then 3 a tick
+        let m = TimeMap {
+            source_in: Tick(0),
+            speed: 1.0,
+            ramp: vec![SpeedKey { t: Tick(0), speed: 1.0 }, SpeedKey { t: Tick(100), speed: 3.0 }],
+        };
+        assert_eq!(m.source_at(Tick(50)), Tick(50 + 25));
+        assert_eq!(m.source_at(Tick(100)), Tick(200));
+        assert_eq!(m.source_at(Tick(110)), Tick(230));
+        assert_eq!(m.features().collect::<Vec<_>>(), ["time.ramp/1"]);
+        assert_eq!(TimeMap::new(Tick(0), -2.0).features().collect::<Vec<_>>(), ["time.reverse/1"]);
     }
 
     #[test]

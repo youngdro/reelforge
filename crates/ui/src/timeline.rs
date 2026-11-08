@@ -380,6 +380,24 @@ impl TimelineView {
             if r.clicked() {
                 out.toggled = Some((track.id.clone(), key, !on));
             }
+            // a magnetic track keeps its clips end to end
+            if track.kind == TrackKind::Video {
+                let magnet = toggle.translate(vec2(-26.0, 0.0));
+                let r = ui
+                    .put(
+                        magnet,
+                        egui::Button::new(egui::RichText::new(icon::SNAP).size(14.0).color(if track.magnetic {
+                            color::ACCENT
+                        } else {
+                            color::WEAK
+                        }))
+                        .frame(false),
+                    )
+                    .on_hover_text(if track.magnetic { words.magnetic_on } else { words.magnetic_off });
+                if r.clicked() {
+                    out.toggled = Some((track.id.clone(), "magnetic", !track.magnetic));
+                }
+            }
         }
         // the corner above the headers
         let corner = Rect::from_min_size(rect.min, vec2(HEADER, RULER));
@@ -523,10 +541,11 @@ fn paint_clip(
     }
     painter.rect_filled(r, radius, fill);
     let mut strip = false;
-    if let ClipContent::Media { media, source_in, speed } = &clip.content
+    if let ClipContent::Media { media, .. } = &clip.content
         && let Some(m) = p.media.get(media)
+        && let Some(timing) = clip.timing()
     {
-        let src = Source { source_in: *source_in, speed: *speed, start };
+        let src = Source { timing, start };
         let inner = painter.with_clip_rect(painter.clip_rect().intersect(r.shrink(1.0)));
         let fade = if dim {
             0.45

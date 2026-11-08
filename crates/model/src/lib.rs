@@ -18,9 +18,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod anim;
+pub mod timing;
 pub mod transition;
 
 pub use anim::{AnimKind, Animation, Animations, Ease, Key, Keys, Offset, Prop};
+pub use timing::{CurvePoint, CurvePreset, Timing};
 pub use transition::{Transition, TransitionKind};
 
 /// The document version this build writes. Older documents keep loading.
@@ -109,6 +111,10 @@ pub struct Track {
     /// Sound muted.
     #[serde(default)]
     pub muted: bool,
+    /// Magnetic: clips stay end to end from the timeline's start, so a removal or trim closes its
+    /// gap and a move reorders.
+    #[serde(default, skip_serializing_if = "is_no")]
+    pub magnetic: bool,
     /// Clips in time order, never overlapping.
     pub clips: Vec<Clip>,
 }
@@ -173,6 +179,10 @@ fn is_yes(b: &bool) -> bool {
     *b
 }
 
+fn is_no(b: &bool) -> bool {
+    !*b
+}
+
 /// A clip's sound fades.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Fades {
@@ -228,6 +238,23 @@ impl Clip {
     pub fn end(&self) -> Tick {
         self.start + self.duration
     }
+
+    /// How a media clip runs through its source; `None` for other clips.
+    pub fn timing(&self) -> Option<Timing> {
+        match &self.content {
+            ClipContent::Media { source_in, speed, reversed, curve, .. } => {
+                Some(Timing::of(*source_in, *speed, *reversed, curve, self.duration))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl ClipContent {
+    /// A media clip from `source_in` at normal speed.
+    pub fn media(media: impl Into<String>, source_in: Tick) -> ClipContent {
+        ClipContent::Media { media: media.into(), source_in, speed: 1.0, reversed: false, curve: vec![] }
+    }
 }
 
 /// What a clip shows or plays.
@@ -240,8 +267,14 @@ pub enum ClipContent {
         media: String,
         /// Source instant at the clip's start.
         source_in: Tick,
-        /// Playback speed; positive.
+        /// Playback speed, up to 100; 0 holds `source_in` (a freeze frame, silent).
         speed: f64,
+        /// Played backwards: the clip covers the same source span from its end.
+        #[serde(default, skip_serializing_if = "is_no")]
+        reversed: bool,
+        /// A speed curve across the clip ([`timing`]); empty is a steady speed.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        curve: Vec<CurvePoint>,
     },
     /// A colour filling the frame.
     Solid {
@@ -415,7 +448,7 @@ pub enum ModelError {
     /// A clip's content does not belong on its track.
     #[error("clip {0:?} cannot sit on {1:?} track {2:?}")]
     WrongTrack(String, TrackKind, String),
-    /// A speed outside (0, 100].
+    /// A speed outside [0, 100].
     #[error("clip {0:?} has an invalid speed")]
     BadSpeed(String),
     /// A title style value out of range.
@@ -440,7 +473,15 @@ impl Project {
         for (kind, name) in [(TrackKind::Video, "Video 1"), (TrackKind::Text, "Text 1"), (TrackKind::Audio, "Audio 1")]
         {
             let id = p.mint("t");
-            p.tracks.push(Track { id, kind, name: name.into(), hidden: false, muted: false, clips: Vec::new() });
+            p.tracks.push(Track {
+                id,
+                kind,
+                name: name.into(),
+                hidden: false,
+                muted: false,
+                magnetic: false,
+                clips: Vec::new(),
+            });
         }
         p
     }
@@ -481,6 +522,18 @@ impl Project {
     pub fn sort_clips(&mut self) {
         for t in &mut self.tracks {
             t.clips.sort_by_key(|c| c.start);
+        }
+    }
+
+    /// Lays the clips of each magnetic track end to end from the start, in their current order.
+    pub fn pack_magnetic(&mut self) {
+        for t in self.tracks.iter_mut().filter(|t| t.magnetic) {
+            let mut at = Tick::ZERO;
+            // keys are kept from each clip's start, so they move with it
+            for c in &mut t.clips {
+                c.start = at;
+                at = c.end();
+            }
         }
     }
 
@@ -527,8 +580,23 @@ impl Project {
                         let Some(m) = self.media.get(media) else {
                             return Err(ModelError::UnknownMedia(clip.id.clone(), media.clone()));
                         };
-                        if !(*speed > 0.0 && *speed <= 100.0) {
+                        if !(*speed >= 0.0 && *speed <= 100.0) {
                             return Err(ModelError::BadSpeed(clip.id.clone()));
+                        }
+                        if let ClipContent::Media { reversed, curve, .. } = &clip.content {
+                            if *speed == 0.0 && (*reversed || !curve.is_empty()) {
+                                return motion("a freeze frame cannot play backwards or follow a curve");
+                            }
+                            let (lo, hi) = timing::CURVE_RANGE;
+                            if !curve.is_empty()
+                                && (curve.len() < 2
+                                    || curve.iter().any(|p| !(0.0..=1.0).contains(&p.x) || !(lo..=hi).contains(&p.m))
+                                    || curve.windows(2).any(|w| w[1].x <= w[0].x))
+                            {
+                                return motion(
+                                    "a speed curve needs two or more points in order, 0 ≤ x ≤ 1, 0.1 ≤ m ≤ 10",
+                                );
+                            }
                         }
                         match track.kind {
                             TrackKind::Video => m.kind != MediaKind::Audio,

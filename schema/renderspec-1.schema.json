@@ -735,6 +735,26 @@
       },
       "type": "object"
     },
+    "SpeedKey": {
+      "additionalProperties": false,
+      "description": "One point of a speed ramp.",
+      "properties": {
+        "speed": {
+          "description": "Speed there, -100 to 100.",
+          "format": "double",
+          "type": "number"
+        },
+        "t": {
+          "$ref": "#/$defs/Tick",
+          "description": "Time from the owner's start."
+        }
+      },
+      "required": [
+        "t",
+        "speed"
+      ],
+      "type": "object"
+    },
     "TextAlign": {
       "description": "How lines line up within a text block.",
       "oneOf": [
@@ -838,16 +858,23 @@
     },
     "TimeMap": {
       "additionalProperties": false,
-      "description": "Source time for a media layer: `source = source_in + (t - at) * speed`.",
+      "description": "Source time for a media layer or audio clip: `source = source_in + ∫ speed dt` from the owner's\nstart. With no `ramp` the speed is constant, so `source = source_in + (t - at) * speed`.",
       "properties": {
+        "ramp": {
+          "description": "A speed that changes over time (feature `time.ramp/1`): straight lines between keys, held\nbefore the first and after the last. Key times are from the owner's start.",
+          "items": {
+            "$ref": "#/$defs/SpeedKey"
+          },
+          "type": "array"
+        },
         "source_in": {
           "$ref": "#/$defs/Tick",
           "default": 0,
-          "description": "Source instant shown at the layer's start."
+          "description": "Source instant shown at the owner's start."
         },
         "speed": {
           "default": 1.0,
-          "description": "Playback speed; positive. Speed curves arrive with a later feature.",
+          "description": "Playback speed, -100 to 100. 0 holds `source_in` (a freeze frame, feature `time.hold/1`);\nbelow 0 plays backwards (feature `time.reverse/1`). Ignored when `ramp` is given.",
           "format": "double",
           "type": "number"
         }

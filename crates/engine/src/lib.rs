@@ -111,6 +111,7 @@ impl Session {
         let mut next = (*self.project).clone();
         let out = change(&mut next)?;
         next.sort_clips();
+        next.pack_magnetic();
         next.check().map_err(|e| EngineError::Refused(e.to_string()))?;
         let old = std::mem::replace(&mut self.project, Arc::new(next));
         self.undo.push((label.to_string(), old));
