@@ -22,6 +22,7 @@ mod audio;
 mod export_job;
 pub mod i18n;
 pub mod remote;
+mod strips;
 mod theme;
 mod timeline;
 
@@ -1062,14 +1063,14 @@ impl eframe::App for EditorApp {
             .frame(bar(theme::color::STAGE))
             .show(ui, |ui| self.status_bar(ui));
         let p = self.project();
-        let (playing, lang) = (self.playing, self.lang);
+        let (playing, lang, media) = (self.playing, self.lang, self.media.clone());
         let out = egui::Panel::bottom("timeline")
             .resizable(true)
             .default_size(280.0)
             .frame(egui::Frame::new().fill(theme::color::PANEL))
             .show(ui, |ui| {
                 egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| self.timeline_bar(ui));
-                self.timeline.show(ui, &p, self.playhead, self.selected.as_deref(), playing, lang)
+                self.timeline.show(ui, &p, self.playhead, self.selected.as_deref(), playing, lang, &media)
             })
             .inner;
         egui::Panel::right("inspector")

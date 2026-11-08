@@ -49,6 +49,7 @@ base64 = "0.22"
 ehttp = "0.7"
 cpal = "0.18"
 sys-locale = "0.3"
+web-time = "1.1"
 
 # ui (L4 and up only; `cargo xtask layers` enforces it)
 egui = "0.37"

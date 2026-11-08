@@ -104,6 +104,17 @@ fn exported_mp4_probes_and_decodes_to_the_same_pictures() {
     assert!(near(centre(&late), [0, 0, 255]), "{:?}", centre(&late));
     assert!(near(centre(&past_end), [0, 0, 255]), "the last frame holds");
 
+    // the timeline's pictures: small, and of the right moment
+    let thumb = |t: f64| footage.thumbnail(&asset, Tick::from_seconds(t), 12).expect("decode").expect("online");
+    let (red, blue) = (thumb(0.5), thumb(1.5));
+    assert_eq!((red.width, red.height, red.rgba.len()), (16, 12, 16 * 12 * 4));
+    let mid = |t: &Thumbnail| {
+        let i = ((t.height / 2 * t.width + t.width / 2) * 4) as usize;
+        [t.rgba[i], t.rgba[i + 1], t.rgba[i + 2], t.rgba[i + 3]]
+    };
+    assert!(near(mid(&red), [255, 0, 0]), "{:?}", mid(&red));
+    assert!(near(mid(&blue), [0, 0, 255]), "{:?}", mid(&blue));
+
     // the exported file is footage for the next edit: play it from 1.5 s, at half size
     let mut spec = two_colours();
     spec.assets.insert("v".into(), asset);
@@ -121,6 +132,18 @@ fn exported_mp4_probes_and_decodes_to_the_same_pictures() {
     let (img, report) = render_frame(&spec, Tick::ZERO, 1.0, &footage, Quality::Final).expect("render");
     assert!(report.placeholders.is_empty());
     assert!(near(centre(&img), [0, 0, 255]));
+}
+
+#[test]
+fn shrinking_averages_what_each_pixel_covers() {
+    // 4×2: left half black, right half white, shrunk to 2×1
+    let px = |v: u8| [v, v, v, 255];
+    let rgba: Vec<u8> = [0, 0, 255, 255, 0, 0, 255, 255].iter().flat_map(|&v| px(v)).collect();
+    let t = Thumbnail::shrink(4, 2, &rgba, 1);
+    assert_eq!((t.width, t.height), (2, 1));
+    assert_eq!(t.rgba, [0, 0, 0, 255, 255, 255, 255, 255]);
+    // never enlarged
+    assert_eq!(Thumbnail::shrink(4, 2, &rgba, 10).height, 2);
 }
 
 #[test]
