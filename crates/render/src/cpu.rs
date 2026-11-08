@@ -3,13 +3,91 @@
 //! Slow and simple on purpose. It is the oracle the wgpu compositor is tested against, and the
 //! fallback where there is no GPU.
 
+use std::sync::Arc;
+
 use reelforge_renderspec::{Blend, RenderSpec};
 
 use crate::plan::{FramePlan, PlannedLayer, PlannedSource, invert};
+use crate::text::Sprite;
 use crate::{FrameReport, Image, MediaSource, Quality, RenderError};
 
 /// Offline slate colour: a dark red, so a missing picture is obvious.
-const SLATE: [f32; 4] = [0.18, 0.02, 0.03, 1.0];
+pub(crate) const SLATE: [f32; 4] = [0.18, 0.02, 0.03, 1.0];
+
+/// What one planned layer draws, its pictures fetched and its text drawn. Both compositors start
+/// from this, so they agree on what is missing and how it is reported.
+pub(crate) enum Resolved {
+    /// A picture fitted by the layer.
+    Picture(Arc<Image>),
+    /// One colour: stretched over the frame (`None`), or a `w` by `h` picture of it fitted by the
+    /// layer (the offline slate).
+    Flat([f32; 4], Option<(u32, u32)>),
+    /// Drawn text, pixel-aligned to the target.
+    Sprite(Sprite),
+    /// Nothing lands in the frame.
+    Nothing,
+}
+
+/// Fetches what `layer` needs and draws its text. Placeholders go in `report` (drafts) or fail
+/// the frame (finals).
+pub(crate) fn resolve(
+    spec: &RenderSpec,
+    plan: &FramePlan,
+    layer: &PlannedLayer,
+    media: &dyn MediaSource,
+    quality: Quality,
+    report: &mut FrameReport,
+) -> Result<Resolved, RenderError> {
+    let mut placeholder = |reason: &str| -> Result<(), RenderError> {
+        if quality == Quality::Final {
+            return Err(RenderError::Missing { layer: layer.id.clone(), reason: reason.to_string() });
+        }
+        report.placeholders.push((layer.id.clone(), reason.to_string()));
+        Ok(())
+    };
+    Ok(match &layer.source {
+        PlannedSource::Solid(color) => Resolved::Flat(*color, None),
+        PlannedSource::Media { asset, at } => {
+            let Some(def) = spec.assets.get(asset) else {
+                return Err(RenderError::Media(format!("unknown asset {asset:?}")));
+            };
+            match media.picture(asset, def, *at).map_err(RenderError::Media)? {
+                Some(pic) => Resolved::Picture(pic),
+                None => {
+                    placeholder("media offline or not decodable yet")?;
+                    let size = def
+                        .probe
+                        .as_ref()
+                        .and_then(|p| Some((p.width?, p.height?)))
+                        .unwrap_or((plan.width, plan.height));
+                    Resolved::Flat(SLATE, Some(size))
+                }
+            }
+        }
+        PlannedSource::Text(text) => {
+            let k = plan.width as f32 / spec.output.width as f32;
+            let family = match &text.font {
+                None => crate::text::DEFAULT_FAMILY.to_string(),
+                Some(font) => {
+                    let Some(def) = spec.assets.get(font) else {
+                        return Err(RenderError::Media(format!("unknown asset {font:?}")));
+                    };
+                    match media.font(font, def).map_err(RenderError::Media)? {
+                        Some(bytes) => crate::text::font_family(&def.sha256, &bytes).map_err(RenderError::Media)?,
+                        None => {
+                            placeholder("font offline; drawn with the default face")?;
+                            crate::text::DEFAULT_FAMILY.to_string()
+                        }
+                    }
+                }
+            };
+            match crate::text::rasterize(layer, text, &family, k, [plan.width, plan.height]) {
+                Some(sp) => Resolved::Sprite(sp),
+                None => Resolved::Nothing,
+            }
+        }
+    })
+}
 
 /// Draws `plan`. Media pictures come from `media`.
 pub fn composite(
@@ -22,54 +100,12 @@ pub fn composite(
     let mut report = FrameReport::default();
     let target = [plan.width as f32, plan.height as f32];
     for layer in &plan.layers {
-        let mut placeholder = |reason: &str| -> Result<(), RenderError> {
-            if quality == Quality::Final {
-                return Err(RenderError::Missing { layer: layer.id.clone(), reason: reason.to_string() });
-            }
-            report.placeholders.push((layer.id.clone(), reason.to_string()));
-            Ok(())
-        };
-        match &layer.source {
-            PlannedSource::Solid(color) => {
-                let pic = Image::filled(1, 1, *color);
-                draw(&mut out, layer, &pic, target, true);
-            }
-            PlannedSource::Media { asset, at } => {
-                let Some(def) = spec.assets.get(asset) else {
-                    return Err(RenderError::Media(format!("unknown asset {asset:?}")));
-                };
-                match media.picture(asset, def, *at).map_err(RenderError::Media)? {
-                    Some(pic) => draw(&mut out, layer, &pic, target, false),
-                    None => {
-                        placeholder("media offline or not decodable yet")?;
-                        let (w, h) = def
-                            .probe
-                            .as_ref()
-                            .and_then(|p| Some((p.width?, p.height?)))
-                            .unwrap_or((plan.width, plan.height));
-                        draw(&mut out, layer, &Image::filled(w, h, SLATE), target, false);
-                    }
-                }
-            }
-            PlannedSource::Text(text) => {
-                let k = plan.width as f32 / spec.output.width as f32;
-                let family = match &text.font {
-                    None => crate::text::DEFAULT_FAMILY.to_string(),
-                    Some(font) => {
-                        let Some(def) = spec.assets.get(font) else {
-                            return Err(RenderError::Media(format!("unknown asset {font:?}")));
-                        };
-                        match media.font(font, def).map_err(RenderError::Media)? {
-                            Some(bytes) => crate::text::font_family(&def.sha256, &bytes).map_err(RenderError::Media)?,
-                            None => {
-                                placeholder("font offline; drawn with the default face")?;
-                                crate::text::DEFAULT_FAMILY.to_string()
-                            }
-                        }
-                    }
-                };
-                crate::text::draw_text(&mut out, layer, text, &family, k);
-            }
+        match resolve(spec, plan, layer, media, quality, &mut report)? {
+            Resolved::Flat(color, None) => draw(&mut out, layer, &Image::filled(1, 1, color), target, true),
+            Resolved::Flat(color, Some((w, h))) => draw(&mut out, layer, &Image::filled(w, h, color), target, false),
+            Resolved::Picture(pic) => draw(&mut out, layer, &pic, target, false),
+            Resolved::Sprite(sp) => crate::text::draw_sprite(&mut out, layer, &sp),
+            Resolved::Nothing => {}
         }
     }
     Ok((out, report))

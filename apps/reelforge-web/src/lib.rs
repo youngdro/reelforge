@@ -36,7 +36,9 @@ mod web {
         let canvas =
             document.get_element_by_id(canvas_id).ok_or("no such canvas")?.dyn_into::<web_sys::HtmlCanvasElement>()?;
         let runner = eframe::WebRunner::new();
-        runner.start(canvas, eframe::WebOptions::default(), Box::new(|_cc| Ok(Box::new(EditorApp::demo())))).await?;
+        runner
+            .start(canvas, eframe::WebOptions::default(), Box::new(|cc| Ok(Box::new(EditorApp::demo().with_gpu(cc)))))
+            .await?;
         Ok(Handle { runner })
     }
 }

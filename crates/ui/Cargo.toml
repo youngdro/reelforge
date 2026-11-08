@@ -14,7 +14,7 @@ reelforge-time = { workspace = true }
 reelforge-model = { workspace = true }
 reelforge-renderspec = { workspace = true }
 reelforge-compile = { workspace = true }
-reelforge-render = { workspace = true }
+reelforge-render = { workspace = true, features = ["gpu"] }
 reelforge-engine = { workspace = true }
 reelforge-media = { workspace = true }
 sha2 = { workspace = true }

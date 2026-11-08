@@ -1,6 +1,6 @@
 [package]
 name = "reelforge-render"
-description = "Draws a RenderSpec: a pure frame plan and the CPU reference compositor, text included (bundled Noto Sans SC). Reads RenderSpec only, never the project."
+description = "Draws a RenderSpec: a pure frame plan and the CPU reference compositor and a wgpu one (feature `gpu`), text included (bundled Noto Sans SC). Reads RenderSpec only, never the project."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,3 +15,13 @@ reelforge-renderspec = { workspace = true }
 thiserror = { workspace = true }
 image = { workspace = true }
 filmcraft-text = { workspace = true }
+wgpu = { workspace = true, optional = true }
+bytemuck = { workspace = true, optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = { workspace = true, optional = true }
+
+[features]
+default = []
+# The wgpu compositor: the same frame plan drawn with WGSL shaders.
+gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster"]

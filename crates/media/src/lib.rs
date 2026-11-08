@@ -21,7 +21,7 @@ use reelforge_render::{Image, MediaSource, StillImages};
 use reelforge_renderspec::{Asset, AssetKind};
 use reelforge_time::{FrameRate, Tick};
 
-pub use export::{ExportError, ExportStats, Progress, export};
+pub use export::{ExportError, ExportStats, Progress, Renderer, export, export_with};
 
 /// What [`probe_path`] measured.
 #[derive(Clone, Debug, PartialEq)]

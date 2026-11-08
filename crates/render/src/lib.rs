@@ -6,9 +6,10 @@
 //!    how strongly". It touches no pixels and does no IO, so it is exact, fast and the same for
 //!    every backend.
 //! 2. A compositor draws a [`plan::FramePlan`] and nothing else. [`cpu`] is the reference
-//!    implementation every other backend is tested against; the wgpu compositor (same plan, WGSL
-//!    shaders) is the next backend and shares the editor's wgpu device so a preview frame never
-//!    leaves the GPU.
+//!    implementation every other backend is tested against; `gpu` (feature `gpu`) draws the same
+//!    plan with WGSL shaders, on the editor's wgpu device for previews or a headless one for
+//!    exports. Both start from what [`cpu::resolve`] fetched and drew (pictures, text sprites), so
+//!    they agree on placeholders and errors.
 //!
 //! This crate depends on `reelforge-renderspec` and `reelforge-time` only (`cargo xtask layers`
 //! enforces it), so the same code renders inside the editor, in the browser and on a render
@@ -19,6 +20,8 @@
 //! [`FrameReport`] says so, so a draft preview keeps working while a final render can refuse.
 
 pub mod cpu;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod image;
 pub mod media;
 pub mod plan;

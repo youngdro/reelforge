@@ -1,5 +1,5 @@
-//! A RenderSpec to an MP4 file: every frame drawn at full size by the reference compositor,
-//! encoded as H.264 High, the sound mixed and encoded as AAC-LC, muxed with the index in front
+//! A RenderSpec to an MP4 file: every frame drawn at full size (on the GPU where there is one,
+//! else by the CPU reference compositor), encoded as H.264 High, the sound mixed and encoded as AAC-LC, muxed with the index in front
 //! ("fast start") so a browser can play it while it downloads.
 
 use std::io::{Read, Seek, Write};
@@ -31,9 +31,24 @@ pub enum ExportError {
     /// Writing the file failed.
     #[error("write: {0}")]
     Write(String),
+    /// The GPU failed mid-export.
+    #[error("gpu: {0}")]
+    Gpu(String),
     /// The progress callback asked to stop.
     #[error("cancelled")]
     Cancelled,
+}
+
+/// Which compositor draws an export's frames.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum Renderer {
+    /// The GPU when there is one, else the CPU.
+    #[default]
+    Auto,
+    /// The CPU reference compositor.
+    Cpu,
+    /// The wgpu compositor; the export fails without a GPU.
+    Gpu,
 }
 
 /// How far an export has come.
@@ -52,6 +67,8 @@ pub struct ExportStats {
     pub frames: u64,
     /// Audio sample frames (per channel), or 0 without a sound track.
     pub audio_samples: u64,
+    /// What drew the frames: `cpu`, or the GPU adapter.
+    pub renderer: String,
 }
 
 const CHANNELS: usize = 2;
@@ -72,6 +89,17 @@ pub fn export<W: Read + Write + Seek>(
     out: W,
     progress: &mut dyn FnMut(Progress) -> bool,
 ) -> Result<(W, ExportStats), ExportError> {
+    export_with(spec, media, out, Renderer::Auto, progress)
+}
+
+/// [`export`], choosing the compositor.
+pub fn export_with<W: Read + Write + Seek>(
+    spec: &RenderSpec,
+    media: &Footage,
+    out: W,
+    renderer: Renderer,
+    progress: &mut dyn FnMut(Progress) -> bool,
+) -> Result<(W, ExportStats), ExportError> {
     validate(spec).map_err(|e| ExportError::Invalid(e.to_string()))?;
     let missing = unsupported_features(spec);
     if !missing.is_empty() {
@@ -82,6 +110,8 @@ pub fn export<W: Read + Write + Seek>(
     if venc.codec != VideoCodec::H264 {
         return Err(ExportError::Invalid(format!("this exporter writes H.264 only, not {:?}", venc.codec)));
     }
+    let mut drawer = Drawer::new(renderer)?;
+    let renderer = drawer.name();
     let fps = o.fps;
     let total = (fps.frame_at(o.duration - Tick(1)) + 1).max(1) as u64;
 
@@ -139,7 +169,7 @@ pub fn export<W: Read + Write + Seek>(
         }
         Ok(())
     };
-    each_frame(spec, media, total, &mut |i, yuv| {
+    each_frame(spec, media, &mut drawer, total, &mut |i, yuv| {
         let frame = filmcraft_h264enc::YuvFrame {
             y: &yuv.y,
             u: &yuv.u,
@@ -157,7 +187,7 @@ pub fn export<W: Read + Write + Seek>(
         if progress(Progress { done: i + 1, total }) { Ok(()) } else { Err(ExportError::Cancelled) }
     })?;
     write_video(&mut mux, enc.flush())?;
-    let mut stats = ExportStats { frames: total, audio_samples: 0 };
+    let mut stats = ExportStats { frames: total, audio_samples: 0, renderer };
     if let Some(mut s) = sound {
         s.mix_until(spec, media, &mut mux, o.duration)?;
         for au in s.enc.flush() {
@@ -170,10 +200,54 @@ pub fn export<W: Read + Write + Seek>(
     Ok((out, stats))
 }
 
-fn draw(spec: &RenderSpec, media: &Footage, i: u64, yuv: &mut Yuv420) -> Result<(), ExportError> {
-    let (img, _) = render_frame(spec, spec.output.fps.tick_of(i as i64), 1.0, media, Quality::Final)?;
-    to_yuv420(&img, yuv);
-    Ok(())
+/// The compositor drawing an export, and the conversion to the encoder's input that goes with it.
+enum Drawer {
+    Cpu,
+    #[cfg(not(target_arch = "wasm32"))]
+    Gpu(Box<reelforge_render::gpu::GpuCompositor>),
+}
+
+impl Drawer {
+    fn new(renderer: Renderer) -> Result<Drawer, ExportError> {
+        match renderer {
+            Renderer::Cpu => Ok(Drawer::Cpu),
+            #[cfg(not(target_arch = "wasm32"))]
+            Renderer::Auto | Renderer::Gpu => match reelforge_render::gpu::GpuCompositor::headless() {
+                Ok(g) => Ok(Drawer::Gpu(Box::new(g))),
+                Err(_) if renderer == Renderer::Auto => Ok(Drawer::Cpu),
+                Err(e) => Err(ExportError::Gpu(e.to_string())),
+            },
+            #[cfg(target_arch = "wasm32")]
+            Renderer::Auto => Ok(Drawer::Cpu),
+            #[cfg(target_arch = "wasm32")]
+            Renderer::Gpu => Err(ExportError::Gpu("the browser exports on the CPU".into())),
+        }
+    }
+
+    fn name(&self) -> String {
+        match self {
+            Drawer::Cpu => "cpu".into(),
+            #[cfg(not(target_arch = "wasm32"))]
+            Drawer::Gpu(g) => g.adapter().to_string(),
+        }
+    }
+
+    fn draw(&mut self, spec: &RenderSpec, media: &Footage, i: u64, yuv: &mut Yuv420) -> Result<(), ExportError> {
+        let t = spec.output.fps.tick_of(i as i64);
+        match self {
+            Drawer::Cpu => {
+                let (img, _) = render_frame(spec, t, 1.0, media, Quality::Final)?;
+                to_yuv420(&img, yuv);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Drawer::Gpu(g) => {
+                g.render(spec, t, 1.0, media, Quality::Final)?;
+                g.read_yuv420(&mut yuv.y, &mut yuv.u, &mut yuv.v).map_err(|e| ExportError::Gpu(e.to_string()))?;
+                yuv.width = spec.output.width as usize;
+            }
+        }
+        Ok(())
+    }
 }
 
 fn blank() -> Yuv420 {
@@ -187,6 +261,7 @@ fn blank() -> Yuv420 {
 fn each_frame(
     spec: &RenderSpec,
     media: &Footage,
+    drawer: &mut Drawer,
     total: u64,
     encode: &mut dyn FnMut(u64, &Yuv420) -> Result<(), ExportError>,
 ) -> Result<(), ExportError> {
@@ -199,7 +274,7 @@ fn each_frame(
             scope.spawn(move || {
                 for i in 0..total {
                     let mut yuv = spare.try_recv().unwrap_or_else(|_| blank());
-                    let r = draw(spec, media, i, &mut yuv).map(|()| yuv);
+                    let r = drawer.draw(spec, media, i, &mut yuv).map(|()| yuv);
                     let failed = r.is_err();
                     // the encoder has stopped (an error, a cancel): stop drawing too
                     if to_encoder.send(r).is_err() || failed {
@@ -221,7 +296,7 @@ fn each_frame(
     {
         let mut yuv = blank();
         for i in 0..total {
-            draw(spec, media, i, &mut yuv)?;
+            drawer.draw(spec, media, i, &mut yuv)?;
             encode(i, &yuv)?;
         }
         Ok(())
