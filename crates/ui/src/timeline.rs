@@ -6,14 +6,16 @@
 //! start and to other clips' edges when snapping is on.
 
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
+use reelforge_media::Footage;
 use reelforge_model::{ClipContent, MediaKind, Project, TrackKind};
 use reelforge_time::Tick;
 
 use crate::i18n::{Lang, Strings};
+use crate::strips::{Source, Strips};
 use crate::theme::{color, icon};
 
 const RULER: f32 = 26.0;
-const ROW: f32 = 46.0;
+const ROW: f32 = 54.0;
 const HEADER: f32 = 132.0;
 /// How close, in points, a drag must come to a snap target to stick to it.
 const SNAP_POINTS: f32 = 8.0;
@@ -28,6 +30,7 @@ pub(crate) struct TimelineView {
     drag: Option<Drag>,
     /// Snap moves and trims to edges and the playhead.
     pub(crate) snap: bool,
+    strips: Strips,
 }
 
 #[derive(Clone)]
@@ -42,7 +45,7 @@ enum Drag {
 
 impl Default for TimelineView {
     fn default() -> TimelineView {
-        TimelineView { px_per_second: 80.0, offset: 0.0, drag: None, snap: true }
+        TimelineView { px_per_second: 80.0, offset: 0.0, drag: None, snap: true, strips: Strips::default() }
     }
 }
 
@@ -86,6 +89,9 @@ impl TimelineView {
         self.offset = 0.0;
     }
 
+    /// Draws the timeline and reads what the pointer did. `media` gives clips their pictures and
+    /// waveforms.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -94,6 +100,7 @@ impl TimelineView {
         selected: Option<&str>,
         playing: bool,
         lang: Lang,
+        media: &Footage,
     ) -> TimelineOutput {
         let words = lang.strings();
         let mut out = TimelineOutput::default();
@@ -126,6 +133,7 @@ impl TimelineView {
         let (pps, offset) = (self.px_per_second, self.offset);
         let x_of = move |t: Tick| lanes.left() + ((t.seconds() - offset) as f32) * pps;
         let t_of = move |x: f32| Tick::from_seconds(offset + ((x - lanes.left()) / pps) as f64);
+        let seconds_of = move |x: f32| offset + ((x - lanes.left()) / pps) as f64;
 
         painter.rect_filled(rect, 0.0, color::ROW);
 
@@ -284,16 +292,23 @@ impl TimelineView {
                     egui::pos2(x_of(a), top + 5.0),
                     egui::pos2(x_of(b).max(x_of(a) + 3.0), top + ROW - 5.0),
                 );
+                // a moved clip carries its source along; a trimmed one keeps it in place
+                let start = if b - a == clip.duration { a } else { clip.start };
                 paint_clip(
                     &lane,
                     r,
                     p,
                     track.kind,
                     clip,
-                    selected == Some(clip.id.as_str()),
-                    dim,
-                    ghost.as_ref().is_some_and(|g| g.0 == clip.id),
+                    start,
+                    Look {
+                        selected: selected == Some(clip.id.as_str()),
+                        dim,
+                        dragging: ghost.as_ref().is_some_and(|g| g.0 == clip.id),
+                    },
                     words,
+                    &mut self.strips,
+                    &seconds_of,
                 );
             }
             // a clip dragged here from another track
@@ -303,7 +318,8 @@ impl TimelineView {
                 && let Some((from, clip)) = p.clip(g)
             {
                 let r = Rect::from_min_max(egui::pos2(x_of(*ga), top + 5.0), egui::pos2(x_of(*gb), top + ROW - 5.0));
-                paint_clip(&lane, r, p, p.tracks[from].kind, clip, true, false, true, words);
+                let look = Look { selected: true, dim: false, dragging: true };
+                paint_clip(&lane, r, p, p.tracks[from].kind, clip, *ga, look, words, &mut self.strips, &seconds_of);
             }
 
             // Header.
@@ -439,11 +455,22 @@ impl TimelineView {
                 }
             }
         }
+        if self.strips.work(ui.ctx(), media, playing) {
+            ui.ctx().request_repaint();
+        }
         out
     }
 }
 
-/// One clip block.
+/// How a clip block is drawn.
+#[derive(Copy, Clone)]
+struct Look {
+    selected: bool,
+    dim: bool,
+    dragging: bool,
+}
+
+/// One clip block, its source placed as if it started at `start`.
 #[allow(clippy::too_many_arguments)]
 fn paint_clip(
     painter: &egui::Painter,
@@ -451,11 +478,13 @@ fn paint_clip(
     p: &Project,
     kind: TrackKind,
     clip: &reelforge_model::Clip,
-    selected: bool,
-    dim: bool,
-    dragging: bool,
+    start: Tick,
+    look: Look,
     words: &Strings,
+    strips: &mut Strips,
+    seconds_of: &dyn Fn(f32) -> f64,
 ) {
+    let Look { selected, dim, dragging } = look;
     let radius = CornerRadius::same(5);
     let (glyph, label, mut fill) = match &clip.content {
         ClipContent::Media { media, .. } => {
@@ -481,6 +510,35 @@ fn paint_clip(
         fill = fill.gamma_multiply(0.8);
     }
     painter.rect_filled(r, radius, fill);
+    let mut strip = false;
+    if let ClipContent::Media { media, source_in, speed } = &clip.content
+        && let Some(m) = p.media.get(media)
+    {
+        let src = Source { source_in: *source_in, speed: *speed, start };
+        let inner = painter.with_clip_rect(painter.clip_rect().intersect(r.shrink(1.0)));
+        let fade = if dim {
+            0.45
+        } else if dragging {
+            0.8
+        } else {
+            1.0
+        };
+        if kind == TrackKind::Audio {
+            let gain = 10f32.powf(clip.volume_db / 20.0);
+            strips.paint_wave(
+                &inner,
+                r.shrink2(vec2(0.0, 3.0)),
+                m,
+                src,
+                seconds_of,
+                gain,
+                Color32::from_white_alpha(150).gamma_multiply(fade),
+            );
+        } else {
+            strips.paint_pictures(&inner, r.shrink(1.0), m, src, seconds_of, Color32::WHITE.gamma_multiply(fade));
+            strip = true;
+        }
+    }
     // a lighter top edge, so blocks read as raised
     painter.with_clip_rect(r).line_segment(
         [r.left_top() + vec2(3.0, 1.0), r.right_top() + vec2(-3.0, 1.0)],
@@ -501,12 +559,18 @@ fn paint_clip(
     if r.width() > 24.0 {
         let text = painter.with_clip_rect(r.shrink2(vec2(8.0, 0.0)));
         let text_color = if dim { Color32::from_white_alpha(140) } else { Color32::WHITE };
-        text.text(
-            r.left_center() + vec2(9.0, 0.0),
-            Align2::LEFT_CENTER,
-            format!("{glyph}  {label}"),
-            FontId::proportional(12.0),
-            text_color,
-        );
+        let name = format!("{glyph}  {label}");
+        if strip {
+            // over pictures the name sits on a dark tab in the corner
+            let galley = painter.layout_no_wrap(name, FontId::proportional(11.5), text_color);
+            let tab = Rect::from_min_size(r.left_top() + vec2(4.0, 4.0), galley.size() + vec2(10.0, 4.0));
+            text.rect_filled(tab, CornerRadius::same(4), Color32::from_black_alpha(150));
+            text.galley(tab.min + vec2(5.0, 2.0), galley, text_color);
+        } else {
+            let at =
+                if kind == TrackKind::Audio { r.left_top() + vec2(9.0, 4.0) } else { r.left_center() + vec2(9.0, 0.0) };
+            let align = if kind == TrackKind::Audio { Align2::LEFT_TOP } else { Align2::LEFT_CENTER };
+            text.text(at, align, name, FontId::proportional(12.0), text_color);
+        }
     }
 }

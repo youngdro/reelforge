@@ -2953,6 +2953,7 @@ dependencies = [
  "sha2",
  "sys-locale",
  "wasm-bindgen-futures",
+ "web-time",
 ]
 
 [[package]]

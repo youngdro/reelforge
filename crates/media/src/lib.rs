@@ -5,6 +5,7 @@
 //!   HEVC, VP8/9, AV1, ProRes, … in MP4/MOV, Matroska/WebM, MXF, MPEG-TS, AVI). It also reads the
 //!   sound of video and audio assets for the export mix.
 //! - [`probe_path`] and [`probe_bytes`] measure a file at import: kind, picture size, length.
+//! - [`Footage::thumbnail`] and [`Footage::audio`] give the timeline its pictures and waveforms.
 //! - [`export::export`] draws every frame of a RenderSpec and writes an H.264 + AAC MP4.
 //!
 //! No FFmpeg and no C libraries, so the same code builds for the browser. There the page hands
@@ -106,6 +107,8 @@ pub struct Footage {
     last: Mutex<HashMap<String, Converted>>,
     /// Font files by asset key.
     fonts: Mutex<HashMap<String, Arc<[u8]>>>,
+    /// Counts files handed over and clears, so callers know when offline footage may be back.
+    generation: std::sync::atomic::AtomicU64,
 }
 
 fn key(asset: &Asset) -> String {
@@ -129,6 +132,7 @@ impl Footage {
         } else {
             self.sources.lock().expect("sources lock").insert(sha256.to_string(), Some(src));
         }
+        self.bump();
         Ok(probe)
     }
 
@@ -142,6 +146,16 @@ impl Footage {
         self.sources.lock().expect("sources lock").clear();
         self.last.lock().expect("frame lock").clear();
         self.fonts.lock().expect("fonts lock").clear();
+        self.bump();
+    }
+
+    /// Changes whenever files are handed over or forgotten: what was offline may be online now.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn bump(&self) {
+        self.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn source(&self, asset: &Asset) -> Option<SharedSource> {
@@ -182,6 +196,68 @@ impl Footage {
             Ok(buf) => Ok(Some(buf.channels)),
             Err(filmcraft_media::MediaError::NoStream(_)) => Ok(None),
             Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+/// A small picture for the timeline: `width × height` pixels of sRGB `[r, g, b, a]` bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Thumbnail {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// `width * height * 4` bytes, row by row.
+    pub rgba: Vec<u8>,
+}
+
+impl Thumbnail {
+    /// `rgba` (`width × height`) shrunk to `height` pixels tall, each pixel the mean of the pixels
+    /// it covers. Never enlarged.
+    pub fn shrink(width: u32, height: u32, rgba: &[u8], to_height: u32) -> Thumbnail {
+        let to_h = to_height.clamp(1, height.max(1));
+        let to_w = ((width as u64 * to_h as u64) / height.max(1) as u64).max(1) as u32;
+        let (w, h) = (width as usize, height as usize);
+        let mut out = Vec::with_capacity(to_w as usize * to_h as usize * 4);
+        for ty in 0..to_h as usize {
+            let (y0, y1) = (ty * h / to_h as usize, ((ty + 1) * h / to_h as usize).max(ty * h / to_h as usize + 1));
+            for tx in 0..to_w as usize {
+                let (x0, x1) = (tx * w / to_w as usize, ((tx + 1) * w / to_w as usize).max(tx * w / to_w as usize + 1));
+                let mut sum = [0u32; 4];
+                for y in y0..y1.min(h) {
+                    for px in rgba[(y * w + x0) * 4..(y * w + x1.min(w)) * 4].as_chunks::<4>().0 {
+                        for (total, &v) in sum.iter_mut().zip(px) {
+                            *total += v as u32;
+                        }
+                    }
+                }
+                let n = ((y1.min(h) - y0) * (x1.min(w) - x0)).max(1) as u32;
+                out.extend(sum.map(|v| ((v + n / 2) / n) as u8));
+            }
+        }
+        Thumbnail { width: to_w, height: to_h, rgba: out }
+    }
+}
+
+impl Footage {
+    /// A picture of `asset` at source instant `at`, `height` pixels tall, for the timeline. Decodes
+    /// on the calling thread. `Ok(None)` when the file is offline or has no picture.
+    pub fn thumbnail(&self, asset: &Asset, at: Tick, height: u32) -> Result<Option<Thumbnail>, String> {
+        match asset.kind {
+            AssetKind::Image => {
+                let Some(img) = self.stills.picture("", asset, Tick::ZERO)? else { return Ok(None) };
+                Ok(Some(Thumbnail::shrink(img.width, img.height, &img.to_srgba8(), height)))
+            }
+            AssetKind::Video => {
+                let Some(src) = self.source(asset) else { return Ok(None) };
+                let Some(v) = src.info().video.as_ref().map(|v| v.height) else { return Ok(None) };
+                let duration = from_ft(src.info().duration);
+                let at = at.max(Tick::ZERO).min(duration - Tick(1)).max(Tick::ZERO);
+                let scale = (height as f32 / v.max(1) as f32).clamp(0.01, 1.0);
+                let frame = src.video_frame(FrameRequest { time: to_ft(at), scale }).map_err(|e| e.to_string())?;
+                Ok(Some(Thumbnail::shrink(frame.width, frame.height, &frame.to_rgba8(), height)))
+            }
+            _ => Ok(None),
         }
     }
 }
