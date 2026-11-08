@@ -1,6 +1,6 @@
 //! What is on screen at an instant. Pure: no pixels, no IO.
 
-use reelforge_renderspec::{Blend, Fit, LayerContent, RenderSpec, TextContent, effects};
+use reelforge_renderspec::{Blend, Fit, LayerContent, RenderSpec, ShapeMask, TextContent, effects};
 use reelforge_time::Tick;
 
 use crate::image::premultiply_srgb;
@@ -43,6 +43,12 @@ pub struct PlannedLayer {
     pub fx: Vec<(String, Vec<(String, f32)>)>,
     /// The `lut` asset of the layer's `color.lut@1`, if it has one.
     pub lut: Option<String>,
+    /// Fractions cut off the picture: left, top, right, bottom.
+    pub crop: [f32; 4],
+    /// The picture mirrored: left to right, top to bottom.
+    pub flip: [bool; 2],
+    /// A shape that shows part of the layer.
+    pub shape: Option<ShapeMask>,
 }
 
 /// What a layer draws.
@@ -65,6 +71,20 @@ pub enum PlannedSource {
 pub type Affine = [f32; 6];
 
 impl PlannedLayer {
+    /// The part of a `w` by `h` picture that shows, after the crop.
+    pub fn visible(&self, w: f32, h: f32) -> (f32, f32) {
+        let [l, t, r, b] = self.crop;
+        ((w * (1.0 - l - r)).max(1e-3), (h * (1.0 - t - b)).max(1e-3))
+    }
+
+    /// Where a point of the visible part (`x`, `y` in its pixels, `cw` by `ch`) is in the whole `w`
+    /// by `h` picture: mirrored, then moved past the crop.
+    pub fn in_picture(&self, x: f32, y: f32, cw: f32, ch: f32, w: f32, h: f32) -> (f32, f32) {
+        let x = if self.flip[0] { cw - x } else { x };
+        let y = if self.flip[1] { ch - y } else { y };
+        (x + self.crop[0] * w, y + self.crop[1] * h)
+    }
+
     /// The map from content pixels (a `w` by `h` picture) to target pixels.
     pub fn matrix(&self, w: f32, h: f32, target: [f32; 2]) -> Affine {
         let (sx, sy) = match self.fit {
@@ -131,6 +151,15 @@ pub fn plan_frame(spec: &RenderSpec, t: Tick, scale: f32) -> FramePlan {
                 .map(|fx| (fx.id.clone(), fx.params.iter().map(|(k, v)| (k.clone(), v.sample(local))).collect()))
                 .collect(),
             lut: layer.fx.iter().find(|fx| fx.id == effects::LUT).and_then(|fx| fx.asset.clone()),
+            crop: match (&layer.content, layer.crop) {
+                (LayerContent::Media { .. }, Some(c)) => [c.left, c.top, c.right, c.bottom],
+                _ => [0.0; 4],
+            },
+            flip: match &layer.content {
+                LayerContent::Media { .. } => [layer.flip_x, layer.flip_y],
+                _ => [false; 2],
+            },
+            shape: layer.shape_mask,
         });
     }
     FramePlan { t, width, height, background: premultiply_srgb(o.background.0), layers }
@@ -153,6 +182,9 @@ mod tests {
             blend: Blend::Normal,
             fx: vec![],
             lut: None,
+            crop: [0.0; 4],
+            flip: [false; 2],
+            shape: None,
         };
         let m = l.matrix(640.0, 360.0, [1080.0, 1920.0]);
         let inv = invert(m).unwrap();

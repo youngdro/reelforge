@@ -227,6 +227,116 @@ pub struct Layer {
     /// Effects, applied in order to the layer's own picture before it is placed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fx: Vec<Effect>,
+    /// Edges cut off a media layer's picture before it is fitted (feature `crop/1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crop: Option<Crop>,
+    /// A media layer's picture mirrored left to right (feature `flip/1`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub flip_x: bool,
+    /// A media layer's picture mirrored top to bottom (feature `flip/1`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub flip_y: bool,
+    /// A shape that shows part of the layer, in the layer's own picture (feature `mask.shape/1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape_mask: Option<ShapeMask>,
+}
+
+/// Edges cut off a picture, as fractions of its width (`left`, `right`) and height (`top`,
+/// `bottom`); what is left must be at least 1 % of each.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Crop {
+    /// From the left edge.
+    #[serde(default)]
+    pub left: f32,
+    /// From the top edge.
+    #[serde(default)]
+    pub top: f32,
+    /// From the right edge.
+    #[serde(default)]
+    pub right: f32,
+    /// From the bottom edge.
+    #[serde(default)]
+    pub bottom: f32,
+}
+
+/// A shape that shows part of a layer.
+///
+/// It is placed in the layer's own picture (after any crop), so it moves, turns and scales with
+/// the layer. Lengths are in units of the picture's shorter side, so a circle stays round.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ShapeMask {
+    /// Which shape.
+    pub shape: MaskShape,
+    /// Its centre, as fractions of the picture's width and height (0.5, 0.5 is the middle).
+    #[serde(default = "middle")]
+    pub center: [f32; 2],
+    /// Width and height (for `mirror`, the height is the band's thickness; `linear` ignores it).
+    #[serde(default = "half")]
+    pub size: [f32; 2],
+    /// Clockwise turn, degrees.
+    #[serde(default)]
+    pub rotation: f32,
+    /// Width of the soft edge, 0 for a hard one.
+    #[serde(default)]
+    pub feather: f32,
+    /// Show the outside instead.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub invert: bool,
+}
+
+fn middle() -> [f32; 2] {
+    [0.5, 0.5]
+}
+
+fn half() -> [f32; 2] {
+    [0.5, 0.5]
+}
+
+/// Mask shapes.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MaskShape {
+    /// Everything above a line through the centre (turned by `rotation`).
+    Linear,
+    /// A band through the centre.
+    Mirror,
+    /// An ellipse.
+    Circle,
+    /// A rectangle.
+    Rectangle,
+}
+
+impl ShapeMask {
+    /// How much of the layer shows, 0 to 1, at `uv` (fractions of a `w` by `h` picture).
+    pub fn coverage(&self, uv: [f32; 2], w: f32, h: f32) -> f32 {
+        let unit = w.min(h).max(1e-6);
+        let (dx, dy) = ((uv[0] - self.center[0]) * w / unit, (uv[1] - self.center[1]) * h / unit);
+        let (sin, cos) = (-self.rotation.to_radians()).sin_cos();
+        let (x, y) = (dx * cos - dy * sin, dx * sin + dy * cos);
+        let (hw, hh) = (self.size[0].max(0.0) / 2.0, self.size[1].max(0.0) / 2.0);
+        let d = match self.shape {
+            MaskShape::Linear => y,
+            MaskShape::Mirror => y.abs() - hh,
+            MaskShape::Circle => {
+                let (rx, ry) = (hw.max(1e-6), hh.max(1e-6));
+                (((x / rx) * (x / rx) + (y / ry) * (y / ry)).sqrt() - 1.0) * rx.min(ry)
+            }
+            MaskShape::Rectangle => {
+                let (qx, qy) = (x.abs() - hw, y.abs() - hh);
+                (qx.max(0.0) * qx.max(0.0) + qy.max(0.0) * qy.max(0.0)).sqrt() + qx.max(qy).min(0.0)
+            }
+        };
+        let m = if self.feather > 0.0 {
+            (0.5 - d / self.feather).clamp(0.0, 1.0)
+        } else if d <= 0.0 {
+            1.0
+        } else {
+            0.0
+        };
+        if self.invert { 1.0 - m } else { m }
+    }
 }
 
 fn one() -> Animated<f32> {
@@ -547,6 +657,79 @@ pub enum Blend {
     Multiply,
     /// Inverse product.
     Screen,
+    /// Multiply in the dark parts, screen in the bright (feature `blend/2`, as are those below).
+    Overlay,
+    /// The darker of the two.
+    Darken,
+    /// The lighter of the two.
+    Lighten,
+    /// A gentle overlay.
+    SoftLight,
+    /// Overlay, led by the layer.
+    HardLight,
+    /// The difference.
+    Difference,
+    /// Brightens what is below.
+    ColorDodge,
+    /// Darkens what is below.
+    ColorBurn,
+}
+
+impl Blend {
+    /// Whether the mode needs `blend/2`.
+    pub fn is_v2(self) -> bool {
+        !matches!(self, Blend::Normal | Blend::Add | Blend::Multiply | Blend::Screen)
+    }
+
+    /// The mode's function of straight colours (`B(Cs, Cd)` of the W3C compositing spec), for the
+    /// modes a renderer works out itself.
+    pub fn mix(self, s: f32, d: f32) -> f32 {
+        let hard = |s: f32, d: f32| {
+            if s <= 0.5 {
+                2.0 * s * d
+            } else {
+                let t = 2.0 * s - 1.0;
+                d + t - d * t
+            }
+        };
+        match self {
+            Blend::Normal => s,
+            Blend::Add => s + d,
+            Blend::Multiply => s * d,
+            Blend::Screen => s + d - s * d,
+            Blend::Overlay => hard(d, s),
+            Blend::HardLight => hard(s, d),
+            Blend::Darken => s.min(d),
+            Blend::Lighten => s.max(d),
+            Blend::Difference => (s - d).abs(),
+            Blend::SoftLight => {
+                if s <= 0.5 {
+                    d - (1.0 - 2.0 * s) * d * (1.0 - d)
+                } else {
+                    let g = if d <= 0.25 { ((16.0 * d - 12.0) * d + 4.0) * d } else { d.sqrt() };
+                    d + (2.0 * s - 1.0) * (g - d)
+                }
+            }
+            Blend::ColorDodge => {
+                if d <= 0.0 {
+                    0.0
+                } else if s >= 1.0 {
+                    1.0
+                } else {
+                    (d / (1.0 - s)).min(1.0)
+                }
+            }
+            Blend::ColorBurn => {
+                if d >= 1.0 {
+                    1.0
+                } else if s <= 0.0 {
+                    0.0
+                } else {
+                    1.0 - ((1.0 - d) / s).min(1.0)
+                }
+            }
+        }
+    }
 }
 
 /// An effect applied to a layer.
@@ -726,6 +909,18 @@ impl RenderSpec {
             }
             if let LayerContent::Media { time, .. } = &layer.content {
                 out.extend(time.features().map(str::to_string));
+            }
+            if layer.crop.is_some() {
+                out.insert("crop/1".to_string());
+            }
+            if layer.flip_x || layer.flip_y {
+                out.insert("flip/1".to_string());
+            }
+            if layer.shape_mask.is_some() {
+                out.insert("mask.shape/1".to_string());
+            }
+            if layer.blend.is_v2() {
+                out.insert("blend/2".to_string());
             }
             if layer.mask.is_some() {
                 out.insert("mask/1".to_string());

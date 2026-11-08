@@ -44,10 +44,14 @@ pub use plan::{FramePlan, PlannedLayer, PlannedSource, plan_frame};
 /// `reelforge-media`'s mix, which every reelforge renderer of sound uses.)
 pub const SUPPORTED_FEATURES: &[&str] = &[
     "audio.stretch/1",
+    "blend/2",
     "color.brightness@1",
     "color.grade@1",
     "color.lut@1",
     "color.saturation@1",
+    "crop/1",
+    "flip/1",
+    "mask.shape/1",
     "text/1",
     "text/2",
     "time.hold/1",
@@ -144,7 +148,7 @@ pub fn layer_outlines(spec: &RenderSpec, t: Tick, media: &dyn MediaSource) -> Ve
                         _ => (plan.width, plan.height),
                     },
                 };
-                let (w, h) = (size.0 as f32, size.1 as f32);
+                let (w, h) = layer.visible(size.0 as f32, size.1 as f32);
                 corners(layer.matrix(w, h, target), w, h)
             }
             PlannedSource::Text(_) => {
@@ -188,6 +192,7 @@ mod tests {
     use super::*;
     use reelforge_renderspec::*;
     use reelforge_time::FrameRate;
+    use std::sync::Arc;
 
     fn spec() -> RenderSpec {
         let mut s = RenderSpec::new(Output {
@@ -213,6 +218,10 @@ mod tests {
             blend: Blend::Normal,
             mask: None,
             fx: vec![],
+            crop: None,
+            flip_x: false,
+            flip_y: false,
+            shape_mask: None,
         });
         s
     }
@@ -246,6 +255,67 @@ mod tests {
         assert_eq!(px(&img, 21, 6), [255, 0, 0, 255]);
         assert_eq!(px(&img, 5, 10), [0, 0, 255, 255]);
         assert_eq!(px(&img, 30, 2), [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn masks_crops_flips_and_blends_do_what_they_say() {
+        // a circle in the middle of the 20x10 box shows; its corners do not
+        let mut s = spec();
+        s.layers[0].shape_mask = Some(ShapeMask {
+            shape: MaskShape::Circle,
+            center: [0.5, 0.5],
+            size: [0.8, 0.8],
+            rotation: 0.0,
+            feather: 0.0,
+            invert: false,
+        });
+        let (img, _) = render_frame(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Final).unwrap();
+        assert_eq!(px(&img, 30, 10), [255, 0, 0, 255]);
+        assert_eq!(px(&img, 21, 6), [0, 0, 255, 255]);
+        // inverted, the other way round
+        s.layers[0].shape_mask.as_mut().unwrap().invert = true;
+        let (img, _) = render_frame(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Final).unwrap();
+        assert_eq!(px(&img, 30, 10), [0, 0, 255, 255]);
+        assert_eq!(px(&img, 21, 6), [255, 0, 0, 255]);
+        // difference of red over blue is magenta; darken of red over blue is black
+        let mut s = spec();
+        s.layers[0].blend = Blend::Difference;
+        let (img, _) = render_frame(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Final).unwrap();
+        assert_eq!(px(&img, 30, 10), [255, 0, 255, 255]);
+        s.layers[0].blend = Blend::Darken;
+        let (img, _) = render_frame(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Final).unwrap();
+        assert_eq!(px(&img, 30, 10), [0, 0, 0, 255]);
+        assert!(s.required_features().contains("blend/2"));
+
+        // a picture, left half white and right half black, stretched over the frame
+        struct Halves;
+        impl MediaSource for Halves {
+            fn picture(&self, _: &str, _: &Asset, _: Tick) -> Result<Option<Arc<Image>>, String> {
+                let mut img = Image::filled(4, 2, [1.0; 4]);
+                for y in 0..2 {
+                    for x in 2..4 {
+                        img.pixels[y * 4 + x] = [0.0, 0.0, 0.0, 1.0];
+                    }
+                }
+                Ok(Some(Arc::new(img)))
+            }
+        }
+        let mut s = spec();
+        s.assets.insert(
+            "p".into(),
+            Asset { kind: AssetKind::Image, sha256: "3".repeat(64), uri: "p.png".into(), of: None, probe: None },
+        );
+        s.layers[0].content = LayerContent::Media { asset: "p".into(), time: TimeMap::default(), fit: Fit::Stretch };
+        s.layers[0].transform = Transform::default();
+        let at = |s: &RenderSpec, x| px(&render_frame(s, Tick::ZERO, 1.0, &Halves, Quality::Final).unwrap().0, x, 10);
+        assert_eq!(at(&s, 8), [255, 255, 255, 255]);
+        s.layers[0].flip_x = true;
+        assert_eq!(at(&s, 8), [0, 0, 0, 255]);
+        // cropped to its right half, black fills the frame
+        s.layers[0].flip_x = false;
+        s.layers[0].crop = Some(Crop { left: 0.5, ..Default::default() });
+        assert_eq!(at(&s, 20), [0, 0, 0, 255]);
+        assert!(s.required_features().contains("crop/1"));
     }
 
     #[test]

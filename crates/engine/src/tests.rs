@@ -636,3 +636,44 @@ fn colour_is_a_filter_a_lookup_table_and_adjustments() {
     s.execute("clip.setColor", &json!({"clip": c, "reset": true})).unwrap();
     assert!(s.project().clip(&c).unwrap().1.color.is_empty());
 }
+
+#[test]
+fn crops_flips_blends_and_masks_reach_the_spec() {
+    let mut s = Session::default();
+    let v = add_video(&mut s, 4.0);
+    let solid = add_red(&mut s, 5.0, 2.0);
+    s.execute("clip.setCrop", &json!({"clip": v, "left": 0.1, "bottom": 0.2, "flipX": true})).unwrap();
+    s.execute("clip.setBlend", &json!({"clip": v, "mode": "softLight"})).unwrap();
+    s.execute("clip.setMask", &json!({"clip": v, "shape": "circle", "feather": 0.1})).unwrap();
+    s.execute("clip.setMask", &json!({"clip": v, "x": 0.3, "invert": true})).unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let layer = spec["layers"].as_array().unwrap().iter().find(|l| l["id"] == json!(v)).unwrap();
+    assert_eq!(layer["crop"]["left"], json!(0.1f32));
+    assert_eq!(layer["crop"]["bottom"], json!(0.2f32));
+    assert_eq!(layer["flip_x"], json!(true));
+    assert_eq!(layer["blend"], json!("soft_light"));
+    let m = &layer["shape_mask"];
+    assert_eq!(
+        (m["shape"].clone(), m["center"][0].clone(), m["invert"].clone()),
+        (json!("circle"), json!(0.3f32), json!(true))
+    );
+    let features = spec["engine"]["features"].as_array().unwrap();
+    for f in ["crop/1", "flip/1", "mask.shape/1", "blend/2"] {
+        assert!(features.contains(&json!(f)), "{f}");
+    }
+    // a split keeps the look on both halves
+    let right = s.execute("clip.split", &json!({"clip": v, "at": {"seconds": 2}})).unwrap()["right"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(s.project().clip(&right).unwrap().1.look, s.project().clip(&v).unwrap().1.look);
+    // solids blend and mask but are not cropped; crops must leave something; masks need a shape first
+    assert!(s.execute("clip.setCrop", &json!({"clip": solid, "left": 0.1})).is_err());
+    s.execute("clip.setBlend", &json!({"clip": solid, "mode": "multiply"})).unwrap();
+    assert!(s.execute("clip.setMask", &json!({"clip": solid, "x": 0.2})).is_err());
+    assert!(s.execute("clip.setCrop", &json!({"clip": v, "left": 0.6, "right": 0.5})).is_err());
+    assert!(s.execute("clip.setBlend", &json!({"clip": v, "mode": "glow"})).is_err());
+    assert!(s.execute("clip.setMask", &json!({"clip": v, "feather": -1})).is_err());
+    s.execute("clip.setMask", &json!({"clip": v, "shape": null})).unwrap();
+    assert!(s.project().clip(&v).unwrap().1.look.mask.is_none());
+}

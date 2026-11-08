@@ -28,7 +28,7 @@ service ships them without the editor.
 | --- | --- | --- |
 | L0 | `reelforge-time` | `Tick`, `FrameRate`, `TimeRange` |
 | L1 | `reelforge-renderspec` | RenderSpec types, validation, JSON Schema (`schema/renderspec-1.schema.json`) |
-| L1 | `reelforge-model` | The project document: canvas, media, tracks (magnetic or not), clips and their colour (filters, LUTs, adjustments; `color`), keyframes and in/out animations (`anim`), transitions (`transition`), speed curves, reverse and freeze frames (`timing`); invariants |
+| L1 | `reelforge-model` | The project document: canvas, media, tracks (magnetic or not), clips and their colour (filters, LUTs, adjustments; `color`), their crop, mirror, blend mode and shape mask (`look`), keyframes and in/out animations (`anim`), transitions (`transition`), speed curves, reverse and freeze frames (`timing`); invariants |
 | L2 | `reelforge-compile` | Project → RenderSpec: all editing meaning resolved here (keyframes, animations and transitions become RenderSpec keys and overlapping layers, `motion`) |
 | L2 | `reelforge-render` | Pure frame plan, CPU reference compositor, wgpu compositor (feature `gpu`); `MediaSource` trait |
 | L3 | `reelforge-media` | Probing, video/audio decoding (`Footage`), MP4 export (H.264 + AAC); FilmCraft's pure-Rust codecs |
@@ -77,7 +77,7 @@ In rough priority order for short videos:
    pure-Rust text engine (harfrust shaping, UAX #14 line breaking, its own rasteriser) with a
    bundled Noto Sans SC subset; system fonts are never consulted, so renders match everywhere.
 3. GPU, next steps: decoded video uploaded as Y'CbCr planes and converted in a shader (today
-   `Footage` converts to linear RGB on the CPU), blurs and other effects that read neighbouring pixels (the colour ones, `color.grade@1` and `color.lut@1` included, are per-pixel WGSL already), and the
+   `Footage` converts to linear RGB on the CPU), blurs and other effects that read neighbouring pixels (the colour ones, `color.grade@1` and `color.lut@1` included, are per-pixel WGSL already, as are crops, mirrors, shape masks and the `blend/2` modes, which read the layers below from a copy), and the
    WebGL2 fallback (no float render targets there, so the browser preview without WebGPU stays on
    the CPU). The wgpu compositor itself is in place: the same frame plan, tested against the CPU
    reference to one 8-bit code, drawing the editor's preview on eframe's own device and exports on

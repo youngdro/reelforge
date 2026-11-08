@@ -19,11 +19,13 @@ use thiserror::Error;
 
 pub mod anim;
 pub mod color;
+pub mod look;
 pub mod timing;
 pub mod transition;
 
 pub use anim::{AnimKind, Animation, Animations, Ease, Key, Keys, Offset, Prop};
 pub use color::{Adjust, ColorGrade, Filter, FilterKind, LutUse};
+pub use look::{BlendMode, Crop, Look, Mask, MaskKind};
 pub use timing::{CurvePoint, CurvePreset, Timing};
 pub use transition::{Transition, TransitionKind};
 
@@ -176,6 +178,9 @@ pub struct Clip {
     /// Filter, lookup table and colour adjustments (picture clips).
     #[serde(default, skip_serializing_if = "ColorGrade::is_empty")]
     pub color: ColorGrade,
+    /// Crop, mirror, mask and blend (picture clips).
+    #[serde(default, skip_serializing_if = "Look::is_empty")]
+    pub look: Look,
 }
 
 fn yes() -> bool {
@@ -579,6 +584,9 @@ impl Project {
                 if clip.fade.fade_in < Tick::ZERO || clip.fade.fade_out < Tick::ZERO {
                     return motion("a fade cannot be negative");
                 }
+                if let Some(why) = clip.look.problem() {
+                    return motion(why);
+                }
                 if !clip.color.adjust.in_range() {
                     return motion("a colour adjustment is out of range");
                 }
@@ -692,6 +700,7 @@ mod tests {
             fade: Default::default(),
             keep_pitch: true,
             color: Default::default(),
+            look: Default::default(),
         }
     }
 

@@ -227,6 +227,46 @@
           "const": "screen",
           "description": "Inverse product.",
           "type": "string"
+        },
+        {
+          "const": "overlay",
+          "description": "Multiply in the dark parts, screen in the bright (feature `blend/2`, as are those below).",
+          "type": "string"
+        },
+        {
+          "const": "darken",
+          "description": "The darker of the two.",
+          "type": "string"
+        },
+        {
+          "const": "lighten",
+          "description": "The lighter of the two.",
+          "type": "string"
+        },
+        {
+          "const": "soft_light",
+          "description": "A gentle overlay.",
+          "type": "string"
+        },
+        {
+          "const": "hard_light",
+          "description": "Overlay, led by the layer.",
+          "type": "string"
+        },
+        {
+          "const": "difference",
+          "description": "The difference.",
+          "type": "string"
+        },
+        {
+          "const": "color_dodge",
+          "description": "Brightens what is below.",
+          "type": "string"
+        },
+        {
+          "const": "color_burn",
+          "description": "Darkens what is below.",
+          "type": "string"
         }
       ]
     },
@@ -239,6 +279,37 @@
       "maxItems": 4,
       "minItems": 4,
       "type": "array"
+    },
+    "Crop": {
+      "additionalProperties": false,
+      "description": "Edges cut off a picture, as fractions of its width (`left`, `right`) and height (`top`,\n`bottom`); what is left must be at least 1 % of each.",
+      "properties": {
+        "bottom": {
+          "default": 0.0,
+          "description": "From the bottom edge.",
+          "format": "float",
+          "type": "number"
+        },
+        "left": {
+          "default": 0.0,
+          "description": "From the left edge.",
+          "format": "float",
+          "type": "number"
+        },
+        "right": {
+          "default": 0.0,
+          "description": "From the right edge.",
+          "format": "float",
+          "type": "number"
+        },
+        "top": {
+          "default": 0.0,
+          "description": "From the top edge.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "type": "object"
     },
     "Ease": {
       "description": "Interpolation from one key to the next.",
@@ -424,9 +495,28 @@
           "$ref": "#/$defs/LayerContent",
           "description": "What it shows."
         },
+        "crop": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Crop"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Edges cut off a media layer's picture before it is fitted (feature `crop/1`)."
+        },
         "dur": {
           "$ref": "#/$defs/Tick",
           "description": "How long it lasts; positive."
+        },
+        "flip_x": {
+          "description": "A media layer's picture mirrored left to right (feature `flip/1`).",
+          "type": "boolean"
+        },
+        "flip_y": {
+          "description": "A media layer's picture mirrored top to bottom (feature `flip/1`).",
+          "type": "boolean"
         },
         "fx": {
           "description": "Effects, applied in order to the layer's own picture before it is placed.",
@@ -450,6 +540,17 @@
           "$ref": "#/$defs/Animated2",
           "default": 1.0,
           "description": "Opacity, 0 to 1."
+        },
+        "shape_mask": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ShapeMask"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A shape that shows part of the layer, in the layer's own picture (feature `mask.shape/1`)."
         },
         "transform": {
           "$ref": "#/$defs/Transform",
@@ -641,6 +742,31 @@
         }
       ]
     },
+    "MaskShape": {
+      "description": "Mask shapes.",
+      "oneOf": [
+        {
+          "const": "linear",
+          "description": "Everything above a line through the centre (turned by `rotation`).",
+          "type": "string"
+        },
+        {
+          "const": "mirror",
+          "description": "A band through the centre.",
+          "type": "string"
+        },
+        {
+          "const": "circle",
+          "description": "An ellipse.",
+          "type": "string"
+        },
+        {
+          "const": "rectangle",
+          "description": "A rectangle.",
+          "type": "string"
+        }
+      ]
+    },
     "Output": {
       "additionalProperties": false,
       "description": "Output settings.",
@@ -740,6 +866,64 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "ShapeMask": {
+      "additionalProperties": false,
+      "description": "A shape that shows part of a layer.\n\nIt is placed in the layer's own picture (after any crop), so it moves, turns and scales with\nthe layer. Lengths are in units of the picture's shorter side, so a circle stays round.",
+      "properties": {
+        "center": {
+          "default": [
+            0.5,
+            0.5
+          ],
+          "description": "Its centre, as fractions of the picture's width and height (0.5, 0.5 is the middle).",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "feather": {
+          "default": 0.0,
+          "description": "Width of the soft edge, 0 for a hard one.",
+          "format": "float",
+          "type": "number"
+        },
+        "invert": {
+          "description": "Show the outside instead.",
+          "type": "boolean"
+        },
+        "rotation": {
+          "default": 0.0,
+          "description": "Clockwise turn, degrees.",
+          "format": "float",
+          "type": "number"
+        },
+        "shape": {
+          "$ref": "#/$defs/MaskShape",
+          "description": "Which shape."
+        },
+        "size": {
+          "default": [
+            0.5,
+            0.5
+          ],
+          "description": "Width and height (for `mirror`, the height is the band's thickness; `linear` ignores it).",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "shape"
+      ],
       "type": "object"
     },
     "SpeedKey": {

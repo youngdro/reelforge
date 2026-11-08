@@ -36,8 +36,8 @@ use reelforge_compile::{CompileOptions, compile};
 use reelforge_engine::{Session, SharedSession};
 use reelforge_media::Footage;
 use reelforge_model::{
-    Adjust, AnimKind, ClipContent, ClipTransform, CurvePreset, FilterKind, MediaKind, Project, Prop, TrackKind,
-    TransitionKind,
+    Adjust, AnimKind, BlendMode, ClipContent, ClipTransform, CurvePreset, FilterKind, Mask, MaskKind, MediaKind,
+    Project, Prop, TrackKind, TransitionKind,
 };
 use reelforge_render::{Quality, render_frame};
 use reelforge_time::Tick;
@@ -154,6 +154,20 @@ struct Inspector {
     speed: Option<SpeedEdit>,
     /// Picture clips: filter, lookup table and adjustments.
     grade: Option<GradeEdit>,
+    /// Picture clips: blend, mask, and for videos and pictures crop and mirror.
+    look: Option<LookEdit>,
+}
+
+/// A picture clip's crop, mirror, blend and mask, as the inspector edits it.
+#[derive(Clone, PartialEq)]
+struct LookEdit {
+    /// Crop and mirror apply (a video or picture clip).
+    media: bool,
+    /// Left, top, right, bottom, in percent.
+    crop: [f32; 4],
+    flip: [bool; 2],
+    blend: BlendMode,
+    mask: Option<Mask>,
 }
 
 /// A picture clip's colour, as the inspector edits it.
@@ -906,6 +920,17 @@ impl EditorApp {
                 lut_strength: clip.color.lut.as_ref().map_or(1.0, |l| l.strength),
                 adjust: clip.color.adjust.values(),
             }),
+            look: picture.then(|| {
+                let c = clip.look.crop;
+                LookEdit {
+                    media: matches!(&clip.content, ClipContent::Media { media, .. }
+                        if p.media.get(media).is_some_and(|m| m.kind != MediaKind::Audio)),
+                    crop: [c.left, c.top, c.right, c.bottom].map(|x| x * 100.0),
+                    flip: [clip.look.flip_x, clip.look.flip_y],
+                    blend: clip.look.blend,
+                    mask: clip.look.mask,
+                }
+            }),
             title: match &clip.content {
                 ClipContent::Text { text, size, style, .. } => Some(Title {
                     text: text.clone(),
@@ -1195,6 +1220,100 @@ impl EditorApp {
                     if !untouched && ui.button(s.grade_reset).clicked() {
                         actions.push(("clip.setColor", json!({"clip": id, "reset": true})));
                     }
+                });
+            }
+            if let Some(l) = &mut edit.look {
+                ui.add_space(6.0);
+                let changed = |r: &egui::Response| r.drag_stopped() || (r.changed() && !r.dragged());
+                theme::section(ui, s.sec_look, |ui| {
+                    egui::Grid::new("look").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                        ui.label(egui::RichText::new(s.blend).color(theme::color::WEAK));
+                        let name = |m: BlendMode| s.blends[BlendMode::ALL.iter().position(|x| *x == m).unwrap_or(0)];
+                        let mut picked = l.blend;
+                        egui::ComboBox::from_id_salt("blend").selected_text(name(l.blend)).width(120.0).show_ui(
+                            ui,
+                            |ui| {
+                                for m in BlendMode::ALL {
+                                    ui.selectable_value(&mut picked, m, name(m));
+                                }
+                            },
+                        );
+                        if picked != l.blend {
+                            actions.push(("clip.setBlend", json!({"clip": id, "mode": picked.name()})));
+                        }
+                        ui.end_row();
+                        if l.media {
+                            for (i, edge) in ["left", "top", "right", "bottom"].into_iter().enumerate() {
+                                ui.label(egui::RichText::new(s.crop_edges[i]).color(theme::color::WEAK));
+                                let r = ui.add_sized(
+                                    [ui.available_width(), 22.0],
+                                    egui::DragValue::new(&mut l.crop[i]).speed(0.2).range(0.0..=95.0).suffix(" %"),
+                                );
+                                if changed(&r) {
+                                    actions.push(("clip.setCrop", json!({"clip": id, edge: l.crop[i] / 100.0})));
+                                }
+                                ui.end_row();
+                            }
+                            ui.label(egui::RichText::new(s.flip).color(theme::color::WEAK));
+                            ui.horizontal(|ui| {
+                                if ui.selectable_label(l.flip[0], s.flip_x).clicked() {
+                                    actions.push(("clip.setCrop", json!({"clip": id, "flipX": !l.flip[0]})));
+                                }
+                                if ui.selectable_label(l.flip[1], s.flip_y).clicked() {
+                                    actions.push(("clip.setCrop", json!({"clip": id, "flipY": !l.flip[1]})));
+                                }
+                            });
+                            ui.end_row();
+                        }
+                        ui.label(egui::RichText::new(s.mask).color(theme::color::WEAK));
+                        ui.horizontal(|ui| {
+                            let name = |k: MaskKind| s.masks[MaskKind::ALL.iter().position(|x| *x == k).unwrap_or(0)];
+                            let kind = l.mask.map(|m| m.kind);
+                            let mut picked = kind;
+                            egui::ComboBox::from_id_salt("mask")
+                                .selected_text(kind.map_or(s.none, name))
+                                .width(92.0)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut picked, None, s.none);
+                                    for k in MaskKind::ALL {
+                                        ui.selectable_value(&mut picked, Some(k), name(k));
+                                    }
+                                });
+                            if picked != kind {
+                                actions
+                                    .push(("clip.setMask", json!({"clip": id, "shape": picked.map(MaskKind::name)})));
+                            }
+                            if let Some(m) = &l.mask
+                                && ui.selectable_label(m.invert, s.mask_invert).clicked()
+                            {
+                                actions.push(("clip.setMask", json!({"clip": id, "invert": !m.invert})));
+                            }
+                        });
+                        ui.end_row();
+                        if let Some(m) = &mut l.mask {
+                            let [cx, cy] = &mut m.center;
+                            let [w, h] = &mut m.size;
+                            let rows: [(&str, &mut f32, f64, std::ops::RangeInclusive<f32>); 6] = [
+                                ("x", cx, 0.005, -1.0..=2.0),
+                                ("y", cy, 0.005, -1.0..=2.0),
+                                ("width", w, 0.005, 0.0..=4.0),
+                                ("height", h, 0.005, 0.0..=4.0),
+                                ("rotation", &mut m.rotation, 0.5, -360.0..=360.0),
+                                ("feather", &mut m.feather, 0.002, 0.0..=1.0),
+                            ];
+                            for (i, (key, v, speed, range)) in rows.into_iter().enumerate() {
+                                ui.label(egui::RichText::new(s.mask_params[i]).color(theme::color::WEAK));
+                                let r = ui.add_sized(
+                                    [ui.available_width(), 22.0],
+                                    egui::DragValue::new(v).speed(speed).range(range).max_decimals(3),
+                                );
+                                if changed(&r) {
+                                    actions.push(("clip.setMask", json!({"clip": id, key: *v})));
+                                }
+                                ui.end_row();
+                            }
+                        }
+                    });
                 });
             }
             if let Some(v) = &mut edit.volume {
