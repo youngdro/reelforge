@@ -50,6 +50,7 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "color.lut@1",
     "color.saturation@1",
     "crop/1",
+    "encode.size/1",
     "flip/1",
     "mask.shape/1",
     "text/1",

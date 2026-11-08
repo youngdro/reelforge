@@ -109,9 +109,27 @@ pub struct VideoEncoding {
     /// Constant quality (lower is better), when the encoder supports it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crf: Option<u8>,
-    /// Target bitrate in kbit/s, when no `crf` is given.
+    /// Target bitrate in kbit/s: used when no `crf` is given, or by encoders without a
+    /// constant-quality mode (hardware ones).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bitrate_kbps: Option<u32>,
+    /// Encode at this size instead of the output's (feature `encode.size/1`): the frame is drawn
+    /// `width ÷ output.width` times the output size. Both even, and the height must be
+    /// `round(output.height × width ÷ output.width)`, so the picture is not stretched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<[u32; 2]>,
+}
+
+impl VideoEncoding {
+    /// How much larger than the output the frames are drawn: 1 without a `size`.
+    pub fn scale(&self, output_width: u32) -> f32 {
+        self.size.map_or(1.0, |[w, _]| w as f32 / output_width as f32)
+    }
+}
+
+/// The height a `width`-wide picture of a `ow` by `oh` output has, rounded as renderers round it.
+pub fn scaled_height(ow: u32, oh: u32, width: u32) -> u32 {
+    (oh as f32 * (width as f32 / ow as f32)).round() as u32
 }
 
 /// Video codecs.
@@ -928,6 +946,9 @@ impl RenderSpec {
             for fx in &layer.fx {
                 out.insert(fx.id.clone());
             }
+        }
+        if self.output.video.as_ref().is_some_and(|v| v.size.is_some()) {
+            out.insert("encode.size/1".to_string());
         }
         for a in &self.audio {
             out.extend(a.time.features().map(str::to_string));

@@ -137,6 +137,34 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &[],
         ),
+        "project.setExport" => {
+            use reelforge_model::{Codec, Quality, Resolution, export};
+            object(
+                vec![
+                    (
+                        "preset",
+                        json!({"enum": export::PRESETS.map(|(id, _)| id), "description": "Ready-made settings, applied before the others: draft (720p 30 fps, low), standard (1080p 30 fps), smooth (1080p 60 fps, high), 4k (2160p HEVC, high)."}),
+                    ),
+                    (
+                        "resolution",
+                        json!({"enum": Resolution::ALL.map(Resolution::name), "description": "Picture size by its shorter side; canvas keeps the canvas's size."}),
+                    ),
+                    (
+                        "fps",
+                        json!({"enum": std::iter::once(0).chain(export::FRAME_RATES).collect::<Vec<_>>(), "description": "Frames per second; 0 keeps the canvas's rate."}),
+                    ),
+                    (
+                        "quality",
+                        json!({"enum": Quality::ALL.map(Quality::name), "description": "Picture quality, and so file size."}),
+                    ),
+                    (
+                        "codec",
+                        json!({"enum": Codec::ALL.map(Codec::name), "description": "Video codec. HEVC and AV1 need the browser's encoder."}),
+                    ),
+                ],
+                &[],
+            )
+        }
         "media.import" => object(
             vec![
                 (

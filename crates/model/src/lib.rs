@@ -19,12 +19,14 @@ use thiserror::Error;
 
 pub mod anim;
 pub mod color;
+pub mod export;
 pub mod look;
 pub mod timing;
 pub mod transition;
 
 pub use anim::{AnimKind, Animation, Animations, Ease, Key, Keys, Offset, Prop};
 pub use color::{Adjust, ColorGrade, Filter, FilterKind, LutUse};
+pub use export::{Codec, ExportSettings, Quality, Resolution};
 pub use look::{BlendMode, Crop, Look, Mask, MaskKind};
 pub use timing::{CurvePoint, CurvePreset, Timing};
 pub use transition::{Transition, TransitionKind};
@@ -45,6 +47,9 @@ pub struct Project {
     pub tracks: Vec<Track>,
     /// Next id to mint.
     pub next_id: u64,
+    /// How the project is exported.
+    #[serde(default, skip_serializing_if = "ExportSettings::is_default")]
+    pub export: ExportSettings,
 }
 
 /// The output canvas.
@@ -480,8 +485,14 @@ impl Default for Project {
 impl Project {
     /// An empty project with one video track and one text track.
     pub fn new(canvas: Canvas) -> Project {
-        let mut p =
-            Project { version: DOCUMENT_VERSION, canvas, media: BTreeMap::new(), tracks: Vec::new(), next_id: 1 };
+        let mut p = Project {
+            version: DOCUMENT_VERSION,
+            canvas,
+            media: BTreeMap::new(),
+            tracks: Vec::new(),
+            next_id: 1,
+            export: ExportSettings::default(),
+        };
         for (kind, name) in [(TrackKind::Video, "Video 1"), (TrackKind::Text, "Text 1"), (TrackKind::Audio, "Audio 1")]
         {
             let id = p.mint("t");

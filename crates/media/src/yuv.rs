@@ -3,15 +3,26 @@
 use reelforge_render::Image;
 use reelforge_render::image::linear_to_srgb;
 
-/// Planar 4:2:0 picture.
-pub(crate) struct Yuv420 {
+/// A planar 4:2:0 picture, 8-bit limited-range BT.709: what encoders take.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Yuv420 {
+    /// Luma, `width × height`.
     pub y: Vec<u8>,
+    /// Blue difference, half each way (rounded up).
     pub u: Vec<u8>,
+    /// Red difference, as `u`.
     pub v: Vec<u8>,
+    /// Width in pixels.
     pub width: usize,
 }
 
 impl Yuv420 {
+    /// Height in pixels.
+    pub fn height(&self) -> usize {
+        self.y.len().checked_div(self.width).unwrap_or(0)
+    }
+
+    /// Chroma width in samples.
     pub fn chroma_width(&self) -> usize {
         self.width.div_ceil(2)
     }

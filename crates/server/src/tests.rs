@@ -232,6 +232,8 @@ fn browsers_send_media_and_fetch_it_back() {
     let dir = temp("web");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("index.html"), "<!doctype html>editor").unwrap();
+    std::fs::create_dir_all(dir.join("snippets/ui-1")).unwrap();
+    std::fs::write(dir.join("snippets/ui-1/inline0.js"), "export {}").unwrap();
     let file = temp("browser.reel.json");
     let _ = std::fs::remove_file(&file);
     let hub = Arc::new(Hub::open(&file).unwrap());
@@ -244,6 +246,11 @@ fn browsers_send_media_and_fetch_it_back() {
     let mut r = agent.get(format!("{base}/")).call().unwrap();
     assert_eq!(r.body_mut().read_to_string().unwrap(), "<!doctype html>editor");
     assert_eq!(agent.get(format!("{base}/..%2Fsecret")).call().unwrap().status(), 404);
+    // scripts wasm-bindgen keeps in folders, but nothing hidden
+    let mut r = agent.get(format!("{base}/snippets/ui-1/inline0.js")).call().unwrap();
+    assert_eq!(r.body_mut().read_to_string().unwrap(), "export {}");
+    assert_eq!(agent.get(format!("{base}/snippets/.hidden/x.js")).call().unwrap().status(), 404);
+    assert_eq!(agent.get(format!("{base}/snippets//x.js")).call().unwrap().status(), 404);
     assert_eq!(agent.get(format!("{base}/v1/project")).call().unwrap().status(), 401);
 
     let png = {

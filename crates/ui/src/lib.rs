@@ -12,13 +12,13 @@
 //! uploaded.
 //!
 //! Files dropped on the window are imported (`media.import`) and placed at the playhead
-//! (`clip.add`). On the desktop, Export writes an MP4 on a background thread.
+//! (`clip.add`). Export writes an MP4: on the desktop on a background thread, in the browser with
+//! its own (hardware) encoder, as a download.
 //!
 //! [`EditorApp::join`] edits a session a server holds instead, with agents and other editors: see
 //! [`remote`].
 
 mod audio;
-#[cfg(not(target_arch = "wasm32"))]
 mod export_job;
 pub mod i18n;
 mod looks;
@@ -27,6 +27,8 @@ mod stage;
 mod strips;
 mod theme;
 mod timeline;
+#[cfg(target_arch = "wasm32")]
+mod webcodecs;
 
 use std::sync::{Arc, Mutex};
 
@@ -58,8 +60,9 @@ pub struct EditorApp {
     media: Arc<Footage>,
     /// Files dropped in the browser, read asynchronously: `(name, bytes)`.
     arrivals: Arc<Mutex<Vec<Arrival>>>,
-    #[cfg(not(target_arch = "wasm32"))]
     export: Option<export_job::ExportJob>,
+    /// The export settings are showing.
+    export_open: bool,
     #[cfg(not(target_arch = "wasm32"))]
     export_dir: std::path::PathBuf,
     playhead: Tick,
@@ -229,8 +232,8 @@ impl EditorApp {
             session,
             media: Arc::new(Footage::new()),
             arrivals: Arc::default(),
-            #[cfg(not(target_arch = "wasm32"))]
             export: None,
+            export_open: false,
             #[cfg(not(target_arch = "wasm32"))]
             export_dir: std::env::current_dir().unwrap_or_default(),
             playhead: Tick::ZERO,
@@ -677,7 +680,6 @@ impl EditorApp {
                 .color(theme::color::WEAK),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                #[cfg(not(target_arch = "wasm32"))]
                 self.export_controls(ui, &p);
                 ui.add_space(4.0);
                 if ui
@@ -1774,6 +1776,7 @@ impl eframe::App for EditorApp {
             }
         }
         self.take_dropped_files(&ctx);
+        self.export_window(&ctx);
         if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
             let screen = ctx.content_rect();
             let painter = ctx

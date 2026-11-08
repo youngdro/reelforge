@@ -4,14 +4,17 @@
 
 use std::io::{Read, Seek, Write};
 
-use filmcraft_isobmff::{AvcConfig, Brand, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions};
+use filmcraft_isobmff::{
+    Av1Config, AvcConfig, Brand, HevcConfig, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions,
+};
 use reelforge_render::{Quality, RenderError, render_frame, unsupported_features};
 use reelforge_renderspec::{AudioCodec, AudioEncoding, RenderSpec, VideoCodec, VideoEncoding, validate};
-use reelforge_time::{TICKS_PER_SECOND, Tick};
+use reelforge_time::{FrameRate, TICKS_PER_SECOND, Tick};
 use thiserror::Error;
 
 use crate::Footage;
-use crate::yuv::{Yuv420, to_yuv420};
+pub use crate::yuv::Yuv420;
+use crate::yuv::to_yuv420;
 
 /// Why an export stopped.
 #[derive(Debug, Error)]
@@ -80,9 +83,9 @@ fn mux_err(e: impl std::fmt::Display) -> ExportError {
 /// Renders `spec` and writes an MP4 to `out`. `progress` is called after every frame; returning
 /// `false` stops the export with [`ExportError::Cancelled`].
 ///
-/// Video is H.264 at the spec's quality (`crf`, default 20) or bitrate. Sound is written when the
-/// spec has audio clips: AAC-LC, stereo, at the spec's rate and bitrate (default 48 kHz,
-/// 192 kbit/s).
+/// Video is H.264 at the spec's quality (`crf`, default 20) or bitrate, at the spec's encoded
+/// size. Sound is written when the spec has audio clips: AAC-LC, stereo, at the spec's rate and
+/// bitrate (default 48 kHz, 192 kbit/s).
 pub fn export<W: Read + Write + Seek>(
     spec: &RenderSpec,
     media: &Footage,
@@ -100,76 +103,146 @@ pub fn export_with<W: Read + Write + Seek>(
     renderer: Renderer,
     progress: &mut dyn FnMut(Progress) -> bool,
 ) -> Result<(W, ExportStats), ExportError> {
+    check(spec)?;
+    let venc = video_encoding(spec);
+    if venc.codec != VideoCodec::H264 {
+        return Err(ExportError::Invalid(format!(
+            "this exporter writes H.264 only; {:?} needs a hardware encoder (export from the browser)",
+            venc.codec
+        )));
+    }
+    let [width, height] = encoded_size(spec);
+    let encoder = SoftwareH264::new(width, height, spec.output.fps, &venc)?;
+    let mut drawer = Drawer::new(renderer)?;
+    let mut writer = ExportWriter::new(spec, out, Box::new(encoder))?;
+    let total = writer.frames();
+    let scale = venc.scale(spec.output.width);
+    each_frame(spec, media, &mut drawer, scale, total, &mut |i, yuv| {
+        writer.push(spec, media, i, yuv)?;
+        if progress(Progress { done: i + 1, total }) { Ok(()) } else { Err(ExportError::Cancelled) }
+    })?;
+    writer.end()?;
+    let (out, mut stats) = writer.finish(spec, media)?;
+    stats.renderer = drawer.name();
+    Ok((out, stats))
+}
+
+/// Checks a spec can be exported: valid, and drawn by this renderer.
+fn check(spec: &RenderSpec) -> Result<(), ExportError> {
     validate(spec).map_err(|e| ExportError::Invalid(e.to_string()))?;
     let missing = unsupported_features(spec);
     if !missing.is_empty() {
         return Err(RenderError::Unsupported(missing).into());
     }
-    let o = &spec.output;
-    let venc = o.video.clone().unwrap_or(VideoEncoding { codec: VideoCodec::H264, crf: Some(20), bitrate_kbps: None });
-    if venc.codec != VideoCodec::H264 {
-        return Err(ExportError::Invalid(format!("this exporter writes H.264 only, not {:?}", venc.codec)));
+    Ok(())
+}
+
+/// The spec's video encoding, or the default one.
+pub fn video_encoding(spec: &RenderSpec) -> VideoEncoding {
+    spec.output.video.clone().unwrap_or(VideoEncoding {
+        codec: VideoCodec::H264,
+        crf: Some(20),
+        bitrate_kbps: None,
+        size: None,
+    })
+}
+
+/// The size frames are encoded at.
+pub fn encoded_size(spec: &RenderSpec) -> [u32; 2] {
+    spec.output.video.as_ref().and_then(|v| v.size).unwrap_or([spec.output.width, spec.output.height])
+}
+
+/// Draws frame `i` of `spec` on the CPU, at its encoded size, into `yuv`.
+pub fn draw_frame(spec: &RenderSpec, media: &Footage, i: u64, yuv: &mut Yuv420) -> Result<(), ExportError> {
+    let scale = video_encoding(spec).scale(spec.output.width);
+    let (img, _) = render_frame(spec, spec.output.fps.tick_of(i as i64), scale, media, Quality::Final)?;
+    to_yuv420(&img, yuv);
+    Ok(())
+}
+
+/// A video encoder's configuration record, as the MP4 sample entry carries it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VideoConfig {
+    /// `avcC`.
+    Avc(Vec<u8>),
+    /// `hvcC`.
+    Hevc(Vec<u8>),
+    /// `av1C`.
+    Av1(Vec<u8>),
+}
+
+/// One encoded picture. Times are in the frame rate's timescale (`fps.num` per second, one frame
+/// is `fps.den`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EncodedFrame {
+    /// The picture's data: length-prefixed NAL units for H.264 and HEVC, OBUs for AV1.
+    pub data: Vec<u8>,
+    /// When it is shown.
+    pub pts: i64,
+    /// When it is decoded.
+    pub dts: i64,
+    /// Whether decoding can start here.
+    pub keyframe: bool,
+}
+
+/// A video encoder an export feeds. An encoder may work asynchronously (the browser's): frames go
+/// in with [`encode`](Self::encode), and whatever is ready comes out with [`take`](Self::take).
+pub trait VideoEncoder {
+    /// Hands over frame `index`.
+    fn encode(&mut self, frame: &Yuv420, index: u64) -> Result<(), ExportError>;
+    /// The frames encoded since the last call, in decode order.
+    fn take(&mut self) -> Result<Vec<EncodedFrame>, ExportError>;
+    /// The configuration record, once known (at the latest with the first frame out).
+    fn config(&self) -> Option<VideoConfig>;
+    /// Asks for the frames still inside; [`take`](Self::take) returns them once ready.
+    fn finish(&mut self) -> Result<(), ExportError>;
+    /// The first decode time when frames are reordered (B-frames): one frame's `-dts`.
+    fn decode_delay(&self) -> i64 {
+        0
     }
-    let mut drawer = Drawer::new(renderer)?;
-    let renderer = drawer.name();
-    let fps = o.fps;
-    let total = (fps.frame_at(o.duration - Tick(1)) + 1).max(1) as u64;
-
-    let mut cfg = filmcraft_h264enc::EncoderConfig::new(o.width, o.height, fps.num, fps.den);
-    cfg.format = filmcraft_h264enc::PacketFormat::LengthPrefixed;
-    cfg.rate = match (venc.crf, venc.bitrate_kbps) {
-        (Some(crf), _) => filmcraft_h264enc::RateControl::Crf(f32::from(crf)),
-        (None, Some(kbps)) => filmcraft_h264enc::RateControl::Vbr { target_kbps: kbps, max_kbps: kbps * 2 },
-        (None, None) => filmcraft_h264enc::RateControl::Crf(20.0),
-    };
-    cfg.keyint = (fps.fps() * 2.0).round().max(1.0) as u32;
-    let mut enc = filmcraft_h264enc::Encoder::new(cfg).map_err(|e| ExportError::Encode(e.to_string()))?;
-
-    let mut mux = Mp4Writer::new(out, WriterOptions::new(Brand::Mp4)).map_err(mux_err)?;
-    let avc = AvcConfig::parse(&enc.avcc()).map_err(mux_err)?;
-    let mut vtrack = TrackConfig::new(SampleEntry::avc(avc, o.width as u16, o.height as u16), fps.num);
-    if enc.delay() > 0 {
-        // with B-frames the first decode time is one frame before the first presentation time
-        vtrack.media_start = Some(i64::from(fps.den));
+    /// Frames handed over but not yet back (an asynchronous encoder's queue, or a flush under
+    /// way); 0 for an encoder that answers at once.
+    fn backlog(&self) -> u32 {
+        0
     }
-    let vtrack = mux.add_track(vtrack).map_err(mux_err)?;
+    /// What encodes, for reports.
+    fn name(&self) -> String;
+}
 
-    let mut sound = if spec.audio.is_empty() {
-        None
-    } else {
-        let a =
-            o.audio.clone().unwrap_or(AudioEncoding { codec: AudioCodec::Aac, sample_rate: 48_000, bitrate_kbps: 192 });
-        if a.codec != AudioCodec::Aac {
-            return Err(ExportError::Invalid(format!("this exporter writes AAC sound only, not {:?}", a.codec)));
-        }
-        let aenc = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(
-            a.sample_rate,
-            CHANNELS,
-            a.bitrate_kbps * 1000,
-        ))
-        .map_err(|e| ExportError::Encode(e.to_string()))?;
-        let mut track = TrackConfig::new(
-            SampleEntry::aac(aenc.audio_specific_config(), CHANNELS as u32, a.sample_rate),
-            a.sample_rate,
-        );
-        track.media_start = Some(i64::from(aenc.priming_samples()));
-        let track = mux.add_track(track).map_err(mux_err)?;
-        Some(Sound { enc: aenc, track, rate: a.sample_rate, mixed: 0 })
-    };
+/// FilmCraft's H.264 encoder: pure Rust, on the CPU.
+pub struct SoftwareH264 {
+    enc: filmcraft_h264enc::Encoder,
+    den: u32,
+    out: Vec<EncodedFrame>,
+}
 
-    let write_video = |mux: &mut Mp4Writer<W>, ps: Vec<filmcraft_h264enc::Packet>| -> Result<(), ExportError> {
-        for p in ps {
-            let s = WriteSample {
-                data: &p.data,
-                duration: fps.den,
-                composition_offset: (p.pts - p.dts) as i32,
-                is_sync: p.keyframe,
-            };
-            mux.write_sample(vtrack, s).map_err(mux_err)?;
-        }
-        Ok(())
-    };
-    each_frame(spec, media, &mut drawer, total, &mut |i, yuv| {
+impl SoftwareH264 {
+    /// An encoder for `width` by `height` frames at `fps`, at `venc`'s quality.
+    pub fn new(width: u32, height: u32, fps: FrameRate, venc: &VideoEncoding) -> Result<SoftwareH264, ExportError> {
+        let mut cfg = filmcraft_h264enc::EncoderConfig::new(width, height, fps.num, fps.den);
+        cfg.format = filmcraft_h264enc::PacketFormat::LengthPrefixed;
+        cfg.rate = match (venc.crf, venc.bitrate_kbps) {
+            (Some(crf), _) => filmcraft_h264enc::RateControl::Crf(f32::from(crf)),
+            (None, Some(kbps)) => filmcraft_h264enc::RateControl::Vbr { target_kbps: kbps, max_kbps: kbps * 2 },
+            (None, None) => filmcraft_h264enc::RateControl::Crf(20.0),
+        };
+        cfg.keyint = (fps.fps() * 2.0).round().max(1.0) as u32;
+        let enc = filmcraft_h264enc::Encoder::new(cfg).map_err(|e| ExportError::Encode(e.to_string()))?;
+        Ok(SoftwareH264 { enc, den: fps.den, out: Vec::new() })
+    }
+
+    fn keep(&mut self, ps: Vec<filmcraft_h264enc::Packet>) {
+        self.out.extend(ps.into_iter().map(|p| EncodedFrame {
+            data: p.data,
+            pts: p.pts,
+            dts: p.dts,
+            keyframe: p.keyframe,
+        }));
+    }
+}
+
+impl VideoEncoder for SoftwareH264 {
+    fn encode(&mut self, yuv: &Yuv420, index: u64) -> Result<(), ExportError> {
         let frame = filmcraft_h264enc::YuvFrame {
             y: &yuv.y,
             u: &yuv.u,
@@ -177,27 +250,223 @@ pub fn export_with<W: Read + Write + Seek>(
             y_stride: yuv.width,
             uv_stride: yuv.chroma_width(),
         };
-        let ps =
-            enc.try_encode(&frame, i as i64 * i64::from(fps.den)).map_err(|e| ExportError::Encode(e.to_string()))?;
-        write_video(&mut mux, ps)?;
-        if let Some(s) = &mut sound {
-            // keep the sound about as far along as the picture so the file interleaves
-            s.mix_until(spec, media, &mut mux, fps.tick_of(i as i64 + 1).min(o.duration))?;
-        }
-        if progress(Progress { done: i + 1, total }) { Ok(()) } else { Err(ExportError::Cancelled) }
-    })?;
-    write_video(&mut mux, enc.flush())?;
-    let mut stats = ExportStats { frames: total, audio_samples: 0, renderer };
-    if let Some(mut s) = sound {
-        s.mix_until(spec, media, &mut mux, o.duration)?;
-        for au in s.enc.flush() {
-            mux.write_sample(s.track, WriteSample { data: &au, duration: 1024, composition_offset: 0, is_sync: true })
-                .map_err(mux_err)?;
-        }
-        stats.audio_samples = s.mixed as u64;
+        let ps = self
+            .enc
+            .try_encode(&frame, index as i64 * i64::from(self.den))
+            .map_err(|e| ExportError::Encode(e.to_string()))?;
+        self.keep(ps);
+        Ok(())
     }
-    let out = mux.finish_faststart().map_err(mux_err)?;
-    Ok((out, stats))
+
+    fn take(&mut self) -> Result<Vec<EncodedFrame>, ExportError> {
+        Ok(std::mem::take(&mut self.out))
+    }
+
+    fn config(&self) -> Option<VideoConfig> {
+        Some(VideoConfig::Avc(self.enc.avcc()))
+    }
+
+    fn finish(&mut self) -> Result<(), ExportError> {
+        let ps = self.enc.flush();
+        self.keep(ps);
+        Ok(())
+    }
+
+    fn decode_delay(&self) -> i64 {
+        if self.enc.delay() > 0 { i64::from(self.den) } else { 0 }
+    }
+
+    fn name(&self) -> String {
+        "h264 (software)".into()
+    }
+}
+
+/// An export being written: frames go in one at a time ([`push`](Self::push)), so a caller can
+/// draw them however it likes and yield between them (the browser does).
+pub struct ExportWriter<W: Read + Write + Seek> {
+    mux: Mp4Writer<W>,
+    enc: Box<dyn VideoEncoder>,
+    vtrack: usize,
+    /// The sample entry has the encoder's real configuration.
+    configured: bool,
+    /// Frames out of the encoder before its configuration was known.
+    held: Vec<EncodedFrame>,
+    sound: Option<Sound>,
+    size: [u32; 2],
+    fps: FrameRate,
+    total: u64,
+    /// Frames handed to the encoder.
+    pushed: u64,
+}
+
+impl<W: Read + Write + Seek> ExportWriter<W> {
+    /// Starts writing `spec` to `out`, encoding with `enc`.
+    pub fn new(spec: &RenderSpec, out: W, enc: Box<dyn VideoEncoder>) -> Result<ExportWriter<W>, ExportError> {
+        check(spec)?;
+        let o = &spec.output;
+        let fps = o.fps;
+        let total = (fps.frame_at(o.duration - Tick(1)) + 1).max(1) as u64;
+        let size = encoded_size(spec);
+        let mut mux = Mp4Writer::new(out, WriterOptions::new(Brand::Mp4)).map_err(mux_err)?;
+        let known = enc.config();
+        let entry = match &known {
+            Some(c) => sample_entry(c, size)?,
+            // replaced once the encoder says
+            None => sample_entry(&placeholder(video_encoding(spec).codec), size)?,
+        };
+        let mut vtrack = TrackConfig::new(entry, fps.num);
+        if enc.decode_delay() > 0 {
+            // with B-frames the first decode time is one frame before the first presentation time
+            vtrack.media_start = Some(enc.decode_delay());
+        }
+        let vtrack = mux.add_track(vtrack).map_err(mux_err)?;
+        let sound = if spec.audio.is_empty() {
+            None
+        } else {
+            let a = o.audio.clone().unwrap_or(AudioEncoding {
+                codec: AudioCodec::Aac,
+                sample_rate: 48_000,
+                bitrate_kbps: 192,
+            });
+            if a.codec != AudioCodec::Aac {
+                return Err(ExportError::Invalid(format!("this exporter writes AAC sound only, not {:?}", a.codec)));
+            }
+            let aenc = filmcraft_aac::Encoder::new(filmcraft_aac::EncoderConfig::cbr(
+                a.sample_rate,
+                CHANNELS,
+                a.bitrate_kbps * 1000,
+            ))
+            .map_err(|e| ExportError::Encode(e.to_string()))?;
+            let mut track = TrackConfig::new(
+                SampleEntry::aac(aenc.audio_specific_config(), CHANNELS as u32, a.sample_rate),
+                a.sample_rate,
+            );
+            track.media_start = Some(i64::from(aenc.priming_samples()));
+            let track = mux.add_track(track).map_err(mux_err)?;
+            Some(Sound { enc: aenc, track, rate: a.sample_rate, mixed: 0 })
+        };
+        Ok(ExportWriter {
+            mux,
+            configured: known.is_some(),
+            enc,
+            vtrack,
+            held: Vec::new(),
+            sound,
+            size,
+            fps,
+            total,
+            pushed: 0,
+        })
+    }
+
+    /// Frames in all.
+    pub fn frames(&self) -> u64 {
+        self.total
+    }
+
+    /// The encoded picture size.
+    pub fn size(&self) -> [u32; 2] {
+        self.size
+    }
+
+    /// Encodes frame `i` (in order, from 0) and writes whatever is ready.
+    pub fn push(&mut self, spec: &RenderSpec, media: &Footage, i: u64, yuv: &Yuv420) -> Result<(), ExportError> {
+        self.enc.encode(yuv, i)?;
+        self.pushed = i + 1;
+        self.poll(spec, media)
+    }
+
+    /// Writes what the encoder has finished since, with the sound up to the same time.
+    pub fn poll(&mut self, spec: &RenderSpec, media: &Footage) -> Result<(), ExportError> {
+        let mut frames = std::mem::take(&mut self.held);
+        frames.extend(self.enc.take()?);
+        if !self.configured {
+            match self.enc.config() {
+                Some(c) => {
+                    self.mux.set_sample_entry(self.vtrack, sample_entry(&c, self.size)?).map_err(mux_err)?;
+                    self.configured = true;
+                }
+                None => {
+                    self.held = frames;
+                    return Ok(());
+                }
+            }
+        }
+        let den = self.fps.den;
+        for f in &frames {
+            let s = WriteSample {
+                data: &f.data,
+                duration: den,
+                composition_offset: (f.pts - f.dts) as i32,
+                is_sync: f.keyframe,
+            };
+            self.mux.write_sample(self.vtrack, s).map_err(mux_err)?;
+        }
+        if let Some(s) = &mut self.sound {
+            // keep the sound about as far along as the picture so the file interleaves
+            let until = self.fps.tick_of(self.pushed as i64).min(spec.output.duration);
+            s.mix_until(spec, media, &mut self.mux, until)?;
+        }
+        Ok(())
+    }
+
+    /// Tells the encoder no more frames come.
+    pub fn end(&mut self) -> Result<(), ExportError> {
+        self.enc.finish()
+    }
+
+    /// Writes the rest (call [`end`](Self::end) first, and wait for an asynchronous encoder) and
+    /// finishes the file.
+    pub fn finish(mut self, spec: &RenderSpec, media: &Footage) -> Result<(W, ExportStats), ExportError> {
+        self.poll(spec, media)?;
+        if !self.configured {
+            return Err(ExportError::Encode("the encoder produced nothing".into()));
+        }
+        let mut stats = ExportStats { frames: self.total, audio_samples: 0, renderer: String::new() };
+        if let Some(mut s) = self.sound.take() {
+            s.mix_until(spec, media, &mut self.mux, spec.output.duration)?;
+            for au in s.enc.flush() {
+                self.mux
+                    .write_sample(
+                        s.track,
+                        WriteSample { data: &au, duration: 1024, composition_offset: 0, is_sync: true },
+                    )
+                    .map_err(mux_err)?;
+            }
+            stats.audio_samples = s.mixed as u64;
+        }
+        let out = self.mux.finish_faststart().map_err(mux_err)?;
+        Ok((out, stats))
+    }
+
+    /// Frames inside the encoder: wait (and [`poll`](Self::poll)) while it is high, and until it
+    /// is 0 after [`end`](Self::end).
+    pub fn backlog(&self) -> u32 {
+        self.enc.backlog()
+    }
+
+    /// What encodes.
+    pub fn encoder(&self) -> String {
+        self.enc.name()
+    }
+}
+
+/// A configuration to start a track with until the encoder gives its own.
+fn placeholder(codec: VideoCodec) -> VideoConfig {
+    match codec {
+        VideoCodec::H264 => VideoConfig::Avc(AvcConfig::default().to_bytes()),
+        VideoCodec::Hevc => VideoConfig::Hevc(HevcConfig::default().to_bytes()),
+        VideoCodec::Av1 => VideoConfig::Av1(Av1Config::default().to_bytes()),
+    }
+}
+
+fn sample_entry(c: &VideoConfig, [w, h]: [u32; 2]) -> Result<SampleEntry, ExportError> {
+    let (w, h) = (w as u16, h as u16);
+    Ok(match c {
+        VideoConfig::Avc(b) => SampleEntry::avc(AvcConfig::parse(b).map_err(mux_err)?, w, h),
+        VideoConfig::Hevc(b) => SampleEntry::hevc(HevcConfig::parse(b).map_err(mux_err)?, w, h),
+        VideoConfig::Av1(b) => SampleEntry::av1(Av1Config::parse(b).map_err(mux_err)?, w, h),
+    })
 }
 
 /// The compositor drawing an export, and the conversion to the encoder's input that goes with it.
@@ -232,18 +501,26 @@ impl Drawer {
         }
     }
 
-    fn draw(&mut self, spec: &RenderSpec, media: &Footage, i: u64, yuv: &mut Yuv420) -> Result<(), ExportError> {
+    fn draw(
+        &mut self,
+        spec: &RenderSpec,
+        media: &Footage,
+        i: u64,
+        scale: f32,
+        yuv: &mut Yuv420,
+    ) -> Result<(), ExportError> {
         let t = spec.output.fps.tick_of(i as i64);
         match self {
             Drawer::Cpu => {
-                let (img, _) = render_frame(spec, t, 1.0, media, Quality::Final)?;
+                let (img, _) = render_frame(spec, t, scale, media, Quality::Final)?;
                 to_yuv420(&img, yuv);
             }
             #[cfg(not(target_arch = "wasm32"))]
             Drawer::Gpu(g) => {
-                g.render(spec, t, 1.0, media, Quality::Final)?;
+                g.render(spec, t, scale, media, Quality::Final)?;
                 g.read_yuv420(&mut yuv.y, &mut yuv.u, &mut yuv.v).map_err(|e| ExportError::Gpu(e.to_string()))?;
-                yuv.width = spec.output.width as usize;
+                yuv.width =
+                    spec.output.video.as_ref().and_then(|v| v.size).map_or(spec.output.width, |[w, _]| w) as usize;
             }
         }
         Ok(())
@@ -262,6 +539,7 @@ fn each_frame(
     spec: &RenderSpec,
     media: &Footage,
     drawer: &mut Drawer,
+    scale: f32,
     total: u64,
     encode: &mut dyn FnMut(u64, &Yuv420) -> Result<(), ExportError>,
 ) -> Result<(), ExportError> {
@@ -274,7 +552,7 @@ fn each_frame(
             scope.spawn(move || {
                 for i in 0..total {
                     let mut yuv = spare.try_recv().unwrap_or_else(|_| blank());
-                    let r = drawer.draw(spec, media, i, &mut yuv).map(|()| yuv);
+                    let r = drawer.draw(spec, media, i, scale, &mut yuv).map(|()| yuv);
                     let failed = r.is_err();
                     // the encoder has stopped (an error, a cancel): stop drawing too
                     if to_encoder.send(r).is_err() || failed {
@@ -296,7 +574,7 @@ fn each_frame(
     {
         let mut yuv = blank();
         for i in 0..total {
-            drawer.draw(spec, media, i, &mut yuv)?;
+            drawer.draw(spec, media, i, scale, &mut yuv)?;
             encode(i, &yuv)?;
         }
         Ok(())

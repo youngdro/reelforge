@@ -414,3 +414,96 @@ fn lookup_tables_load_from_files_and_bytes() {
     assert!(footage.lut("l", &offline).expect("reads").is_some());
     assert!(footage.insert_bytes(&sha(9), "bad.cube", b"LUT_3D_SIZE 2\n".to_vec()).is_err());
 }
+
+#[test]
+fn an_export_can_be_smaller_and_at_another_rate() {
+    let mut spec = two_colours();
+    spec.output.fps = FrameRate::FPS_25;
+    spec.output.video = Some(reelforge_renderspec::VideoEncoding {
+        codec: reelforge_renderspec::VideoCodec::H264,
+        crf: Some(23),
+        bitrate_kbps: Some(500),
+        size: Some([32, 24]),
+    });
+    let (path, stats) = export_to_file(&spec, &Footage::new(), "small.mp4");
+    assert_eq!(stats.frames, 50);
+    let probe = probe_path(&path).expect("probe");
+    assert_eq!((probe.size, probe.fps), (Some([32, 24]), Some(FrameRate::FPS_25)));
+    // a size that would stretch the picture is refused, as is a codec this exporter lacks
+    spec.output.video.as_mut().unwrap().size = Some([32, 30]);
+    assert!(matches!(
+        export(&spec, &Footage::new(), Cursor::new(Vec::new()), &mut |_| true),
+        Err(ExportError::Invalid(_))
+    ));
+    let v = spec.output.video.as_mut().unwrap();
+    v.size = None;
+    v.codec = reelforge_renderspec::VideoCodec::Hevc;
+    assert!(matches!(
+        export(&spec, &Footage::new(), Cursor::new(Vec::new()), &mut |_| true),
+        Err(ExportError::Invalid(_))
+    ));
+}
+
+/// An encoder like the browser's: its configuration and frames arrive a step late.
+struct Late {
+    inner: crate::SoftwareH264,
+    ready: Vec<crate::EncodedFrame>,
+    told: bool,
+}
+
+impl crate::VideoEncoder for Late {
+    fn encode(&mut self, frame: &crate::Yuv420, index: u64) -> Result<(), ExportError> {
+        self.ready.extend(self.inner.take()?);
+        self.inner.encode(frame, index)
+    }
+    fn take(&mut self) -> Result<Vec<crate::EncodedFrame>, ExportError> {
+        if !self.ready.is_empty() {
+            self.told = true;
+        }
+        Ok(std::mem::take(&mut self.ready))
+    }
+    fn config(&self) -> Option<crate::VideoConfig> {
+        if self.told { self.inner.config() } else { None }
+    }
+    fn finish(&mut self) -> Result<(), ExportError> {
+        self.inner.finish()?;
+        self.ready.extend(self.inner.take()?);
+        Ok(())
+    }
+    fn decode_delay(&self) -> i64 {
+        self.inner.decode_delay()
+    }
+    fn name(&self) -> String {
+        "late".into()
+    }
+}
+
+#[test]
+fn an_encoder_that_answers_late_still_makes_a_playable_file() {
+    let spec = two_colours();
+    let venc = crate::video_encoding(&spec);
+    let inner = crate::SoftwareH264::new(64, 48, spec.output.fps, &venc).unwrap();
+    let footage = Footage::new();
+    let mut w =
+        crate::ExportWriter::new(&spec, Cursor::new(Vec::new()), Box::new(Late { inner, ready: vec![], told: false }))
+            .unwrap();
+    let mut yuv = crate::Yuv420::default();
+    for i in 0..w.frames() {
+        crate::draw_frame(&spec, &footage, i, &mut yuv).unwrap();
+        w.push(&spec, &footage, i, &yuv).unwrap();
+    }
+    w.end().unwrap();
+    let (cur, stats) = w.finish(&spec, &footage).unwrap();
+    assert_eq!(stats.frames, 60);
+    let path = temp("late.mp4");
+    std::fs::write(&path, cur.into_inner()).unwrap();
+    let asset = Asset {
+        kind: AssetKind::Video,
+        sha256: sha(7),
+        uri: path.to_string_lossy().into_owned(),
+        of: None,
+        probe: None,
+    };
+    let late = footage.picture("v", &asset, Tick::from_seconds(1.5)).expect("decode").expect("online");
+    assert!(near(centre(&late), [0, 0, 255]), "{:?}", centre(&late));
+}

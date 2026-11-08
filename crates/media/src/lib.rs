@@ -13,6 +13,7 @@
 
 pub mod export;
 pub mod stretch;
+pub mod webcodecs;
 mod yuv;
 
 use std::collections::HashMap;
@@ -23,7 +24,10 @@ use reelforge_render::{Image, Lut, MediaSource, StillImages};
 use reelforge_renderspec::{Asset, AssetKind};
 use reelforge_time::{FrameRate, Tick};
 
-pub use export::{ExportError, ExportStats, Progress, Renderer, export, export_with};
+pub use export::{
+    EncodedFrame, ExportError, ExportStats, ExportWriter, Progress, Renderer, SoftwareH264, VideoConfig, VideoEncoder,
+    Yuv420, draw_frame, encoded_size, export, export_with, video_encoding,
+};
 
 /// What [`probe_path`] measured.
 #[derive(Clone, Debug, PartialEq)]

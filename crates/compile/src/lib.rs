@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use reelforge_model::{
-    Adjust, BlendMode, Clip, ClipContent, Mask, MaskKind, MediaKind, Project, Prop, Timing, TitleAlign, Track,
+    Adjust, BlendMode, Clip, ClipContent, Codec, Mask, MaskKind, MediaKind, Project, Prop, Timing, TitleAlign, Track,
     TrackKind, TransitionKind,
 };
 use reelforge_renderspec::{
@@ -100,10 +100,23 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
     let mut spec = RenderSpec::new(Output {
         width: c.width,
         height: c.height,
-        fps: c.fps,
+        fps: if options.encode { project.export.frame_rate(c) } else { c.fps },
         duration,
         background: Color(c.background),
-        video: options.encode.then_some(VideoEncoding { codec: VideoCodec::H264, crf: Some(20), bitrate_kbps: None }),
+        video: options.encode.then(|| {
+            let e = &project.export;
+            let size = e.size(c);
+            VideoEncoding {
+                codec: match e.codec {
+                    Codec::H264 => VideoCodec::H264,
+                    Codec::Hevc => VideoCodec::Hevc,
+                    Codec::Av1 => VideoCodec::Av1,
+                },
+                crf: Some(e.quality.crf()),
+                bitrate_kbps: Some(e.bitrate_kbps(c)),
+                size: (size != [c.width, c.height]).then_some(size),
+            }
+        }),
         audio: options.encode.then_some(AudioEncoding {
             codec: AudioCodec::Aac,
             sample_rate: 48_000,

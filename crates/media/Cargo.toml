@@ -24,3 +24,4 @@ filmcraft-isobmff = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 reelforge-render = { workspace = true, features = ["gpu"] }
+

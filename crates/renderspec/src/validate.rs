@@ -41,6 +41,22 @@ pub fn validate(spec: &RenderSpec) -> Result<(), ValidationError> {
             return Err(bad(format!("output.{name}"), "must be even and between 2 and 8192"));
         }
     }
+    if let Some(v) = &o.video {
+        if v.bitrate_kbps == Some(0) || v.crf.is_some_and(|c| c > 51) {
+            return Err(bad("output.video", "crf must be 0 to 51 and a bitrate above 0"));
+        }
+        if let Some([w, h]) = v.size
+            && (w == 0
+                || h == 0
+                || w > 8192
+                || h > 8192
+                || w % 2 != 0
+                || h % 2 != 0
+                || h != crate::scaled_height(o.width, o.height, w))
+        {
+            return Err(bad("output.video.size", "must be even, at most 8192 and keep the output's aspect"));
+        }
+    }
     if !o.fps.is_valid() {
         return Err(bad("output.fps", "frame rate must be non-zero and a whole number of ticks per frame"));
     }
