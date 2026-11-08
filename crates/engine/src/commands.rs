@@ -1,11 +1,12 @@
 //! The command registry. Every action in reelforge is one of these.
 
 use reelforge_compile::{CompileOptions, compile};
+use reelforge_model::timeline as model_timeline;
 use reelforge_model::{
     Adjust, AnimKind, Animation, BlendMode, Clip, ClipContent, ClipEffect, ClipTransform, Codec, CurvePoint,
     CurvePreset, Ease, ExportSettings, Filter, FilterKind, Key, LutUse, Mask, MaskKind, Media, MediaKind, Outline,
-    Project, Prop, Quality, Resolution, Shadow, TitleStyle, Track, TrackKind, Transition, TransitionKind, anim, export,
-    timing,
+    Project, Prop, Quality, Resolution, Shadow, Timeline, TitleStyle, Track, TrackKind, Transition, TransitionKind,
+    anim, export, timing,
 };
 use reelforge_renderspec::AssetKind;
 use reelforge_time::{FrameRate, Tick};
@@ -135,6 +136,51 @@ static REGISTRY: &[CommandSpec] = &[
         edits: true,
         enabled: always,
         run: media_import,
+    },
+    CommandSpec {
+        id: "timeline.list",
+        label: "Timelines",
+        params: "{}",
+        doc: "The project's timelines in order: id, name, length and which one is being edited (the one every other command works on).",
+        edits: false,
+        enabled: always,
+        run: timeline_list,
+    },
+    CommandSpec {
+        id: "timeline.add",
+        label: "New Timeline",
+        params: r#"{"name"?: string, "copy"?: bool}"#,
+        doc: "Adds a timeline after the current one, empty or (`copy`) a copy of the current one, and switches to it. Media, canvas and export settings are shared.",
+        edits: true,
+        enabled: always,
+        run: timeline_add,
+    },
+    CommandSpec {
+        id: "timeline.switch",
+        label: "Switch Timeline",
+        params: r#"{"timeline": id}"#,
+        doc: "Edits another timeline from now on; the current one keeps its tracks.",
+        edits: true,
+        enabled: always,
+        run: timeline_switch,
+    },
+    CommandSpec {
+        id: "timeline.rename",
+        label: "Rename Timeline",
+        params: r#"{"timeline"?: id, "name": string}"#,
+        doc: "Renames a timeline (the current one by default).",
+        edits: true,
+        enabled: always,
+        run: timeline_rename,
+    },
+    CommandSpec {
+        id: "timeline.remove",
+        label: "Delete Timeline",
+        params: r#"{"timeline"?: id}"#,
+        doc: "Deletes a timeline (the current one by default) and its clips; the last one cannot go. Deleting the current one switches to its neighbour.",
+        edits: true,
+        enabled: always,
+        run: timeline_remove,
     },
     CommandSpec {
         id: "track.add",
@@ -713,6 +759,99 @@ fn track_set(s: &mut Session, v: &Value) -> CmdResult {
         t.muted = muted.unwrap_or(t.muted);
         t.magnetic = magnetic.unwrap_or(t.magnetic);
         Ok(json!({ "track": id, "name": t.name, "hidden": t.hidden, "muted": t.muted, "magnetic": t.magnetic }))
+    })
+}
+
+fn timeline_json(p: &Project) -> Value {
+    let list: Vec<Value> = p
+        .timeline_list()
+        .into_iter()
+        .map(|t| json!({ "id": t.id, "name": t.name, "duration": t.duration, "current": t.current }))
+        .collect();
+    json!({ "current": p.timeline, "timelines": list })
+}
+
+fn timeline_list(s: &mut Session, _: &Value) -> CmdResult {
+    Ok(timeline_json(&s.project()))
+}
+
+/// The timeline a command names, or the current one.
+fn which_timeline(proj: &Project, p: &P) -> Result<String, EngineError> {
+    let id = p.opt_str("timeline")?.map_or_else(|| proj.timeline.clone(), str::to_string);
+    if proj.timelines.iter().any(|t| t.id == id) || (proj.timelines.is_empty() && id.is_empty()) {
+        Ok(id)
+    } else {
+        Err(EngineError::Params(format!("no timeline {id:?}")))
+    }
+}
+
+fn timeline_add(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let name = p.opt_str("name")?.map(str::to_string);
+    let copy = p.opt_bool("copy")?.unwrap_or(false);
+    s.edit("New Timeline", |proj| {
+        proj.name_first_timeline("Timeline 1");
+        let tracks = if copy { proj.copy_tracks() } else { model_timeline::empty_tracks(proj) };
+        let id = proj.mint("s");
+        let name = name.unwrap_or_else(|| {
+            let current = proj.timelines.iter().find(|t| t.id == proj.timeline).map(|t| t.name.clone());
+            match (copy, current) {
+                (true, Some(n)) => format!("{n} copy"),
+                _ => format!("Timeline {}", proj.timelines.len() + 1),
+            }
+        });
+        let at = proj.timelines.iter().position(|t| t.id == proj.timeline).map_or(proj.timelines.len(), |i| i + 1);
+        proj.timelines.insert(at, Timeline { id: id.clone(), name, tracks });
+        proj.switch_timeline(&id);
+        Ok(json!({ "timeline": id }))
+    })
+}
+
+fn timeline_switch(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("timeline")?.to_string();
+    s.edit("Switch Timeline", |proj| {
+        if proj.switch_timeline(&id) {
+            Ok(json!({ "timeline": id }))
+        } else {
+            Err(EngineError::Params(format!("no timeline {id:?}")))
+        }
+    })
+}
+
+fn timeline_rename(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let name = p.str("name")?.trim().to_string();
+    if name.is_empty() {
+        return Err(EngineError::Params("`name` cannot be empty".into()));
+    }
+    s.edit("Rename Timeline", |proj| {
+        let mut id = which_timeline(proj, &p)?;
+        if id.is_empty() {
+            proj.name_first_timeline(&name);
+            id = proj.timeline.clone();
+        }
+        if let Some(t) = proj.timelines.iter_mut().find(|t| t.id == id) {
+            t.name = name;
+        }
+        Ok(json!({ "timeline": id }))
+    })
+}
+
+fn timeline_remove(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    s.edit("Delete Timeline", |proj| {
+        let id = which_timeline(proj, &p)?;
+        if proj.timelines.len() < 2 {
+            return Err(EngineError::Refused("a project keeps at least one timeline".into()));
+        }
+        let at = proj.timelines.iter().position(|t| t.id == id).expect("checked above");
+        if id == proj.timeline {
+            let next = proj.timelines[if at + 1 < proj.timelines.len() { at + 1 } else { at - 1 }].id.clone();
+            proj.switch_timeline(&next);
+        }
+        proj.timelines.remove(at);
+        Ok(json!({ "timeline": proj.timeline }))
     })
 }
 

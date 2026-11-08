@@ -6,8 +6,8 @@
 //! commands, and a render goes through `reelforge-compile`, which turns a project into a
 //! RenderSpec. Nothing here knows about pixels.
 //!
-//! The model is shaped for short videos rather than for a broadcast NLE: one timeline, a vertical
-//! canvas by default, tracks that are either picture, text or sound, and clips that carry their own
+//! The model is shaped for short videos rather than for a broadcast NLE: one timeline edited at a
+//! time (others wait in [`Project::timelines`]), a vertical canvas by default, tracks that are either picture, text or sound, and clips that carry their own
 //! transform, opacity and volume.
 
 use std::collections::BTreeMap;
@@ -21,6 +21,7 @@ pub mod anim;
 pub mod color;
 pub mod export;
 pub mod look;
+pub mod timeline;
 pub mod timing;
 pub mod transition;
 
@@ -28,6 +29,7 @@ pub use anim::{AnimKind, Animation, Animations, Ease, Key, Keys, Offset, Prop};
 pub use color::{Adjust, ColorGrade, Filter, FilterKind, LutUse};
 pub use export::{Codec, ExportSettings, Quality, Resolution};
 pub use look::{BlendMode, Crop, Look, Mask, MaskKind};
+pub use timeline::{Timeline, TimelineInfo};
 pub use timing::{CurvePoint, CurvePreset, Timing};
 pub use transition::{Transition, TransitionKind};
 
@@ -50,6 +52,13 @@ pub struct Project {
     /// How the project is exported.
     #[serde(default, skip_serializing_if = "ExportSettings::is_default")]
     pub export: ExportSettings,
+    /// Every timeline, in order, once there is more than one; empty while the project has only
+    /// ever had the one in `tracks`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub timelines: Vec<Timeline>,
+    /// Id of the timeline being edited (its tracks are `tracks`); empty while `timelines` is.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub timeline: String,
 }
 
 /// The output canvas.
@@ -474,6 +483,9 @@ pub enum ModelError {
     /// Keyframes or animations that cannot be played.
     #[error("clip {0:?}: {1}")]
     BadMotion(String, &'static str),
+    /// The list of timelines does not hold together.
+    #[error("timelines: {0}")]
+    BadTimeline(&'static str),
 }
 
 impl Default for Project {
@@ -492,20 +504,10 @@ impl Project {
             tracks: Vec::new(),
             next_id: 1,
             export: ExportSettings::default(),
+            timelines: Vec::new(),
+            timeline: String::new(),
         };
-        for (kind, name) in [(TrackKind::Video, "Video 1"), (TrackKind::Text, "Text 1"), (TrackKind::Audio, "Audio 1")]
-        {
-            let id = p.mint("t");
-            p.tracks.push(Track {
-                id,
-                kind,
-                name: name.into(),
-                hidden: false,
-                muted: false,
-                magnetic: false,
-                clips: Vec::new(),
-            });
-        }
+        p.tracks = timeline::empty_tracks(&mut p);
         p
     }
 
@@ -569,7 +571,22 @@ impl Project {
                 return Err(ModelError::DuplicateId(id.clone()));
             }
         }
-        for track in &self.tracks {
+        if self.timelines.is_empty() != self.timeline.is_empty() {
+            return Err(ModelError::BadTimeline("the current timeline is not in the list"));
+        }
+        for t in &self.timelines {
+            if !ids.insert(t.id.clone()) {
+                return Err(ModelError::DuplicateId(t.id.clone()));
+            }
+            if t.id == self.timeline && !t.tracks.is_empty() {
+                return Err(ModelError::BadTimeline("the current timeline's tracks are the project's"));
+            }
+        }
+        if !self.timelines.is_empty() && !self.timelines.iter().any(|t| t.id == self.timeline) {
+            return Err(ModelError::BadTimeline("the current timeline is not in the list"));
+        }
+        let parked = self.timelines.iter().flat_map(|t| &t.tracks);
+        for track in self.tracks.iter().chain(parked) {
             if !ids.insert(track.id.clone()) {
                 return Err(ModelError::DuplicateId(track.id.clone()));
             }

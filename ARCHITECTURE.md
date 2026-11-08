@@ -28,7 +28,7 @@ service ships them without the editor.
 | --- | --- | --- |
 | L0 | `reelforge-time` | `Tick`, `FrameRate`, `TimeRange` |
 | L1 | `reelforge-renderspec` | RenderSpec types, validation, JSON Schema (`schema/renderspec-1.schema.json`) |
-| L1 | `reelforge-model` | The project document: canvas, media, tracks (magnetic or not), clips and their colour (filters, LUTs, adjustments; `color`), their crop, mirror, blend mode and shape mask (`look`), keyframes and in/out animations (`anim`), transitions (`transition`), speed curves, reverse and freeze frames (`timing`); invariants |
+| L1 | `reelforge-model` | The project document: canvas, media, tracks (magnetic or not) of the timeline being edited and the other timelines parked beside it (`timeline`), clips and their colour (filters, LUTs, adjustments; `color`), their crop, mirror, blend mode and shape mask (`look`), keyframes and in/out animations (`anim`), transitions (`transition`), speed curves, reverse and freeze frames (`timing`); invariants |
 | L2 | `reelforge-compile` | Project → RenderSpec: all editing meaning resolved here (keyframes, animations and transitions become RenderSpec keys and overlapping layers, `motion`) |
 | L2 | `reelforge-render` | Pure frame plan, CPU reference compositor, wgpu compositor (feature `gpu`); `MediaSource` trait |
 | L3 | `reelforge-media` | Probing, video/audio decoding (`Footage`), MP4 export (`ExportWriter` over any `VideoEncoder`, AAC sound), the synthesised sound library (`library:` URIs); FilmCraft's pure-Rust codecs |

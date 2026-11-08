@@ -124,9 +124,8 @@ fn object(props: Vec<(&'static str, Value)>, required: &[&str]) -> Value {
 pub fn input_schema(id: &str) -> Option<Value> {
     let clip = || ("clip", ident("Clip id, such as c4."));
     Some(match id {
-        "commands.list" | "project.inspect" | "edit.undo" | "edit.redo" | "title.templates" | "sound.library" => {
-            object(vec![], &[])
-        }
+        "commands.list" | "project.inspect" | "edit.undo" | "edit.redo" | "title.templates" | "sound.library"
+        | "timeline.list" => object(vec![], &[]),
         "sound.add" => object(
             vec![
                 (
@@ -208,6 +207,22 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["path"],
         ),
+        "timeline.add" => object(
+            vec![
+                ("name", json!({"type": "string", "description": "Name; \"Timeline N\" by default."})),
+                ("copy", json!({"type": "boolean", "description": "Start as a copy of the current timeline."})),
+            ],
+            &[],
+        ),
+        "timeline.switch" => object(vec![("timeline", ident("Timeline id, such as s4."))], &["timeline"]),
+        "timeline.rename" => object(
+            vec![
+                ("timeline", ident("Timeline id; the current one by default.")),
+                ("name", json!({"type": "string", "minLength": 1, "description": "New name."})),
+            ],
+            &["name"],
+        ),
+        "timeline.remove" => object(vec![("timeline", ident("Timeline id; the current one by default."))], &[]),
         "track.add" => object(
             vec![
                 ("kind", json!({"enum": ["video", "text", "audio"], "description": "What the track holds."})),
