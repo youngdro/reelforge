@@ -72,6 +72,8 @@ pub(crate) mod icon {
     pub const DONE: &str = "\u{e184}";
     pub const UPLOAD: &str = "\u{e1ae}";
     pub const FIT: &str = "\u{e534}";
+    pub const CAPTIONS: &str = "\u{e1a8}";
+    pub const WAVEFORM: &str = "\u{e802}";
     pub const SHOWN: &str = "\u{e220}";
     pub const HIDDEN: &str = "\u{e224}";
 }

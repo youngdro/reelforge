@@ -364,21 +364,23 @@ impl Hub {
         let project = self.shared.project();
         let fps = project.canvas.fps;
         let time = |name: &str| {
-            params.get(name).map(|v| parse_time(v, fps).map_err(|e| CallError::Failed(format!("`{name}`: {e}")))).transpose()
+            params
+                .get(name)
+                .map(|v| parse_time(v, fps).map_err(|e| CallError::Failed(format!("`{name}`: {e}"))))
+                .transpose()
         };
         let text = |name: &str| params.get(name).and_then(Value::as_str).map(str::to_string);
         let range = (time("from")?, time("to")?);
         let options = reelforge_speech::Options { language: text("language"), prompt: text("prompt") };
         let spec = reelforge_compile::compile(&project, &reelforge_compile::CompileOptions { encode: false })
             .map_err(|e| CallError::Failed(e.to_string()))?;
-        let heard = self
-            .speech
-            .transcribe(&spec, &self.footage, range, &options, &mut |_| true)
-            .map_err(CallError::Failed)?;
+        let heard =
+            self.speech.transcribe(&spec, &self.footage, range, &options, &mut |_| true).map_err(CallError::Failed)?;
         if heard.segments.is_empty() {
             return Ok(Output::Json(json!({"language": heard.language, "count": 0, "clips": []})));
         }
-        let add = reelforge_speech::captions_params(&heard.segments, text("track").as_deref(), text("template").as_deref());
+        let add =
+            reelforge_speech::captions_params(&heard.segments, text("track").as_deref(), text("template").as_deref());
         let placed = self.shared.execute("captions.add", &add, by)?;
         Ok(Output::Json(json!({
             "language": heard.language,

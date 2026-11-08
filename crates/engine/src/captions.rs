@@ -211,7 +211,9 @@ pub(crate) fn captions_add(s: &mut Session, v: &Value) -> CmdResult {
     let mut cues = Vec::with_capacity(list.len());
     for (i, c) in list.iter().enumerate() {
         let cp = P::new(c, fps);
-        let field = |e: EngineError| EngineError::Params(format!("cues[{i}]: {}", e.to_string().trim_start_matches("invalid parameters: ")));
+        let field = |e: EngineError| {
+            EngineError::Params(format!("cues[{i}]: {}", e.to_string().trim_start_matches("invalid parameters: ")))
+        };
         let (start, end) = (cp.time("start").map_err(field)?, cp.time("end").map_err(field)?);
         if end <= start {
             return Err(EngineError::Params(format!("cues[{i}]: ends before it starts")));

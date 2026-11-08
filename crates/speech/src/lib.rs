@@ -12,6 +12,8 @@
 //! is skipped.
 
 mod mel;
+#[doc(hidden)]
+pub mod tiny;
 mod tokens;
 
 use std::path::{Path, PathBuf};
@@ -317,8 +319,8 @@ impl Recogniser {
         let samples = timeline_audio(spec, media, from, range.1.unwrap_or(spec.output.duration))?;
         let mut out = model.as_mut().expect("loaded above").transcribe(&samples, options, progress)?;
         for s in &mut out.segments {
-            s.start = s.start + from;
-            s.end = s.end + from;
+            s.start += from;
+            s.end += from;
         }
         Ok(out)
     }
@@ -327,10 +329,8 @@ impl Recogniser {
 /// `captions.add` parameters placing `segments`, on `track` (a new captions track by default) in
 /// `template`'s look.
 pub fn captions_params(segments: &[Segment], track: Option<&str>, template: Option<&str>) -> serde_json::Value {
-    let cues: Vec<serde_json::Value> = segments
-        .iter()
-        .map(|s| serde_json::json!({"start": s.start.0, "end": s.end.0, "text": s.text}))
-        .collect();
+    let cues: Vec<serde_json::Value> =
+        segments.iter().map(|s| serde_json::json!({"start": s.start.0, "end": s.end.0, "text": s.text})).collect();
     let mut out = serde_json::json!({ "cues": cues });
     if let Some(t) = track {
         out["track"] = t.into();

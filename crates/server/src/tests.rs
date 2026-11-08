@@ -291,8 +291,55 @@ fn transcribing_without_a_model_says_where_to_put_one() {
     let err = hub.call("captions.transcribe", &json!({"language": "zh"})).unwrap_err();
     assert!(matches!(&err, CallError::Failed(m) if m.contains("no speech model") && m.contains("no-model")), "{err}");
     // lines from elsewhere still go in
-    let out = hub
-        .call("captions.add", &json!({"cues": [{"start": 0, "end": {"seconds": 1}, "text": "你好"}]}))
-        .unwrap();
+    let out =
+        hub.call("captions.add", &json!({"cues": [{"start": 0, "end": {"seconds": 1}, "text": "你好"}]})).unwrap();
     assert!(matches!(out, Output::Json(v) if v["clips"].as_array().unwrap().len() == 1));
+}
+
+#[test]
+fn an_agent_gets_captions_from_the_timeline_sound() {
+    // a model shaped like Whisper (random, tiny): checks the chain, not the hearing
+    let model = temp("tiny-whisper");
+    reelforge_speech::tiny::write(&model).unwrap();
+    let hub = Hub::new(Session::default()).with_speech_model(model);
+    // three seconds of a warbling 16 kHz mono tone, on the timeline
+    let rate = 16_000u32;
+    let n = rate * 3;
+    let mut wav = Vec::new();
+    wav.extend(b"RIFF");
+    wav.extend((36 + n * 2).to_le_bytes());
+    wav.extend(b"WAVEfmt ");
+    for v in [16u32.to_le_bytes(), [1, 0, 1, 0], rate.to_le_bytes(), (rate * 2).to_le_bytes(), [2, 0, 16, 0]] {
+        wav.extend(v);
+    }
+    wav.extend(b"data");
+    wav.extend((n * 2).to_le_bytes());
+    for i in 0..n {
+        let t = i as f32 / rate as f32;
+        let v = ((t * 300.0 * std::f32::consts::TAU).sin() * (t * 3.0).sin() * 12000.0) as i16;
+        wav.extend(v.to_le_bytes());
+    }
+    let path = temp("speech.wav");
+    std::fs::write(&path, &wav).unwrap();
+    let Output::Json(m) = hub.call("media.import", &json!({"path": path.to_string_lossy()})).unwrap() else {
+        panic!("json")
+    };
+    let audio = track(&hub, "audio");
+    hub.call("clip.add", &json!({"track": audio, "media": m["media"]["id"]})).unwrap();
+
+    let Output::Json(heard) = hub.call("captions.transcribe", &json!({"language": "zh"})).unwrap() else {
+        panic!("json")
+    };
+    assert_eq!(heard["language"], "zh");
+    let count = heard["count"].as_u64().unwrap() as usize;
+    assert_eq!(heard["clips"].as_array().unwrap().len(), count);
+    let p = hub.session().project();
+    let captions = p.tracks.iter().find(|t| t.name == reelforge_engine::CAPTIONS_TRACK);
+    assert_eq!(captions.map_or(0, |t| t.clips.len()), count);
+    for c in captions.iter().flat_map(|t| &t.clips) {
+        assert!(c.end() <= reelforge_time::Tick::from_seconds(3.0));
+    }
+    // parameters are checked before any listening
+    let bad = hub.call("captions.transcribe", &json!({"from": "soon"})).unwrap_err();
+    assert!(bad.to_string().contains("`from`"), "{bad}");
 }

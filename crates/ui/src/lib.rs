@@ -27,6 +27,7 @@ mod stage;
 mod strips;
 mod theme;
 mod timeline;
+mod transcribe_job;
 
 use std::sync::{Arc, Mutex};
 
@@ -57,6 +58,11 @@ pub struct EditorApp {
     arrivals: Arc<Mutex<Vec<Arrival>>>,
     #[cfg(not(target_arch = "wasm32"))]
     export: Option<export_job::ExportJob>,
+    /// Automatic captions in progress.
+    transcribe: Option<transcribe_job::TranscribeJob>,
+    /// The local speech model, loaded on first use.
+    #[cfg(not(target_arch = "wasm32"))]
+    speech: Option<Arc<reelforge_speech::Recogniser>>,
     #[cfg(not(target_arch = "wasm32"))]
     export_dir: std::path::PathBuf,
     playhead: Tick,
@@ -168,6 +174,9 @@ impl EditorApp {
             arrivals: Arc::default(),
             #[cfg(not(target_arch = "wasm32"))]
             export: None,
+            transcribe: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            speech: None,
             #[cfg(not(target_arch = "wasm32"))]
             export_dir: std::env::current_dir().unwrap_or_default(),
             playhead: Tick::ZERO,
@@ -701,6 +710,7 @@ impl EditorApp {
             if theme::tool(ui, icon::COLOUR, s.colour, s.colour_tip, true).clicked() {
                 self.add_colour();
             }
+            self.transcribe_controls(ui);
             ui.label(
                 egui::RichText::new(format!("{}  {}", icon::IMPORT, s.drop_hint)).color(theme::color::WEAK).small(),
             );

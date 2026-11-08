@@ -30,7 +30,7 @@ pub struct Vocab {
 }
 
 /// GPT-2's byte ↔ printable character table, reversed.
-fn byte_decoder() -> HashMap<char, u8> {
+pub(crate) fn byte_decoder() -> HashMap<char, u8> {
     let mut printable: Vec<u32> = (b'!' as u32..=b'~' as u32).chain(0xA1..=0xAC).chain(0xAE..=0xFF).collect();
     let mut chars = printable.clone();
     let mut n = 0;
@@ -58,7 +58,8 @@ impl Vocab {
         }
         let mut specials = HashMap::new();
         for t in v.get("added_tokens").and_then(Value::as_array).into_iter().flatten() {
-            if let (Some(c), Some(id)) = (t.get("content").and_then(Value::as_str), t.get("id").and_then(Value::as_u64)) {
+            if let (Some(c), Some(id)) = (t.get("content").and_then(Value::as_str), t.get("id").and_then(Value::as_u64))
+            {
                 specials.insert(c.to_string(), id as u32);
             }
         }
@@ -158,8 +159,7 @@ impl Vocab {
 
     /// The text of `tokens`, skipping anything that is not text.
     pub fn text(&self, tokens: &[u32]) -> String {
-        let bytes: Vec<u8> =
-            tokens.iter().filter_map(|&t| self.pieces.get(t as usize)).flatten().copied().collect();
+        let bytes: Vec<u8> = tokens.iter().filter_map(|&t| self.pieces.get(t as usize)).flatten().copied().collect();
         String::from_utf8_lossy(&bytes).into_owned()
     }
 }
@@ -295,59 +295,22 @@ pub fn split(tokens: &[u32], v: &Vocab, window: u32) -> (Vec<Piece>, u32) {
                 s
             }
         }
-        Some(s) if s > 0 && tokens.last().is_some_and(|&t| v.is_timestamp(t)) && !ends_single(tokens, v) => s,
+        // a timestamp opening a piece that never came: start there next time, once pieces were
+        // closed before it (otherwise nothing was said and the window is done)
+        Some(s) if !pieces.is_empty() => s,
         _ => window,
     };
     (pieces, if advance == 0 { window } else { advance.min(window) })
 }
 
-/// Whether the tokens end with a timestamp that closes a piece (not one that opens the next).
-fn ends_single(tokens: &[u32], v: &Vocab) -> bool {
-    let n = tokens.len();
-    n >= 2 && v.is_timestamp(tokens[n - 1]) && !v.is_timestamp(tokens[n - 2])
-}
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
-
-    /// A small vocabulary shaped like Whisper's: byte tokens, a few words, the specials, two
-    /// languages and timestamps up to 30 s.
-    pub(crate) fn tiny_tokenizer() -> String {
-        let enc: HashMap<u8, char> = byte_decoder().into_iter().map(|(c, b)| (b, c)).collect();
-        let piece = |s: &str| s.bytes().map(|b| enc[&b]).collect::<String>();
-        let mut vocab = serde_json::Map::new();
-        let mut merges = vec![];
-        let words = ["你好", "世界", " hello", "，", "字幕"];
-        for (i, w) in words.iter().enumerate() {
-            vocab.insert(piece(w), (i as u32).into());
-            // merge the word's bytes left to right
-            let chars: Vec<char> = piece(w).chars().collect();
-            for k in 1..chars.len() {
-                merges.push(format!("{} {}", chars[..k].iter().collect::<String>(), chars[k]));
-            }
-        }
-        let mut added = vec![];
-        let mut id = words.len() as u32;
-        let mut add = |name: String| {
-            added.push(serde_json::json!({ "id": id, "content": name, "special": true }));
-            id += 1;
-        };
-        for name in ["<|endoftext|>", "<|startoftranscript|>", "<|en|>", "<|zh|>", "<|translate|>", "<|transcribe|>"] {
-            add(name.into());
-        }
-        for name in ["<|startoflm|>", "<|startofprev|>", "<|nospeech|>", "<|notimestamps|>"] {
-            add(name.into());
-        }
-        for i in 0..=1500 {
-            add(format!("<|{:.2}|>", i as f32 * 0.02));
-        }
-        serde_json::json!({ "model": { "type": "BPE", "vocab": vocab, "merges": merges }, "added_tokens": added }).to_string()
-    }
 
     #[test]
     fn reads_the_vocabulary_and_decodes_bytes() {
-        let v = Vocab::from_json(&tiny_tokenizer()).unwrap();
+        let v = Vocab::from_json(&crate::tiny::tokenizer()).unwrap();
         assert_eq!((v.eot, v.sot, v.transcribe, v.timestamp_begin), (5, 6, 10, 15));
         assert_eq!(v.no_speech, Some(13));
         assert_eq!(v.language("zh"), Some(8));
@@ -361,7 +324,7 @@ pub(crate) mod tests {
 
     #[test]
     fn timestamps_come_in_order_and_in_pairs() {
-        let v = Vocab::from_json(&tiny_tokenizer()).unwrap();
+        let v = Vocab::from_json(&crate::tiny::tokenizer()).unwrap();
         let n = 15 + 1501;
         let tb = 15usize;
         let allowed = |sampled: &[u32]| {
@@ -385,16 +348,13 @@ pub(crate) mod tests {
 
     #[test]
     fn windows_split_into_timed_pieces() {
-        let v = Vocab::from_json(&tiny_tokenizer()).unwrap();
+        let v = Vocab::from_json(&crate::tiny::tokenizer()).unwrap();
         let ts = |s: u32| 15 + s;
         // two closed pieces, ending on a closing timestamp: move on a whole window
         let (p, adv) = split(&[ts(0), 0, ts(50), ts(50), 1, ts(120)], &v, 1500);
         assert_eq!(
             p,
-            vec![
-                Piece { start: 0, end: 50, tokens: vec![0] },
-                Piece { start: 50, end: 120, tokens: vec![1] }
-            ]
+            vec![Piece { start: 0, end: 50, tokens: vec![0] }, Piece { start: 50, end: 120, tokens: vec![1] }]
         );
         assert_eq!(adv, 1500);
         // a piece left open: decode it again next window
@@ -408,6 +368,8 @@ pub(crate) mod tests {
         // ending on an opening timestamp: start the next window there
         let (_, adv) = split(&[ts(0), 0, ts(50), ts(900)], &v, 1500);
         assert_eq!(adv, 900);
+        // a lone opening timestamp says nothing: the window is done
+        assert_eq!(split(&[ts(15)], &v, 1500), (vec![], 1500));
         // nothing at all
         assert_eq!(split(&[], &v, 1500), (vec![], 1500));
     }

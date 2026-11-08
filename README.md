@@ -11,7 +11,10 @@ effects and undo work; projects export to H.264 + AAC MP4 from the desktop edito
 render with shaping, wrapping, outlines, shadows, gradients and boxes, Chinese included (a bundled
 Noto Sans SC subset covering GB 2312), and ten title templates (花字) apply a look in one step
 (`title.templates`, `"template"` on `clip.add` / `clip.set`). SubRip captions come in by dropping a
-`.srt` on the editor or `captions.import`, and go out with `captions.export`. Frames are composited on the GPU (wgpu) in the editor's preview and in exports,
+`.srt` on the editor or `captions.import`, and go out with `captions.export`. **Auto captions** hear
+the timeline with a local Whisper model (pure Rust on candle, CPU; nothing leaves the machine): the
+editor's Auto captions button, or `captions.transcribe` for agents on a server. Get a model with
+`reelforge-cli fetch-model --size small` (into `~/.reelforge/models/whisper`, or `REELFORGE_WHISPER`). Frames are composited on the GPU (wgpu) in the editor's preview and in exports,
 with the CPU compositor as the reference and the fallback. Agents edit through an MCP server (stdio
 or HTTP), and the same operations are an HTTP API and `reelforge-cli call`. People in a browser or on
 another machine join a server's session and edit live alongside agents. The preview plays sound,

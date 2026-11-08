@@ -174,6 +174,23 @@ impl Remote {
         self.pump();
     }
 
+    /// Runs operation `id` on the server, outside the queue of edits (one that works on the server's
+    /// own media, such as `captions.transcribe`); `done` gets its result. Any change it makes reaches
+    /// the mirror like anyone else's.
+    pub fn call(&self, id: &str, params: &Value, done: impl FnOnce(Result<Value, String>) + Send + 'static) {
+        let url = format!("{}/v1/ops/{id}", self.inner.base);
+        // it may take minutes
+        let mut req = ehttp::Request::post(url, serde_json::to_vec(params).expect("serialises")).with_timeout(None);
+        req.headers.insert("Content-Type", "application/json");
+        let this = self.clone();
+        ehttp::fetch(self.request(req), move |r| {
+            done(answer(r).map(|v| v["result"].clone()).map_err(|e| e.to_string()));
+            this.state().stale = true;
+            this.settle();
+            (this.inner.wake)();
+        });
+    }
+
     /// Restarts what stopped when the server could not be reached, once it is time. `now` is the
     /// editor's clock in seconds. Returns how long until it wants to be called again, if it does.
     pub fn tick(&self, now: f64) -> Option<f64> {
