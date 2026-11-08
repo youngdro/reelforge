@@ -104,9 +104,8 @@ impl EditorApp {
             }
         }
         let can = !p.tracks.iter().all(|t| t.clips.is_empty());
-        if ui
-            .add_enabled(can, egui::Button::new("⬇ Export MP4"))
-            .on_hover_text(self.export_dir.display().to_string())
+        if crate::theme::primary(ui, crate::theme::icon::EXPORT, "Export", can)
+            .on_hover_text(format!("Write an MP4 to {}", self.export_dir.display()))
             .clicked()
         {
             match ExportJob::start(p, &self.export_dir) {

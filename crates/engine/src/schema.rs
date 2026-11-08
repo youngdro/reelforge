@@ -127,6 +127,18 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["kind"],
         ),
+        "track.set" => object(
+            vec![
+                ("track", ident("Track id, such as t1.")),
+                ("name", json!({"type": "string", "minLength": 1, "description": "New name."})),
+                (
+                    "hidden",
+                    json!({"type": "boolean", "description": "Hide the track's picture (video and text tracks)."}),
+                ),
+                ("muted", json!({"type": "boolean", "description": "Mute the track's sound."})),
+            ],
+            &["track"],
+        ),
         "clip.add" => {
             let mut props = vec![
                 ("track", ident("Track id, such as t1 (project.inspect lists them).")),

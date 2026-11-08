@@ -265,3 +265,19 @@ fn a_mirror_adopts_the_state_it_mirrors_without_history() {
     let b = mirror.execute("track.add", &json!({"kind": "text"}), "editor").unwrap();
     assert_eq!(a, b);
 }
+
+#[test]
+fn tracks_are_renamed_hidden_and_muted() {
+    let mut s = Session::default();
+    let t = s.project().tracks[0].id.clone();
+    let out = s.execute("track.set", &json!({"track": t, "hidden": true, "name": "B-roll"})).unwrap();
+    assert_eq!(out, json!({"track": t, "name": "B-roll", "hidden": true, "muted": false}));
+    s.execute("track.set", &json!({"track": t, "muted": true})).unwrap();
+    let track = s.project().tracks[0].clone();
+    assert!(track.hidden && track.muted && track.name == "B-roll");
+    assert!(s.execute("track.set", &json!({"track": "nope", "muted": true})).is_err());
+    assert!(s.execute("track.set", &json!({"track": t, "name": " "})).is_err());
+    assert!(s.execute("track.set", &json!({"track": t, "muted": "yes"})).is_err());
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(!s.project().tracks[0].muted);
+}
