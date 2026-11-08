@@ -1,0 +1,130 @@
+//! The engine: one session, one command registry, one dispatcher.
+//!
+//! Every way of changing a project goes through [`Session::execute`]: the interface's buttons and
+//! drags, the command line, an MCP agent, a script. A command is a [`CommandSpec`] with a stable id
+//! (`clip.split`), a label, a parameter description that agents read, an `enabled` check that
+//! explains itself, and a `run` function. Nothing about what an edit means lives in a client, so
+//! two clients cannot disagree, and a command added here reaches all of them.
+//!
+//! Edits are copy-on-write: the project is an `Arc<Project>`, an edit clones it, applies the change,
+//! checks the invariants and only then commits, pushing the old snapshot onto the undo stack. A
+//! reader (a preview, an export) holds a snapshot and never blocks an edit.
+
+mod commands;
+mod params;
+
+use std::sync::Arc;
+
+use reelforge_model::Project;
+use serde_json::{Value, json};
+use thiserror::Error;
+
+pub use commands::{CommandSpec, registry};
+pub use params::parse_time;
+
+/// How many undo steps a session keeps.
+pub const UNDO_DEPTH: usize = 200;
+
+/// Why a command failed. Nothing changed.
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum EngineError {
+    /// No command has this id.
+    #[error("unknown command {0:?}")]
+    Unknown(String),
+    /// The command cannot run now; the message says why.
+    #[error("{0}")]
+    Disabled(String),
+    /// The parameters are wrong; the message names the field.
+    #[error("invalid parameters: {0}")]
+    Params(String),
+    /// The edit would break the project.
+    #[error("{0}")]
+    Refused(String),
+}
+
+/// Result of a command.
+pub type CmdResult = Result<Value, EngineError>;
+
+/// An open project and its history.
+pub struct Session {
+    project: Arc<Project>,
+    undo: Vec<(String, Arc<Project>)>,
+    redo: Vec<(String, Arc<Project>)>,
+    revision: u64,
+}
+
+impl Default for Session {
+    fn default() -> Session {
+        Session::new(Project::default())
+    }
+}
+
+impl Session {
+    /// A session on `project`.
+    pub fn new(project: Project) -> Session {
+        Session { project: Arc::new(project), undo: Vec::new(), redo: Vec::new(), revision: 0 }
+    }
+
+    /// The current project snapshot. Cheap; hold it as long as needed.
+    pub fn project(&self) -> Arc<Project> {
+        self.project.clone()
+    }
+
+    /// Bumped by every committed change (edits, undo, redo). Clients compare it to know when to
+    /// redraw, and a remote client sends the revision it last saw.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Labels of the undo stack, oldest first.
+    pub fn history(&self) -> Vec<String> {
+        self.undo.iter().map(|(l, _)| l.clone()).collect()
+    }
+
+    /// Runs the command `id` with `params` (an object, or null for none).
+    pub fn execute(&mut self, id: &str, params: &Value) -> CmdResult {
+        let spec = registry().iter().find(|c| c.id == id).ok_or_else(|| EngineError::Unknown(id.to_string()))?;
+        (spec.enabled)(self).map_err(EngineError::Disabled)?;
+        let empty = json!({});
+        let params = if params.is_null() { &empty } else { params };
+        if !params.is_object() {
+            return Err(EngineError::Params("parameters must be a JSON object".into()));
+        }
+        (spec.run)(self, params)
+    }
+
+    /// Applies `change` to a copy of the project; commits it as one undo step named `label` only if
+    /// it succeeds and the result passes [`Project::check`].
+    pub fn edit<T>(
+        &mut self,
+        label: &str,
+        change: impl FnOnce(&mut Project) -> Result<T, EngineError>,
+    ) -> Result<T, EngineError> {
+        let mut next = (*self.project).clone();
+        let out = change(&mut next)?;
+        next.sort_clips();
+        next.check().map_err(|e| EngineError::Refused(e.to_string()))?;
+        let old = std::mem::replace(&mut self.project, Arc::new(next));
+        self.undo.push((label.to_string(), old));
+        if self.undo.len() > UNDO_DEPTH {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+        self.revision += 1;
+        Ok(out)
+    }
+
+    fn swap(&mut self, undo: bool) -> CmdResult {
+        let (from, to) = if undo { (&mut self.undo, &mut self.redo) } else { (&mut self.redo, &mut self.undo) };
+        let Some((label, snapshot)) = from.pop() else {
+            return Err(EngineError::Disabled(format!("nothing to {}", if undo { "undo" } else { "redo" })));
+        };
+        let current = std::mem::replace(&mut self.project, snapshot);
+        to.push((label.clone(), current));
+        self.revision += 1;
+        Ok(json!({ "label": label }))
+    }
+}
+
+#[cfg(test)]
+mod tests;

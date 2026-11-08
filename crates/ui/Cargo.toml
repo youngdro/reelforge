@@ -1,0 +1,24 @@
+[package]
+name = "reelforge-ui"
+description = "The editor interface in egui, drawn with wgpu on the desktop and in the browser. A client of the engine: every change is a command."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+reelforge-time = { workspace = true }
+reelforge-model = { workspace = true }
+reelforge-renderspec = { workspace = true }
+reelforge-compile = { workspace = true }
+reelforge-render = { workspace = true }
+reelforge-engine = { workspace = true }
+serde_json = { workspace = true }
+egui = { workspace = true }
+eframe = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+eframe = { workspace = true, features = ["x11", "wayland"] }

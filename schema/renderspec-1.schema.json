@@ -1,0 +1,808 @@
+{
+  "$defs": {
+    "Animated": {
+      "anyOf": [
+        {
+          "description": "The same value throughout.",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        {
+          "description": "Keyframes, sorted by time; before the first and after the last the value holds.",
+          "items": {
+            "$ref": "#/$defs/Key"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "A value that is either constant or keyframed."
+    },
+    "Animated2": {
+      "anyOf": [
+        {
+          "description": "The same value throughout.",
+          "format": "float",
+          "type": "number"
+        },
+        {
+          "description": "Keyframes, sorted by time; before the first and after the last the value holds.",
+          "items": {
+            "$ref": "#/$defs/Key2"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "A value that is either constant or keyframed."
+    },
+    "Asset": {
+      "additionalProperties": false,
+      "description": "A file the edit reads, addressed by content.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/AssetKind",
+          "description": "What the file is."
+        },
+        "of": {
+          "description": "For a derived asset (a mask sequence, a stabilisation track), the asset it was made from.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "probe": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Probe"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the editor measured when it imported the file."
+        },
+        "sha256": {
+          "description": "SHA-256 of the file's bytes, lowercase hex. This, not the URI, is the asset's identity.",
+          "type": "string"
+        },
+        "uri": {
+          "description": "Where to fetch it: `file:`, `https:`, `s3:`, `opfs:`… A renderer may resolve the hash\nthrough its own cache instead.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "sha256",
+        "uri"
+      ],
+      "type": "object"
+    },
+    "AssetKind": {
+      "description": "Asset kinds.",
+      "oneOf": [
+        {
+          "const": "video",
+          "description": "Video, possibly with sound.",
+          "type": "string"
+        },
+        {
+          "const": "image",
+          "description": "A still image.",
+          "type": "string"
+        },
+        {
+          "const": "audio",
+          "description": "Sound only.",
+          "type": "string"
+        },
+        {
+          "const": "font",
+          "description": "A font file.",
+          "type": "string"
+        },
+        {
+          "const": "mask_sequence",
+          "description": "Per-frame alpha masks derived from another asset.",
+          "type": "string"
+        },
+        {
+          "const": "lut",
+          "description": "A colour lookup table.",
+          "type": "string"
+        }
+      ]
+    },
+    "AudioClip": {
+      "additionalProperties": false,
+      "description": "Sound from an asset.",
+      "properties": {
+        "asset": {
+          "description": "A `video` or `audio` asset.",
+          "type": "string"
+        },
+        "at": {
+          "$ref": "#/$defs/Tick",
+          "description": "When it starts on the output timeline."
+        },
+        "dur": {
+          "$ref": "#/$defs/Tick",
+          "description": "How long it plays; positive."
+        },
+        "gain_db": {
+          "$ref": "#/$defs/Animated2",
+          "default": 0.0,
+          "description": "Gain in dB; keyframe times are relative to the clip's start."
+        },
+        "id": {
+          "description": "Id, unique among audio clips.",
+          "type": "string"
+        },
+        "time": {
+          "$ref": "#/$defs/TimeMap",
+          "default": {
+            "source_in": 0,
+            "speed": 1.0
+          },
+          "description": "Which source instant plays when."
+        }
+      },
+      "required": [
+        "id",
+        "asset",
+        "at",
+        "dur"
+      ],
+      "type": "object"
+    },
+    "AudioCodec": {
+      "description": "Audio codecs.",
+      "oneOf": [
+        {
+          "const": "aac",
+          "description": "AAC-LC.",
+          "type": "string"
+        },
+        {
+          "const": "opus",
+          "description": "Opus.",
+          "type": "string"
+        }
+      ]
+    },
+    "AudioEncoding": {
+      "additionalProperties": false,
+      "description": "Audio encoding settings.",
+      "properties": {
+        "bitrate_kbps": {
+          "description": "Bitrate in kbit/s.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "codec": {
+          "$ref": "#/$defs/AudioCodec",
+          "description": "Codec."
+        },
+        "sample_rate": {
+          "description": "Sample rate in Hz.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "codec",
+        "sample_rate",
+        "bitrate_kbps"
+      ],
+      "type": "object"
+    },
+    "Blend": {
+      "description": "Blend modes.",
+      "oneOf": [
+        {
+          "const": "normal",
+          "description": "Over.",
+          "type": "string"
+        },
+        {
+          "const": "add",
+          "description": "Sum.",
+          "type": "string"
+        },
+        {
+          "const": "multiply",
+          "description": "Product.",
+          "type": "string"
+        },
+        {
+          "const": "screen",
+          "description": "Inverse product.",
+          "type": "string"
+        }
+      ]
+    },
+    "Color": {
+      "description": "A straight (not premultiplied) sRGB colour with alpha, each 0 to 1.",
+      "items": {
+        "format": "float",
+        "type": "number"
+      },
+      "maxItems": 4,
+      "minItems": 4,
+      "type": "array"
+    },
+    "Ease": {
+      "description": "Interpolation from one key to the next.",
+      "oneOf": [
+        {
+          "const": "linear",
+          "description": "Straight line.",
+          "type": "string"
+        },
+        {
+          "const": "hold",
+          "description": "Hold this value until the next key.",
+          "type": "string"
+        },
+        {
+          "const": "in_out",
+          "description": "Smoothstep: slow out of this key and into the next.",
+          "type": "string"
+        }
+      ]
+    },
+    "Effect": {
+      "additionalProperties": false,
+      "description": "An effect applied to a layer.",
+      "properties": {
+        "id": {
+          "description": "`<name>@<version>`, such as `color.brightness@1`.",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Animated2"
+          },
+          "default": {},
+          "description": "Parameters by name.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "EngineRequirements": {
+      "additionalProperties": false,
+      "description": "What a renderer must provide to draw this spec.",
+      "properties": {
+        "features": {
+          "description": "Feature ids the spec uses beyond the base format, such as `text/1`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "min": {
+          "description": "The oldest renderer version that draws this spec correctly (semver), if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Fit": {
+      "description": "How media is fitted to the output frame.",
+      "oneOf": [
+        {
+          "const": "contain",
+          "description": "Whole picture visible, bars where the shapes differ.",
+          "type": "string"
+        },
+        {
+          "const": "cover",
+          "description": "Frame covered, picture cropped where the shapes differ.",
+          "type": "string"
+        },
+        {
+          "const": "stretch",
+          "description": "Stretched to the frame.",
+          "type": "string"
+        }
+      ]
+    },
+    "FrameRate": {
+      "description": "A rational frame rate, `num / den` frames per second (30000 / 1001 is 29.97).",
+      "properties": {
+        "den": {
+          "description": "Denominator; never zero.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "num": {
+          "description": "Numerator.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "num",
+        "den"
+      ],
+      "type": "object"
+    },
+    "Key": {
+      "additionalProperties": false,
+      "description": "One keyframe.",
+      "properties": {
+        "ease": {
+          "$ref": "#/$defs/Ease",
+          "default": "linear",
+          "description": "How the value moves from this key to the next."
+        },
+        "t": {
+          "$ref": "#/$defs/Tick",
+          "description": "Time relative to the owner's start."
+        },
+        "v": {
+          "description": "Value at that time.",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "t",
+        "v"
+      ],
+      "type": "object"
+    },
+    "Key2": {
+      "additionalProperties": false,
+      "description": "One keyframe.",
+      "properties": {
+        "ease": {
+          "$ref": "#/$defs/Ease",
+          "default": "linear",
+          "description": "How the value moves from this key to the next."
+        },
+        "t": {
+          "$ref": "#/$defs/Tick",
+          "description": "Time relative to the owner's start."
+        },
+        "v": {
+          "description": "Value at that time.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "t",
+        "v"
+      ],
+      "type": "object"
+    },
+    "Layer": {
+      "additionalProperties": false,
+      "description": "One picture layer.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Tick",
+          "description": "When the layer starts on the output timeline."
+        },
+        "blend": {
+          "$ref": "#/$defs/Blend",
+          "default": "normal",
+          "description": "How it combines with what is below."
+        },
+        "content": {
+          "$ref": "#/$defs/LayerContent",
+          "description": "What it shows."
+        },
+        "dur": {
+          "$ref": "#/$defs/Tick",
+          "description": "How long it lasts; positive."
+        },
+        "fx": {
+          "description": "Effects, applied in order to the layer's own picture before it is placed.",
+          "items": {
+            "$ref": "#/$defs/Effect"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "Id, unique in the spec; the editor uses its clip id so a render maps back to the edit.",
+          "type": "string"
+        },
+        "mask": {
+          "description": "A `mask_sequence` asset whose alpha multiplies this layer.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "opacity": {
+          "$ref": "#/$defs/Animated2",
+          "default": 1.0,
+          "description": "Opacity, 0 to 1."
+        },
+        "transform": {
+          "$ref": "#/$defs/Transform",
+          "default": {
+            "position": [
+              0.0,
+              0.0
+            ],
+            "rotation": 0.0,
+            "scale": 1.0
+          },
+          "description": "Where it sits. Keyframe times are relative to the layer's start."
+        }
+      },
+      "required": [
+        "id",
+        "at",
+        "dur",
+        "content"
+      ],
+      "type": "object"
+    },
+    "LayerContent": {
+      "description": "What a layer shows.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Frames of a video or image asset.",
+          "properties": {
+            "asset": {
+              "description": "The asset id.",
+              "type": "string"
+            },
+            "fit": {
+              "$ref": "#/$defs/Fit",
+              "default": "contain",
+              "description": "How the picture is fitted to the frame before the transform applies."
+            },
+            "time": {
+              "$ref": "#/$defs/TimeMap",
+              "default": {
+                "source_in": 0,
+                "speed": 1.0
+              },
+              "description": "Which source instant each output instant shows."
+            },
+            "type": {
+              "const": "media",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "asset"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A flat colour filling the frame.",
+          "properties": {
+            "color": {
+              "$ref": "#/$defs/Color",
+              "description": "The colour."
+            },
+            "type": {
+              "const": "solid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "color"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Set text (feature `text/1`).",
+          "properties": {
+            "color": {
+              "$ref": "#/$defs/Color",
+              "description": "Fill colour."
+            },
+            "font": {
+              "description": "A `font` asset; absent means the renderer's bundled default face.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "size": {
+              "description": "Size of the em in output pixels.",
+              "format": "float",
+              "type": "number"
+            },
+            "text": {
+              "description": "The words; `\\n` breaks a line.",
+              "type": "string"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text",
+            "size",
+            "color"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Output": {
+      "additionalProperties": false,
+      "description": "Output settings.",
+      "properties": {
+        "audio": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AudioEncoding"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How to encode the sound; absent for a silent output."
+        },
+        "background": {
+          "$ref": "#/$defs/Color",
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "description": "Colour under every layer (straight sRGB, 0 to 1)."
+        },
+        "duration": {
+          "$ref": "#/$defs/Tick",
+          "description": "Length of the output."
+        },
+        "fps": {
+          "$ref": "#/$defs/FrameRate",
+          "description": "Frame rate."
+        },
+        "height": {
+          "description": "Height in pixels; even, at most 8192.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "video": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VideoEncoding"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How to encode the picture; absent when only frames are wanted."
+        },
+        "width": {
+          "description": "Width in pixels; even, at most 8192.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height",
+        "fps",
+        "duration"
+      ],
+      "type": "object"
+    },
+    "Probe": {
+      "additionalProperties": false,
+      "description": "Measured properties of an asset.",
+      "properties": {
+        "duration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Tick"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Length, for time-based media."
+        },
+        "height": {
+          "description": "Picture height in pixels.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "width": {
+          "description": "Picture width in pixels.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Tick": {
+      "description": "A position or a duration in ticks.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "TimeMap": {
+      "additionalProperties": false,
+      "description": "Source time for a media layer: `source = source_in + (t - at) * speed`.",
+      "properties": {
+        "source_in": {
+          "$ref": "#/$defs/Tick",
+          "default": 0,
+          "description": "Source instant shown at the layer's start."
+        },
+        "speed": {
+          "default": 1.0,
+          "description": "Playback speed; positive. Speed curves arrive with a later feature.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "Transform": {
+      "additionalProperties": false,
+      "description": "A layer's placement, about the frame's centre.",
+      "properties": {
+        "position": {
+          "$ref": "#/$defs/Animated",
+          "default": [
+            0.0,
+            0.0
+          ],
+          "description": "Offset of the layer's centre from the frame's centre, as fractions of the frame (x right,\ny down)."
+        },
+        "rotation": {
+          "$ref": "#/$defs/Animated2",
+          "default": 0.0,
+          "description": "Clockwise rotation in degrees."
+        },
+        "scale": {
+          "$ref": "#/$defs/Animated2",
+          "default": 1.0,
+          "description": "Uniform scale; 1 is the fitted size."
+        }
+      },
+      "type": "object"
+    },
+    "VideoCodec": {
+      "description": "Video codecs.",
+      "oneOf": [
+        {
+          "const": "h264",
+          "description": "H.264 / AVC.",
+          "type": "string"
+        },
+        {
+          "const": "hevc",
+          "description": "H.265 / HEVC.",
+          "type": "string"
+        },
+        {
+          "const": "av1",
+          "description": "AV1.",
+          "type": "string"
+        }
+      ]
+    },
+    "VideoEncoding": {
+      "additionalProperties": false,
+      "description": "Video encoding settings.",
+      "properties": {
+        "bitrate_kbps": {
+          "description": "Target bitrate in kbit/s, when no `crf` is given.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "codec": {
+          "$ref": "#/$defs/VideoCodec",
+          "description": "Codec."
+        },
+        "crf": {
+          "description": "Constant quality (lower is better), when the encoder supports it.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "codec"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A finished edit, ready to render.",
+  "properties": {
+    "assets": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Asset"
+      },
+      "default": {},
+      "description": "Every file the edit reads, by id. Ids are local to this spec.",
+      "type": "object"
+    },
+    "audio": {
+      "default": [],
+      "description": "Sound, mixed together.",
+      "items": {
+        "$ref": "#/$defs/AudioClip"
+      },
+      "type": "array"
+    },
+    "engine": {
+      "$ref": "#/$defs/EngineRequirements",
+      "default": {},
+      "description": "What the renderer must support."
+    },
+    "layers": {
+      "default": [],
+      "description": "Picture layers, bottom first.",
+      "items": {
+        "$ref": "#/$defs/Layer"
+      },
+      "type": "array"
+    },
+    "output": {
+      "$ref": "#/$defs/Output",
+      "description": "The picture and sound to produce."
+    },
+    "spec": {
+      "description": "Format version; must be [`SPEC_VERSION`].",
+      "type": "string"
+    }
+  },
+  "required": [
+    "spec",
+    "output"
+  ],
+  "title": "RenderSpec",
+  "type": "object"
+}

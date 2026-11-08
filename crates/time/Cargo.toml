@@ -1,0 +1,17 @@
+[package]
+name = "reelforge-time"
+description = "Exact integer time: ticks, frame rates and time ranges shared by every reelforge crate."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+schemars = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

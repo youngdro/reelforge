@@ -1,0 +1,17 @@
+[package]
+name = "reelforge-renderspec"
+description = "RenderSpec: the versioned, self-contained description of a finished edit that any reelforge renderer can draw."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+reelforge-time = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+thiserror = { workspace = true }
