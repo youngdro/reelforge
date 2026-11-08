@@ -158,3 +158,38 @@ fn importing_a_file_measures_it_and_clips_default_to_its_length() {
     assert_eq!(s.revision(), before);
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn titles_get_the_subtitle_look_and_can_be_restyled() {
+    let mut s = Session::default();
+    let text = s.project().tracks.iter().find(|t| t.kind == TrackKind::Text).unwrap().id.clone();
+    let c = s.execute("clip.add", &json!({"track": text, "text": "第一句字幕", "size": 60})).unwrap();
+    let id = c["clip"].as_str().unwrap().to_string();
+    let style = |s: &Session| match &s.project().clip(&id).unwrap().1.content {
+        ClipContent::Text { style, .. } => style.clone(),
+        _ => unreachable!(),
+    };
+    assert_eq!(style(&s), reelforge_model::TitleStyle::subtitle());
+
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let content = &spec["layers"][0]["content"];
+    assert_eq!(content["weight"], 700);
+    assert_eq!(content["width"].as_f64().unwrap(), 0.9 * 1080.0);
+    assert!((content["stroke"]["width"].as_f64().unwrap() - 4.8).abs() < 1e-4, "0.08 em of 60 px");
+
+    s.execute(
+        "clip.set",
+        &json!({"clip": id, "weight": 400, "outline": null, "background": [0, 0, 0, 0.6], "align": "left"}),
+    )
+    .unwrap();
+    let st = style(&s);
+    assert_eq!((st.weight, st.outline, st.background), (400, None, Some([0.0, 0.0, 0.0, 0.6])));
+    assert_eq!(st.align, reelforge_model::TitleAlign::Left);
+
+    let before = s.revision();
+    assert!(s.execute("clip.set", &json!({"clip": id, "weight": 1000})).is_err());
+    assert!(s.execute("clip.set", &json!({"clip": id, "wrap": 2})).is_err());
+    let colour = add_red(&mut s, 0.0, 1.0);
+    assert!(s.execute("clip.set", &json!({"clip": colour, "weight": 700})).is_err());
+    assert_eq!(s.revision(), before + 1, "only the colour clip was added");
+}

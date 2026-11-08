@@ -16,6 +16,13 @@ pub trait MediaSource {
     /// The picture of `asset` at source time `at`. `Ok(None)` means "not available yet" (offline,
     /// still loading, or a kind this source does not decode).
     fn picture(&self, asset_id: &str, asset: &Asset, at: Tick) -> Result<Option<Arc<Image>>, String>;
+
+    /// The bytes of a `font` asset (TrueType or OpenType). `Ok(None)` means not available; the
+    /// default implementation has no fonts.
+    fn font(&self, asset_id: &str, asset: &Asset) -> Result<Option<Arc<[u8]>>, String> {
+        let _ = (asset_id, asset);
+        Ok(None)
+    }
 }
 
 /// A source with nothing in it: every picture is offline.

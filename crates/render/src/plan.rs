@@ -55,7 +55,7 @@ pub enum PlannedSource {
     },
     /// A colour filling the frame, premultiplied linear.
     Solid([f32; 4]),
-    /// Text (not drawn by this build yet: a placeholder in drafts).
+    /// Text, laid out and drawn by the compositor.
     Text(TextContent),
 }
 

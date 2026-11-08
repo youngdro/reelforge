@@ -1,7 +1,9 @@
 //! The command registry. Every action in reelforge is one of these.
 
 use reelforge_compile::{CompileOptions, compile};
-use reelforge_model::{Clip, ClipContent, ClipEffect, ClipTransform, Media, MediaKind, Project, Track, TrackKind};
+use reelforge_model::{
+    Clip, ClipContent, ClipEffect, ClipTransform, Media, MediaKind, Outline, Project, TitleStyle, Track, TrackKind,
+};
 use reelforge_renderspec::AssetKind;
 use reelforge_time::{FrameRate, Tick};
 use serde_json::{Value, json};
@@ -88,8 +90,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.add",
         label: "Add Clip",
-        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "text"?: string, "size"?: px, "color"?: [r,g,b,a]}"#,
-        doc: "Places media, text or a colour on a track; starts at the track's end unless `start` is given.",
+        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null}"#,
+        doc: "Places media, text or a colour on a track; starts at the track's end unless `start` is given. Titles default to bold white with a black outline, wrapping at 90 % of the canvas.",
         edits: true,
         enabled: always,
         run: clip_add,
@@ -142,7 +144,7 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.set",
         label: "Clip Properties",
-        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "text"?, "size"?, "color"?}"#,
+        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null}"#,
         doc: "Sets a clip's placement, opacity, volume or title.",
         edits: true,
         enabled: always,
@@ -395,7 +397,15 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
                 let natural = item.duration.map(|d| d - source_in).filter(|d| *d > Tick::ZERO);
                 (ClipContent::Media { media: m.clone(), source_in, speed: 1.0 }, natural)
             }
-            (None, Some(t)) => (ClipContent::Text { text: t.clone(), size, color: color.unwrap_or([1.0; 4]) }, None),
+            (None, Some(t)) => (
+                ClipContent::Text {
+                    text: t.clone(),
+                    size,
+                    color: color.unwrap_or([1.0; 4]),
+                    style: title_style(&p, TitleStyle::subtitle())?,
+                },
+                None,
+            ),
             (None, None) => (
                 ClipContent::Solid {
                     color: color.ok_or_else(|| EngineError::Params("give `media`, `text` or `color`".into()))?,
@@ -519,6 +529,41 @@ fn clip_set_speed(s: &mut Session, v: &Value) -> CmdResult {
     })
 }
 
+const STYLE_KEYS: [&str; 5] = ["weight", "align", "wrap", "outline", "background"];
+
+/// `base` with the title style parameters in `p` applied (`null` removes an outline or box).
+fn title_style(p: &P, base: TitleStyle) -> Result<TitleStyle, EngineError> {
+    let mut st = base;
+    if let Some(w) = p.opt_u32("weight")? {
+        st.weight = u16::try_from(w).map_err(|_| EngineError::Params("`weight` must be 100 to 900".into()))?;
+    }
+    if let Some(a) = p.opt_str("align")? {
+        st.align = serde_json::from_value(json!(a))
+            .map_err(|_| EngineError::Params("`align` must be left, center or right".into()))?;
+    }
+    if let Some(w) = p.opt_f64("wrap")? {
+        st.wrap = w as f32;
+    }
+    match p.v.get("outline") {
+        Some(Value::Null) => st.outline = None,
+        Some(v) => {
+            let o = P::new(v, p.fps);
+            let current = st.outline.clone().unwrap_or(Outline { color: [0.0, 0.0, 0.0, 1.0], width: 0.08 });
+            st.outline = Some(Outline {
+                color: o.opt_color("color")?.unwrap_or(current.color),
+                width: o.opt_f64("width")?.map_or(current.width, |w| w as f32),
+            });
+        }
+        None => {}
+    }
+    match p.v.get("background") {
+        Some(Value::Null) => st.background = None,
+        Some(_) => st.background = p.opt_color("background")?,
+        None => {}
+    }
+    Ok(st)
+}
+
 fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
     let p = P::new(v, fps(s));
     let id = p.str("clip")?.to_string();
@@ -526,6 +571,7 @@ fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
     let (x, y, scale, rotation, opacity, volume) =
         (f("x")?, f("y")?, f("scale")?, f("rotation")?, f("opacity")?, f("volumeDb")?);
     let (text, size, color) = (p.opt_str("text")?.map(str::to_string), f("size")?, p.opt_color("color")?);
+    let styled = STYLE_KEYS.iter().any(|k| p.v.get(k).is_some());
     if opacity.is_some_and(|o| !(0.0..=1.0).contains(&o)) {
         return Err(EngineError::Params("`opacity` must be between 0 and 1".into()));
     }
@@ -550,8 +596,12 @@ fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
         if let Some(v) = volume {
             clip.volume_db = v;
         }
+        if styled && !matches!(clip.content, ClipContent::Text { .. }) {
+            return Err(EngineError::Params("title style applies to text clips".into()));
+        }
         match &mut clip.content {
-            ClipContent::Text { text: tt, size: ts, color: tc } => {
+            ClipContent::Text { text: tt, size: ts, color: tc, style } => {
+                *style = title_style(&p, style.clone())?;
                 if let Some(v) = text {
                     *tt = v;
                 }

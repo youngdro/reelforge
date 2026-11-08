@@ -8,8 +8,8 @@ edit (RenderSpec), so a render can happen in the editor or on a separate render 
 Status: early. Video, still images and sound import (drop files on the editor, or `media.import`) and
 decode in pure Rust on the desktop and in the browser; solid colours, transforms, opacity, two colour
 effects, undo and a CPU preview work; projects export to H.264 + AAC MP4 from the desktop editor and the
-CLI. Titles are placeholders until text rendering lands; the wgpu compositor and audio playback come
-next. See [ARCHITECTURE.md](ARCHITECTURE.md).
+CLI. Titles render with shaping, wrapping, outline and box, Chinese included (a bundled Noto Sans SC
+subset covering GB 2312); the wgpu compositor and audio playback come next. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Video and audio codecs and containers are FilmCraft's clean-room, pure-Rust crates
 (`filmcraft-codecs`, `filmcraft-h264enc`, `filmcraft-aac`, `filmcraft-isobmff`; MIT OR Apache-2.0):
@@ -50,11 +50,12 @@ cargo run -q -p reelforge-cli -- compile demo.reel.json -o demo.renderspec.json
 cargo run -q -p reelforge-cli -- frame demo.renderspec.json --seconds 1.5 --out frame.png --draft
 ```
 
-With your own footage (export refuses titles until text rendering lands):
+With your own footage and a subtitle:
 
 ```sh
 cargo run -q -p reelforge-cli -- new cut.reel.json
 cargo run -q -p reelforge-cli -- exec cut.reel.json media.import '{"path": "/path/to/clip.mp4"}' --save   # → m4
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t1", "media": "m4", "sourceIn": {"seconds": 1}, "duration": {"seconds": 4}}' --save
+cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t2", "text": "第一句字幕", "size": 72, "start": {"seconds": 0.5}, "duration": {"seconds": 2}}' --save
 cargo run -q -r -p reelforge-cli -- export cut.reel.json -o cut.mp4      # a project, or a RenderSpec
 ```

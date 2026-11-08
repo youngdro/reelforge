@@ -8,10 +8,11 @@
 
 use std::collections::BTreeMap;
 
-use reelforge_model::{ClipContent, MediaKind, Project, TrackKind};
+use reelforge_model::{ClipContent, MediaKind, Project, TitleAlign, TrackKind};
 use reelforge_renderspec::{
     Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Blend, Color, Effect, Fit, Layer, LayerContent,
-    Output, Probe, RenderSpec, TextContent, TimeMap, Transform, VideoCodec, VideoEncoding, validate,
+    Output, Probe, RenderSpec, TextAlign, TextBackground, TextContent, TextStroke, TimeMap, Transform, VideoCodec,
+    VideoEncoding, validate,
 };
 use reelforge_time::Tick;
 use thiserror::Error;
@@ -106,11 +107,21 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                         fit: Fit::Contain,
                     },
                     ClipContent::Solid { color } => LayerContent::Solid { color: Color(*color) },
-                    ClipContent::Text { text, size, color } => LayerContent::Text(TextContent {
-                        text: text.clone(),
-                        font: None,
-                        size: *size,
-                        color: Color(*color),
+                    ClipContent::Text { text, size, color, style } => LayerContent::Text(TextContent {
+                        weight: style.weight,
+                        align: match style.align {
+                            TitleAlign::Left => TextAlign::Left,
+                            TitleAlign::Center => TextAlign::Center,
+                            TitleAlign::Right => TextAlign::Right,
+                        },
+                        width: (style.wrap > 0.0).then_some(style.wrap * project.canvas.width as f32),
+                        stroke: style
+                            .outline
+                            .as_ref()
+                            .filter(|o| o.width > 0.0)
+                            .map(|o| TextStroke { color: Color(o.color), width: o.width * size }),
+                        background: style.background.map(|c| TextBackground { color: Color(c), padding: 0.25 }),
+                        ..TextContent::new(text.clone(), *size, Color(*color))
                     }),
                 };
                 spec.layers.push(Layer {
@@ -162,7 +173,7 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reelforge_model::{Clip, ClipTransform, Media};
+    use reelforge_model::{Clip, ClipTransform, Media, TitleStyle};
 
     fn clip(id: &str, start: Tick, duration: Tick, content: ClipContent) -> Clip {
         Clip {
@@ -202,7 +213,7 @@ mod tests {
             "c21",
             Tick::ZERO,
             Tick::SECOND,
-            ClipContent::Text { text: "Hi".into(), size: 80.0, color: [1.0; 4] },
+            ClipContent::Text { text: "Hi".into(), size: 80.0, color: [1.0; 4], style: TitleStyle::subtitle() },
         ));
         let spec = compile(&p, &CompileOptions::default()).unwrap();
         assert_eq!(spec.layers.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(), ["c20", "c21"]);

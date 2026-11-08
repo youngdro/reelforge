@@ -186,7 +186,74 @@ pub enum ClipContent {
         size: f32,
         /// Straight sRGB colour.
         color: [f32; 4],
+        /// Weight, outline, box, wrapping.
+        #[serde(default)]
+        style: TitleStyle,
     },
+}
+
+/// How a title looks beyond its words, size and colour.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TitleStyle {
+    /// 100 (thin) to 900 (black); 700 is bold.
+    #[serde(default = "bold")]
+    pub weight: u16,
+    /// Line alignment.
+    #[serde(default)]
+    pub align: TitleAlign,
+    /// Lines wrap at this fraction of the canvas width; 0 wraps only at line breaks.
+    #[serde(default = "wrap")]
+    pub wrap: f32,
+    /// An outline around the glyphs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outline: Option<Outline>,
+    /// A box behind the title, straight sRGB colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<[f32; 4]>,
+}
+
+fn bold() -> u16 {
+    700
+}
+
+fn wrap() -> f32 {
+    0.9
+}
+
+impl Default for TitleStyle {
+    /// Bold, centred, wrapping at 90 % of the canvas, no outline or box.
+    fn default() -> TitleStyle {
+        TitleStyle { weight: bold(), align: TitleAlign::Center, wrap: wrap(), outline: None, background: None }
+    }
+}
+
+impl TitleStyle {
+    /// The style new titles get: bold white-on-anything, with a black outline, as subtitles are.
+    pub fn subtitle() -> TitleStyle {
+        TitleStyle { outline: Some(Outline { color: [0.0, 0.0, 0.0, 1.0], width: 0.08 }), ..TitleStyle::default() }
+    }
+}
+
+/// Line alignment of a title.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum TitleAlign {
+    /// Left edges line up.
+    Left,
+    /// Centred.
+    #[default]
+    Center,
+    /// Right edges line up.
+    Right,
+}
+
+/// An outline around a title's glyphs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Outline {
+    /// Straight sRGB colour.
+    pub color: [f32; 4],
+    /// Width in ems (0.08 is 8 % of the size).
+    pub width: f32,
 }
 
 /// A clip's placement: offset from the canvas centre as fractions of the canvas, scale and
@@ -243,6 +310,9 @@ pub enum ModelError {
     /// A speed outside (0, 100].
     #[error("clip {0:?} has an invalid speed")]
     BadSpeed(String),
+    /// A title style value out of range.
+    #[error("title {0:?}: {1}")]
+    BadStyle(String, &'static str),
 }
 
 impl Default for Project {
@@ -338,7 +408,22 @@ impl Project {
                         }
                     }
                     ClipContent::Solid { .. } => track.kind == TrackKind::Video,
-                    ClipContent::Text { .. } => track.kind == TrackKind::Text,
+                    ClipContent::Text { size, style, .. } => {
+                        let bad = |why| Err(ModelError::BadStyle(clip.id.clone(), why));
+                        if !(*size > 0.0 && size.is_finite()) {
+                            return bad("size must be positive");
+                        }
+                        if !(100..=900).contains(&style.weight) {
+                            return bad("weight must be 100 to 900");
+                        }
+                        if !(0.0..=1.0).contains(&style.wrap) {
+                            return bad("wrap must be 0 to 1");
+                        }
+                        if style.outline.as_ref().is_some_and(|o| !(0.0..=0.5).contains(&o.width)) {
+                            return bad("outline width must be 0 to 0.5 em");
+                        }
+                        track.kind == TrackKind::Text
+                    }
                 };
                 if !fits {
                     return Err(ModelError::WrongTrack(clip.id.clone(), track.kind, track.id.clone()));

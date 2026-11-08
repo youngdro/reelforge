@@ -104,6 +104,8 @@ pub struct Footage {
     /// (a held frame, a slow clip, a paused playhead) does not convert it again. Holding the
     /// decoded frame keeps the pointer comparison sound.
     last: Mutex<HashMap<String, Converted>>,
+    /// Font files by asset key.
+    fonts: Mutex<HashMap<String, Arc<[u8]>>>,
 }
 
 fn key(asset: &Asset) -> String {
@@ -130,10 +132,16 @@ impl Footage {
         Ok(probe)
     }
 
+    /// Hands over a font file's bytes (TrueType or OpenType) for `font` assets with this hash.
+    pub fn insert_font(&self, sha256: &str, bytes: Vec<u8>) {
+        self.fonts.lock().expect("fonts lock").insert(sha256.to_string(), bytes.into());
+    }
+
     /// Forgets everything decoded so far (files changed on disk).
     pub fn clear(&self) {
         self.sources.lock().expect("sources lock").clear();
         self.last.lock().expect("frame lock").clear();
+        self.fonts.lock().expect("fonts lock").clear();
     }
 
     fn source(&self, asset: &Asset) -> Option<SharedSource> {
@@ -179,6 +187,29 @@ impl Footage {
 }
 
 impl MediaSource for Footage {
+    fn font(&self, _: &str, asset: &Asset) -> Result<Option<Arc<[u8]>>, String> {
+        if asset.kind != AssetKind::Font {
+            return Ok(None);
+        }
+        let k = key(asset);
+        if let Some(b) = self.fonts.lock().expect("fonts lock").get(&k) {
+            return Ok(Some(b.clone()));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if asset.uri.contains("://") && !asset.uri.starts_with("file://") {
+                return Ok(None);
+            }
+            let path = asset.uri.strip_prefix("file://").unwrap_or(&asset.uri);
+            let Ok(bytes) = std::fs::read(path) else { return Ok(None) };
+            let bytes: Arc<[u8]> = bytes.into();
+            self.fonts.lock().expect("fonts lock").insert(k, bytes.clone());
+            Ok(Some(bytes))
+        }
+        #[cfg(target_arch = "wasm32")]
+        Ok(None)
+    }
+
     fn picture(&self, asset_id: &str, asset: &Asset, at: Tick) -> Result<Option<Arc<Image>>, String> {
         match asset.kind {
             AssetKind::Image => self.stills.picture(asset_id, asset, at),

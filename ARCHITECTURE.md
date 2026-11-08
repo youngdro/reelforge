@@ -69,7 +69,11 @@ In rough priority order for short videos:
    (`filmcraft_codecs::register_video_decoder`), decoding at preview size, export in the browser
    (WebCodecs encoder, or the pure-Rust one in a worker), pitch-preserving speed changes.
    Pure-Rust decoding and MP4 export (`reelforge-media`) are in place.
-2. Text rendering (`text/1`) with bundled fonts including CJK.
+2. Text, next steps: per-line subtitle boxes, shadows, animated titles (typewriter, pop-in),
+   importing font files in the editor (specs already take `font` assets), and a smaller web build
+   (the two bundled CJK faces add 5 MB to the wasm). `text/1` itself is in place: FilmCraft's
+   pure-Rust text engine (harfrust shaping, UAX #14 line breaking, its own rasteriser) with a
+   bundled Noto Sans SC subset; system fonts are never consulted, so renders match everywhere.
 3. The wgpu compositor, sharing eframe's device so preview frames never leave the GPU, tested
    against the CPU reference.
 4. Audio mixing and playback.

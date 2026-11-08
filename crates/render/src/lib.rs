@@ -22,6 +22,10 @@ pub mod cpu;
 pub mod image;
 pub mod media;
 pub mod plan;
+pub mod text;
+
+#[cfg(test)]
+mod text_tests;
 
 use reelforge_renderspec::RenderSpec;
 use reelforge_time::Tick;
@@ -32,7 +36,7 @@ pub use media::{MediaSource, NoMedia, StillImages};
 pub use plan::{FramePlan, PlannedLayer, PlannedSource, plan_frame};
 
 /// Feature ids this renderer implements; see `RenderSpec::required_features`.
-pub const SUPPORTED_FEATURES: &[&str] = &["color.brightness@1", "color.saturation@1"];
+pub const SUPPORTED_FEATURES: &[&str] = &["color.brightness@1", "color.saturation@1", "text/1"];
 
 /// Why a frame could not be rendered.
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -164,11 +168,26 @@ mod tests {
     #[test]
     fn final_renders_refuse_what_drafts_mark() {
         let mut s = spec();
-        s.layers[0].content =
-            LayerContent::Text(TextContent { text: "Hi".into(), font: None, size: 8.0, color: Color([1.0; 4]) });
+        s.layers[0].fx.push(Effect { id: "blur.gaussian@1".into(), params: Default::default() });
         assert!(matches!(
             render_frame(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Final),
             Err(RenderError::Unsupported(_))
+        ));
+        let mut s = spec();
+        s.assets.insert(
+            "v".into(),
+            Asset {
+                kind: AssetKind::Video,
+                sha256: "0".repeat(64),
+                uri: "file:///gone.mp4".into(),
+                of: None,
+                probe: None,
+            },
+        );
+        s.layers[0].content = LayerContent::Media { asset: "v".into(), time: TimeMap::default(), fit: Fit::Contain };
+        assert!(matches!(
+            render_frame(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Final),
+            Err(RenderError::Missing { .. })
         ));
         let (_, report) = render_frame(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Draft).unwrap();
         assert_eq!(report.placeholders.len(), 1);

@@ -62,7 +62,17 @@ struct Inspector {
     scale: f32,
     rotation: f32,
     opacity: f32,
-    text: Option<String>,
+    title: Option<Title>,
+}
+
+/// A title's own values in the inspector.
+#[derive(Clone, PartialEq)]
+struct Title {
+    text: String,
+    size: f32,
+    bold: bool,
+    outline: bool,
+    boxed: bool,
 }
 
 impl EditorApp {
@@ -96,6 +106,7 @@ impl EditorApp {
             {"id": "clip.add", "params": {"track": video, "color": [0.12, 0.10, 0.30], "duration": {"seconds": 6}}},
             {"id": "clip.add", "params": {"track": video, "color": [0.85, 0.35, 0.20], "start": {"seconds": 6}, "duration": {"seconds": 4}}},
             {"id": "clip.add", "params": {"track": text, "text": "reelforge", "size": 140, "start": {"seconds": 1}, "duration": {"seconds": 4}}},
+            {"id": "clip.add", "params": {"track": text, "text": "全 Rust 短视频剪辑", "size": 72, "start": {"seconds": 5}, "duration": {"seconds": 4}}},
         ]});
         s.execute("edit.batch", &steps).expect("the demo project is valid");
         EditorApp::new(s)
@@ -240,7 +251,7 @@ impl EditorApp {
             {
                 let _ = self.execute(
                     "clip.add",
-                    json!({"track": t, "text": "Title", "start": self.playhead, "duration": {"seconds": 3}}),
+                    json!({"track": t, "text": "标题 Title", "start": self.playhead, "duration": {"seconds": 3}}),
                 );
             }
             let sel = self.selected.clone();
@@ -290,8 +301,14 @@ impl EditorApp {
             scale: clip.transform.scale,
             rotation: clip.transform.rotation,
             opacity: clip.opacity,
-            text: match &clip.content {
-                ClipContent::Text { text, .. } => Some(text.clone()),
+            title: match &clip.content {
+                ClipContent::Text { text, size, style, .. } => Some(Title {
+                    text: text.clone(),
+                    size: *size,
+                    bold: style.weight >= 600,
+                    outline: style.outline.is_some(),
+                    boxed: style.background.is_some(),
+                }),
                 _ => None,
             },
         };
@@ -302,22 +319,30 @@ impl EditorApp {
         let edit = self.inspector.as_mut().expect("set above");
         let mut commit = false;
         egui::Grid::new("inspector").num_columns(2).show(ui, |ui| {
-            let mut row =
-                |ui: &mut egui::Ui, name: &str, v: &mut f32, speed: f64, range: std::ops::RangeInclusive<f32>| {
-                    ui.label(name);
-                    let r = ui.add(egui::DragValue::new(v).speed(speed).range(range));
-                    commit |= r.drag_stopped() || (r.changed() && !r.dragged());
-                    ui.end_row();
-                };
-            row(ui, "X", &mut edit.x, 0.005, -2.0..=2.0);
-            row(ui, "Y", &mut edit.y, 0.005, -2.0..=2.0);
-            row(ui, "Scale", &mut edit.scale, 0.01, 0.0..=10.0);
-            row(ui, "Rotation", &mut edit.rotation, 0.5, -360.0..=360.0);
-            row(ui, "Opacity", &mut edit.opacity, 0.01, 0.0..=1.0);
-            if let Some(text) = &mut edit.text {
+            // a value is committed when its drag ends or it is typed in
+            let row = |ui: &mut egui::Ui, name: &str, v: &mut f32, speed: f64, range: std::ops::RangeInclusive<f32>| {
+                ui.label(name);
+                let r = ui.add(egui::DragValue::new(v).speed(speed).range(range));
+                ui.end_row();
+                r.drag_stopped() || (r.changed() && !r.dragged())
+            };
+            commit |= row(ui, "X", &mut edit.x, 0.005, -2.0..=2.0);
+            commit |= row(ui, "Y", &mut edit.y, 0.005, -2.0..=2.0);
+            commit |= row(ui, "Scale", &mut edit.scale, 0.01, 0.0..=10.0);
+            commit |= row(ui, "Rotation", &mut edit.rotation, 0.5, -360.0..=360.0);
+            commit |= row(ui, "Opacity", &mut edit.opacity, 0.01, 0.0..=1.0);
+            if let Some(t) = &mut edit.title {
                 ui.label("Text");
-                let r = ui.text_edit_singleline(text);
+                let r = ui.add(egui::TextEdit::multiline(&mut t.text).desired_rows(2).desired_width(150.0));
                 commit |= r.lost_focus();
+                ui.end_row();
+                commit |= row(ui, "Size", &mut t.size, 1.0, 8.0..=600.0);
+                ui.label("Style");
+                ui.horizontal(|ui| {
+                    commit |= ui.checkbox(&mut t.bold, "Bold").changed();
+                    commit |= ui.checkbox(&mut t.outline, "Outline").changed();
+                    commit |= ui.checkbox(&mut t.boxed, "Box").changed();
+                });
                 ui.end_row();
             }
         });
@@ -325,8 +350,17 @@ impl EditorApp {
             let e = self.inspector.clone().expect("set");
             let mut params =
                 json!({"clip": id, "x": e.x, "y": e.y, "scale": e.scale, "rotation": e.rotation, "opacity": e.opacity});
-            if let Some(t) = e.text {
-                params["text"] = json!(t);
+            if let Some(t) = e.title {
+                let was = current.title.as_ref();
+                params["text"] = json!(t.text);
+                params["size"] = json!(t.size);
+                params["weight"] = json!(if t.bold { 700 } else { 400 });
+                if was.is_some_and(|w| w.outline != t.outline) {
+                    params["outline"] = if t.outline { json!({}) } else { Value::Null };
+                }
+                if was.is_some_and(|w| w.boxed != t.boxed) {
+                    params["background"] = if t.boxed { json!([0.0, 0.0, 0.0, 0.55]) } else { Value::Null };
+                }
             }
             if self.execute("clip.set", params).is_err() {
                 self.inspector = Some(current);

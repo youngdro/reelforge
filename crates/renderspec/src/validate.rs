@@ -84,6 +84,26 @@ pub fn validate(spec: &RenderSpec) -> Result<(), ValidationError> {
                     return Err(bad(format!("{path}.content.size"), "must be positive"));
                 }
                 color_ok(&format!("{path}.content.color"), text.color.0)?;
+                if !(100..=900).contains(&text.weight) {
+                    return Err(bad(format!("{path}.content.weight"), "must be 100 to 900"));
+                }
+                if let Some(w) = text.width
+                    && !(w > 0.0 && w.is_finite())
+                {
+                    return Err(bad(format!("{path}.content.width"), "must be positive"));
+                }
+                if let Some(st) = &text.stroke {
+                    color_ok(&format!("{path}.content.stroke.color"), st.color.0)?;
+                    if !(st.width >= 0.0 && st.width <= text.size) {
+                        return Err(bad(format!("{path}.content.stroke.width"), "must be 0 to the text size"));
+                    }
+                }
+                if let Some(bg) = &text.background {
+                    color_ok(&format!("{path}.content.background.color"), bg.color.0)?;
+                    if !(bg.padding >= 0.0 && bg.padding <= 4.0) {
+                        return Err(bad(format!("{path}.content.background.padding"), "must be 0 to 4 ems"));
+                    }
+                }
                 if let Some(font) = &text.font {
                     asset_of_kind(spec, &format!("{path}.content.font"), font, &[AssetKind::Font])?;
                 }
@@ -229,13 +249,25 @@ mod tests {
     #[test]
     fn text_and_media_layers_round_trip() {
         let mut s = base();
-        s.layers[0].content = LayerContent::Text(TextContent {
-            text: "Hello".into(),
-            font: None,
-            size: 96.0,
-            color: Color([1.0, 1.0, 1.0, 1.0]),
-        });
+        let mut text = TextContent::new("你好 Hello", 96.0, Color([1.0, 1.0, 1.0, 1.0]));
+        text.weight = 700;
+        text.width = Some(900.0);
+        text.stroke = Some(TextStroke { color: Color([0.0, 0.0, 0.0, 1.0]), width: 6.0 });
+        text.background = Some(TextBackground { color: Color([0.0, 0.0, 0.0, 0.5]), padding: 0.25 });
+        s.layers[0].content = LayerContent::Text(text.clone());
         assert_eq!(RenderSpec::from_json(&s.to_json()).unwrap(), s);
+        // the optional styling has defaults, so a minimal text layer still reads
+        let mut v = serde_json::to_value(&s).unwrap();
+        let c = &mut v["layers"][0]["content"];
+        for k in ["weight", "align", "width", "stroke", "background"] {
+            c.as_object_mut().unwrap().remove(k);
+        }
+        let back = RenderSpec::from_json(&v.to_string()).unwrap();
+        assert_eq!(back.layers[0].content, LayerContent::Text(TextContent::new("你好 Hello", 96.0, text.color)));
+        text.weight = 950;
+        s.layers[0].content = LayerContent::Text(text);
+        assert!(validate(&s).is_err());
+        s.layers[0].content = LayerContent::Text(TextContent::new("ok", 96.0, Color([1.0; 4])));
         assert!(s.required_features().contains("text/1"));
     }
 
