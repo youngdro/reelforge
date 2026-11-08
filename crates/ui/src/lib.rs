@@ -22,6 +22,7 @@ mod audio;
 mod export_job;
 pub mod i18n;
 pub mod remote;
+mod stage;
 mod strips;
 mod theme;
 mod timeline;
@@ -65,12 +66,18 @@ pub struct EditorApp {
     selected: Option<String>,
     status: String,
     preview: Option<egui::TextureHandle>,
-    preview_key: Option<(u64, i64, u64)>,
+    preview_key: Option<(u64, i64, u64, Option<[u32; 4]>)>,
+    /// Where the visible layers land in the preview's frame, bottom first.
+    outlines: Vec<(String, reelforge_render::Outline)>,
+    /// A drag on the preview in progress.
+    gesture: Option<stage::Gesture>,
     gpu: Option<GpuPreview>,
     /// Whether the bundled Chinese face has been given to egui.
     fonts: bool,
     timeline: timeline::TimelineView,
     inspector: Option<Inspector>,
+    /// The project revision the inspector's values were read at.
+    inspector_seen: u64,
     /// The server whose session this editor mirrors, when it joined one.
     remote: Option<remote::Remote>,
     /// The interface's language.
@@ -168,10 +175,13 @@ impl EditorApp {
             status: String::new(),
             preview: None,
             preview_key: None,
+            outlines: Vec::new(),
+            gesture: None,
             gpu: None,
             fonts: false,
             timeline: timeline::TimelineView::default(),
             inspector: None,
+            inspector_seen: 0,
             remote: None,
             lang: Lang::detect(),
             lang_chosen: false,
@@ -769,8 +779,11 @@ impl EditorApp {
                 _ => None,
             },
         };
-        if self.inspector.as_ref().is_none_or(|i| i.clip != id) {
+        // reloaded when the project changes (a drag in the preview, undo, another editor)
+        let revision = self.session.revision();
+        if self.inspector.as_ref().is_none_or(|i| i.clip != id) || self.inspector_seen != revision {
             self.inspector = Some(current.clone());
+            self.inspector_seen = revision;
         }
         let (glyph, kind) = match &clip.content {
             ClipContent::Media { media, .. } => match p.media.get(media).map(|m| m.kind) {
@@ -894,73 +907,106 @@ impl EditorApp {
     }
 
     fn preview(&mut self, ui: &mut egui::Ui) {
-        let p = self.project();
+        let mut p = self.project();
+        // a gesture in progress is drawn from a copy with the clip's new placement
+        if let Some(g) = &self.gesture
+            && let Some(clip) = Arc::make_mut(&mut p).clip_mut(&g.clip)
+        {
+            clip.transform = g.now;
+        }
         let frame = p.canvas.fps.frame_at(self.playhead);
-        let key = (self.session.revision(), frame, self.remote.as_ref().map_or(0, remote::Remote::media_epoch));
+        let moving = self.gesture.as_ref().map(|g| [g.now.x, g.now.y, g.now.scale, g.now.rotation].map(f32::to_bits));
+        let key = (self.session.revision(), frame, self.remote.as_ref().map_or(0, remote::Remote::media_epoch), moving);
         let changed = self.preview_key != Some(key);
         self.preview_key = Some(key);
         let long = p.canvas.width.max(p.canvas.height) as f32;
         let scale = (PREVIEW_LONG_SIDE / long).min(1.0);
+        let at = p.canvas.fps.snap(self.playhead);
+        // an empty timeline does not compile: the background is drawn alone
+        let spec = if changed { compile(&p, &CompileOptions { encode: false }).ok() } else { None };
+        if changed {
+            self.outlines =
+                spec.as_ref().map(|spec| reelforge_render::layer_outlines(spec, at, &*self.media)).unwrap_or_default();
+        }
         if changed && let Some(g) = &mut self.gpu {
-            // an empty timeline does not compile: the CPU path below draws the background
             g.texture = None;
-            if let Ok(spec) = compile(&p, &CompileOptions { encode: false }) {
-                match g.compositor.render(&spec, p.canvas.fps.snap(self.playhead), scale, &*self.media, Quality::Draft)
-                {
+            if let Some(spec) = &spec {
+                match g.compositor.render(spec, at, scale, &*self.media, Quality::Draft) {
                     Ok(_report) => g.show(),
                     Err(e) => self.status = fill(self.s().preview_failed, &[&e]),
                 }
             }
         }
-        if let Some((id, [w, h])) = self.gpu.as_ref().and_then(|g| g.texture) {
-            let avail = ui.available_size();
-            let (w, h) = (w as f32, h as f32);
-            let s = (avail.x / w).min(avail.y / h);
-            ui.centered_and_justified(|ui| {
-                ui.add(egui::Image::new((id, egui::vec2(w * s, h * s))));
-            });
-            return;
-        }
-        if changed || self.preview.is_none() {
-            let image = match compile(&p, &CompileOptions { encode: false }) {
-                Ok(spec) => {
-                    match render_frame(&spec, p.canvas.fps.snap(self.playhead), scale, &*self.media, Quality::Draft) {
+        let shown = if let Some((id, [w, h])) = self.gpu.as_ref().and_then(|g| g.texture) {
+            Some((id, [w as f32, h as f32]))
+        } else {
+            if self.gpu.is_none() && (changed || self.preview.is_none()) {
+                let image = match &spec {
+                    Some(spec) => match render_frame(spec, at, scale, &*self.media, Quality::Draft) {
                         Ok((img, _report)) => Some(img),
                         Err(e) => {
                             self.status = fill(self.s().preview_failed, &[&e]);
                             None
                         }
+                    },
+                    None => None,
+                };
+                let color = match image {
+                    Some(img) => egui::ColorImage::from_rgba_unmultiplied(
+                        [img.width as usize, img.height as usize],
+                        &img.to_srgba8(),
+                    ),
+                    None => {
+                        let s = PREVIEW_LONG_SIDE / long;
+                        let (w, h) = ((p.canvas.width as f32 * s) as usize, (p.canvas.height as f32 * s) as usize);
+                        let bg = p.canvas.background.map(|c| (c * 255.0) as u8);
+                        egui::ColorImage::new(
+                            [w.max(1), h.max(1)],
+                            vec![egui::Color32::from_rgb(bg[0], bg[1], bg[2]); w.max(1) * h.max(1)],
+                        )
                     }
+                };
+                match &mut self.preview {
+                    Some(t) => t.set(color, egui::TextureOptions::LINEAR),
+                    None => self.preview = Some(ui.ctx().load_texture("preview", color, egui::TextureOptions::LINEAR)),
                 }
-                Err(_) => None, // an empty timeline: show the background
-            };
-            let color = match image {
-                Some(img) => egui::ColorImage::from_rgba_unmultiplied(
-                    [img.width as usize, img.height as usize],
-                    &img.to_srgba8(),
-                ),
-                None => {
-                    let s = PREVIEW_LONG_SIDE / p.canvas.width.max(p.canvas.height) as f32;
-                    let (w, h) = ((p.canvas.width as f32 * s) as usize, (p.canvas.height as f32 * s) as usize);
-                    let bg = p.canvas.background.map(|c| (c * 255.0) as u8);
-                    egui::ColorImage::new(
-                        [w.max(1), h.max(1)],
-                        vec![egui::Color32::from_rgb(bg[0], bg[1], bg[2]); w.max(1) * h.max(1)],
-                    )
-                }
-            };
-            match &mut self.preview {
-                Some(t) => t.set(color, egui::TextureOptions::LINEAR),
-                None => self.preview = Some(ui.ctx().load_texture("preview", color, egui::TextureOptions::LINEAR)),
             }
+            self.preview.as_ref().map(|t| (t.id(), t.size().map(|v| v as f32)))
+        };
+        let Some((id, [w, h])) = shown else { return };
+        let area = ui.available_rect_before_wrap();
+        let s = (area.width() / w).min(area.height() / h);
+        let frame_rect = egui::Rect::from_center_size(area.center(), egui::vec2(w * s, h * s));
+        let response = ui.allocate_rect(area, egui::Sense::click_and_drag());
+        ui.painter().image(
+            id,
+            frame_rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+        if self.playing {
+            return;
         }
-        if let Some(tex) = &self.preview {
-            let avail = ui.available_size();
-            let [w, h] = tex.size().map(|v| v as f32);
-            let s = (avail.x / w).min(avail.y / h);
-            ui.centered_and_justified(|ui| {
-                ui.add(egui::Image::new((tex.id(), egui::vec2(w * s, h * s))));
-            });
+        let view = stage::View { frame: frame_rect, k: frame_rect.width() / p.canvas.width as f32 };
+        let committed = self.project();
+        let out = stage::interact(
+            ui,
+            &response,
+            view,
+            [p.canvas.width as f32, p.canvas.height as f32],
+            &self.outlines,
+            self.selected.as_deref(),
+            &mut self.gesture,
+            |id| committed.clip(id).map(|(_, c)| c.transform),
+        );
+        if let Some(sel) = out.select {
+            self.selected = sel;
+        }
+        if let Some((clip, t)) = out.commit {
+            let _ = self.execute(
+                "clip.set",
+                json!({"clip": clip, "x": t.x, "y": t.y, "scale": t.scale, "rotation": t.rotation}),
+            );
         }
     }
 }

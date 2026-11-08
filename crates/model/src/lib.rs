@@ -258,7 +258,7 @@ pub struct Outline {
 
 /// A clip's placement: offset from the canvas centre as fractions of the canvas, scale and
 /// clockwise rotation in degrees.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ClipTransform {
     /// Horizontal offset, fraction of the canvas width.
     pub x: f32,
