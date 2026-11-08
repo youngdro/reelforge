@@ -6,7 +6,7 @@ members = ["crates/*", "apps/*", "xtask"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.90"
+rust-version = "1.95"
 repository = "https://github.com/youngdro/reelforge"
 
 [workspace.dependencies]
@@ -16,6 +16,7 @@ reelforge-renderspec = { path = "crates/renderspec" }
 reelforge-model = { path = "crates/model" }
 reelforge-compile = { path = "crates/compile" }
 reelforge-render = { path = "crates/render" }
+reelforge-media = { path = "crates/media" }
 reelforge-engine = { path = "crates/engine" }
 reelforge-ui = { path = "crates/ui" }
 
@@ -29,6 +30,14 @@ log = "0.4"
 
 # media
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# FilmCraft's clean-room, pure-Rust codecs and containers (MIT OR Apache-2.0)
+filmcraft-media = "0.9"
+filmcraft-codecs = "0.9"
+filmcraft-time = "0.9"
+filmcraft-frame = "0.9"
+filmcraft-h264enc = "0.9"
+filmcraft-aac = "0.9"
+filmcraft-isobmff = "0.9"
 
 # cli
 clap = { version = "4", features = ["derive"] }

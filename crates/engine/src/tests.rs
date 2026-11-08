@@ -1,4 +1,4 @@
-use reelforge_model::ClipContent;
+use reelforge_model::{ClipContent, TrackKind};
 use reelforge_time::Tick;
 use serde_json::json;
 
@@ -120,4 +120,41 @@ fn errors_explain_themselves() {
     assert_eq!(s.execute("edit.undo", &json!({})), Err(EngineError::Disabled("nothing to undo".into())));
     let e = s.execute("clip.add", &json!({"track": "t1"})).unwrap_err();
     assert!(e.to_string().contains("`media`, `text` or `color`"));
+}
+
+#[test]
+fn importing_a_file_measures_it_and_clips_default_to_its_length() {
+    // half a second of 8 kHz mono silence, as a WAV
+    let n: u32 = 4000;
+    let mut wav = Vec::new();
+    for part in [&b"RIFF"[..], &(36 + n * 2).to_le_bytes(), b"WAVEfmt ", &16u32.to_le_bytes(), &1u16.to_le_bytes()] {
+        wav.extend_from_slice(part);
+    }
+    for part in [&1u16.to_le_bytes()[..], &8000u32.to_le_bytes(), &16000u32.to_le_bytes(), &2u16.to_le_bytes()] {
+        wav.extend_from_slice(part);
+    }
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&(n * 2).to_le_bytes());
+    wav.resize(wav.len() + n as usize * 2, 0);
+    let path = std::env::temp_dir().join(format!("reelforge-engine-{}.wav", std::process::id()));
+    std::fs::write(&path, &wav).unwrap();
+
+    let mut s = Session::default();
+    let r = s.execute("media.import", &json!({"path": path.to_string_lossy()})).unwrap();
+    assert_eq!(r["media"]["kind"], "audio");
+    assert_eq!(r["media"]["sha256"].as_str().unwrap().len(), 64);
+    let id = r["media"]["id"].as_str().unwrap().to_string();
+    assert_eq!(s.project().media[&id].duration, Some(Tick::from_seconds(0.5)));
+
+    let audio = s.project().tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().id.clone();
+    let c = s.execute("clip.add", &json!({"track": audio, "media": id})).unwrap();
+    assert_eq!(c["duration"], json!(Tick::from_seconds(0.5)));
+
+    // what cannot be read is refused, and nothing changes
+    std::fs::write(&path, b"not media").unwrap();
+    let before = s.revision();
+    assert!(s.execute("media.import", &json!({"path": path.to_string_lossy(), "kind": "audio"})).is_err());
+    assert_eq!(s.revision(), before);
+    let _ = std::fs::remove_file(&path);
 }

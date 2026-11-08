@@ -2,6 +2,7 @@
 
 use reelforge_compile::{CompileOptions, compile};
 use reelforge_model::{Clip, ClipContent, ClipEffect, ClipTransform, Media, MediaKind, Project, Track, TrackKind};
+use reelforge_renderspec::AssetKind;
 use reelforge_time::{FrameRate, Tick};
 use serde_json::{Value, json};
 
@@ -70,7 +71,7 @@ static REGISTRY: &[CommandSpec] = &[
         id: "media.import",
         label: "Import Media",
         params: r#"{"path": string, "kind"?: "video"|"image"|"audio", "name"?: string, "duration"?: time, "size"?: [w, h], "sha256"?: hex}"#,
-        doc: "Adds a file to the project's media. Hashes the file and reads an image's size when the file is reachable.",
+        doc: "Adds a file to the project's media. When the file is reachable, hashes it and measures its kind, picture size and length (any value passed wins).",
         edits: true,
         enabled: always,
         run: media_import,
@@ -279,11 +280,12 @@ fn kind_from_path(path: &str) -> Option<MediaKind> {
 fn media_import(s: &mut Session, v: &Value) -> CmdResult {
     let p = P::new(v, fps(s));
     let path = p.str("path")?.to_string();
-    let kind = match p.opt_str("kind")? {
-        Some(k) => serde_json::from_value(json!(k))
-            .map_err(|_| EngineError::Params("`kind` must be video, image or audio".into()))?,
-        None => kind_from_path(&path)
-            .ok_or_else(|| EngineError::Params("cannot tell the kind from the extension; pass `kind`".into()))?,
+    let asked: Option<MediaKind> = match p.opt_str("kind")? {
+        Some(k) => Some(
+            serde_json::from_value(json!(k))
+                .map_err(|_| EngineError::Params("`kind` must be video, image or audio".into()))?,
+        ),
+        None => None,
     };
     #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
     let mut sha256 = p.opt_str("sha256")?.map(str::to_string);
@@ -295,18 +297,39 @@ fn media_import(s: &mut Session, v: &Value) -> CmdResult {
         ),
         None => None,
     };
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+    let mut duration = p.opt_time("duration")?;
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+    let mut probed: Option<reelforge_media::Probe> = None;
     #[cfg(not(target_arch = "wasm32"))]
     {
         use sha2::{Digest, Sha256};
-        let local = path.strip_prefix("file://").unwrap_or(&path);
+        let local = std::path::Path::new(path.strip_prefix("file://").unwrap_or(&path));
         if sha256.is_none()
             && let Ok(bytes) = std::fs::read(local)
         {
             sha256 = Some(Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect());
         }
-        if size.is_none() && kind == MediaKind::Image {
-            size = image::image_dimensions(local).ok().map(|(w, h)| [w, h]);
+        if local.is_file() {
+            probed = Some(
+                reelforge_media::probe_path(local)
+                    .map_err(|e| EngineError::Refused(format!("cannot read {path}: {e}")))?,
+            );
         }
+    }
+    let kind = match (asked, &probed) {
+        (Some(k), _) => k,
+        (None, Some(pr)) => match pr.kind {
+            AssetKind::Video => MediaKind::Video,
+            AssetKind::Image => MediaKind::Image,
+            _ => MediaKind::Audio,
+        },
+        (None, None) => kind_from_path(&path)
+            .ok_or_else(|| EngineError::Params("cannot tell the kind from the extension; pass `kind`".into()))?,
+    };
+    if let Some(pr) = probed {
+        size = size.or(pr.size);
+        duration = duration.or(pr.duration);
     }
     if let Some(h) = &sha256
         && (h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit()))
@@ -314,7 +337,6 @@ fn media_import(s: &mut Session, v: &Value) -> CmdResult {
         return Err(EngineError::Params("`sha256` must be 64 hex digits".into()));
     }
     let sha256 = sha256.map(|h| h.to_ascii_lowercase());
-    let duration = p.opt_time("duration")?;
     let name = p
         .opt_str("name")?
         .map(str::to_string)

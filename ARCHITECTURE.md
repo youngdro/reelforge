@@ -20,7 +20,8 @@ WebGPU with a WebGL2 fallback). Three ideas hold it together:
 
 A crate depends only on lower layers; `cargo xtask layers` enforces it, plus two rules the layers
 alone would allow: the renderer never depends on the project model or the compiler, and UI or
-windowing crates (egui, eframe, winit, web-sys…) appear only from L4 up.
+windowing crates (egui, eframe, winit, web-sys…) appear only from L5 up. The renderer and `reelforge-media` read RenderSpec only, so a render
+service ships them without the editor.
 
 | Layer | Crate | Role |
 | --- | --- | --- |
@@ -29,11 +30,12 @@ windowing crates (egui, eframe, winit, web-sys…) appear only from L4 up.
 | L1 | `reelforge-model` | The project document: canvas, media, tracks, clips; invariants |
 | L2 | `reelforge-compile` | Project → RenderSpec: all editing meaning resolved here |
 | L2 | `reelforge-render` | Pure frame plan + CPU reference compositor; `MediaSource` trait |
-| L3 | `reelforge-engine` | `Session`, command registry, copy-on-write undo, batches |
-| L4 | `reelforge-ui` | The egui editor: toolbar, preview, timeline, inspector |
-| L5 | `reelforge` | Desktop app (eframe, wgpu renderer) |
-| L5 | `reelforge-cli` | Commands, scripts, compile, validate, render a frame |
-| L5 | `reelforge-web` | Browser app (eframe web runner) + `window.reelforge.execute` |
+| L3 | `reelforge-media` | Probing, video/audio decoding (`Footage`), MP4 export (H.264 + AAC); FilmCraft's pure-Rust codecs |
+| L4 | `reelforge-engine` | `Session`, command registry, copy-on-write undo, batches |
+| L5 | `reelforge-ui` | The egui editor: toolbar, preview, timeline, inspector |
+| L6 | `reelforge` | Desktop app (eframe, wgpu renderer) |
+| L6 | `reelforge-cli` | Commands, scripts, compile, validate, render a frame, export |
+| L6 | `reelforge-web` | Browser app (eframe web runner) + `window.reelforge.execute` |
 
 ```text
             interface (egui on wgpu)   CLI   browser API   MCP (next)
@@ -63,9 +65,10 @@ windowing crates (egui, eframe, winit, web-sys…) appear only from L4 up.
 
 In rough priority order for short videos:
 
-1. Video decoding behind `MediaSource` (WebCodecs in the browser, platform/hardware decoders natively)
-   and encoding/muxing for export (H.264 + AAC MP4). Candidates to reuse: FilmCraft's pure-Rust
-   codec and container crates (MIT/Apache).
+1. Faster media: hardware/WebCodecs decoders registered in front of the pure-Rust ones
+   (`filmcraft_codecs::register_video_decoder`), decoding at preview size, export in the browser
+   (WebCodecs encoder, or the pure-Rust one in a worker), pitch-preserving speed changes.
+   Pure-Rust decoding and MP4 export (`reelforge-media`) are in place.
 2. Text rendering (`text/1`) with bundled fonts including CJK.
 3. The wgpu compositor, sharing eframe's device so preview frames never leave the GPU, tested
    against the CPU reference.
