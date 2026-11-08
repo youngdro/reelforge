@@ -23,6 +23,7 @@ pub mod cpu;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod image;
+pub mod lut;
 pub mod media;
 pub mod plan;
 pub mod text;
@@ -35,6 +36,7 @@ use reelforge_time::Tick;
 use thiserror::Error;
 
 pub use crate::image::Image;
+pub use lut::Lut;
 pub use media::{MediaSource, NoMedia, StillImages};
 pub use plan::{FramePlan, PlannedLayer, PlannedSource, plan_frame};
 
@@ -43,6 +45,8 @@ pub use plan::{FramePlan, PlannedLayer, PlannedSource, plan_frame};
 pub const SUPPORTED_FEATURES: &[&str] = &[
     "audio.stretch/1",
     "color.brightness@1",
+    "color.grade@1",
+    "color.lut@1",
     "color.saturation@1",
     "text/1",
     "text/2",
@@ -265,7 +269,7 @@ mod tests {
     #[test]
     fn final_renders_refuse_what_drafts_mark() {
         let mut s = spec();
-        s.layers[0].fx.push(Effect { id: "blur.gaussian@1".into(), params: Default::default() });
+        s.layers[0].fx.push(Effect { id: "blur.gaussian@1".into(), params: Default::default(), asset: None });
         assert!(matches!(
             render_frame(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Final),
             Err(RenderError::Unsupported(_))

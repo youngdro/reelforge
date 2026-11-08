@@ -152,9 +152,67 @@ fn effects_apply_in_order() {
     let fx = |id: &str, amount: f32| Effect {
         id: id.into(),
         params: [("amount".to_string(), Animated::Constant(amount))].into_iter().collect(),
+        asset: None,
     };
     s.layers[i].fx = vec![fx("color.saturation@1", 0.2), fx("color.brightness@1", 0.15), fx("color.saturation@1", 1.8)];
     same(&s, Tick::ZERO, 1.0, &Pictures(picture(40, 40)), Quality::Final);
+}
+
+/// Pictures and one lookup table.
+struct Graded(Arc<Image>, Arc<Lut>);
+
+impl MediaSource for Graded {
+    fn picture(&self, _: &str, _: &Asset, _: Tick) -> Result<Option<Arc<Image>>, String> {
+        Ok(Some(self.0.clone()))
+    }
+
+    fn lut(&self, _: &str, _: &Asset) -> Result<Option<Arc<Lut>>, String> {
+        Ok(Some(self.1.clone()))
+    }
+}
+
+#[test]
+fn grades_and_lookup_tables_match() {
+    let mut s = base(48, 48);
+    let i = with_picture(&mut s, Fit::Cover);
+    s.assets.insert(
+        "look".into(),
+        Asset { kind: AssetKind::Lut, sha256: "2".repeat(64), uri: "file:///look.cube".into(), of: None, probe: None },
+    );
+    let params = |pairs: &[(&str, f32)]| pairs.iter().map(|(k, v)| (k.to_string(), Animated::Constant(*v))).collect();
+    s.layers[i].fx = vec![
+        Effect {
+            id: effects::GRADE.into(),
+            params: params(&[
+                ("exposure", 0.4),
+                ("contrast", 0.3),
+                ("saturation", -0.2),
+                ("temperature", 0.5),
+                ("tint", -0.2),
+                ("highlights", -0.4),
+                ("shadows", 0.3),
+                ("fade", 0.3),
+                ("vignette", 0.6),
+            ]),
+            asset: None,
+        },
+        Effect { id: effects::LUT.into(), params: params(&[("amount", 0.8)]), asset: Some("look".into()) },
+    ];
+    // a table that warms and crushes: not the identity anywhere
+    let mut lut = Lut::identity(9);
+    for c in &mut lut.data {
+        *c = [c[0].sqrt(), c[1] * c[1], c[2] * 0.7 + 0.1];
+    }
+    let media = Graded(picture(48, 48), Arc::new(lut));
+    same(&s, Tick::ZERO, 1.0, &media, Quality::Final);
+    // and on a title
+    let mut t = base(96, 48);
+    let mut title =
+        layer("t", LayerContent::Text(TextContent::new("Hi".to_string(), 30.0, Color([0.9, 0.6, 0.3, 1.0]))));
+    title.fx = s.layers[i].fx.clone();
+    t.assets = s.assets.clone();
+    t.layers.push(title);
+    same(&t, Tick::ZERO, 1.0, &media, Quality::Final);
 }
 
 #[test]

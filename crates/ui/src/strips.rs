@@ -59,6 +59,7 @@ fn asset(m: &Media) -> Asset {
             MediaKind::Video => AssetKind::Video,
             MediaKind::Image => AssetKind::Image,
             MediaKind::Audio => AssetKind::Audio,
+            MediaKind::Lut => AssetKind::Lut,
         },
         sha256: m.sha256.clone().unwrap_or_default(),
         uri: m.uri.clone(),

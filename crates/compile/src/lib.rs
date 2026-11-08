@@ -9,12 +9,12 @@
 use std::collections::BTreeMap;
 
 use reelforge_model::{
-    Clip, ClipContent, MediaKind, Project, Prop, Timing, TitleAlign, Track, TrackKind, TransitionKind,
+    Adjust, Clip, ClipContent, MediaKind, Project, Prop, Timing, TitleAlign, Track, TrackKind, TransitionKind,
 };
 use reelforge_renderspec::{
     Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Blend, Color, Ease, Effect, Fit, Key, Layer,
     LayerContent, Output, Probe, RenderSpec, SpeedKey, TextAlign, TextBackground, TextContent, TextShadow, TextStroke,
-    TimeMap, Transform, VideoCodec, VideoEncoding, validate,
+    TimeMap, Transform, VideoCodec, VideoEncoding, effects, validate,
 };
 use reelforge_time::Tick;
 use thiserror::Error;
@@ -88,6 +88,7 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                         MediaKind::Video => AssetKind::Video,
                         MediaKind::Image => AssetKind::Image,
                         MediaKind::Audio => AssetKind::Audio,
+                        MediaKind::Lut => AssetKind::Lut,
                     },
                     sha256,
                     uri: m.uri.clone(),
@@ -161,14 +162,15 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                     opacity: motion::lower(clip, Prop::Opacity, &shape, step),
                     blend: Blend::Normal,
                     mask: None,
-                    fx: clip
-                        .effects
-                        .iter()
-                        .map(|e| Effect {
+                    fx: {
+                        let mut fx = color_fx(clip, &mut asset_for)?;
+                        fx.extend(clip.effects.iter().map(|e| Effect {
                             id: e.id.clone(),
                             params: e.params.iter().map(|(k, v)| (k.clone(), Animated::Constant(*v))).collect(),
-                        })
-                        .collect(),
+                            asset: None,
+                        }));
+                        fx
+                    },
                 });
                 // a dip passes through a colour layer over both clips
                 if let Some((kind, half)) = cuts[i]
@@ -220,6 +222,39 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
     spec.engine.features = spec.required_features().into_iter().collect();
     validate(&spec).map_err(|e| CompileError::Invalid(e.to_string()))?;
     Ok(spec)
+}
+
+/// A clip's colour as effects: its filter, its lookup table, then its own adjustments.
+fn color_fx(
+    clip: &Clip,
+    asset_for: &mut impl FnMut(&str) -> Result<String, CompileError>,
+) -> Result<Vec<Effect>, CompileError> {
+    let grade = |a: Adjust| Effect {
+        id: effects::GRADE.into(),
+        params: Adjust::RANGES
+            .iter()
+            .zip(a.values())
+            .filter(|(_, v)| *v != 0.0)
+            .map(|((name, ..), v)| (name.to_string(), Animated::Constant(v)))
+            .collect(),
+        asset: None,
+    };
+    let c = &clip.color;
+    let mut fx = Vec::new();
+    if let Some(f) = c.filter.filter(|f| f.strength > 0.0) {
+        fx.push(grade(f.kind.adjust().scaled(f.strength)));
+    }
+    if let Some(l) = c.lut.as_ref().filter(|l| l.strength > 0.0) {
+        fx.push(Effect {
+            id: effects::LUT.into(),
+            params: [("amount".to_string(), Animated::Constant(l.strength))].into_iter().collect(),
+            asset: Some(asset_for(&l.media)?),
+        });
+    }
+    if !c.adjust.is_zero() {
+        fx.push(grade(c.adjust));
+    }
+    Ok(fx)
 }
 
 /// A clip's timing as a layer or audio clip that starts `lead` before the clip.
@@ -285,6 +320,7 @@ mod tests {
             transition: None,
             fade: Default::default(),
             keep_pitch: true,
+            color: Default::default(),
         }
     }
 

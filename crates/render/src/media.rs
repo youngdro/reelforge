@@ -7,6 +7,7 @@ use reelforge_renderspec::{Asset, AssetKind};
 use reelforge_time::Tick;
 
 use crate::Image;
+use crate::lut::Lut;
 
 /// Supplies decoded pictures to the planner.
 ///
@@ -20,6 +21,12 @@ pub trait MediaSource {
     /// The bytes of a `font` asset (TrueType or OpenType). `Ok(None)` means not available; the
     /// default implementation has no fonts.
     fn font(&self, asset_id: &str, asset: &Asset) -> Result<Option<Arc<[u8]>>, String> {
+        let _ = (asset_id, asset);
+        Ok(None)
+    }
+
+    /// A `lut` asset, read. `Ok(None)` means not available; the default implementation has none.
+    fn lut(&self, asset_id: &str, asset: &Asset) -> Result<Option<Arc<Lut>>, String> {
         let _ = (asset_id, asset);
         Ok(None)
     }

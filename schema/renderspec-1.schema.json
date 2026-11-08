@@ -264,6 +264,13 @@
       "additionalProperties": false,
       "description": "An effect applied to a layer.",
       "properties": {
+        "asset": {
+          "description": "An asset the effect reads: the `lut` of `color.lut@1`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "id": {
           "description": "`<name>@<version>`, such as `color.brightness@1`.",
           "type": "string"

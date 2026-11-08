@@ -18,10 +18,12 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod anim;
+pub mod color;
 pub mod timing;
 pub mod transition;
 
 pub use anim::{AnimKind, Animation, Animations, Ease, Key, Keys, Offset, Prop};
+pub use color::{Adjust, ColorGrade, Filter, FilterKind, LutUse};
 pub use timing::{CurvePoint, CurvePreset, Timing};
 pub use transition::{Transition, TransitionKind};
 
@@ -94,6 +96,8 @@ pub enum MediaKind {
     Image,
     /// Sound only.
     Audio,
+    /// A colour lookup table (`.cube`), used by clips' colour rather than placed.
+    Lut,
 }
 
 /// A track.
@@ -169,6 +173,9 @@ pub struct Clip {
     /// Whether sound at another speed keeps its pitch (rather than rising and falling like tape).
     #[serde(default = "yes", skip_serializing_if = "is_yes")]
     pub keep_pitch: bool,
+    /// Filter, lookup table and colour adjustments (picture clips).
+    #[serde(default, skip_serializing_if = "ColorGrade::is_empty")]
+    pub color: ColorGrade,
 }
 
 fn yes() -> bool {
@@ -572,6 +579,20 @@ impl Project {
                 if clip.fade.fade_in < Tick::ZERO || clip.fade.fade_out < Tick::ZERO {
                     return motion("a fade cannot be negative");
                 }
+                if !clip.color.adjust.in_range() {
+                    return motion("a colour adjustment is out of range");
+                }
+                if clip.color.filter.is_some_and(|f| !(0.0..=1.0).contains(&f.strength)) {
+                    return motion("a filter's strength must be 0 to 1");
+                }
+                if let Some(l) = &clip.color.lut {
+                    if !(0.0..=1.0).contains(&l.strength) {
+                        return motion("a lookup table's strength must be 0 to 1");
+                    }
+                    if self.media.get(&l.media).is_none_or(|m| m.kind != MediaKind::Lut) {
+                        return Err(ModelError::UnknownMedia(clip.id.clone(), l.media.clone()));
+                    }
+                }
                 if clip.transition.is_some_and(|t| t.duration <= Tick::ZERO) {
                     return motion("a transition must have a positive length");
                 }
@@ -599,8 +620,8 @@ impl Project {
                             }
                         }
                         match track.kind {
-                            TrackKind::Video => m.kind != MediaKind::Audio,
-                            TrackKind::Audio => m.kind != MediaKind::Image,
+                            TrackKind::Video => matches!(m.kind, MediaKind::Video | MediaKind::Image),
+                            TrackKind::Audio => matches!(m.kind, MediaKind::Video | MediaKind::Audio),
                             TrackKind::Text => false,
                         }
                     }
@@ -670,6 +691,7 @@ mod tests {
             transition: None,
             fade: Default::default(),
             keep_pitch: true,
+            color: Default::default(),
         }
     }
 

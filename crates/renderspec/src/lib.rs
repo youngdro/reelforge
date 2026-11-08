@@ -558,6 +558,34 @@ pub struct Effect {
     /// Parameters by name.
     #[serde(default)]
     pub params: BTreeMap<String, Animated<f32>>,
+    /// An asset the effect reads: the `lut` of `color.lut@1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset: Option<String>,
+}
+
+/// Effect ids, with their parameters.
+///
+/// - `color.brightness@1`: `amount` added to each channel, -1 to 1.
+/// - `color.saturation@1`: `amount` times the colourfulness; 1 leaves it.
+/// - `color.grade@1`: a colour grade. Every parameter is 0 when it changes nothing: `exposure`
+///   (stops), `contrast` (-1 to 1, around mid grey), `saturation` (-1 grey to 1 twice as rich),
+///   `temperature` (-1 cool to 1 warm), `tint` (-1 green to 1 magenta), `highlights` and
+///   `shadows` (-1 to 1, darken or lift the bright or dark parts), `fade` (0 to 1, lifts the
+///   blacks) and `vignette` (0 to 1, darkens towards the corners of the layer's picture).
+/// - `color.lut@1`: a 3-D lookup table (`asset`, a `lut` in the `.cube` format, applied to
+///   sRGB-encoded colour), mixed in by `amount` (0 to 1, default 1). One per layer.
+pub mod effects {
+    /// Brightness.
+    pub const BRIGHTNESS: &str = "color.brightness@1";
+    /// Saturation.
+    pub const SATURATION: &str = "color.saturation@1";
+    /// A colour grade.
+    pub const GRADE: &str = "color.grade@1";
+    /// The parameters of a grade, in order.
+    pub const GRADE_PARAMS: [&str; 9] =
+        ["exposure", "contrast", "saturation", "temperature", "tint", "highlights", "shadows", "fade", "vignette"];
+    /// A lookup table.
+    pub const LUT: &str = "color.lut@1";
 }
 
 /// Sound from an asset.

@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use filmcraft_media::{FrameRequest, MediaKind, SharedSource};
-use reelforge_render::{Image, MediaSource, StillImages};
+use reelforge_render::{Image, Lut, MediaSource, StillImages};
 use reelforge_renderspec::{Asset, AssetKind};
 use reelforge_time::{FrameRate, Tick};
 
@@ -108,8 +108,15 @@ pub struct Footage {
     last: Mutex<HashMap<String, Converted>>,
     /// Font files by asset key.
     fonts: Mutex<HashMap<String, Arc<[u8]>>>,
+    /// Lookup tables by asset key.
+    luts: Mutex<HashMap<String, Arc<Lut>>>,
     /// Counts files handed over and clears, so callers know when offline footage may be back.
     generation: std::sync::atomic::AtomicU64,
+}
+
+/// Whether a file name is a lookup table (`.cube`).
+pub fn is_lut(name: &str) -> bool {
+    name.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("cube"))
 }
 
 fn key(asset: &Asset) -> String {
@@ -125,6 +132,12 @@ impl Footage {
     /// Hands over a file's bytes (the browser has no file system) and measures them. `name` gives
     /// the extension.
     pub fn insert_bytes(&self, sha256: &str, name: &str, bytes: Vec<u8>) -> Result<Probe, String> {
+        if is_lut(name) {
+            let lut = Lut::parse_cube(&String::from_utf8_lossy(&bytes))?;
+            self.luts.lock().expect("luts lock").insert(sha256.to_string(), Arc::new(lut));
+            self.bump();
+            return Ok(Probe { kind: AssetKind::Lut, size: None, duration: None, fps: None, has_audio: false });
+        }
         let bytes: Arc<[u8]> = bytes.into();
         let src = filmcraft_codecs::open_bytes(name, bytes.clone()).map_err(|e| e.to_string())?;
         let probe = probe_source(&src)?;
@@ -147,6 +160,7 @@ impl Footage {
         self.sources.lock().expect("sources lock").clear();
         self.last.lock().expect("frame lock").clear();
         self.fonts.lock().expect("fonts lock").clear();
+        self.luts.lock().expect("luts lock").clear();
         self.bump();
     }
 
@@ -264,6 +278,29 @@ impl Footage {
 }
 
 impl MediaSource for Footage {
+    fn lut(&self, _: &str, asset: &Asset) -> Result<Option<Arc<Lut>>, String> {
+        if asset.kind != AssetKind::Lut {
+            return Ok(None);
+        }
+        let k = key(asset);
+        if let Some(l) = self.luts.lock().expect("luts lock").get(&k) {
+            return Ok(Some(l.clone()));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if asset.uri.contains("://") && !asset.uri.starts_with("file://") {
+                return Ok(None);
+            }
+            let path = asset.uri.strip_prefix("file://").unwrap_or(&asset.uri);
+            let Ok(text) = std::fs::read_to_string(path) else { return Ok(None) };
+            let lut = Arc::new(Lut::parse_cube(&text).map_err(|e| format!("{path}: {e}"))?);
+            self.luts.lock().expect("luts lock").insert(k, lut.clone());
+            Ok(Some(lut))
+        }
+        #[cfg(target_arch = "wasm32")]
+        Ok(None)
+    }
+
     fn font(&self, _: &str, asset: &Asset) -> Result<Option<Arc<[u8]>>, String> {
         if asset.kind != AssetKind::Font {
             return Ok(None);

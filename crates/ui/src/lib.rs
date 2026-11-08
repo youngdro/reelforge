@@ -36,7 +36,8 @@ use reelforge_compile::{CompileOptions, compile};
 use reelforge_engine::{Session, SharedSession};
 use reelforge_media::Footage;
 use reelforge_model::{
-    AnimKind, ClipContent, ClipTransform, CurvePreset, MediaKind, Project, Prop, TrackKind, TransitionKind,
+    Adjust, AnimKind, ClipContent, ClipTransform, CurvePreset, FilterKind, MediaKind, Project, Prop, TrackKind,
+    TransitionKind,
 };
 use reelforge_render::{Quality, render_frame};
 use reelforge_time::Tick;
@@ -151,6 +152,18 @@ struct Inspector {
     fades: Option<[f32; 2]>,
     /// Video and sound clips: speed, pitch, direction and curve.
     speed: Option<SpeedEdit>,
+    /// Picture clips: filter, lookup table and adjustments.
+    grade: Option<GradeEdit>,
+}
+
+/// A picture clip's colour, as the inspector edits it.
+#[derive(Clone, PartialEq)]
+struct GradeEdit {
+    filter: Option<FilterKind>,
+    filter_strength: f32,
+    lut: Option<String>,
+    lut_strength: f32,
+    adjust: [f32; 9],
 }
 
 /// How a video or sound clip runs, as the inspector edits it.
@@ -319,6 +332,10 @@ impl EditorApp {
 
     /// Runs a command and reports the outcome in the status bar.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        // a call from outside the window (the browser API) shows at once, not at the next input
+        if let Some(ctx) = self.window.get() {
+            ctx.request_repaint();
+        }
         match self.run(id, &params) {
             Ok(v) => {
                 self.status = fill(self.s().done, &[&self.lang.command(id)]);
@@ -443,6 +460,7 @@ impl EditorApp {
         let kind = match probe.kind {
             reelforge_renderspec::AssetKind::Video => "video",
             reelforge_renderspec::AssetKind::Image => "image",
+            reelforge_renderspec::AssetKind::Lut => "lut",
             _ => "audio",
         };
         let mut params = json!({ "path": name, "kind": kind, "sha256": sha });
@@ -470,6 +488,15 @@ impl EditorApp {
     /// or on a new track above the others.
     fn place(&mut self, imported: &Value) {
         let Ok(m) = serde_json::from_value::<reelforge_model::Media>(imported["media"].clone()) else { return };
+        if m.kind == MediaKind::Lut {
+            // a lookup table is worn by the selected picture clip, or waits in the colour section
+            let wear = self
+                .selected
+                .clone()
+                .is_some_and(|c| self.run("clip.setColor", &json!({"clip": c, "lut": m.id})).is_ok());
+            self.status = fill(if wear { self.s().lut_worn } else { self.s().lut_imported }, &[&m.name]);
+            return;
+        }
         let want = if m.kind == MediaKind::Audio { TrackKind::Audio } else { TrackKind::Video };
         let tracks: Vec<String> =
             self.project().tracks.iter().filter(|t| t.kind == want).map(|t| t.id.clone()).collect();
@@ -872,6 +899,13 @@ impl EditorApp {
                 }),
                 _ => None,
             },
+            grade: picture.then(|| GradeEdit {
+                filter: clip.color.filter.map(|f| f.kind),
+                filter_strength: clip.color.filter.map_or(1.0, |f| f.strength),
+                lut: clip.color.lut.as_ref().map(|l| l.media.clone()),
+                lut_strength: clip.color.lut.as_ref().map_or(1.0, |l| l.strength),
+                adjust: clip.color.adjust.values(),
+            }),
             title: match &clip.content {
                 ClipContent::Text { text, size, style, .. } => Some(Title {
                     text: text.clone(),
@@ -1064,6 +1098,105 @@ impl EditorApp {
                     }
                 });
             });
+            if let Some(g) = &mut edit.grade {
+                ui.add_space(6.0);
+                let changed = |r: &egui::Response| r.drag_stopped() || (r.changed() && !r.dragged());
+                theme::section(ui, s.sec_grade, |ui| {
+                    egui::Grid::new("grade").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                        ui.label(egui::RichText::new(s.filter).color(theme::color::WEAK));
+                        ui.horizontal(|ui| {
+                            let name =
+                                |k: FilterKind| s.filters[FilterKind::ALL.iter().position(|x| *x == k).unwrap_or(0)];
+                            let mut picked = g.filter;
+                            egui::ComboBox::from_id_salt("filter")
+                                .selected_text(g.filter.map_or(s.none, name))
+                                .width(92.0)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut picked, None, s.none);
+                                    for k in FilterKind::ALL {
+                                        ui.selectable_value(&mut picked, Some(k), name(k));
+                                    }
+                                });
+                            if picked != g.filter {
+                                actions.push((
+                                    "clip.setColor",
+                                    json!({"clip": id, "filter": picked.map(FilterKind::name)}),
+                                ));
+                            }
+                            if g.filter.is_some() {
+                                let r = ui.add(
+                                    egui::DragValue::new(&mut g.filter_strength)
+                                        .speed(0.01)
+                                        .range(0.0..=1.0)
+                                        .max_decimals(2),
+                                );
+                                if changed(&r) {
+                                    actions.push((
+                                        "clip.setColor",
+                                        json!({"clip": id, "filterStrength": g.filter_strength}),
+                                    ));
+                                }
+                            }
+                        });
+                        ui.end_row();
+                        ui.label(egui::RichText::new(s.lut).color(theme::color::WEAK));
+                        ui.horizontal(|ui| {
+                            let luts: Vec<(&str, &str)> = p
+                                .media
+                                .values()
+                                .filter(|m| m.kind == MediaKind::Lut)
+                                .map(|m| (m.id.as_str(), m.name.as_str()))
+                                .collect();
+                            if luts.is_empty() {
+                                ui.label(egui::RichText::new(s.lut_hint).color(theme::color::WEAK).small());
+                                return;
+                            }
+                            let shown = g
+                                .lut
+                                .as_deref()
+                                .and_then(|l| luts.iter().find(|(id, _)| *id == l))
+                                .map_or(s.none, |(_, name)| *name);
+                            let mut picked = g.lut.clone();
+                            egui::ComboBox::from_id_salt("lut").selected_text(shown).width(92.0).show_ui(ui, |ui| {
+                                ui.selectable_value(&mut picked, None, s.none);
+                                for (lid, name) in &luts {
+                                    ui.selectable_value(&mut picked, Some(lid.to_string()), *name);
+                                }
+                            });
+                            if picked != g.lut {
+                                actions.push(("clip.setColor", json!({"clip": id, "lut": picked})));
+                            }
+                            if g.lut.is_some() {
+                                let r = ui.add(
+                                    egui::DragValue::new(&mut g.lut_strength)
+                                        .speed(0.01)
+                                        .range(0.0..=1.0)
+                                        .max_decimals(2),
+                                );
+                                if changed(&r) {
+                                    actions.push(("clip.setColor", json!({"clip": id, "lutStrength": g.lut_strength})));
+                                }
+                            }
+                        });
+                        ui.end_row();
+                        for (i, (name, lo, hi)) in Adjust::RANGES.into_iter().enumerate() {
+                            ui.label(egui::RichText::new(s.adjust_names[i]).color(theme::color::WEAK));
+                            let r = ui.add_sized(
+                                [ui.available_width(), 22.0],
+                                egui::DragValue::new(&mut g.adjust[i]).speed(0.01).range(lo..=hi).max_decimals(2),
+                            );
+                            if changed(&r) {
+                                actions.push(("clip.setColor", json!({"clip": id, name: g.adjust[i]})));
+                            }
+                            ui.end_row();
+                        }
+                    });
+                    let untouched = g.filter.is_none() && g.lut.is_none() && g.adjust.iter().all(|v| *v == 0.0);
+                    if !untouched && ui.button(s.grade_reset).clicked() {
+                        actions.push(("clip.setColor", json!({"clip": id, "reset": true})));
+                    }
+                });
+            }
             if let Some(v) = &mut edit.volume {
                 ui.add_space(6.0);
                 theme::section(ui, s.sec_sound, |ui| {

@@ -1,6 +1,6 @@
 //! What is on screen at an instant. Pure: no pixels, no IO.
 
-use reelforge_renderspec::{Blend, Fit, LayerContent, RenderSpec, TextContent};
+use reelforge_renderspec::{Blend, Fit, LayerContent, RenderSpec, TextContent, effects};
 use reelforge_time::Tick;
 
 use crate::image::premultiply_srgb;
@@ -41,6 +41,8 @@ pub struct PlannedLayer {
     pub blend: Blend,
     /// Effects with their parameters at this instant: `(id, [(name, value)])`.
     pub fx: Vec<(String, Vec<(String, f32)>)>,
+    /// The `lut` asset of the layer's `color.lut@1`, if it has one.
+    pub lut: Option<String>,
 }
 
 /// What a layer draws.
@@ -128,6 +130,7 @@ pub fn plan_frame(spec: &RenderSpec, t: Tick, scale: f32) -> FramePlan {
                 .iter()
                 .map(|fx| (fx.id.clone(), fx.params.iter().map(|(k, v)| (k.clone(), v.sample(local))).collect()))
                 .collect(),
+            lut: layer.fx.iter().find(|fx| fx.id == effects::LUT).and_then(|fx| fx.asset.clone()),
         });
     }
     FramePlan { t, width, height, background: premultiply_srgb(o.background.0), layers }
@@ -149,6 +152,7 @@ mod tests {
             opacity: 1.0,
             blend: Blend::Normal,
             fx: vec![],
+            lut: None,
         };
         let m = l.matrix(640.0, 360.0, [1080.0, 1920.0]);
         let inv = invert(m).unwrap();

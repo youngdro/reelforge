@@ -145,7 +145,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ),
                 (
                     "kind",
-                    json!({"enum": ["video", "image", "audio"], "description": "Measured from the file when it is reachable."}),
+                    json!({"enum": ["video", "image", "audio", "lut"], "description": "Measured from the file when it is reachable."}),
                 ),
                 ("name", json!({"type": "string", "description": "Display name; the file name by default."})),
                 ("duration", time("Length, when the file cannot be measured.")),
@@ -301,6 +301,35 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["clip", "slot", "kind"],
         ),
+        "clip.setColor" => {
+            let mut props = vec![
+                clip(),
+                (
+                    "filter",
+                    json!({"description": "A ready-made look; null removes it.", "oneOf": [{"enum": ["fresh", "warm", "cool", "mono", "vintage", "film", "vivid", "dusk"]}, {"type": "null"}]}),
+                ),
+                (
+                    "filterStrength",
+                    json!({"type": "number", "minimum": 0, "maximum": 1, "description": "How strongly the filter applies; 1 by default."}),
+                ),
+                (
+                    "lut",
+                    json!({"description": "A lookup table: the id of `lut` media (imported from a .cube file); null removes it.", "oneOf": [{"type": "string"}, {"type": "null"}]}),
+                ),
+                (
+                    "lutStrength",
+                    json!({"type": "number", "minimum": 0, "maximum": 1, "description": "How strongly the table applies; 1 by default."}),
+                ),
+                ("reset", json!({"type": "boolean", "description": "Clear the filter, table and adjustments first."})),
+            ];
+            for (name, lo, hi) in reelforge_model::Adjust::RANGES {
+                props.push((
+                    name,
+                    json!({"type": "number", "minimum": lo, "maximum": hi, "description": format!("Adjustment, {lo} to {hi}; 0 changes nothing.")}),
+                ));
+            }
+            object(props, &["clip"])
+        }
         "clip.setReverse" => object(
             vec![
                 clip(),
