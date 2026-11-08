@@ -12,6 +12,7 @@
 //! file bytes over with [`Footage::insert_bytes`]; natively a `file:` URI is read on demand.
 
 pub mod export;
+pub mod library;
 pub mod stretch;
 pub mod webcodecs;
 mod yuv;
@@ -182,7 +183,11 @@ impl Footage {
         if let Some(s) = self.sources.lock().expect("sources lock").get(&k) {
             return s.clone();
         }
-        let opened = self.open(asset);
+        let opened = match library::id_of(&asset.uri) {
+            // made, not read: the same bytes everywhere, browser included
+            Some(id) => library::wav(id).and_then(|b| filmcraft_codecs::open_bytes("sound.wav", b.into()).ok()),
+            None => self.open(asset),
+        };
         self.sources.lock().expect("sources lock").insert(k, opened.clone());
         opened
     }

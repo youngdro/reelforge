@@ -83,6 +83,24 @@ static REGISTRY: &[CommandSpec] = &[
         run: title_templates_list,
     },
     CommandSpec {
+        id: "sound.library",
+        label: "Sound Library",
+        params: "{}",
+        doc: "The built-in sounds: effects (whoosh, pop, ding...) and music beds, made by synthesis so they are free to use. Add one with sound.add.",
+        edits: false,
+        enabled: always,
+        run: sound_library,
+    },
+    CommandSpec {
+        id: "sound.add",
+        label: "Add Sound",
+        params: r#"{"sound": id, "at"?: time, "track"?: id, "name"?: string}"#,
+        doc: "Puts a library sound on an audio track (the given one, else the first, else a new one) at `at` (default: after the track's last clip).",
+        edits: true,
+        enabled: always,
+        run: sound_add,
+    },
+    CommandSpec {
         id: "project.inspect",
         label: "Inspect Project",
         params: "{}",
@@ -380,6 +398,128 @@ fn commands_list(s: &mut Session, _: &Value) -> CmdResult {
             })
             .collect(),
     ))
+}
+
+fn sound_library(_: &mut Session, _: &Value) -> CmdResult {
+    use reelforge_media::library::{Category, SOUNDS};
+    let list: Vec<Value> = SOUNDS
+        .iter()
+        .map(|snd| {
+            json!({
+                "id": snd.id,
+                "kind": match snd.category { Category::Effect => "effect", Category::Music => "music" },
+                "name": snd.en,
+                "nameZh": snd.zh,
+            })
+        })
+        .collect();
+    Ok(json!({ "sounds": list }))
+}
+
+fn sound_add(s: &mut Session, v: &Value) -> CmdResult {
+    use reelforge_media::library;
+    let p = P::new(v, fps(s));
+    let id = p.str("sound")?;
+    let snd = library::find(id).ok_or_else(|| {
+        EngineError::Params(format!(
+            "`sound` must be one of {}",
+            library::SOUNDS.iter().map(|s| s.id).collect::<Vec<_>>().join(", ")
+        ))
+    })?;
+    let (at, track, name) = (p.opt_time("at")?, p.opt_str("track")?.map(str::to_string), p.opt_str("name")?);
+    if at.is_some_and(|t| t < Tick::ZERO) {
+        return Err(EngineError::Params("`at` must not be negative".into()));
+    }
+    let uri = format!("{}{}", library::SCHEME, snd.id);
+    let name = name.unwrap_or(snd.en).to_string();
+    // made once here for its hash and length; the same bytes wherever it plays
+    let known = s.project().media.values().find(|m| m.uri == uri).map(|m| m.id.clone());
+    let made = match known {
+        Some(_) => None,
+        None => {
+            use sha2::{Digest, Sha256};
+            let bytes = library::wav(snd.id).expect("a library sound");
+            let frames = (bytes.len() - 44) / 4;
+            let sha: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+            Some((sha, Tick::from_seconds(frames as f64 / f64::from(library::RATE))))
+        }
+    };
+    s.edit("Add Sound", |proj| {
+        let media = match (known, made) {
+            (Some(m), _) => m,
+            (None, Some((sha, duration))) => {
+                let m = proj.mint("m");
+                let item = Media {
+                    id: m.clone(),
+                    name,
+                    uri,
+                    sha256: Some(sha),
+                    kind: MediaKind::Audio,
+                    duration: Some(duration),
+                    size: None,
+                };
+                proj.media.insert(m.clone(), item);
+                m
+            }
+            (None, None) => unreachable!("made when not known"),
+        };
+        let duration = proj.media[&media].duration.expect("library sounds have a length");
+        let free = |t: &Track, start: Tick| t.clips.iter().all(|c| c.end() <= start || c.start >= start + duration);
+        let (track, start) = match track {
+            Some(t) => {
+                let tr = proj.track(&t).ok_or_else(|| not_found("track", &t))?;
+                if tr.kind != TrackKind::Audio {
+                    return Err(EngineError::Params(format!("{t} is not an audio track")));
+                }
+                let start = at.unwrap_or_else(|| tr.clips.last().map_or(Tick::ZERO, Clip::end));
+                (t, start)
+            }
+            // the first audio track with room, else a new one
+            None => {
+                let room = proj.tracks.iter().filter(|t| t.kind == TrackKind::Audio).find_map(|t| {
+                    let start = at.unwrap_or_else(|| t.clips.last().map_or(Tick::ZERO, Clip::end));
+                    free(t, start).then(|| (t.id.clone(), start))
+                });
+                match room {
+                    Some(found) => found,
+                    None => {
+                        let t = proj.mint("t");
+                        let n = proj.tracks.iter().filter(|t| t.kind == TrackKind::Audio).count() + 1;
+                        proj.tracks.push(Track {
+                            id: t.clone(),
+                            kind: TrackKind::Audio,
+                            name: format!("Audio {n}"),
+                            hidden: false,
+                            muted: false,
+                            magnetic: false,
+                            clips: vec![],
+                        });
+                        (t, at.unwrap_or(Tick::ZERO))
+                    }
+                }
+            }
+        };
+        let clip = proj.mint("c");
+        let c = Clip {
+            id: clip.clone(),
+            start,
+            duration,
+            content: ClipContent::media(media.clone(), Tick::ZERO),
+            transform: ClipTransform::default(),
+            opacity: 1.0,
+            volume_db: 0.0,
+            effects: vec![],
+            keys: Default::default(),
+            anim: Default::default(),
+            transition: None,
+            fade: Default::default(),
+            keep_pitch: true,
+            color: Default::default(),
+            look: Default::default(),
+        };
+        proj.track_mut(&track).expect("found above").clips.push(c);
+        Ok(json!({ "media": media, "track": track, "clip": clip, "start": start, "duration": duration }))
+    })
 }
 
 fn project_inspect(s: &mut Session, _: &Value) -> CmdResult {

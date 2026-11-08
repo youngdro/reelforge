@@ -22,6 +22,7 @@ mod audio;
 mod export_job;
 pub mod i18n;
 mod looks;
+mod record;
 pub mod remote;
 mod stage;
 mod strips;
@@ -63,6 +64,11 @@ pub struct EditorApp {
     export: Option<export_job::ExportJob>,
     /// The export settings are showing.
     export_open: bool,
+    /// The sound library is showing.
+    sounds_open: bool,
+    /// A voice-over being recorded, and how many were.
+    recorder: Option<record::Recorder>,
+    takes: u32,
     #[cfg(not(target_arch = "wasm32"))]
     export_dir: std::path::PathBuf,
     playhead: Tick,
@@ -234,6 +240,9 @@ impl EditorApp {
             arrivals: Arc::default(),
             export: None,
             export_open: false,
+            sounds_open: false,
+            recorder: None,
+            takes: 0,
             #[cfg(not(target_arch = "wasm32"))]
             export_dir: std::env::current_dir().unwrap_or_default(),
             playhead: Tick::ZERO,
@@ -766,6 +775,91 @@ impl EditorApp {
     }
 
     /// Above the timeline: edit tools, snapping, zoom.
+    /// Record, or stop and place what was recorded at the playhead.
+    fn record_button(&mut self, ui: &mut egui::Ui) {
+        let s = self.s();
+        if let Some(why) = self.recorder.as_ref().and_then(record::Recorder::failed) {
+            self.recorder = None;
+            self.status = fill(s.mic_failed, &[&why]);
+        }
+        match &self.recorder {
+            None => {
+                let r = ui.add(egui::Button::new(
+                    egui::RichText::new(format!("●  {}", s.record)).color(theme::color::PLAYHEAD),
+                ));
+                if r.on_hover_text(s.record_tip).clicked() {
+                    match record::Recorder::start() {
+                        Ok(rec) => {
+                            self.recorder = Some(rec);
+                            self.status = s.recording.to_string();
+                        }
+                        Err(e) => self.status = fill(s.mic_failed, &[&e]),
+                    }
+                }
+            }
+            Some(rec) => {
+                let label = format!("■  {}  {}", s.stop_recording, theme::timecode(rec.seconds()));
+                let r = ui.add(
+                    egui::Button::new(egui::RichText::new(label).color(theme::color::ON_ACCENT).strong())
+                        .fill(theme::color::PLAYHEAD),
+                );
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+                if r.clicked() {
+                    let rec = self.recorder.take().expect("recording");
+                    match rec.stop() {
+                        Ok(take) if take.seconds() >= 0.2 => {
+                            self.takes += 1;
+                            let name = format!("{} {}.wav", s.recording_name, self.takes);
+                            self.import_bytes(&name, take.wav());
+                        }
+                        Ok(_) => self.status = s.recording_short.to_string(),
+                        Err(e) => self.status = fill(s.mic_failed, &[&e]),
+                    }
+                }
+            }
+        }
+    }
+
+    /// The built-in sounds, while open: a click puts one at the playhead.
+    fn sounds_window(&mut self, ctx: &egui::Context) {
+        if !self.sounds_open {
+            return;
+        }
+        use reelforge_media::library::{Category, SOUNDS};
+        let s = self.s();
+        let zh = self.lang == Lang::Zh;
+        let mut open = true;
+        let mut picked = None;
+        egui::Window::new(s.sounds_title)
+            .open(&mut open)
+            .anchor(egui::Align2::LEFT_TOP, [12.0, 48.0])
+            .collapsible(false)
+            .resizable(false)
+            .default_width(300.0)
+            .show(ctx, |ui| {
+                for (title, cat) in [(s.sound_effects, Category::Effect), (s.sound_music, Category::Music)] {
+                    ui.label(egui::RichText::new(title).small().strong().color(theme::color::WEAK));
+                    ui.horizontal_wrapped(|ui| {
+                        for snd in SOUNDS.iter().filter(|x| x.category == cat) {
+                            let name = if zh { snd.zh } else { snd.en };
+                            let icon = if cat == Category::Music { icon::MUSIC } else { icon::SOUND };
+                            if ui.button(format!("{icon}  {name}")).on_hover_text(s.sound_tip).clicked() {
+                                picked = Some((snd.id, name));
+                            }
+                        }
+                    });
+                    ui.add_space(6.0);
+                }
+                ui.label(egui::RichText::new(s.sound_free).small().color(theme::color::WEAK));
+            });
+        self.sounds_open = open;
+        if let Some((id, name)) = picked
+            && let Ok(v) = self.execute("sound.add", json!({"sound": id, "at": self.playhead, "name": name}))
+        {
+            self.selected = v["clip"].as_str().map(str::to_string);
+        }
+    }
+
     fn timeline_bar(&mut self, ui: &mut egui::Ui) {
         let sel = self.selected.is_some();
         let s = self.s();
@@ -786,6 +880,10 @@ impl EditorApp {
             if theme::tool(ui, icon::COLOUR, s.colour, s.colour_tip, true).clicked() {
                 self.add_colour();
             }
+            if theme::tool(ui, icon::MUSIC, s.sounds, s.sounds_tip, true).clicked() {
+                self.sounds_open = !self.sounds_open;
+            }
+            self.record_button(ui);
             ui.label(
                 egui::RichText::new(format!("{}  {}", icon::IMPORT, s.drop_hint)).color(theme::color::WEAK).small(),
             );
@@ -1777,6 +1875,7 @@ impl eframe::App for EditorApp {
         }
         self.take_dropped_files(&ctx);
         self.export_window(&ctx);
+        self.sounds_window(&ctx);
         if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
             let screen = ctx.content_rect();
             let painter = ctx
