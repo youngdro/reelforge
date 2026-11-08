@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 use reelforge_compile::{CompileOptions, compile};
-use reelforge_engine::Session;
+use reelforge_engine::{Session, SharedSession};
 use reelforge_media::Footage;
 use reelforge_model::{ClipContent, MediaKind, Project, TrackKind};
 use reelforge_render::{Quality, render_frame};
@@ -37,7 +37,9 @@ type Arrival = (String, Result<Vec<u8>, String>);
 
 /// The editor window's state.
 pub struct EditorApp {
-    session: Session,
+    session: Arc<SharedSession>,
+    /// The last revision drawn, to notice changes other clients made.
+    seen: u64,
     media: Arc<Footage>,
     /// Files dropped in the browser, read asynchronously: `(name, bytes)`.
     arrivals: Arc<Mutex<Vec<Arrival>>>,
@@ -116,7 +118,14 @@ struct Title {
 impl EditorApp {
     /// An editor on `session`.
     pub fn new(session: Session) -> EditorApp {
+        EditorApp::shared(SharedSession::new(session))
+    }
+
+    /// An editor on a session other clients edit too (agents through a server the app hosts). Their
+    /// changes show as they commit.
+    pub fn shared(session: Arc<SharedSession>) -> EditorApp {
         EditorApp {
+            seen: session.revision(),
             session,
             media: Arc::new(Footage::new()),
             arrivals: Arc::default(),
@@ -152,6 +161,12 @@ impl EditorApp {
         EditorApp::new(s)
     }
 
+    /// Starts with `status` in the status bar.
+    pub fn with_status(mut self, status: String) -> EditorApp {
+        self.status = status;
+        self
+    }
+
     /// Draws the preview with the wgpu compositor on eframe's device, when eframe runs on wgpu
     /// with a device that has what the compositor needs (WebGPU, Vulkan, Metal, DX12; not WebGL2).
     pub fn with_gpu(mut self, cc: &eframe::CreationContext<'_>) -> EditorApp {
@@ -159,7 +174,9 @@ impl EditorApp {
             let info = rs.adapter.get_info();
             if info.backend != eframe::wgpu::Backend::Gl {
                 let compositor = reelforge_render::gpu::GpuCompositor::new(rs.device.clone(), rs.queue.clone(), &info);
-                self.status = format!("Preview on {}", compositor.adapter());
+                if self.status == "Ready" {
+                    self.status = format!("Preview on {}", compositor.adapter());
+                }
                 self.gpu = Some(GpuPreview {
                     compositor,
                     renderer: rs.renderer.clone(),
@@ -178,14 +195,14 @@ impl EditorApp {
         self
     }
 
-    /// The session, for hosts that drive the editor (the web page's API, a control channel).
-    pub fn session_mut(&mut self) -> &mut Session {
-        &mut self.session
+    /// The session, for hosts that drive the editor (the web page's API, a server).
+    pub fn session(&self) -> &Arc<SharedSession> {
+        &self.session
     }
 
     /// Runs a command and reports the outcome in the status bar.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value, String> {
-        match self.session.execute(id, &params) {
+        match self.session.execute(id, &params, "editor") {
             Ok(v) => {
                 self.status = format!("{id}: done");
                 Ok(v)
@@ -248,7 +265,7 @@ impl EditorApp {
         let at = self.playhead;
         let add = |track: &str| json!({"track": track, "media": m.id, "start": at});
         // a track with no room refuses the clip and nothing changes, so trying is safe
-        let mut placed = tracks.iter().find_map(|t| self.session.execute("clip.add", &add(t)).ok());
+        let mut placed = tracks.iter().find_map(|t| self.session.execute("clip.add", &add(t), "editor").ok());
         if placed.is_none() {
             let kind = if want == TrackKind::Audio { "audio" } else { "video" };
             if let Ok(t) = self.execute("track.add", json!({ "kind": kind })) {
@@ -504,6 +521,13 @@ impl eframe::App for EditorApp {
         let ctx = ui.ctx().clone();
         if !self.fonts {
             self.fonts = true;
+            // another client's edit wakes the window, which otherwise sleeps until input
+            let repaint = ctx.clone();
+            self.session.on_change(move |c, _| {
+                if c.by != "editor" {
+                    repaint.request_repaint();
+                }
+            });
             // egui's own faces have no Chinese: fall back to the face titles are drawn with
             let families = [egui::FontFamily::Proportional, egui::FontFamily::Monospace];
             ctx.add_font(egui::epaint::text::FontInsert::new(
@@ -516,6 +540,20 @@ impl eframe::App for EditorApp {
                     })
                     .to_vec(),
             ));
+        }
+        let change = self.session.last_change();
+        if change.revision != self.seen {
+            self.seen = change.revision;
+            if change.by != "editor" {
+                self.status = format!("{} · {}", change.by, change.command);
+                // a clip it removed may have been the selection
+                if let Some(sel) = &self.selected
+                    && !self.project().tracks.iter().any(|t| t.clips.iter().any(|c| &c.id == sel))
+                {
+                    self.selected = None;
+                    self.inspector = None;
+                }
+            }
         }
         self.take_dropped_files(&ctx);
         if ctx.input(|i| !i.raw.hovered_files.is_empty()) {

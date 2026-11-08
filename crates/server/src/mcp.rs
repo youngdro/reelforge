@@ -47,8 +47,15 @@ fn rpc_result(id: &Value, result: Value) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "result": result})
 }
 
-/// Answers one JSON-RPC message. Notifications and responses get `None`.
-pub fn handle(hub: &Hub, msg: &Value) -> Option<Value> {
+/// The client's name from an `initialize` request, to say who made each change.
+pub fn client_name(msg: &Value) -> Option<String> {
+    (msg.get("method")? == "initialize")
+        .then(|| msg["params"]["clientInfo"]["name"].as_str().map(|n| format!("agent {n}")))
+        .flatten()
+}
+
+/// Answers one JSON-RPC message from client `by`. Notifications and responses get `None`.
+pub fn handle(hub: &Hub, msg: &Value, by: &str) -> Option<Value> {
     let Some(obj) = msg.as_object() else {
         return Some(rpc_error(&Value::Null, -32600, "expected a JSON-RPC request object"));
     };
@@ -86,7 +93,7 @@ pub fn handle(hub: &Hub, msg: &Value) -> Option<Value> {
                 return Some(rpc_error(id, -32602, "tools/call needs a tool `name`"));
             };
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
-            match hub.call(name, &args) {
+            match hub.call_as(by, name, &args) {
                 Ok(Output::Json(v)) => {
                     let text = serde_json::to_string_pretty(&v).expect("serialises");
                     let mut result = json!({"content": [{"type": "text", "text": text}], "isError": false});
@@ -121,14 +128,14 @@ pub fn handle(hub: &Hub, msg: &Value) -> Option<Value> {
 
 /// Answers a message as it arrived on the wire: a parse error, a single message, or (older
 /// revisions) a batch.
-pub fn handle_text(hub: &Hub, text: &str) -> Option<Value> {
+pub fn handle_text(hub: &Hub, text: &str, by: &str) -> Option<Value> {
     match serde_json::from_str::<Value>(text) {
         Err(e) => Some(rpc_error(&Value::Null, -32700, &format!("parse error: {e}"))),
         Ok(Value::Array(batch)) => {
-            let out: Vec<Value> = batch.iter().filter_map(|m| handle(hub, m)).collect();
+            let out: Vec<Value> = batch.iter().filter_map(|m| handle(hub, m, by)).collect();
             (!out.is_empty()).then_some(Value::Array(out))
         }
-        Ok(msg) => handle(hub, &msg),
+        Ok(msg) => handle(hub, &msg, by),
     }
 }
 
@@ -136,12 +143,16 @@ pub fn handle_text(hub: &Hub, text: &str) -> Option<Value> {
 pub fn serve_stdio(hub: &Hub) -> std::io::Result<()> {
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
+    let mut by = "agent".to_string();
     for line in stdin.lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
-        if let Some(reply) = handle_text(hub, &line) {
+        if let Some(name) = serde_json::from_str(&line).ok().as_ref().and_then(client_name) {
+            by = name;
+        }
+        if let Some(reply) = handle_text(hub, &line, &by) {
             writeln!(stdout, "{reply}")?;
             stdout.flush()?;
         }

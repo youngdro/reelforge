@@ -8,7 +8,8 @@ use crate::http::HttpServer;
 use crate::{CallError, Hub, Output, mcp, ops};
 
 fn rpc(hub: &Hub, id: i64, method: &str, params: Value) -> Value {
-    mcp::handle(hub, &json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})).expect("a reply")
+    mcp::handle(hub, &json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}), "mcp:test")
+        .expect("a reply")
 }
 
 fn call(hub: &Hub, tool: &str, args: Value) -> Value {
@@ -40,7 +41,7 @@ fn every_operation_is_a_tool_with_a_schema() {
     assert_eq!(init["result"]["protocolVersion"], "2025-03-26");
     assert!(init["result"]["capabilities"]["tools"].is_object());
     // notifications get no answer
-    assert!(mcp::handle(&hub, &json!({"jsonrpc": "2.0", "method": "notifications/initialized"})).is_none());
+    assert!(mcp::handle(&hub, &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}), "t").is_none());
 
     let tools = rpc(&hub, 2, "tools/list", json!({}))["result"]["tools"].as_array().unwrap().clone();
     assert_eq!(tools.len(), ops().len() - 1, "all but commands.list");
@@ -196,4 +197,32 @@ fn other_machines_need_a_token() {
     let Err(e) = HttpServer::bind(hub.clone(), "0.0.0.0:0", None) else { panic!("bound without a token") };
     assert!(e.contains("token"));
     assert!(HttpServer::bind(hub, "0.0.0.0:0", Some("t".into())).is_ok());
+}
+
+#[test]
+fn remote_clients_hear_who_changed_what() {
+    let hub = Arc::new(Hub::new(Session::default()));
+    let server = HttpServer::bind(hub.clone(), "127.0.0.1:0", None).unwrap();
+    let base = format!("http://{}", server.local_addr());
+    std::thread::spawn(move || server.run());
+    // an MCP client names itself, and its edits carry the name
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"claude-code","version":"1"}}}"#;
+    let (_, heads, _) = post(&base, "/mcp", init, &[]);
+    let session = heads.iter().find(|(k, _)| k.eq_ignore_ascii_case("mcp-session-id")).unwrap().1.clone();
+    let since = hub.session().revision();
+    let poll = {
+        let base = base.clone();
+        std::thread::spawn(move || {
+            let mut r = ureq::get(format!("{base}/v1/events?since={since}&timeout=10")).call().unwrap();
+            serde_json::from_slice::<Value>(&r.body_mut().read_to_vec().unwrap()).unwrap()
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let video = track(&hub, "video");
+    let call = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "clip_add", "arguments": {"track": video, "color": [1, 1, 0]}}});
+    post(&base, "/mcp", &call.to_string(), &[("Mcp-Session-Id", &session)]);
+    let heard = poll.join().unwrap();
+    assert_eq!(heard, json!({"revision": since + 1, "command": "clip.add", "by": "agent claude-code"}));
+    assert_eq!(hub.session().last_change().by, "agent claude-code");
 }

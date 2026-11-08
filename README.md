@@ -79,6 +79,15 @@ claude mcp add reelforge -- ./target/release/reelforge-cli serve /path/to/cut.re
 claude mcp add --transport http reelforge http://127.0.0.1:7878/mcp
 ```
 
+To edit together with an agent, let the editor host the server: the agent's edits appear in the
+window as they commit, the status bar says who made each one, and undo covers both.
+
+```sh
+cargo run -r -p reelforge -- cut.reel.json --serve        # MCP at http://127.0.0.1:7878/mcp
+```
+
+Opening a project in the editor saves every edit to it, whoever makes it.
+
 On anything but loopback the server needs a token (`--token` or `REELFORGE_TOKEN`), sent as
 `Authorization: Bearer …`.
 

@@ -13,6 +13,7 @@
 mod commands;
 mod params;
 mod schema;
+mod shared;
 
 use std::sync::Arc;
 
@@ -23,6 +24,7 @@ use thiserror::Error;
 pub use commands::{CommandSpec, registry};
 pub use params::parse_time;
 pub use schema::input_schema;
+pub use shared::{Change, SharedSession};
 
 /// How many undo steps a session keeps.
 pub const UNDO_DEPTH: usize = 200;

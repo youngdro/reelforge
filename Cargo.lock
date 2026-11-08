@@ -2610,6 +2610,7 @@ dependencies = [
  "eframe",
  "reelforge-engine",
  "reelforge-model",
+ "reelforge-server",
  "reelforge-ui",
 ]
 

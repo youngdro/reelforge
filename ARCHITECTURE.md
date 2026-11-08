@@ -83,9 +83,11 @@ In rough priority order for short videos:
    reference to one 8-bit code, drawing the editor's preview on eframe's own device and exports on
    a headless one, with the sRGB and 4:2:0 conversions in shaders.
 4. Audio mixing and playback.
-5. Live, shared editing: the editor joining a server's session (or hosting one), so a person and
-   an agent edit the same project and each sees the other's changes as they commit; resources and
-   change notifications in MCP. The server itself is in place (`reelforge-server`): every command
-   and render/export/save as MCP tools over stdio and Streamable HTTP, the same operations at
-   `/v1`, and `reelforge-cli call` on a file or a server.
+5. Shared editing, next steps: the browser editor joining a server's session (project over
+   `/v1/events`, media bytes served by the server), MCP resources and change notifications, and
+   per-client undo. In place: `reelforge-server` exposes every command and render/export/save as
+   MCP tools (stdio, Streamable HTTP) and at `/v1`; `reelforge-cli call` works on a file or a
+   server; and the desktop editor hosts a server on its own session (`--serve`), so an agent's
+   edits show in the window as they commit (`SharedSession` records who made each change and
+   wakes listeners and long-polls).
 6. A standalone render service that accepts a RenderSpec.

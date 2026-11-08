@@ -209,3 +209,34 @@ fn every_command_has_a_schema_that_names_its_required_fields() {
     }
     assert!(crate::input_schema("no.such").is_none());
 }
+
+#[test]
+fn a_shared_session_announces_changes_and_who_made_them() {
+    use std::sync::Mutex;
+    let shared = crate::SharedSession::new(Session::default());
+    let heard = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let h = heard.clone();
+    shared.on_change(move |c, p| h.lock().unwrap().push((c.by.clone(), c.command.clone(), p.tracks.len())));
+    let track = shared.project().tracks[0].id.clone();
+    // queries and refusals announce nothing
+    shared.execute("project.inspect", &json!({}), "agent").unwrap();
+    assert!(shared.execute("clip.split", &json!({"clip": "x", "at": 0}), "agent").is_err());
+    assert!(heard.lock().unwrap().is_empty());
+
+    let since = shared.revision();
+    let waiter = {
+        let shared = shared.clone();
+        std::thread::spawn(move || shared.wait_for_change(since, std::time::Duration::from_secs(10)))
+    };
+    shared.execute("clip.add", &json!({"track": track, "color": [1, 0, 0]}), "agent").unwrap();
+    let change = waiter.join().unwrap();
+    assert_eq!((change.revision, change.command.as_str(), change.by.as_str()), (since + 1, "clip.add", "agent"));
+    shared.execute("edit.undo", &json!({}), "editor").unwrap();
+    let heard = heard.lock().unwrap();
+    assert_eq!(
+        heard.iter().map(|(by, cmd, _)| format!("{by}:{cmd}")).collect::<Vec<_>>(),
+        ["agent:clip.add", "editor:edit.undo"]
+    );
+    // a wait with nothing new times out with the last change
+    assert_eq!(shared.wait_for_change(shared.revision(), std::time::Duration::from_millis(10)).command, "edit.undo");
+}
