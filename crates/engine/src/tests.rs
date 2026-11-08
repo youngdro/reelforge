@@ -704,3 +704,36 @@ fn export_settings_shape_the_compiled_output() {
     assert!(s.execute("project.setExport", &json!({"codec": "vp8"})).is_err());
     assert!(s.execute("project.setExport", &json!({"preset": "cinema"})).is_err());
 }
+
+#[test]
+fn library_sounds_go_on_an_audio_track_and_into_the_mix() {
+    let mut s = Session::default();
+    let list = s.execute("sound.library", &json!({})).unwrap();
+    assert!(list["sounds"].as_array().unwrap().len() >= 12);
+    let a = s.execute("sound.add", &json!({"sound": "whoosh", "at": {"seconds": 1}})).unwrap();
+    let b = s.execute("sound.add", &json!({"sound": "whoosh", "name": "嗖"})).unwrap();
+    // one media for both, the second after the first
+    assert_eq!(a["media"], b["media"]);
+    assert_eq!(a["track"], b["track"]);
+    let m = &s.project().media[a["media"].as_str().unwrap()];
+    assert_eq!(m.uri, "library:whoosh");
+    assert!(m.sha256.is_some());
+    let end = Tick::SECOND + m.duration.unwrap();
+    assert_eq!(s.project().clip(b["clip"].as_str().unwrap()).unwrap().1.start, end);
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert_eq!(spec["audio"].as_array().unwrap().len(), 2);
+    assert!(s.execute("sound.add", &json!({"sound": "kazoo"})).is_err());
+    let v = video_track(&s);
+    assert!(s.execute("sound.add", &json!({"sound": "pop", "track": v})).is_err());
+}
+
+#[test]
+fn a_sound_that_does_not_fit_gets_its_own_track() {
+    let mut s = Session::default();
+    let a = s.execute("sound.add", &json!({"sound": "boom", "at": {"seconds": 0}})).unwrap();
+    let b = s.execute("sound.add", &json!({"sound": "pop", "at": {"seconds": 0.5}})).unwrap();
+    assert_ne!(a["track"], b["track"]);
+    // naming a full track refuses
+    let t = a["track"].as_str().unwrap();
+    assert!(s.execute("sound.add", &json!({"sound": "pop", "at": {"seconds": 0.5}, "track": t})).is_err());
+}

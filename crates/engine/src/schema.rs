@@ -124,7 +124,27 @@ fn object(props: Vec<(&'static str, Value)>, required: &[&str]) -> Value {
 pub fn input_schema(id: &str) -> Option<Value> {
     let clip = || ("clip", ident("Clip id, such as c4."));
     Some(match id {
-        "commands.list" | "project.inspect" | "edit.undo" | "edit.redo" | "title.templates" => object(vec![], &[]),
+        "commands.list" | "project.inspect" | "edit.undo" | "edit.redo" | "title.templates" | "sound.library" => {
+            object(vec![], &[])
+        }
+        "sound.add" => object(
+            vec![
+                (
+                    "sound",
+                    json!({"enum": reelforge_media::library::SOUNDS.iter().map(|s| s.id).collect::<Vec<_>>(), "description": "A library sound (see sound.library)."}),
+                ),
+                ("at", time("Where it starts on the timeline; after the track's last clip by default.")),
+                (
+                    "track",
+                    json!({"type": "string", "description": "An audio track; the first one (or a new one) by default."}),
+                ),
+                (
+                    "name",
+                    json!({"type": "string", "description": "The media's display name; the English name by default."}),
+                ),
+            ],
+            &["sound"],
+        ),
         "project.setCanvas" => object(
             vec![
                 ("width", json!({"type": "integer", "minimum": 16, "description": "Output width in pixels."})),

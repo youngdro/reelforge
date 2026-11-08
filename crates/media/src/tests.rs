@@ -507,3 +507,12 @@ fn an_encoder_that_answers_late_still_makes_a_playable_file() {
     let late = footage.picture("v", &asset, Tick::from_seconds(1.5)).expect("decode").expect("online");
     assert!(near(centre(&late), [0, 0, 255]), "{:?}", centre(&late));
 }
+
+#[test]
+fn library_sounds_play_without_a_file() {
+    let asset = Asset { kind: AssetKind::Audio, sha256: sha(9), uri: "library:ding".into(), of: None, probe: None };
+    let footage = Footage::new();
+    let sound = footage.audio(&asset, 0, 4800, 48_000).expect("made").expect("online");
+    assert_eq!(sound.len(), 2);
+    assert!(rms(&sound[0]) > 0.01);
+}
