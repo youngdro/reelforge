@@ -53,7 +53,7 @@ struct Wave {
 }
 
 /// The renderer's description of a model file, for [`Footage`].
-fn asset(m: &Media) -> Asset {
+pub(crate) fn asset(m: &Media) -> Asset {
     Asset {
         kind: match m.kind {
             MediaKind::Video => AssetKind::Video,

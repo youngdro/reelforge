@@ -12,16 +12,20 @@
 //! uploaded.
 //!
 //! Files dropped on the window are imported (`media.import`) and placed at the playhead
-//! (`clip.add`). Export writes an MP4: on the desktop on a background thread, in the browser with
-//! its own (hardware) encoder, as a download.
+//! (`clip.add`); files picked with Import in the asset panel on the left (`assets`) only join the
+//! project's media, to be dragged onto the timeline from there. Export writes an MP4: on the
+//! desktop on a background thread, in the browser with its own (hardware) encoder, as a download.
 //!
 //! [`EditorApp::join`] edits a session a server holds instead, with agents and other editors: see
 //! [`remote`].
 
+mod assets;
 mod audio;
 mod export_job;
 pub mod i18n;
 mod looks;
+#[cfg(target_arch = "wasm32")]
+mod picker;
 mod record;
 pub mod remote;
 mod stage;
@@ -50,8 +54,9 @@ use theme::icon;
 /// Longest side of the preview render, in pixels.
 const PREVIEW_LONG_SIDE: f32 = 640.0;
 
-/// A file the browser finished reading: its name and bytes.
-type Arrival = (String, Result<Vec<u8>, String>);
+/// A file the browser finished reading: its name, its bytes, and whether it goes on the timeline
+/// too (a drop) or only into the project's media (picked with Import).
+pub(crate) type Arrival = (String, Result<Vec<u8>, String>, bool);
 
 /// The editor window's state.
 pub struct EditorApp {
@@ -64,8 +69,8 @@ pub struct EditorApp {
     export: Option<export_job::ExportJob>,
     /// The export settings are showing.
     export_open: bool,
-    /// The sound library is showing.
-    sounds_open: bool,
+    /// The panel on the left: media, sounds, titles.
+    assets: assets::AssetPanel,
     /// The timelines window is showing, and the name being typed for the current timeline.
     timelines_open: bool,
     timeline_name: String,
@@ -243,7 +248,7 @@ impl EditorApp {
             arrivals: Arc::default(),
             export: None,
             export_open: false,
-            sounds_open: false,
+            assets: assets::AssetPanel::default(),
             timelines_open: false,
             timeline_name: String::new(),
             recorder: None,
@@ -448,9 +453,9 @@ impl EditorApp {
         }
     }
 
-    /// Imports a file on disk and places it at the playhead.
+    /// Imports a file on disk and, when `place`, places it at the playhead.
     #[cfg(not(target_arch = "wasm32"))]
-    fn import_path(&mut self, path: &std::path::Path) {
+    fn import_path(&mut self, path: &std::path::Path, place: bool) {
         if is_subrip(&path.to_string_lossy()) {
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             match std::fs::read(path) {
@@ -469,12 +474,12 @@ impl EditorApp {
         }
         let path = path.to_string_lossy().into_owned();
         if let Ok(v) = self.execute("media.import", json!({ "path": path })) {
-            self.place(&v);
+            self.imported(&v, place);
         }
     }
 
-    /// Imports a file the browser handed over and places it at the playhead.
-    fn import_bytes(&mut self, name: &str, bytes: Vec<u8>) {
+    /// Imports a file the browser handed over and, when `place`, places it at the playhead.
+    fn import_bytes(&mut self, name: &str, bytes: Vec<u8>, place: bool) {
         if is_subrip(name) {
             self.import_captions(name, &bytes);
             return;
@@ -485,7 +490,7 @@ impl EditorApp {
         }
         if let Some(remote) = &self.remote {
             // the server keeps the file; it is imported by the server's path when it is there
-            self.status = match remote.upload(name, bytes) {
+            self.status = match remote.upload(name, bytes, place) {
                 Ok(()) => fill(self.s().sending, &[&name]),
                 Err(e) => format!("{name}: {e}"),
             };
@@ -514,7 +519,7 @@ impl EditorApp {
             params["duration"] = json!(d);
         }
         if let Ok(v) = self.execute("media.import", params) {
-            self.place(&v);
+            self.imported(&v, place);
         }
     }
 
@@ -552,9 +557,8 @@ impl EditorApp {
         }
     }
 
-    /// Puts newly imported media at the playhead, on the lowest track of its kind with room there,
-    /// or on a new track above the others.
-    fn place(&mut self, imported: &Value) {
+    /// After `media.import`: puts the file at the playhead when `place`, or says it is in the media.
+    fn imported(&mut self, imported: &Value, place: bool) {
         let Ok(m) = serde_json::from_value::<reelforge_model::Media>(imported["media"].clone()) else { return };
         if imported["relinked"] == true {
             // it was offline on the timeline already
@@ -563,30 +567,129 @@ impl EditorApp {
         }
         if m.kind == MediaKind::Lut {
             // a lookup table is worn by the selected picture clip, or waits in the colour section
-            let wear = self
-                .selected
-                .clone()
-                .is_some_and(|c| self.run("clip.setColor", &json!({"clip": c, "lut": m.id})).is_ok());
+            let wear = place
+                && self
+                    .selected
+                    .clone()
+                    .is_some_and(|c| self.run("clip.setColor", &json!({"clip": c, "lut": m.id})).is_ok());
             self.status = fill(if wear { self.s().lut_worn } else { self.s().lut_imported }, &[&m.name]);
             return;
         }
+        if place {
+            if self.place(&m, self.playhead, None) {
+                self.status = fill(self.s().imported, &[&m.name]);
+            }
+        } else {
+            self.status = fill(self.s().added_to_media, &[&m.name]);
+        }
+    }
+
+    /// Puts media `m` at `at`: on `track` if it has room there, else on the lowest track of its
+    /// kind with room, else on a new track above the others. Selects the new clip.
+    fn place(&mut self, m: &reelforge_model::Media, at: Tick, track: Option<String>) -> bool {
+        if m.kind == MediaKind::Lut {
+            if let Some(c) = self.selected.clone()
+                && self.execute("clip.setColor", json!({"clip": c, "lut": m.id})).is_ok()
+            {
+                self.status = fill(self.s().lut_worn, &[&m.name]);
+            }
+            return false;
+        }
         let want = if m.kind == MediaKind::Audio { TrackKind::Audio } else { TrackKind::Video };
-        let tracks: Vec<String> =
-            self.project().tracks.iter().filter(|t| t.kind == want).map(|t| t.id.clone()).collect();
-        let at = self.playhead;
-        let add = |track: &str| json!({"track": track, "media": m.id, "start": at});
+        let id = m.id.clone();
+        self.put(want, track, move |t| json!({"track": t, "media": id, "start": at}))
+    }
+
+    /// Adds a clip (`params` for a track id) to `track` when it takes it there, else to the lowest
+    /// track of `kind` with room, else to a new track of that kind. Selects the new clip.
+    fn put(&mut self, kind: TrackKind, track: Option<String>, params: impl Fn(&str) -> Value) -> bool {
+        let mut tracks: Vec<String> =
+            self.project().tracks.iter().filter(|t| t.kind == kind).map(|t| t.id.clone()).collect();
+        if let Some(t) = track {
+            tracks.retain(|x| *x != t);
+            tracks.insert(0, t);
+        }
         // a track with no room refuses the clip and nothing changes, so trying is safe
-        let mut placed = tracks.iter().find_map(|t| self.run("clip.add", &add(t)).ok());
+        let mut placed = tracks.iter().find_map(|t| self.run("clip.add", &params(t)).ok());
         if placed.is_none() {
-            let kind = if want == TrackKind::Audio { "audio" } else { "video" };
-            if let Ok(t) = self.execute("track.add", json!({ "kind": kind })) {
+            let word = match kind {
+                TrackKind::Audio => "audio",
+                TrackKind::Text => "text",
+                TrackKind::Video => "video",
+            };
+            if let Ok(t) = self.execute("track.add", json!({ "kind": word })) {
                 let id = t["track"].as_str().unwrap_or_default().to_string();
-                placed = self.execute("clip.add", add(&id)).ok();
+                placed = self.execute("clip.add", params(&id)).ok();
             }
         }
-        if let Some(v) = placed {
-            self.selected = v["clip"].as_str().map(str::to_string);
-            self.status = fill(self.s().imported, &[&m.name]);
+        match placed {
+            Some(v) => {
+                self.selected = v["clip"].as_str().map(str::to_string);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Puts something from the asset panel at `at` (on `track`, when it was dropped on one).
+    fn add_item(&mut self, item: &assets::Item, at: Tick, track: Option<String>) {
+        let s = self.s();
+        match item {
+            assets::Item::Media(id) => {
+                let Some(m) = self.project().media.get(id).cloned() else { return };
+                if self.place(&m, at, track) {
+                    self.status = fill(s.imported, &[&m.name]);
+                }
+            }
+            assets::Item::Sound { id, name, .. } => {
+                let mut params = json!({"sound": id, "at": at, "name": name});
+                if let Some(t) = track {
+                    params["track"] = json!(t);
+                }
+                if let Ok(v) = self.execute("sound.add", params) {
+                    self.selected = v["clip"].as_str().map(str::to_string);
+                }
+            }
+            assets::Item::Title(template) => {
+                let (text, template) = (s.new_title, *template);
+                self.put(TrackKind::Text, track, move |t| {
+                    let mut p = json!({"track": t, "text": text, "start": at, "duration": assets::TITLE_LENGTH});
+                    if let Some(id) = template {
+                        p["template"] = json!(id);
+                    }
+                    p
+                });
+            }
+        }
+    }
+
+    /// Asks for files to add to the project's media: the system's file dialog on the desktop, the
+    /// browser's file picker on the web (its files arrive later, like dropped ones).
+    fn pick_files(&mut self, ctx: &egui::Context) {
+        let s = self.s();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = ctx;
+            let picked = rfd::FileDialog::new()
+                .add_filter(s.picker_media, IMPORTABLE)
+                .add_filter(s.picker_all, &["*"])
+                .pick_files()
+                .unwrap_or_default();
+            for path in picked {
+                if self.remote.is_some() {
+                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    match std::fs::read(&path) {
+                        Ok(bytes) => self.import_bytes(&name, bytes, false),
+                        Err(e) => self.status = format!("{name}: {e}"),
+                    }
+                } else {
+                    self.import_path(&path, false);
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        if let Err(e) = picker::pick_files(ctx, self.arrivals.clone(), IMPORTABLE) {
+            self.status = format!("{}: {e}", s.import);
         }
     }
 
@@ -598,11 +701,11 @@ impl EditorApp {
                 // the server may be another machine: send the file's bytes
                 let name = f.path().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 match std::fs::read(f.path()) {
-                    Ok(bytes) => self.import_bytes(&name, bytes),
+                    Ok(bytes) => self.import_bytes(&name, bytes, true),
                     Err(e) => self.status = format!("{name}: {e}"),
                 }
             } else {
-                self.import_path(f.path());
+                self.import_path(f.path(), true);
             }
             #[cfg(target_arch = "wasm32")]
             {
@@ -611,15 +714,15 @@ impl EditorApp {
                 wasm_bindgen_futures::spawn_local(async move {
                     let name = f.path().to_string_lossy().into_owned();
                     let bytes = f.bytes_async().await;
-                    arrivals.lock().expect("arrivals lock").push((name, bytes));
+                    arrivals.lock().expect("arrivals lock").push((name, bytes, true));
                     ctx.request_repaint();
                 });
             }
         }
         let arrived = std::mem::take(&mut *self.arrivals.lock().expect("arrivals lock"));
-        for (name, bytes) in arrived {
+        for (name, bytes, place) in arrived {
             match bytes {
-                Ok(b) => self.import_bytes(&name, b),
+                Ok(b) => self.import_bytes(&name, b, place),
                 Err(e) => self.status = format!("{name}: {e}"),
             }
         }
@@ -867,51 +970,13 @@ impl EditorApp {
                         Ok(take) if take.seconds() >= 0.2 => {
                             self.takes += 1;
                             let name = format!("{} {}.wav", s.recording_name, self.takes);
-                            self.import_bytes(&name, take.wav());
+                            self.import_bytes(&name, take.wav(), true);
                         }
                         Ok(_) => self.status = s.recording_short.to_string(),
                         Err(e) => self.status = fill(s.mic_failed, &[&e]),
                     }
                 }
             }
-        }
-    }
-
-    /// The built-in sounds, while open: a click puts one at the playhead.
-    fn sounds_window(&mut self, ctx: &egui::Context) {
-        if !self.sounds_open {
-            return;
-        }
-        use reelforge_media::library::{Category, SOUNDS};
-        let s = self.s();
-        let mut open = true;
-        let mut picked = None;
-        egui::Window::new(s.sounds_title)
-            .open(&mut open)
-            .anchor(egui::Align2::LEFT_TOP, [12.0, 48.0])
-            .collapsible(false)
-            .resizable(false)
-            .default_width(300.0)
-            .show(ctx, |ui| {
-                for (title, cat) in [(s.sound_effects, Category::Effect), (s.sound_music, Category::Music)] {
-                    ui.label(egui::RichText::new(title).small().strong().color(theme::color::WEAK));
-                    ui.horizontal_wrapped(|ui| {
-                        for (snd, name) in SOUNDS.iter().zip(s.sound_names).filter(|(x, _)| x.category == cat) {
-                            let icon = if cat == Category::Music { icon::MUSIC } else { icon::SOUND };
-                            if ui.button(format!("{icon}  {name}")).on_hover_text(s.sound_tip).clicked() {
-                                picked = Some((snd.id, name));
-                            }
-                        }
-                    });
-                    ui.add_space(6.0);
-                }
-                ui.label(egui::RichText::new(s.sound_free).small().color(theme::color::WEAK));
-            });
-        self.sounds_open = open;
-        if let Some((id, name)) = picked
-            && let Ok(v) = self.execute("sound.add", json!({"sound": id, "at": self.playhead, "name": name}))
-        {
-            self.selected = v["clip"].as_str().map(str::to_string);
         }
     }
 
@@ -1027,7 +1092,6 @@ impl EditorApp {
             let label = if list.len() > 1 { format!("{shown}  ({}/{})", current + 1, list.len()) } else { shown };
             if theme::tool(ui, icon::FILM, &label, s.timelines_tip, true).clicked() {
                 self.timelines_open = !self.timelines_open;
-                self.sounds_open &= !self.timelines_open;
                 self.timeline_name.clear();
             }
             ui.separator();
@@ -1047,14 +1111,7 @@ impl EditorApp {
             if theme::tool(ui, icon::COLOUR, s.colour, s.colour_tip, true).clicked() {
                 self.add_colour();
             }
-            if theme::tool(ui, icon::MUSIC, s.sounds, s.sounds_tip, true).clicked() {
-                self.sounds_open = !self.sounds_open;
-                self.timelines_open &= !self.sounds_open;
-            }
             self.record_button(ui);
-            ui.label(
-                egui::RichText::new(format!("{}  {}", icon::IMPORT, s.drop_hint)).color(theme::color::WEAK).small(),
-            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if theme::tool(ui, icon::FIT, "", s.fit_tip, true).clicked() {
                     let width = ui.ctx().content_rect().width();
@@ -1965,6 +2022,12 @@ fn placement_at(c: &reelforge_model::Clip, at: Tick) -> ClipTransform {
 
 /// Whether a file name is a SubRip caption file.
 /// A CapCut / 剪映 draft: `draft_content.json` or `draft_info.json`.
+/// What Import offers: video, pictures, sound, LUTs, captions and CapCut drafts.
+const IMPORTABLE: &[&str] = &[
+    "mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "webp", "gif", "mp3", "wav", "m4a", "aac", "flac", "ogg",
+    "opus", "cube", "srt", "json",
+];
+
 fn is_draft(name: &str) -> bool {
     let file = name.rsplit(['/', '\\']).next().unwrap_or(name).to_ascii_lowercase();
     file.starts_with("draft_") && file.ends_with(".json") && (file.contains("content") || file.contains("info"))
@@ -2037,8 +2100,7 @@ impl eframe::App for EditorApp {
             }
             for up in remote.take_uploaded() {
                 if let Ok(v) = self.execute("media.import", up.import) {
-                    self.place(&v);
-                    self.status = fill(self.s().imported, &[&up.name]);
+                    self.imported(&v, up.place);
                 }
             }
             if let Some(note) = remote.take_notes().pop() {
@@ -2047,7 +2109,6 @@ impl eframe::App for EditorApp {
         }
         self.take_dropped_files(&ctx);
         self.export_window(&ctx);
-        self.sounds_window(&ctx);
         self.timelines_window(&ctx);
         if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
             let screen = ctx.content_rect();
@@ -2085,6 +2146,18 @@ impl eframe::App for EditorApp {
                 self.timeline.show(ui, &p, self.playhead, self.selected.as_deref(), playing, lang, &media)
             })
             .inner;
+        if self.assets.wants_looks() && self.looks.is_none() {
+            self.looks = Some(looks::previews(&ctx));
+        }
+        let looks = self.looks.clone().unwrap_or_default();
+        let s = self.s();
+        let asked = egui::Panel::left("assets")
+            .resizable(true)
+            .default_size(300.0)
+            .size_range(220.0..=520.0)
+            .frame(egui::Frame::new().fill(theme::color::PANEL).inner_margin(egui::Margin::same(10)))
+            .show(ui, |ui| self.assets.show(ui, &p, &media, s, &looks, playing))
+            .inner;
         egui::Panel::right("inspector")
             .resizable(true)
             .default_size(290.0)
@@ -2119,6 +2192,20 @@ impl eframe::App for EditorApp {
                 params["end"] = json!(t);
             }
             let _ = self.execute("clip.trim", params);
+        }
+        match asked {
+            Some(assets::Action::Import) => self.pick_files(&ctx),
+            Some(assets::Action::Add(item)) => self.add_item(&item, self.playhead, None),
+            Some(assets::Action::Remove(id)) => {
+                let name = p.media.get(&id).map(|m| m.name.clone()).unwrap_or_default();
+                if self.execute("media.remove", json!({"media": id})).is_ok() {
+                    self.status = fill(self.s().media_removed, &[&name]);
+                }
+            }
+            None => {}
+        }
+        if let Some((item, at, track)) = out.dropped {
+            self.add_item(&item, at, track);
         }
         if let Some((track, key, on)) = out.toggled {
             let _ = self.execute("track.set", json!({"track": track, key: on}));

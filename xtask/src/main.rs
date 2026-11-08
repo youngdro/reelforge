@@ -47,7 +47,7 @@ const FORBIDDEN: &[(&str, &str, &str)] = &[
 const NATIVE_ONLY: &[&str] = &["reelforge-server"];
 
 /// External crates allowed only from this layer up.
-const UI_ONLY: &[&str] = &["egui", "eframe", "egui-wgpu", "egui-winit", "winit", "wasm-bindgen", "web-sys"];
+const UI_ONLY: &[&str] = &["egui", "eframe", "egui-wgpu", "egui-winit", "winit", "wasm-bindgen", "web-sys", "rfd"];
 const UI_LAYER: u8 = 5;
 
 fn main() -> ExitCode {

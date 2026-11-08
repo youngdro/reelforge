@@ -846,3 +846,30 @@ fn a_capcut_draft_becomes_a_timeline() {
     assert!(s.execute("capcut.import", &json!({"draft": "not json"})).is_err());
     assert!(s.execute("capcut.import", &json!({"draft": "{}"})).is_err());
 }
+
+#[test]
+fn media_leaves_the_project_only_when_no_clip_uses_it() {
+    let mut s = Session::default();
+    let m = s
+        .execute("media.import", &json!({"path": "missing/clip.mp4", "kind": "video", "duration": {"seconds": 4}}))
+        .unwrap()["media"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let c = s.execute("clip.add", &json!({"track": video_track(&s), "media": m})).unwrap()["clip"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(media_uses(&s.project(), &m), 1);
+    // a clip parked on another timeline still counts
+    s.execute("timeline.add", &json!({})).unwrap();
+    assert!(s.execute("media.remove", &json!({"media": m})).is_err());
+    s.execute("timeline.switch", &json!({"timeline": s.project().timelines[0].id})).unwrap();
+    s.execute("clip.remove", &json!({"clips": c})).unwrap();
+    assert_eq!(media_uses(&s.project(), &m), 0);
+    s.execute("media.remove", &json!({"media": m})).unwrap();
+    assert!(s.project().media.is_empty());
+    assert!(s.execute("media.remove", &json!({"media": m})).is_err());
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.project().media.contains_key(&m));
+}

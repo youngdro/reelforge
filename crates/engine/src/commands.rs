@@ -147,6 +147,15 @@ static REGISTRY: &[CommandSpec] = &[
         run: media_import,
     },
     CommandSpec {
+        id: "media.remove",
+        label: "Remove Media",
+        params: r#"{"media": id}"#,
+        doc: "Takes a file out of the project's media. Refused while a clip on any timeline uses it (as its picture or sound, or as its LUT).",
+        edits: true,
+        enabled: always,
+        run: media_remove,
+    },
+    CommandSpec {
         id: "timeline.list",
         label: "Timelines",
         params: "{}",
@@ -763,6 +772,36 @@ fn media_import(s: &mut Session, v: &Value) -> CmdResult {
         let out = json!({ "media": serde_json::to_value(&m).expect("serialises") });
         proj.media.insert(id, m);
         Ok(out)
+    })
+}
+
+/// How many clips, on every timeline, use media `id` (as their source or their LUT).
+pub fn media_uses(proj: &Project, id: &str) -> usize {
+    let parked = proj.timelines.iter().flat_map(|t| &t.tracks);
+    proj.tracks
+        .iter()
+        .chain(parked)
+        .flat_map(|t| &t.clips)
+        .filter(|c| {
+            matches!(&c.content, ClipContent::Media { media, .. } if media == id)
+                || c.color.lut.as_ref().is_some_and(|l| l.media == id)
+        })
+        .count()
+}
+
+fn media_remove(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("media")?.to_string();
+    s.edit("Remove Media", |proj| {
+        if !proj.media.contains_key(&id) {
+            return Err(EngineError::Refused(format!("no media {id:?}")));
+        }
+        match media_uses(proj, &id) {
+            0 => {}
+            n => return Err(EngineError::Refused(format!("{n} clip(s) use {id:?}; delete them first"))),
+        }
+        proj.media.remove(&id);
+        Ok(json!({ "media": id }))
     })
 }
 
