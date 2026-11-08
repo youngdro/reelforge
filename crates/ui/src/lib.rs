@@ -17,6 +17,7 @@
 //! [`EditorApp::join`] edits a session a server holds instead, with agents and other editors: see
 //! [`remote`].
 
+mod audio;
 #[cfg(not(target_arch = "wasm32"))]
 mod export_job;
 pub mod remote;
@@ -53,6 +54,9 @@ pub struct EditorApp {
     export_dir: std::path::PathBuf,
     playhead: Tick,
     playing: bool,
+    /// Preview sound, and the project revision its mix was compiled from.
+    sound: audio::Playback,
+    sound_spec: Option<(u64, Arc<reelforge_renderspec::RenderSpec>)>,
     selected: Option<String>,
     status: String,
     preview: Option<egui::TextureHandle>,
@@ -143,6 +147,8 @@ impl EditorApp {
             export_dir: std::env::current_dir().unwrap_or_default(),
             playhead: Tick::ZERO,
             playing: false,
+            sound: audio::Playback::default(),
+            sound_spec: None,
             selected: None,
             status: "Ready".into(),
             preview: None,
@@ -264,6 +270,51 @@ impl EditorApp {
         self.session.project()
     }
 
+    /// Plays from the playhead (from the start, at the end), or pauses.
+    fn set_playing(&mut self, playing: bool) {
+        self.playing = playing;
+        if playing {
+            if self.playhead >= self.project().duration() {
+                self.playhead = Tick::ZERO;
+            }
+            self.sound.start(self.playhead);
+            if let Some(why) = self.sound.take_problem() {
+                self.status = why;
+            }
+        } else {
+            self.sound.stop();
+        }
+    }
+
+    /// Moves the playhead on while playing: by the sound the device took, or by `dt` seconds
+    /// without a device; and mixes the sound ahead.
+    fn advance(&mut self, dt: f64) {
+        let p = self.project();
+        let revision = self.session.revision();
+        if self.sound_spec.as_ref().is_none_or(|(r, _)| *r != revision) {
+            let stale = self.sound_spec.is_some();
+            self.sound_spec =
+                compile(&p, &CompileOptions { encode: false }).ok().map(|spec| (revision, Arc::new(spec)));
+            if stale && self.sound.running() {
+                // what was mixed ahead is of the old cut: mix again from here
+                self.sound.start(self.playhead);
+            }
+        }
+        self.playhead = match self.sound.clock() {
+            Some(t) => t,
+            None => self.playhead + Tick::from_seconds(dt),
+        };
+        let end = p.duration();
+        if self.playhead >= end {
+            self.playhead = end;
+            self.set_playing(false);
+            return;
+        }
+        if let Some((_, spec)) = &self.sound_spec {
+            self.sound.fill(spec, &self.media);
+        }
+    }
+
     /// Imports a file on disk and places it at the playhead.
     #[cfg(not(target_arch = "wasm32"))]
     fn import_path(&mut self, path: &std::path::Path) {
@@ -373,10 +424,7 @@ impl EditorApp {
             let p = self.project();
             let track_of = |kind| p.tracks.iter().find(|t| t.kind == kind).map(|t| t.id.clone());
             if ui.button(if self.playing { "⏸ Pause" } else { "▶ Play" }).clicked() {
-                self.playing = !self.playing;
-                if self.playing && self.playhead >= p.duration() {
-                    self.playhead = Tick::ZERO;
-                }
+                self.set_playing(!self.playing);
             }
             ui.separator();
             if let Some(t) = track_of(TrackKind::Video)
@@ -585,6 +633,8 @@ impl eframe::App for EditorApp {
         if !self.fonts {
             self.fonts = true;
             let _ = self.window.set(ctx.clone());
+            #[cfg(not(target_arch = "wasm32"))]
+            self.sound.prepare();
             // another client's edit wakes the window, which otherwise sleeps until input
             let repaint = ctx.clone();
             self.session.on_change(move |c, _| {
@@ -649,16 +699,11 @@ impl eframe::App for EditorApp {
         }
         if self.playing {
             let dt = ui.input(|i| i.stable_dt).min(0.1);
-            self.playhead += Tick::from_seconds(dt as f64);
-            let end = self.project().duration();
-            if self.playhead >= end {
-                self.playhead = end;
-                self.playing = false;
-            }
+            self.advance(dt as f64);
             ui.ctx().request_repaint();
         }
         if ui.input(|i| i.key_pressed(egui::Key::Space)) && !ui.ctx().egui_wants_keyboard_input() {
-            self.playing = !self.playing;
+            self.set_playing(!self.playing);
         }
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::right("inspector").resizable(true).default_size(240.0).show(ui, |ui| self.inspector(ui));
@@ -672,6 +717,9 @@ impl eframe::App for EditorApp {
 
         if let Some(t) = out.seek {
             self.playhead = p.canvas.fps.snap(t.max(Tick::ZERO));
+            if self.playing {
+                self.sound.start(self.playhead);
+            }
         }
         if let Some(sel) = out.select {
             self.selected = sel;

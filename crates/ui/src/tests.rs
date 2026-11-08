@@ -8,6 +8,8 @@ use reelforge_server::Hub;
 use reelforge_server::http::HttpServer;
 use serde_json::{Value, json};
 
+use reelforge_time::Tick;
+
 use crate::EditorApp;
 
 fn serve(hub: &Arc<Hub>) -> String {
@@ -129,4 +131,70 @@ fn a_wrong_token_is_reported_and_nothing_is_joined() {
     });
     assert!(notes[0].contains("token"), "{notes:?}");
     assert!(!remote.joined());
+}
+
+/// A stereo 16-bit WAV: a 440 Hz tone on the left, silence on the right.
+fn tone_wav(rate: u32, seconds: f32) -> Vec<u8> {
+    let n = (rate as f32 * seconds) as u32;
+    let mut b = Vec::new();
+    b.extend(b"RIFF");
+    b.extend((36 + n * 4).to_le_bytes());
+    b.extend(b"WAVEfmt ");
+    for v in [16u32.to_le_bytes(), [1, 0, 2, 0], rate.to_le_bytes(), (rate * 4).to_le_bytes(), [4, 0, 16, 0]] {
+        b.extend(v);
+    }
+    b.extend(b"data");
+    b.extend((n * 4).to_le_bytes());
+    for i in 0..n {
+        let v = ((i as f32 / rate as f32 * 440.0 * std::f32::consts::TAU).sin() * 16000.0) as i16;
+        b.extend(v.to_le_bytes());
+        b.extend(0i16.to_le_bytes());
+    }
+    b
+}
+
+fn rms(frames: &[[f32; 2]], channel: usize) -> f32 {
+    (frames.iter().map(|f| f[channel] * f[channel]).sum::<f32>() / frames.len() as f32).sqrt()
+}
+
+#[test]
+fn the_preview_plays_the_mix_and_follows_edits() {
+    let wav = std::env::temp_dir().join(format!("reelforge-ui-tone-{}.wav", std::process::id()));
+    std::fs::write(&wav, tone_wav(44_100, 3.0)).unwrap();
+    let mut app = EditorApp::new(Session::default());
+    app.sound = crate::audio::Playback::silent(48_000);
+    let m = app.execute("media.import", json!({"path": wav})).unwrap()["media"]["id"].as_str().unwrap().to_string();
+    let audio = first_track(&app, reelforge_model::TrackKind::Audio);
+    let clip =
+        app.execute("clip.add", json!({"track": audio, "media": m})).unwrap()["clip"].as_str().unwrap().to_string();
+    // something to look at, so the cut is longer than the sound
+    let video = first_track(&app, reelforge_model::TrackKind::Video);
+    app.execute("clip.add", json!({"track": video, "color": [0, 0, 0], "duration": {"seconds": 5}})).unwrap();
+
+    app.set_playing(true);
+    app.advance(0.0);
+    let (heard, at) = app.sound.take(4_800);
+    assert!((rms(&heard, 0) - 16000.0 / 32768.0 / 2f32.sqrt()).abs() < 0.02, "{}", rms(&heard, 0));
+    assert_eq!(rms(&heard, 1), 0.0);
+    assert_eq!(at, Tick::from_seconds(0.1), "the playhead is where the sound is");
+
+    // removing the clip while playing silences what was mixed ahead too
+    app.execute("clip.remove", json!({"clips": clip})).unwrap();
+    app.advance(0.0);
+    assert_eq!(rms(&app.sound.take(4_800).0, 0), 0.0);
+
+    // pausing stops the sound; playing again starts where the playhead is
+    app.set_playing(false);
+    assert_eq!(rms(&app.sound.take(100).0, 0), 0.0);
+    app.execute("edit.undo", json!({})).unwrap();
+    app.playhead = Tick::from_seconds(2.95);
+    app.set_playing(true);
+    app.advance(0.0);
+    let (tail, _) = app.sound.take(4_800);
+    assert!(rms(&tail[..2_000], 0) > 0.2 && rms(&tail[2_600..], 0) == 0.0, "the tone ends at 3 s");
+
+    // at the end of the cut playback stops
+    app.playhead = Tick::from_seconds(4.99);
+    app.advance(0.1);
+    assert!(!app.playing && !app.sound.running());
 }
