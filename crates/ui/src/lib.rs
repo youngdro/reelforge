@@ -13,8 +13,8 @@
 //!
 //! Files dropped on the window are imported (`media.import`) and placed at the playhead
 //! (`clip.add`); files picked with Import in the asset panel on the left (`assets`) only join the
-//! project's media, to be dragged onto the timeline from there. Export writes an MP4: on the desktop on a background thread, in the browser with
-//! its own (hardware) encoder, as a download.
+//! project's media, to be dragged onto the timeline from there. Export writes an MP4: on the
+//! desktop on a background thread, in the browser with its own (hardware) encoder, as a download.
 //!
 //! [`EditorApp::join`] edits a session a server holds instead, with agents and other editors: see
 //! [`remote`].
