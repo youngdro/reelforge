@@ -738,15 +738,22 @@ impl EditorApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 self.export_controls(ui, &p);
                 ui.add_space(4.0);
-                if ui
-                    .add(egui::Button::new(egui::RichText::new(s.switch_to).color(theme::color::WEAK)).frame(false))
-                    .on_hover_text(s.switch_tip)
-                    .clicked()
-                {
+                let mut lang = self.lang;
+                egui::ComboBox::from_id_salt("lang")
+                    .selected_text(egui::RichText::new(s.lang_name).color(theme::color::WEAK))
+                    .width(96.0)
+                    .show_ui(ui, |ui| {
+                        for l in Lang::ALL {
+                            ui.selectable_value(&mut lang, l, l.strings().lang_name);
+                        }
+                    })
+                    .response
+                    .on_hover_text(s.lang_tip);
+                if lang != self.lang {
                     if self.status == s.ready {
                         self.status.clear();
                     }
-                    self.lang = if self.lang == Lang::Zh { Lang::En } else { Lang::Zh };
+                    self.lang = lang;
                     self.lang_chosen = true;
                     self.lang_unsaved = true;
                 }
@@ -874,7 +881,6 @@ impl EditorApp {
         }
         use reelforge_media::library::{Category, SOUNDS};
         let s = self.s();
-        let zh = self.lang == Lang::Zh;
         let mut open = true;
         let mut picked = None;
         egui::Window::new(s.sounds_title)
@@ -887,8 +893,7 @@ impl EditorApp {
                 for (title, cat) in [(s.sound_effects, Category::Effect), (s.sound_music, Category::Music)] {
                     ui.label(egui::RichText::new(title).small().strong().color(theme::color::WEAK));
                     ui.horizontal_wrapped(|ui| {
-                        for snd in SOUNDS.iter().filter(|x| x.category == cat) {
-                            let name = if zh { snd.zh } else { snd.en };
+                        for (snd, name) in SOUNDS.iter().zip(s.sound_names).filter(|(x, _)| x.category == cat) {
                             let icon = if cat == Category::Music { icon::MUSIC } else { icon::SOUND };
                             if ui.button(format!("{icon}  {name}")).on_hover_text(s.sound_tip).clicked() {
                                 picked = Some((snd.id, name));
@@ -1080,7 +1085,7 @@ impl EditorApp {
         ui.horizontal_centered(|ui| {
             let warn =
                 ["cannot", "no sound", "failed", "refused", "error", ": "].iter().any(|w| self.status.contains(w))
-                    && !self.status.ends_with(": done");
+                    && !self.status.ends_with(s.done.trim_start_matches("{}"));
             let (glyph, tint) =
                 if warn { (icon::WARNING, theme::color::WARN) } else { (icon::DONE, theme::color::WEAK) };
             ui.label(egui::RichText::new(format!("{glyph}  {}", self.status)).small().color(tint));
@@ -1255,7 +1260,6 @@ impl EditorApp {
             _ => None,
         };
         let edit_is_title = matches!(clip.content, ClipContent::Text { .. });
-        let lang = self.lang;
         if edit_is_title && self.looks.is_none() {
             self.looks = Some(looks::previews(ui.ctx()));
         }
@@ -1314,8 +1318,8 @@ impl EditorApp {
                 });
                 ui.add_space(6.0);
                 theme::section(ui, s.sec_templates, |ui| {
-                    let names: std::collections::HashMap<&str, (&str, &str)> =
-                        reelforge_engine::title_templates().into_iter().map(|t| (t.id, (t.name, t.name_zh))).collect();
+                    let names: std::collections::HashMap<&str, &str> =
+                        reelforge_engine::title_templates().into_iter().map(|t| t.id).zip(s.template_names).collect();
                     let width = (ui.available_width() - 8.0) / 2.0;
                     let size = egui::vec2(width, width * looks::SIZE[1] as f32 / looks::SIZE[0] as f32);
                     egui::Grid::new("looks").num_columns(2).spacing([8.0, 8.0]).show(ui, |ui| {
@@ -1336,8 +1340,7 @@ impl EditorApp {
                                 egui::Stroke::new(1.0, theme::color::LINE)
                             };
                             ui.painter().rect_stroke(rect, 6.0, stroke, egui::StrokeKind::Inside);
-                            let (en, zh) = names.get(id).copied().unwrap_or((id, id));
-                            let r = r.on_hover_text(if lang == Lang::Zh { zh } else { en });
+                            let r = r.on_hover_text(names.get(id).copied().unwrap_or(id));
                             if r.clicked() && !on {
                                 wear = Some(id);
                             }
