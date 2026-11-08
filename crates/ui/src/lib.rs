@@ -21,6 +21,7 @@ mod audio;
 #[cfg(not(target_arch = "wasm32"))]
 mod export_job;
 pub mod remote;
+mod theme;
 mod timeline;
 
 use std::sync::{Arc, Mutex};
@@ -33,6 +34,7 @@ use reelforge_model::{ClipContent, MediaKind, Project, TrackKind};
 use reelforge_render::{Quality, render_frame};
 use reelforge_time::Tick;
 use serde_json::{Value, json};
+use theme::icon;
 
 /// Longest side of the preview render, in pixels.
 const PREVIEW_LONG_SIDE: f32 = 640.0;
@@ -114,6 +116,10 @@ struct Inspector {
     scale: f32,
     rotation: f32,
     opacity: f32,
+    /// Colour and title clips.
+    color: Option<[f32; 4]>,
+    /// Clips with sound, in dB.
+    volume: Option<f32>,
     title: Option<Title>,
 }
 
@@ -210,9 +216,6 @@ impl EditorApp {
             let info = rs.adapter.get_info();
             if info.backend != eframe::wgpu::Backend::Gl {
                 let compositor = reelforge_render::gpu::GpuCompositor::new(rs.device.clone(), rs.queue.clone(), &info);
-                if self.status == "Ready" {
-                    self.status = format!("Preview on {}", compositor.adapter());
-                }
                 self.gpu = Some(GpuPreview {
                     compositor,
                     renderer: rs.renderer.clone(),
@@ -419,67 +422,290 @@ impl EditorApp {
         }
     }
 
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            let p = self.project();
-            let track_of = |kind| p.tracks.iter().find(|t| t.kind == kind).map(|t| t.id.clone());
-            if ui.button(if self.playing { "⏸ Pause" } else { "▶ Play" }).clicked() {
+    fn track_of(&self, kind: TrackKind) -> Option<String> {
+        self.project().tracks.iter().find(|t| t.kind == kind).map(|t| t.id.clone())
+    }
+
+    fn add_title(&mut self) {
+        if let Some(t) = self.track_of(TrackKind::Text) {
+            let _ = self.execute(
+                "clip.add",
+                json!({"track": t, "text": "标题 Title", "start": self.playhead, "duration": {"seconds": 3}}),
+            );
+        }
+    }
+
+    fn add_colour(&mut self) {
+        if let Some(t) = self.track_of(TrackKind::Video) {
+            let _ = self.execute(
+                "clip.add",
+                json!({"track": t, "color": [0.2, 0.5, 0.9], "start": self.playhead, "duration": {"seconds": 3}}),
+            );
+        }
+    }
+
+    fn split(&mut self) {
+        if let Some(sel) = self.selected.clone() {
+            let _ = self.execute("clip.split", json!({"clip": sel, "at": self.playhead}));
+        }
+    }
+
+    fn delete(&mut self) {
+        if let Some(sel) = self.selected.clone()
+            && self.execute("clip.remove", json!({"clips": sel})).is_ok()
+        {
+            self.selected = None;
+            self.inspector = None;
+        }
+    }
+
+    fn seek(&mut self, t: Tick) {
+        let p = self.project();
+        self.playhead = p.canvas.fps.snap(t.max(Tick::ZERO).min(p.duration()));
+        if self.playing {
+            self.sound.start(self.playhead);
+        }
+    }
+
+    /// Keys, when no text field has them.
+    fn shortcuts(&mut self, ctx: &egui::Context) {
+        use egui::{Key, Modifiers};
+        if ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        let cmd = Modifiers::COMMAND;
+        let pressed = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
+        let fps = self.project().canvas.fps;
+        if pressed(Modifiers::NONE, Key::Space) {
+            self.set_playing(!self.playing);
+        }
+        if pressed(cmd | Modifiers::SHIFT, Key::Z) || pressed(cmd, Key::Y) {
+            let _ = self.execute("edit.redo", json!({}));
+        }
+        if pressed(cmd, Key::Z) {
+            let _ = self.execute("edit.undo", json!({}));
+        }
+        if pressed(Modifiers::NONE, Key::S) || pressed(cmd, Key::B) {
+            self.split();
+        }
+        if pressed(Modifiers::NONE, Key::Delete) || pressed(Modifiers::NONE, Key::Backspace) {
+            self.delete();
+        }
+        let frame = fps.frame_at(self.playhead);
+        let second = fps.fps().round() as i64;
+        for (m, k, step) in [
+            (Modifiers::NONE, Key::ArrowLeft, -1),
+            (Modifiers::NONE, Key::ArrowRight, 1),
+            (Modifiers::SHIFT, Key::ArrowLeft, -second),
+            (Modifiers::SHIFT, Key::ArrowRight, second),
+        ] {
+            if pressed(m, k) {
+                self.seek(fps.tick_of(frame + step));
+            }
+        }
+        if pressed(Modifiers::NONE, Key::Home) {
+            self.seek(Tick::ZERO);
+        }
+        if pressed(Modifiers::NONE, Key::End) {
+            self.seek(self.project().duration());
+        }
+    }
+
+    /// The bar along the top: name, what the project is, who is here, undo, export.
+    fn top_bar(&mut self, ui: &mut egui::Ui) {
+        let p = self.project();
+        ui.horizontal_centered(|ui| {
+            ui.label(egui::RichText::new("reelforge").strong().size(15.0).color(theme::color::ACCENT));
+            ui.add_space(6.0);
+            let c = &p.canvas;
+            ui.label(
+                egui::RichText::new(format!(
+                    "{}×{} · {} fps · {}",
+                    c.width,
+                    c.height,
+                    (c.fps.fps() * 100.0).round() / 100.0,
+                    theme::timecode(p.duration().seconds())
+                ))
+                .color(theme::color::WEAK),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                #[cfg(not(target_arch = "wasm32"))]
+                self.export_controls(ui, &p);
+                ui.add_space(4.0);
+                if theme::tool(ui, icon::REDO, "", "Redo  (Ctrl+Shift+Z)", true).clicked() {
+                    let _ = self.execute("edit.redo", json!({}));
+                }
+                if theme::tool(ui, icon::UNDO, "", "Undo  (Ctrl+Z)", true).clicked() {
+                    let _ = self.execute("edit.undo", json!({}));
+                }
+                if let Some(remote) = &self.remote {
+                    ui.add_space(8.0);
+                    let host = remote.base().split("://").nth(1).unwrap_or(remote.base()).to_string();
+                    let (tint, word) = if !remote.joined() {
+                        (theme::color::WARN, "Connecting")
+                    } else if remote.settled() {
+                        (theme::color::ACCENT, "Live")
+                    } else {
+                        (theme::color::WARN, "Syncing")
+                    };
+                    ui.label(egui::RichText::new(format!("{}  {word} · {host}", icon::CONNECTED)).color(tint))
+                        .on_hover_text(
+                            "Edits here and by agents and other editors on this server meet in one project.",
+                        );
+                }
+            });
+        });
+    }
+
+    /// Under the preview: where the playhead is, and play.
+    fn transport(&mut self, ui: &mut egui::Ui) {
+        let p = self.project();
+        let fps = p.canvas.fps;
+        ui.horizontal_centered(|ui| {
+            ui.label(
+                egui::RichText::new(theme::timecode(self.playhead.seconds())).monospace().color(theme::color::TEXT),
+            );
+            ui.label(
+                egui::RichText::new(format!("/ {}", theme::timecode(p.duration().seconds())))
+                    .monospace()
+                    .color(theme::color::WEAK),
+            );
+            // the play controls, centred on the panel
+            let w = 4.0 * 34.0 + 3.0 * 6.0 + 12.0;
+            let room = ui.available_width();
+            ui.add_space(((room - w) / 2.0 - 120.0).max(8.0));
+            let frame = fps.frame_at(self.playhead);
+            if theme::tool(ui, icon::TO_START, "", "To the start  (Home)", true).clicked() {
+                self.seek(Tick::ZERO);
+            }
+            if theme::tool(ui, icon::FRAME_BACK, "", "Previous frame  (←)", true).clicked() {
+                self.seek(fps.tick_of(frame - 1));
+            }
+            let play = egui::Button::new(
+                egui::RichText::new(if self.playing { icon::PAUSE } else { icon::PLAY })
+                    .size(18.0)
+                    .color(theme::color::ON_ACCENT),
+            )
+            .fill(theme::color::ACCENT)
+            .min_size(egui::vec2(44.0, 30.0))
+            .corner_radius(15.0);
+            if ui.add(play).on_hover_text("Play / pause  (Space)").clicked() {
                 self.set_playing(!self.playing);
             }
-            ui.separator();
-            if let Some(t) = track_of(TrackKind::Video)
-                && ui.button("+ Colour").clicked()
-            {
-                let _ =
-                    self.execute("clip.add", json!({"track": t, "color": [0.2, 0.5, 0.9], "duration": {"seconds": 3}}));
+            if theme::tool(ui, icon::FRAME_ON, "", "Next frame  (→)", true).clicked() {
+                self.seek(fps.tick_of(frame + 1));
             }
-            if let Some(t) = track_of(TrackKind::Text)
-                && ui.button("+ Title").clicked()
-            {
-                let _ = self.execute(
-                    "clip.add",
-                    json!({"track": t, "text": "标题 Title", "start": self.playhead, "duration": {"seconds": 3}}),
-                );
+            if theme::tool(ui, icon::TO_END, "", "To the end  (End)", true).clicked() {
+                self.seek(p.duration());
             }
-            let sel = self.selected.clone();
-            if ui.add_enabled(sel.is_some(), egui::Button::new("✂ Split")).clicked() {
-                let _ = self.execute("clip.split", json!({"clip": sel, "at": self.playhead}));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(egui::RichText::new(format!("frame {frame}")).monospace().color(theme::color::WEAK));
+            });
+        });
+    }
+
+    /// Above the timeline: edit tools, snapping, zoom.
+    fn timeline_bar(&mut self, ui: &mut egui::Ui) {
+        let sel = self.selected.is_some();
+        ui.horizontal(|ui| {
+            if theme::tool(ui, icon::SPLIT, "Split", "Cut the selected clip at the playhead  (S)", sel).clicked() {
+                self.split();
             }
-            if ui.add_enabled(sel.is_some(), egui::Button::new("🗑 Delete")).clicked()
-                && self.execute("clip.remove", json!({"clips": sel})).is_ok()
-            {
-                self.selected = None;
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                ui.separator();
-                self.export_controls(ui, &p);
+            if theme::tool(ui, icon::DELETE, "Delete", "Remove the selected clip  (Delete)", sel).clicked() {
+                self.delete();
             }
             ui.separator();
-            if ui.button("↶ Undo").clicked() {
-                let _ = self.execute("edit.undo", json!({}));
+            if theme::tool(ui, icon::TEXT, "Title", "Add a title at the playhead", true).clicked() {
+                self.add_title();
             }
-            if ui.button("↷ Redo").clicked() {
-                let _ = self.execute("edit.redo", json!({}));
+            if theme::tool(ui, icon::COLOUR, "Colour", "Add a colour clip at the playhead", true).clicked() {
+                self.add_colour();
             }
-            ui.separator();
-            let fps = p.canvas.fps;
-            ui.monospace(format!("{:.2}s · frame {}", self.playhead.seconds(), fps.frame_at(self.playhead)));
-            ui.separator();
-            ui.label(egui::RichText::new(&self.status).weak());
+            ui.label(
+                egui::RichText::new(format!("{}  Drop video, pictures or sound to import", icon::IMPORT))
+                    .color(theme::color::WEAK)
+                    .small(),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if theme::tool(ui, icon::FIT, "", "Fit the whole cut", true).clicked() {
+                    let width = ui.ctx().content_rect().width();
+                    self.timeline.fit(self.project().duration().seconds(), width);
+                }
+                if theme::tool(ui, icon::ZOOM_IN, "", "Zoom in  (Ctrl + wheel)", true).clicked() {
+                    self.timeline.zoom(1.5);
+                }
+                if theme::tool(ui, icon::ZOOM_OUT, "", "Zoom out", true).clicked() {
+                    self.timeline.zoom(1.0 / 1.5);
+                }
+                let snap = self.timeline.snap;
+                let magnet = egui::Button::new(egui::RichText::new(icon::SNAP).size(14.0).color(if snap {
+                    theme::color::ACCENT
+                } else {
+                    theme::color::WEAK
+                }))
+                .selected(snap);
+                if ui.add(magnet).on_hover_text(if snap { "Snapping on" } else { "Snapping off" }).clicked() {
+                    self.timeline.snap = !snap;
+                }
+            });
+        });
+    }
+
+    fn status_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_centered(|ui| {
+            let warn =
+                ["cannot", "no sound", "failed", "refused", "error", ": "].iter().any(|w| self.status.contains(w))
+                    && !self.status.ends_with(": done");
+            let (glyph, tint) =
+                if warn { (icon::WARNING, theme::color::WARN) } else { (icon::DONE, theme::color::WEAK) };
+            ui.label(egui::RichText::new(format!("{glyph}  {}", self.status)).small().color(tint));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let shown = match &self.gpu {
+                    Some(g) => format!("{}  GPU preview · {}", icon::SCREEN, g.compositor.adapter()),
+                    None => format!("{}  CPU preview", icon::SCREEN),
+                };
+                ui.label(egui::RichText::new(shown).small().color(theme::color::WEAK));
+            });
         });
     }
 
     fn inspector(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Inspector");
+        ui.add_space(4.0);
         let p = self.project();
         let Some(id) = self.selected.clone() else {
-            ui.label("Select a clip on the timeline.");
+            ui.add_space(24.0);
+            ui.vertical_centered(|ui| {
+                ui.label(egui::RichText::new(icon::FILM).size(28.0).color(theme::color::LINE));
+                ui.label(egui::RichText::new("Select a clip to edit it").color(theme::color::WEAK));
+            });
+            ui.add_space(16.0);
+            theme::section(ui, "SHORTCUTS", |ui| {
+                egui::Grid::new("keys").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+                    for (k, what) in [
+                        ("Space", "Play / pause"),
+                        ("S", "Split at the playhead"),
+                        ("Delete", "Remove the clip"),
+                        ("Ctrl+Z", "Undo"),
+                        ("Ctrl+Shift+Z", "Redo"),
+                        ("← / →", "One frame"),
+                        ("Shift+← / →", "One second"),
+                        ("Ctrl+wheel", "Zoom the timeline"),
+                    ] {
+                        ui.label(egui::RichText::new(k).monospace().color(theme::color::TEXT));
+                        ui.label(egui::RichText::new(what).color(theme::color::WEAK));
+                        ui.end_row();
+                    }
+                });
+            });
             return;
         };
         let Some((_, clip)) = p.clip(&id) else {
             self.selected = None;
             return;
+        };
+        let has_sound = match &clip.content {
+            ClipContent::Media { media, .. } => p.media.get(media).is_some_and(|m| m.kind != MediaKind::Image),
+            _ => false,
         };
         let current = Inspector {
             clip: id.clone(),
@@ -488,6 +714,11 @@ impl EditorApp {
             scale: clip.transform.scale,
             rotation: clip.transform.rotation,
             opacity: clip.opacity,
+            color: match &clip.content {
+                ClipContent::Text { color, .. } | ClipContent::Solid { color } => Some(*color),
+                ClipContent::Media { .. } => None,
+            },
+            volume: has_sound.then_some(clip.volume_db),
             title: match &clip.content {
                 ClipContent::Text { text, size, style, .. } => Some(Title {
                     text: text.clone(),
@@ -502,41 +733,109 @@ impl EditorApp {
         if self.inspector.as_ref().is_none_or(|i| i.clip != id) {
             self.inspector = Some(current.clone());
         }
-        ui.label(format!("{id} · {:.2}s → {:.2}s", clip.start.seconds(), clip.end().seconds()));
+        let (glyph, kind) = match &clip.content {
+            ClipContent::Media { media, .. } => match p.media.get(media).map(|m| m.kind) {
+                Some(MediaKind::Image) => (icon::IMAGE, "Picture"),
+                Some(MediaKind::Audio) => (icon::MUSIC, "Sound"),
+                _ => (icon::VIDEO, "Video"),
+            },
+            ClipContent::Text { .. } => (icon::TEXT, "Title"),
+            ClipContent::Solid { .. } => (icon::COLOUR, "Colour"),
+        };
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(glyph).size(18.0).color(theme::color::ACCENT));
+            ui.label(egui::RichText::new(kind).heading().strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(egui::RichText::new(&id).monospace().color(theme::color::WEAK));
+            });
+        });
+        ui.label(
+            egui::RichText::new(format!(
+                "{} → {}  ·  {}",
+                theme::timecode(clip.start.seconds()),
+                theme::timecode(clip.end().seconds()),
+                theme::timecode(clip.duration.seconds())
+            ))
+            .monospace()
+            .small()
+            .color(theme::color::WEAK),
+        );
+        ui.add_space(6.0);
         let edit = self.inspector.as_mut().expect("set above");
         let mut commit = false;
-        egui::Grid::new("inspector").num_columns(2).show(ui, |ui| {
-            // a value is committed when its drag ends or it is typed in
-            let row = |ui: &mut egui::Ui, name: &str, v: &mut f32, speed: f64, range: std::ops::RangeInclusive<f32>| {
-                ui.label(name);
-                let r = ui.add(egui::DragValue::new(v).speed(speed).range(range));
-                ui.end_row();
-                r.drag_stopped() || (r.changed() && !r.dragged())
-            };
-            commit |= row(ui, "X", &mut edit.x, 0.005, -2.0..=2.0);
-            commit |= row(ui, "Y", &mut edit.y, 0.005, -2.0..=2.0);
-            commit |= row(ui, "Scale", &mut edit.scale, 0.01, 0.0..=10.0);
-            commit |= row(ui, "Rotation", &mut edit.rotation, 0.5, -360.0..=360.0);
-            commit |= row(ui, "Opacity", &mut edit.opacity, 0.01, 0.0..=1.0);
+        // a value is committed when its drag ends or it is typed in
+        let row = |ui: &mut egui::Ui,
+                   name: &str,
+                   v: &mut f32,
+                   speed: f64,
+                   range: std::ops::RangeInclusive<f32>,
+                   suffix: &str| {
+            ui.label(egui::RichText::new(name).color(theme::color::WEAK));
+            let r = ui.add_sized(
+                [ui.available_width(), 24.0],
+                egui::DragValue::new(v).speed(speed).range(range).suffix(suffix),
+            );
+            ui.end_row();
+            r.drag_stopped() || (r.changed() && !r.dragged())
+        };
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             if let Some(t) = &mut edit.title {
-                ui.label("Text");
-                let r = ui.add(egui::TextEdit::multiline(&mut t.text).desired_rows(2).desired_width(150.0));
-                commit |= r.lost_focus();
-                ui.end_row();
-                commit |= row(ui, "Size", &mut t.size, 1.0, 8.0..=600.0);
-                ui.label("Style");
-                ui.horizontal(|ui| {
-                    commit |= ui.checkbox(&mut t.bold, "Bold").changed();
-                    commit |= ui.checkbox(&mut t.outline, "Outline").changed();
-                    commit |= ui.checkbox(&mut t.boxed, "Box").changed();
+                theme::section(ui, "TEXT", |ui| {
+                    let r = ui.add(egui::TextEdit::multiline(&mut t.text).desired_rows(3).desired_width(f32::INFINITY));
+                    commit |= r.lost_focus();
+                    egui::Grid::new("title").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                        commit |= row(ui, "Size", &mut t.size, 1.0, 8.0..=600.0, " px");
+                    });
+                    ui.horizontal(|ui| {
+                        commit |= ui.toggle_value(&mut t.bold, "Bold").changed();
+                        commit |= ui.toggle_value(&mut t.outline, "Outline").changed();
+                        commit |= ui.toggle_value(&mut t.boxed, "Box").changed();
+                    });
                 });
-                ui.end_row();
+                ui.add_space(6.0);
+            }
+            if let Some(c) = &mut edit.color {
+                theme::section(ui, "COLOUR", |ui| {
+                    let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+                    let r =
+                        egui::color_picker::color_edit_button_rgba(ui, &mut rgba, egui::color_picker::Alpha::OnlyBlend);
+                    if r.changed() {
+                        *c = rgba.to_rgba_unmultiplied();
+                    }
+                });
+                ui.add_space(6.0);
+            }
+            theme::section(ui, "TRANSFORM", |ui| {
+                egui::Grid::new("transform").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                    commit |= row(ui, "Position X", &mut edit.x, 0.005, -2.0..=2.0, "");
+                    commit |= row(ui, "Position Y", &mut edit.y, 0.005, -2.0..=2.0, "");
+                    commit |= row(ui, "Scale", &mut edit.scale, 0.01, 0.0..=10.0, "×");
+                    commit |= row(ui, "Rotation", &mut edit.rotation, 0.5, -360.0..=360.0, "°");
+                    commit |= row(ui, "Opacity", &mut edit.opacity, 0.01, 0.0..=1.0, "");
+                });
+            });
+            if let Some(v) = &mut edit.volume {
+                ui.add_space(6.0);
+                theme::section(ui, "SOUND", |ui| {
+                    egui::Grid::new("sound").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                        commit |= row(ui, "Volume", v, 0.2, -60.0..=12.0, " dB");
+                    });
+                });
             }
         });
+        // a colour is committed once the pointer lets go of the picker
+        let picked = self.inspector.as_ref().is_some_and(|e| e.color != current.color);
+        commit |= picked && !ui.ctx().egui_is_using_pointer();
         if commit && self.inspector.as_ref() != Some(&current) {
             let e = self.inspector.clone().expect("set");
             let mut params =
                 json!({"clip": id, "x": e.x, "y": e.y, "scale": e.scale, "rotation": e.rotation, "opacity": e.opacity});
+            if let Some(c) = e.color {
+                params["color"] = json!(c);
+            }
+            if let Some(v) = e.volume {
+                params["volumeDb"] = json!(v);
+            }
             if let Some(t) = e.title {
                 let was = current.title.as_ref();
                 params["text"] = json!(t.text);
@@ -642,24 +941,20 @@ impl eframe::App for EditorApp {
                     repaint.request_repaint();
                 }
             });
-            // egui's own faces have no Chinese: fall back to the face titles are drawn with
-            let families = [egui::FontFamily::Proportional, egui::FontFamily::Monospace];
-            ctx.add_font(egui::epaint::text::FontInsert::new(
-                "Noto Sans SC",
-                egui::FontData::from_static(reelforge_render::text::NOTO_SANS_SC_REGULAR),
-                families
-                    .map(|family| egui::epaint::text::InsertFontFamily {
-                        family,
-                        priority: egui::epaint::text::FontPriority::Lowest,
-                    })
-                    .to_vec(),
-            ));
+            theme::install(&ctx);
         }
         let change = self.session.last_change();
         if change.revision != self.seen {
             self.seen = change.revision;
             if change.by != "editor" {
-                self.status = format!("{} · {}", change.by, change.command);
+                let who = if change.by.starts_with("agent") {
+                    icon::AGENT
+                } else if change.by == "web" {
+                    icon::WEB
+                } else {
+                    icon::CONNECTED
+                };
+                self.status = format!("{who}  {} · {}", change.by, change.command);
                 // a clip it removed may have been the selection
                 if let Some(sel) = &self.selected
                     && !self.project().tracks.iter().any(|t| t.clips.iter().any(|c| &c.id == sel))
@@ -702,24 +997,39 @@ impl eframe::App for EditorApp {
             self.advance(dt as f64);
             ui.ctx().request_repaint();
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Space)) && !ui.ctx().egui_wants_keyboard_input() {
-            self.set_playing(!self.playing);
-        }
-        egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
-        egui::Panel::right("inspector").resizable(true).default_size(240.0).show(ui, |ui| self.inspector(ui));
+        self.shortcuts(&ctx);
+        let bar = |fill| egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(12, 6));
+        egui::Panel::top("top").exact_size(42.0).frame(bar(theme::color::PANEL)).show(ui, |ui| self.top_bar(ui));
+        egui::Panel::bottom("status")
+            .exact_size(24.0)
+            .frame(bar(theme::color::STAGE))
+            .show(ui, |ui| self.status_bar(ui));
         let p = self.project();
+        let playing = self.playing;
         let out = egui::Panel::bottom("timeline")
             .resizable(true)
-            .default_size(220.0)
-            .show(ui, |ui| self.timeline.show(ui, &p, self.playhead, self.selected.as_deref()))
+            .default_size(280.0)
+            .frame(egui::Frame::new().fill(theme::color::PANEL))
+            .show(ui, |ui| {
+                egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| self.timeline_bar(ui));
+                self.timeline.show(ui, &p, self.playhead, self.selected.as_deref(), playing)
+            })
             .inner;
-        egui::CentralPanel::default().show(ui, |ui| self.preview(ui));
+        egui::Panel::right("inspector")
+            .resizable(true)
+            .default_size(290.0)
+            .frame(egui::Frame::new().fill(theme::color::PANEL).inner_margin(egui::Margin::same(12)))
+            .show(ui, |ui| self.inspector(ui));
+        egui::Panel::bottom("transport")
+            .exact_size(46.0)
+            .frame(bar(theme::color::STAGE).inner_margin(egui::Margin::symmetric(16, 6)))
+            .show(ui, |ui| self.transport(ui));
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(theme::color::STAGE).inner_margin(egui::Margin::same(16)))
+            .show(ui, |ui| self.preview(ui));
 
         if let Some(t) = out.seek {
-            self.playhead = p.canvas.fps.snap(t.max(Tick::ZERO));
-            if self.playing {
-                self.sound.start(self.playhead);
-            }
+            self.seek(t);
         }
         if let Some(sel) = out.select {
             self.selected = sel;
@@ -729,6 +1039,19 @@ impl eframe::App for EditorApp {
                 "clip.move",
                 json!({"clip": clip, "start": p.canvas.fps.snap(start.max(Tick::ZERO)), "track": track}),
             );
+        }
+        if let Some((clip, start, end)) = out.trimmed {
+            let mut params = json!({"clip": clip});
+            if let Some(t) = start {
+                params["start"] = json!(t);
+            }
+            if let Some(t) = end {
+                params["end"] = json!(t);
+            }
+            let _ = self.execute("clip.trim", params);
+        }
+        if let Some((track, key, on)) = out.toggled {
+            let _ = self.execute("track.set", json!({"track": track, key: on}));
         }
     }
 

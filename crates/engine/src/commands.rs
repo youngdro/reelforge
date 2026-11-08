@@ -88,6 +88,15 @@ static REGISTRY: &[CommandSpec] = &[
         run: track_add,
     },
     CommandSpec {
+        id: "track.set",
+        label: "Track Settings",
+        params: r#"{"track": id, "name"?: string, "hidden"?: bool, "muted"?: bool}"#,
+        doc: "Renames a track, hides its picture or mutes its sound.",
+        edits: true,
+        enabled: always,
+        run: track_set,
+    },
+    CommandSpec {
         id: "clip.add",
         label: "Add Clip",
         params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null}"#,
@@ -350,6 +359,24 @@ fn media_import(s: &mut Session, v: &Value) -> CmdResult {
         let out = json!({ "media": serde_json::to_value(&m).expect("serialises") });
         proj.media.insert(id, m);
         Ok(out)
+    })
+}
+
+fn track_set(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("track")?.to_string();
+    let (name, hidden, muted) = (p.opt_str("name")?.map(str::to_string), p.opt_bool("hidden")?, p.opt_bool("muted")?);
+    if name.as_deref().is_some_and(|n| n.trim().is_empty()) {
+        return Err(EngineError::Params("`name` must not be empty".into()));
+    }
+    s.edit("Track Settings", |proj| {
+        let t = proj.track_mut(&id).ok_or_else(|| EngineError::Refused(format!("no track {id:?}")))?;
+        if let Some(n) = name {
+            t.name = n;
+        }
+        t.hidden = hidden.unwrap_or(t.hidden);
+        t.muted = muted.unwrap_or(t.muted);
+        Ok(json!({ "track": id, "name": t.name, "hidden": t.hidden, "muted": t.muted }))
     })
 }
 

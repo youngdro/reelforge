@@ -54,6 +54,10 @@ impl<'a> P<'a> {
         self.opt(name).map(|v| v.as_str().ok_or_else(|| Self::wrong(name, "a string"))).transpose()
     }
 
+    pub fn opt_bool(&self, name: &str) -> Result<Option<bool>, EngineError> {
+        self.opt(name).map(|v| v.as_bool().ok_or_else(|| Self::wrong(name, "true or false"))).transpose()
+    }
+
     pub fn opt_f64(&self, name: &str) -> Result<Option<f64>, EngineError> {
         self.opt(name)
             .map(|v| v.as_f64().filter(|f| f.is_finite()).ok_or_else(|| Self::wrong(name, "a finite number")))
