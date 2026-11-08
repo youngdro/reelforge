@@ -80,7 +80,7 @@ fn sha(i: u8) -> String {
 #[test]
 fn exported_mp4_probes_and_decodes_to_the_same_pictures() {
     let (path, stats) = export_to_file(&two_colours(), &Footage::new(), "colours.mp4");
-    assert_eq!(stats, ExportStats { frames: 60, audio_samples: 0 });
+    assert_eq!((stats.frames, stats.audio_samples), (60, 0));
 
     let probe = probe_path(&path).expect("probe");
     assert_eq!(probe.kind, AssetKind::Video);
@@ -230,4 +230,40 @@ fn a_spec_this_renderer_cannot_draw_is_refused_before_any_work() {
     spec.layers[0].fx.push(Effect { id: "blur.gaussian@1".into(), params: Default::default() });
     let r = export(&spec, &Footage::new(), Cursor::new(Vec::new()), &mut |_| panic!("no frame is drawn"));
     assert!(matches!(r, Err(ExportError::Render(RenderError::Unsupported(_)))), "{r:?}");
+}
+
+#[test]
+fn cpu_and_gpu_exports_decode_to_the_same_pictures() {
+    let spec = two_colours();
+    let run = |renderer| {
+        export_with(&spec, &Footage::new(), Cursor::new(Vec::new()), renderer, &mut |_| true)
+            .map(|(cur, stats)| (cur.into_inner(), stats))
+    };
+    let (cpu, stats) = run(Renderer::Cpu).expect("cpu export");
+    assert_eq!(stats.renderer, "cpu");
+    let (gpu, stats) = match run(Renderer::Gpu) {
+        Ok(r) => r,
+        Err(e) => {
+            assert!(std::env::var_os("REELFORGE_REQUIRE_GPU").is_none(), "{e}");
+            eprintln!("skipping: {e}");
+            return;
+        }
+    };
+    assert_ne!(stats.renderer, "cpu");
+    let footage = Footage::new();
+    for (i, bytes) in [cpu, gpu].into_iter().enumerate() {
+        let path = temp(&format!("renderer{i}.mp4"));
+        std::fs::write(&path, bytes).expect("write");
+        let asset = Asset {
+            kind: AssetKind::Video,
+            sha256: sha(40 + i as u8),
+            uri: path.to_string_lossy().into_owned(),
+            of: None,
+            probe: None,
+        };
+        for (t, want) in [(0.5, [255, 0, 0]), (1.5, [0, 0, 255])] {
+            let pic = footage.picture("v", &asset, Tick::from_seconds(t)).expect("decode").expect("online");
+            assert!(near(centre(&pic), want), "renderer {i} at {t}s: {:?}", centre(&pic));
+        }
+    }
 }

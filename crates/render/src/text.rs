@@ -5,8 +5,8 @@
 //! Chinese and Latin, so a spec renders the same everywhere, browser included. A spec can bring
 //! its own face as a `font` asset. System fonts are never consulted: they differ per machine.
 
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use filmcraft_text::fonts;
 use filmcraft_text::layout::{Align, ParagraphStyle, TextStyle};
@@ -23,7 +23,9 @@ use crate::plan::PlannedLayer;
 /// The family of the bundled default face.
 pub const DEFAULT_FAMILY: &str = "Noto Sans SC";
 
-static NOTO_SANS_SC_REGULAR: &[u8] = include_bytes!("../fonts/NotoSansSC-Regular.subset.ttf");
+/// The bundled default face, Regular: Noto Sans SC subset to GB 2312 and Latin (OFL). The editor
+/// gives it to egui too, so its own labels show Chinese.
+pub static NOTO_SANS_SC_REGULAR: &[u8] = include_bytes!("../fonts/NotoSansSC-Regular.subset.ttf");
 static NOTO_SANS_SC_BOLD: &[u8] = include_bytes!("../fonts/NotoSansSC-Bold.subset.ttf");
 
 /// Registers the bundled faces once.
@@ -71,11 +73,64 @@ struct Region {
     h: usize,
 }
 
-/// Draws `text` for `layer` into `out`. `k` is target pixels per output pixel (the preview scale).
-pub(crate) fn draw_text(out: &mut Image, layer: &PlannedLayer, text: &TextContent, family: &str, k: f32) {
+/// Text drawn but not yet composited: a premultiplied picture whose top-left pixel lands on target
+/// pixel `(x, y)`, before the layer's effects, opacity and blend. Both compositors draw it.
+#[derive(Clone, Debug)]
+pub struct Sprite {
+    /// Target column of the picture's left edge.
+    pub x: i32,
+    /// Target row of the picture's top edge.
+    pub y: i32,
+    /// The picture, shared: the same title on the next frame is the same sprite.
+    pub image: Arc<Image>,
+}
+
+/// Composites drawn text into `out` on the CPU: the layer's effects, opacity and blend.
+pub(crate) fn draw_sprite(out: &mut Image, layer: &PlannedLayer, sp: &Sprite) {
+    let w = sp.image.width as i32;
+    for (i, px) in sp.image.pixels.iter().enumerate() {
+        let (x, y) = (sp.x + i as i32 % w, sp.y + i as i32 / w);
+        if px[3] <= 0.0 || x < 0 || y < 0 || x >= out.width as i32 || y >= out.height as i32 {
+            continue;
+        }
+        let mut px = *px;
+        apply_fx(&mut px, &layer.fx);
+        for c in &mut px {
+            *c *= layer.opacity;
+        }
+        let o = (y as u32 * out.width + x as u32) as usize;
+        out.pixels[o] = blend(layer.blend, px, out.pixels[o]);
+    }
+}
+
+/// Lays out and draws `text` for `layer` on a `target`-sized frame. `k` is target pixels per output
+/// pixel (the preview scale), clipped to the frame (plus the
+/// outline's reach). `None` when nothing lands in the frame.
+///
+/// Titles mostly sit still, so the last few sprites are kept and a frame that draws the same text
+/// the same way gets the same sprite back (the GPU then skips the upload too).
+pub fn rasterize(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32, target: [u32; 2]) -> Option<Sprite> {
+    type Recent = Mutex<VecDeque<(String, Option<Sprite>)>>;
+    static RECENT: OnceLock<Recent> = OnceLock::new();
+    const KEEP: usize = 16;
+    let key = format!("{text:?}|{family}|{k}|{:?}|{}|{}|{target:?}", layer.center, layer.scale, layer.rotation);
+    let recent = RECENT.get_or_init(Mutex::default);
+    if let Some((_, sp)) = recent.lock().expect("sprite lock").iter().find(|(k, _)| *k == key) {
+        return sp.clone();
+    }
+    let sp = draw_uncached(layer, text, family, k, target);
+    let mut r = recent.lock().expect("sprite lock");
+    if r.len() == KEEP {
+        r.pop_front();
+    }
+    r.push_back((key, sp.clone()));
+    sp
+}
+
+fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32, target: [u32; 2]) -> Option<Sprite> {
     bundled();
     if text.text.trim().is_empty() {
-        return;
+        return None;
     }
     let style = TextStyle {
         family: family.to_string(),
@@ -97,7 +152,7 @@ pub(crate) fn draw_text(out: &mut Image, layer: &PlannedLayer, text: &TextConten
     // the block's centre goes to the layer's centre, scaled and turned about it
     let s = k * layer.scale;
     if s <= 0.0 {
-        return;
+        return None;
     }
     let (sin, cos) = layer.rotation.sin_cos();
     let centre: Xform = [1.0, 0.0, 0.0, 1.0, -(b[0] + b[2]) / 2.0, -(b[1] + b[3]) / 2.0];
@@ -121,10 +176,10 @@ pub(crate) fn draw_text(out: &mut Image, layer: &PlannedLayer, text: &TextConten
     // only what lands in the frame (plus the stroke's reach, so edges stroke correctly)
     let x0 = (d[0].floor() as i32).max(-(grow as i32));
     let y0 = (d[1].floor() as i32).max(-(grow as i32));
-    let x1 = (d[2].ceil() as i32).min(out.width as i32 + grow as i32);
-    let y1 = (d[3].ceil() as i32).min(out.height as i32 + grow as i32);
+    let x1 = (d[2].ceil() as i32).min(target[0] as i32 + grow as i32);
+    let y1 = (d[3].ceil() as i32).min(target[1] as i32 + grow as i32);
     if x1 <= x0 || y1 <= y0 {
-        return;
+        return None;
     }
     let r = Region { x: x0, y: y0, w: (x1 - x0) as usize, h: (y1 - y0) as usize };
 
@@ -144,36 +199,17 @@ pub(crate) fn draw_text(out: &mut Image, layer: &PlannedLayer, text: &TextConten
         let a = top[3] * cov;
         std::array::from_fn(|i| top[i] * cov + under[i] * (1.0 - a))
     };
-    for my in 0..r.h {
-        let y = r.y + my as i32;
-        if y < 0 || y >= out.height as i32 {
-            continue;
+    let mut image = Image::filled(r.w as u32, r.h as u32, [0.0; 4]);
+    for (i, px) in image.pixels.iter_mut().enumerate() {
+        if let (Some(mk), Some(c)) = (&behind, back_c) {
+            *px = over(c, mk.a[i].clamp(0.0, 1.0), *px);
         }
-        for mx in 0..r.w {
-            let x = r.x + mx as i32;
-            if x < 0 || x >= out.width as i32 {
-                continue;
-            }
-            let i = my * r.w + mx;
-            let mut px = [0.0; 4];
-            if let (Some(mk), Some(c)) = (&behind, back_c) {
-                px = over(c, mk.a[i].clamp(0.0, 1.0), px);
-            }
-            if let (Some(mk), Some(c)) = (&outline, stroke_c) {
-                px = over(c, mk.a[i].clamp(0.0, 1.0), px);
-            }
-            px = over(fill_c, fill.a[i].clamp(0.0, 1.0), px);
-            if px[3] <= 0.0 {
-                continue;
-            }
-            apply_fx(&mut px, &layer.fx);
-            for c in &mut px {
-                *c *= layer.opacity;
-            }
-            let o = (y as u32 * out.width + x as u32) as usize;
-            out.pixels[o] = blend(layer.blend, px, out.pixels[o]);
+        if let (Some(mk), Some(c)) = (&outline, stroke_c) {
+            *px = over(c, mk.a[i].clamp(0.0, 1.0), *px);
         }
+        *px = over(fill_c, fill.a[i].clamp(0.0, 1.0), *px);
     }
+    Some(Sprite { x: r.x, y: r.y, image: Arc::new(image) })
 }
 
 #[cfg(test)]

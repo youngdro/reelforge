@@ -2629,11 +2629,14 @@ dependencies = [
 name = "reelforge-render"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "filmcraft-text",
  "image",
+ "pollster",
  "reelforge-renderspec",
  "reelforge-time",
  "thiserror 2.0.21",
+ "wgpu",
 ]
 
 [[package]]

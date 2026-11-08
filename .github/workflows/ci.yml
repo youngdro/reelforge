@@ -18,5 +18,10 @@ jobs:
           targets: wasm32-unknown-unknown
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # Mesa's software Vulkan (lavapipe), so the wgpu compositor is tested against the CPU one
+      - name: software GPU
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
       - name: fmt, clippy, tests, layers, wasm
         run: cargo xtask ci
+        env:
+          REELFORGE_REQUIRE_GPU: "1"

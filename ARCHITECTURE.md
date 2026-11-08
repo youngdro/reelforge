@@ -29,7 +29,7 @@ service ships them without the editor.
 | L1 | `reelforge-renderspec` | RenderSpec types, validation, JSON Schema (`schema/renderspec-1.schema.json`) |
 | L1 | `reelforge-model` | The project document: canvas, media, tracks, clips; invariants |
 | L2 | `reelforge-compile` | Project → RenderSpec: all editing meaning resolved here |
-| L2 | `reelforge-render` | Pure frame plan + CPU reference compositor; `MediaSource` trait |
+| L2 | `reelforge-render` | Pure frame plan, CPU reference compositor, wgpu compositor (feature `gpu`); `MediaSource` trait |
 | L3 | `reelforge-media` | Probing, video/audio decoding (`Footage`), MP4 export (H.264 + AAC); FilmCraft's pure-Rust codecs |
 | L4 | `reelforge-engine` | `Session`, command registry, copy-on-write undo, batches |
 | L5 | `reelforge-ui` | The egui editor: toolbar, preview, timeline, inspector |
@@ -44,7 +44,7 @@ service ships them without the editor.
                                    |
                                Project ──compile──► RenderSpec (JSON, versioned)
                                                         |
-                                    plan_frame (pure) ──┴──► compositor: CPU reference │ wgpu (next)
+                                    plan_frame (pure) ──┴──► compositor: CPU reference │ wgpu
                                                                    │
                                           in-process (default)  or  render service (optional)
 ```
@@ -74,8 +74,12 @@ In rough priority order for short videos:
    (the two bundled CJK faces add 5 MB to the wasm). `text/1` itself is in place: FilmCraft's
    pure-Rust text engine (harfrust shaping, UAX #14 line breaking, its own rasteriser) with a
    bundled Noto Sans SC subset; system fonts are never consulted, so renders match everywhere.
-3. The wgpu compositor, sharing eframe's device so preview frames never leave the GPU, tested
-   against the CPU reference.
+3. GPU, next steps: decoded video uploaded as Y'CbCr planes and converted in a shader (today
+   `Footage` converts to linear RGB on the CPU), effects beyond the two colour ones as WGSL, and the
+   WebGL2 fallback (no float render targets there, so the browser preview without WebGPU stays on
+   the CPU). The wgpu compositor itself is in place: the same frame plan, tested against the CPU
+   reference to one 8-bit code, drawing the editor's preview on eframe's own device and exports on
+   a headless one, with the sRGB and 4:2:0 conversions in shaders.
 4. Audio mixing and playback.
 5. MCP server (stdio and Streamable HTTP) over the same registry; a session service for live,
    shared editing by people and agents.

@@ -5,7 +5,7 @@
 //! reelforge-cli exec demo.reel.json clip.split '{"clip": "c4", "at": {"seconds": 2}}' --save
 //! reelforge-cli compile demo.reel.json -o demo.renderspec.json
 //! reelforge-cli frame demo.renderspec.json --seconds 1.5 --out frame.png
-//! reelforge-cli export demo.reel.json -o demo.mp4
+//! reelforge-cli export demo.reel.json -o demo.mp4 [--renderer auto|cpu|gpu]
 //! ```
 
 use std::io::{BufRead, Read};
@@ -100,6 +100,9 @@ enum Cmd {
         /// The MP4 to write.
         #[arg(short, long)]
         out: PathBuf,
+        /// What draws the frames: the GPU when there is one (`auto`), or always `cpu` or `gpu`.
+        #[arg(long, default_value = "auto", value_parser = ["auto", "cpu", "gpu"])]
+        renderer: String,
     },
     /// Print the RenderSpec JSON Schema.
     Schema,
@@ -222,7 +225,12 @@ fn run(cmd: Cmd) -> Result<(), String> {
             }
             Ok(())
         }
-        Cmd::Export { input, out } => {
+        Cmd::Export { input, out, renderer } => {
+            let renderer = match renderer.as_str() {
+                "cpu" => reelforge_media::Renderer::Cpu,
+                "gpu" => reelforge_media::Renderer::Gpu,
+                _ => reelforge_media::Renderer::Auto,
+            };
             let text = read(&input)?;
             let is_spec = serde_json::from_str::<Value>(&text).map_err(|e| e.to_string())?.get("spec").is_some();
             let spec = if is_spec {
@@ -242,7 +250,7 @@ fn run(cmd: Cmd) -> Result<(), String> {
                 .map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
             let started = std::time::Instant::now();
             let mut shown = 0;
-            let result = reelforge_media::export(&spec, &Footage::new(), file, &mut |p| {
+            let result = reelforge_media::export_with(&spec, &Footage::new(), file, renderer, &mut |p| {
                 let pct = p.done * 100 / p.total;
                 if pct >= shown + 10 || p.done == p.total {
                     shown = pct;
@@ -262,6 +270,7 @@ fn run(cmd: Cmd) -> Result<(), String> {
                 "out": out,
                 "frames": stats.frames,
                 "audioSamples": stats.audio_samples,
+                "renderer": stats.renderer,
                 "seconds": started.elapsed().as_secs_f64(),
             }));
             Ok(())

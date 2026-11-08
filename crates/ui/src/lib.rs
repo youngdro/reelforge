@@ -6,8 +6,10 @@
 //! interface only reads the project snapshot back to draw it. The preview is a RenderSpec drawn by
 //! `reelforge-render`, the same path an export takes.
 //!
-//! Today the preview is composited on the CPU and uploaded as a texture. The wgpu compositor will
-//! draw into a texture on eframe's own device instead, so the frame never leaves the GPU.
+//! Given eframe's wgpu device ([`EditorApp::with_gpu`]), the preview is drawn by the wgpu
+//! compositor into a texture egui shows as it is, so a frame never leaves the GPU. Without one (or
+//! on a WebGL2 fallback, which lacks what the compositor needs) it is drawn on the CPU and
+//! uploaded.
 //!
 //! Files dropped on the window are imported (`media.import`) and placed at the playhead
 //! (`clip.add`). On the desktop, Export writes an MP4 on a background thread.
@@ -49,8 +51,44 @@ pub struct EditorApp {
     status: String,
     preview: Option<egui::TextureHandle>,
     preview_key: Option<(u64, i64)>,
+    gpu: Option<GpuPreview>,
+    /// Whether the bundled Chinese face has been given to egui.
+    fonts: bool,
     timeline: timeline::TimelineView,
     inspector: Option<Inspector>,
+}
+
+/// The wgpu compositor on eframe's device, and the egui texture showing its frames.
+struct GpuPreview {
+    compositor: reelforge_render::gpu::GpuCompositor,
+    renderer: Arc<egui::mutex::RwLock<eframe::egui_wgpu::Renderer>>,
+    device: eframe::wgpu::Device,
+    /// The registered texture and the frame size it was registered at.
+    texture: Option<(egui::TextureId, [u32; 2])>,
+}
+
+impl GpuPreview {
+    /// Converts the frame for egui and (re)registers the texture when its size changed.
+    fn show(&mut self) {
+        let Some(tex) = self.compositor.display() else { return };
+        let size = [tex.width(), tex.height()];
+        let id = match self.texture {
+            Some((id, old)) if old == size => id,
+            known => {
+                let view = tex.create_view(&Default::default());
+                let filter = eframe::wgpu::FilterMode::Linear;
+                let mut r = self.renderer.write();
+                match known {
+                    Some((id, _)) => {
+                        r.update_egui_texture_from_wgpu_texture(&self.device, &view, filter, id);
+                        id
+                    }
+                    None => r.register_native_texture(&self.device, &view, filter),
+                }
+            }
+        };
+        self.texture = Some((id, size));
+    }
 }
 
 /// Values being edited in the inspector, committed as one command when the gesture ends.
@@ -92,6 +130,8 @@ impl EditorApp {
             status: "Ready".into(),
             preview: None,
             preview_key: None,
+            gpu: None,
+            fonts: false,
             timeline: timeline::TimelineView::default(),
             inspector: None,
         }
@@ -110,6 +150,25 @@ impl EditorApp {
         ]});
         s.execute("edit.batch", &steps).expect("the demo project is valid");
         EditorApp::new(s)
+    }
+
+    /// Draws the preview with the wgpu compositor on eframe's device, when eframe runs on wgpu
+    /// with a device that has what the compositor needs (WebGPU, Vulkan, Metal, DX12; not WebGL2).
+    pub fn with_gpu(mut self, cc: &eframe::CreationContext<'_>) -> EditorApp {
+        if let Some(rs) = &cc.wgpu_render_state {
+            let info = rs.adapter.get_info();
+            if info.backend != eframe::wgpu::Backend::Gl {
+                let compositor = reelforge_render::gpu::GpuCompositor::new(rs.device.clone(), rs.queue.clone(), &info);
+                self.status = format!("Preview on {}", compositor.adapter());
+                self.gpu = Some(GpuPreview {
+                    compositor,
+                    renderer: rs.renderer.clone(),
+                    device: rs.device.clone(),
+                    texture: None,
+                });
+            }
+        }
+        self
     }
 
     /// Where Export writes its files (the desktop app passes the project's folder).
@@ -372,10 +431,31 @@ impl EditorApp {
         let p = self.project();
         let frame = p.canvas.fps.frame_at(self.playhead);
         let key = (self.session.revision(), frame);
-        if self.preview_key != Some(key) {
-            self.preview_key = Some(key);
-            let long = p.canvas.width.max(p.canvas.height) as f32;
-            let scale = (PREVIEW_LONG_SIDE / long).min(1.0);
+        let changed = self.preview_key != Some(key);
+        self.preview_key = Some(key);
+        let long = p.canvas.width.max(p.canvas.height) as f32;
+        let scale = (PREVIEW_LONG_SIDE / long).min(1.0);
+        if changed && let Some(g) = &mut self.gpu {
+            // an empty timeline does not compile: the CPU path below draws the background
+            g.texture = None;
+            if let Ok(spec) = compile(&p, &CompileOptions { encode: false }) {
+                match g.compositor.render(&spec, p.canvas.fps.snap(self.playhead), scale, &*self.media, Quality::Draft)
+                {
+                    Ok(_report) => g.show(),
+                    Err(e) => self.status = format!("preview: {e}"),
+                }
+            }
+        }
+        if let Some((id, [w, h])) = self.gpu.as_ref().and_then(|g| g.texture) {
+            let avail = ui.available_size();
+            let (w, h) = (w as f32, h as f32);
+            let s = (avail.x / w).min(avail.y / h);
+            ui.centered_and_justified(|ui| {
+                ui.add(egui::Image::new((id, egui::vec2(w * s, h * s))));
+            });
+            return;
+        }
+        if changed || self.preview.is_none() {
             let image = match compile(&p, &CompileOptions { encode: false }) {
                 Ok(spec) => {
                     match render_frame(&spec, p.canvas.fps.snap(self.playhead), scale, &*self.media, Quality::Draft) {
@@ -422,6 +502,21 @@ impl EditorApp {
 impl eframe::App for EditorApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if !self.fonts {
+            self.fonts = true;
+            // egui's own faces have no Chinese: fall back to the face titles are drawn with
+            let families = [egui::FontFamily::Proportional, egui::FontFamily::Monospace];
+            ctx.add_font(egui::epaint::text::FontInsert::new(
+                "Noto Sans SC",
+                egui::FontData::from_static(reelforge_render::text::NOTO_SANS_SC_REGULAR),
+                families
+                    .map(|family| egui::epaint::text::InsertFontFamily {
+                        family,
+                        priority: egui::epaint::text::FontPriority::Lowest,
+                    })
+                    .to_vec(),
+            ));
+        }
         self.take_dropped_files(&ctx);
         if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
             let screen = ctx.content_rect();
