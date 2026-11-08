@@ -47,6 +47,7 @@ tiny_http = "0.12"
 ureq = "3"
 base64 = "0.22"
 ehttp = "0.7"
+cpal = "0.18"
 
 # ui (L4 and up only; `cargo xtask layers` enforces it)
 egui = "0.37"

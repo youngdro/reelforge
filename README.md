@@ -11,8 +11,9 @@ effects and undo work; projects export to H.264 + AAC MP4 from the desktop edito
 render with shaping, wrapping, outline and box, Chinese included (a bundled Noto Sans SC subset
 covering GB 2312). Frames are composited on the GPU (wgpu) in the editor's preview and in exports,
 with the CPU compositor as the reference and the fallback. Agents edit through an MCP server (stdio
-or HTTP), and the same operations are an HTTP API and `reelforge-cli call`. Audio playback and live
-shared editing come next. See [ARCHITECTURE.md](ARCHITECTURE.md).
+or HTTP), and the same operations are an HTTP API and `reelforge-cli call`. People in a browser or on
+another machine join a server's session and edit live alongside agents. The preview plays sound,
+mixed as the export mixes it, with the picture following the sound. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Video and audio codecs and containers are FilmCraft's clean-room, pure-Rust crates
 (`filmcraft-codecs`, `filmcraft-h264enc`, `filmcraft-aac`, `filmcraft-isobmff`; MIT OR Apache-2.0):
@@ -24,7 +25,8 @@ Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT l
 
 ## Build and run
 
-Rust 1.95 or newer.
+Rust 1.95 or newer. On Linux the editor plays sound through ALSA: install `libasound2-dev` (Debian,
+Ubuntu) or `alsa-lib-devel` (Fedora) to build it.
 
 ```sh
 cargo run -p reelforge                      # the editor (opens a demo project)

@@ -82,7 +82,12 @@ In rough priority order for short videos:
    the CPU). The wgpu compositor itself is in place: the same frame plan, tested against the CPU
    reference to one 8-bit code, drawing the editor's preview on eframe's own device and exports on
    a headless one, with the sRGB and 4:2:0 conversions in shaders.
-4. Audio mixing and playback.
+4. Audio, next steps: waveforms on the timeline, fades and volume keyframes in the inspector,
+   scrubbing sound, pitch-preserving speed changes, and mixing on a worker thread (in the browser,
+   an AudioWorklet). In place: the export's mix (`reelforge_media::export::mix`) plays in the
+   preview (`reelforge-ui`'s `audio`, through cpal: ALSA, CoreAudio, WASAPI, WebAudio), mixed a
+   quarter second ahead on the editor's thread; while it plays the device's sample count is the
+   playhead, so picture follows sound, and an edit or a seek mixes again from the playhead.
 5. Shared editing, next steps: MCP resources and change notifications, per-client undo, a push
    channel (WebSocket or SSE) in place of long polls, and presence (who is looking where). In
    place: `reelforge-server` exposes every command and render/export/save as MCP tools (stdio,
