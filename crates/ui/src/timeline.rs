@@ -183,13 +183,12 @@ impl TimelineView {
             let row = ((y - rect.top() - RULER) / ROW).floor();
             (row >= 0.0).then(|| order.get(row as usize).copied()).flatten()
         };
-        let mut hit: Option<Hit> = None;
-        if let Some(pos) = pointer
-            && lanes.contains(pos)
-            && pos.y > ruler.bottom()
-            && let Some(ti) = row_at(pos.y)
-        {
-            let track = &p.tracks[ti];
+        let hit_at = |pos: Pos2| -> Option<Hit> {
+            if !lanes.contains(pos) || pos.y <= ruler.bottom() {
+                return None;
+            }
+            let track = &p.tracks[row_at(pos.y)?];
+            let mut hit = None;
             for clip in &track.clips {
                 let (a, b) = (x_of(clip.start), x_of(clip.end()));
                 if pos.x >= a - EDGE_POINTS / 2.0 && pos.x <= b + EDGE_POINTS / 2.0 {
@@ -204,7 +203,9 @@ impl TimelineView {
                     hit = Some(Hit { clip: clip.id.clone(), track: track.id.clone(), grab: pos.x - a, edge });
                 }
             }
-        }
+            hit
+        };
+        let hit = pointer.and_then(hit_at);
 
         // Snap targets: the start, the playhead and every other clip's edges.
         let dragged_clip = match &self.drag {
@@ -230,10 +231,11 @@ impl TimelineView {
         };
         let mut snapped_at: Option<Tick> = None;
 
-        // The drag in progress, as it would land now.
+        // The drag in progress, as it would land now. egui no longer counts the frame the button
+        // comes up on as dragged, so that frame is asked for too: it is where the drop happens.
         let mut ghost: Option<(String, Tick, Tick, String)> = None;
         if let (Some(drag), Some(pos)) = (&self.drag, response.interact_pointer_pos())
-            && response.dragged()
+            && (response.dragged() || response.drag_stopped())
         {
             match drag {
                 Drag::Move { clip, grab, track } => {
@@ -437,11 +439,14 @@ impl TimelineView {
 
         // Gestures.
         let in_lanes = |pos: Pos2| pos.x >= lanes.left();
+        // egui calls it a drag only once the pointer has travelled a few points, so what was grabbed
+        // is read where the button went down: an edge is only a few points wide.
+        let pressed_at = ui.input(|i| i.pointer.press_origin());
         if response.drag_started()
-            && let Some(pos) = response.interact_pointer_pos()
+            && let Some(pos) = pressed_at.or(response.interact_pointer_pos())
             && in_lanes(pos)
         {
-            self.drag = Some(match hit.clone() {
+            self.drag = Some(match hit_at(pos) {
                 Some(h) if pos.y > ruler.bottom() => {
                     out.select = Some(Some(h.clip.clone()));
                     match h.edge {
@@ -696,4 +701,133 @@ pub(crate) fn paint_cut(painter: &egui::Painter, x: f32, mid: f32, w: f32) {
 pub(crate) fn diamond(painter: &egui::Painter, c: egui::Pos2, h: f32, fill: Color32, stroke: Stroke) {
     let pts = vec![c + vec2(0.0, -h), c + vec2(h, 0.0), c + vec2(0.0, h), c + vec2(-h, 0.0)];
     painter.add(egui::Shape::convex_polygon(pts, fill, stroke));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eframe::egui::{Event, PointerButton, RawInput};
+    use reelforge_engine::Session;
+    use serde_json::{Value, json};
+
+    /// A timeline driven by synthetic pointer events, its gestures applied to a session the way
+    /// the editor applies them.
+    struct Rig {
+        ctx: egui::Context,
+        view: TimelineView,
+        session: Session,
+    }
+
+    impl Rig {
+        fn new() -> Rig {
+            Rig { ctx: egui::Context::default(), view: TimelineView::default(), session: Session::default() }
+        }
+
+        fn run(&mut self, cmd: &str, params: Value) -> Value {
+            self.session.execute(cmd, &params).unwrap_or_else(|e| panic!("{cmd}: {e}"))
+        }
+
+        fn frame(&mut self, events: Vec<Event>) {
+            let p = self.session.project().clone();
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 500.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = None;
+            let mut full = self.ctx.run_ui(input, |ui| {
+                out = Some(self.view.show(ui, &p, Tick::ZERO, None, false, Lang::En, &Footage::new()));
+            });
+            full.textures_delta.clear();
+            let out = out.expect("drawn");
+            if let Some((clip, start, track)) = out.moved {
+                self.run("clip.move", json!({"clip": clip, "start": start, "track": track}));
+            }
+            if let Some((clip, start, end)) = out.trimmed {
+                let mut params = json!({"clip": clip});
+                if let Some(t) = start {
+                    params["start"] = json!(t);
+                }
+                if let Some(t) = end {
+                    params["end"] = json!(t);
+                }
+                self.run("clip.trim", params);
+            }
+        }
+
+        /// Presses at `from`, moves to `to` in steps and lets go there.
+        fn drag(&mut self, from: Pos2, to: Pos2) {
+            let button = |pos, pressed| Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            self.frame(vec![Event::PointerMoved(from)]);
+            self.frame(vec![button(from, true)]);
+            for i in 1..=10 {
+                self.frame(vec![Event::PointerMoved(from + (to - from) * (i as f32 / 10.0))]);
+            }
+            self.frame(vec![button(to, false)]);
+            self.frame(vec![]);
+        }
+
+        /// The middle of `track`'s row, `seconds` along (the view starts at 0, 80 points a second).
+        fn at(&self, track: &str, seconds: f32) -> Pos2 {
+            let p = self.session.project();
+            let order: Vec<usize> = (0..p.tracks.len())
+                .rev()
+                .filter(|&i| p.tracks[i].kind != TrackKind::Audio)
+                .chain((0..p.tracks.len()).filter(|&i| p.tracks[i].kind == TrackKind::Audio))
+                .collect();
+            let row = order.iter().position(|&i| p.tracks[i].id == track).expect("a row");
+            Pos2::new(HEADER + seconds * 80.0, RULER + ROW * (row as f32 + 0.5))
+        }
+    }
+
+    fn setup() -> (Rig, String, String, String) {
+        let mut rig = Rig::new();
+        let low = rig.session.project().tracks[0].id.clone();
+        let high = rig.run("track.add", json!({"kind": "video"}))["track"].as_str().unwrap().to_string();
+        let clip = rig.run("clip.add", json!({"track": low, "color": [1, 0, 0], "duration": {"seconds": 2}}));
+        let clip = clip["clip"].as_str().unwrap().to_string();
+        rig.frame(vec![]);
+        (rig, low, high, clip)
+    }
+
+    #[test]
+    fn dragging_a_clip_onto_another_track_moves_it_there() {
+        let (mut rig, low, high, clip) = setup();
+        rig.view.snap = false;
+        rig.drag(rig.at(&low, 1.0), rig.at(&high, 2.0));
+        let p = rig.session.project();
+        let (ti, c) = p.clip(&clip).expect("still there");
+        assert_eq!(p.tracks[ti].id, high, "landed on the other track");
+        assert_eq!(c.start, Tick::from_seconds(1.0));
+    }
+
+    #[test]
+    fn dragging_a_clip_along_its_track_moves_it() {
+        let (mut rig, low, _, clip) = setup();
+        rig.view.snap = false;
+        rig.drag(rig.at(&low, 1.0), rig.at(&low, 3.0));
+        let p = rig.session.project();
+        let (ti, c) = p.clip(&clip).expect("still there");
+        assert_eq!(p.tracks[ti].id, low);
+        assert_eq!(c.start, Tick::from_seconds(2.0));
+    }
+
+    #[test]
+    fn dragging_a_clips_edges_trims_it() {
+        let (mut rig, low, _, clip) = setup();
+        rig.view.snap = false;
+        // the end edge, from 2 s back to 1.5 s
+        rig.drag(rig.at(&low, 2.0) - vec2(2.0, 0.0), rig.at(&low, 1.5));
+        let c = rig.session.project().clip(&clip).expect("there").1.clone();
+        assert_eq!((c.start, c.end()), (Tick::ZERO, Tick::from_seconds(1.5)));
+        // the start edge, from 0 s on to 0.5 s
+        rig.drag(rig.at(&low, 0.0) + vec2(2.0, 0.0), rig.at(&low, 0.5));
+        let c = rig.session.project().clip(&clip).expect("there").1.clone();
+        assert_eq!((c.start, c.end()), (Tick::from_seconds(0.5), Tick::from_seconds(1.5)));
+    }
 }
