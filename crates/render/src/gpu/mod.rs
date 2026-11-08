@@ -19,7 +19,6 @@ use std::sync::Arc;
 
 use reelforge_renderspec::{Blend, Fit, MaskShape, RenderSpec, effects};
 use reelforge_time::Tick;
-use wgpu::util::DeviceExt;
 
 use crate::cpu::{Resolved, resolve, resolve_lut};
 use crate::plan::{Affine, FramePlan, PlannedLayer, invert, plan_frame};
@@ -148,10 +147,69 @@ fn texture(
     })
 }
 
+/// A frame on its way back from the GPU as 4:2:0 ([`GpuCompositor::start_yuv420`]).
+pub struct YuvReadback {
+    buffer: wgpu::Buffer,
+    done: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>,
+    size: [u32; 2],
+    strides: [u32; 2],
+    sizes: [u64; 2],
+}
+
+impl YuvReadback {
+    /// The frame's size in pixels.
+    pub fn size(&self) -> [u32; 2] {
+        self.size
+    }
+
+    /// Whether the planes have arrived (natively, only after the device was polled).
+    pub fn ready(&self) -> bool {
+        self.done.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+
+    /// The planes, once [`ready`](Self::ready): as [`GpuCompositor::read_yuv420`] gives them.
+    pub fn finish(self, y: &mut Vec<u8>, u: &mut Vec<u8>, v: &mut Vec<u8>) -> Result<(), GpuError> {
+        match self.done.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            Some(Ok(())) => {}
+            Some(Err(e)) => return Err(GpuError::Readback(e)),
+            None => return Err(GpuError::Readback("the frame is not back yet".into())),
+        }
+        let [w, h] = self.size;
+        let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+        let [ls, cs] = self.strides;
+        let (l, c) = (self.sizes[0] as usize, self.sizes[1] as usize);
+        {
+            let data = self.buffer.get_mapped_range(..).map_err(|e| GpuError::Readback(e.to_string()))?;
+            let rows = |out: &mut Vec<u8>, bytes: &[u8], stride: u32, width: u32, height: u32| {
+                out.clear();
+                for r in bytes.chunks((stride * 4) as usize).take(height as usize) {
+                    out.extend_from_slice(&r[..width as usize]);
+                }
+            };
+            rows(y, &data[..l], ls, w, h);
+            rows(u, &data[l..l + c], cs, cw, ch);
+            rows(v, &data[l + c..], cs, cw, ch);
+        }
+        self.buffer.unmap();
+        Ok(())
+    }
+}
+
 impl GpuCompositor {
     /// A compositor on `device`, which it shares (the editor's, say). Compute shaders, used only to
     /// read frames back as Y'CbCr, are set up where the device has them.
     pub fn new(device: wgpu::Device, queue: wgpu::Queue, adapter: &wgpu::AdapterInfo) -> GpuCompositor {
+        let name = format!("{} ({:?}, {:?})", adapter.name, adapter.device_type, adapter.backend);
+        GpuCompositor::named(device, queue, name)
+    }
+
+    /// Another compositor on the same device and queue, with its own working picture: an export
+    /// beside the editor's preview.
+    pub fn sibling(&self) -> GpuCompositor {
+        GpuCompositor::named(self.device.clone(), self.queue.clone(), self.adapter.clone())
+    }
+
+    fn named(device: wgpu::Device, queue: wgpu::Queue, adapter: String) -> GpuCompositor {
         let composite = device.create_shader_module(wgpu::include_wgsl!("composite.wgsl"));
         let convert = device.create_shader_module(wgpu::include_wgsl!("convert.wgsl"));
         let unfilterable = wgpu::BindingType::Texture {
@@ -302,7 +360,7 @@ impl GpuCompositor {
         GpuCompositor {
             device,
             queue,
-            adapter: format!("{} ({:?}, {:?})", adapter.name, adapter.device_type, adapter.backend),
+            adapter,
             layer_layout,
             layer_pipelines,
             display_pipelines,
@@ -337,6 +395,12 @@ impl GpuCompositor {
         }))
         .map_err(|e| GpuError::Unavailable(e.to_string()))?;
         Ok(GpuCompositor::new(device, queue, &adapter.get_info()))
+    }
+
+    /// Whether frames can be read back as 4:2:0 ([`start_yuv420`](Self::start_yuv420)): the
+    /// device has compute shaders.
+    pub fn converts_yuv(&self) -> bool {
+        self.luma_pipeline.is_some() && self.chroma_pipeline.is_some()
     }
 
     /// The adapter in use, for logs and reports.
@@ -414,11 +478,7 @@ impl GpuCompositor {
             let sizes = Sizes { visible: size, whole, shaped };
             let Some(uniform) = layer_uniform(layer, m, sizes, mode, color, target, lut.as_deref()) else { continue };
             let lut_view = lut.as_ref().map(|l| self.lut(l));
-            let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("layer"),
-                contents: bytemuck::cast_slice(&uniform),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
+            let buffer = self.uniform("layer", bytemuck::cast_slice(&uniform));
             let frame = self.frame.as_ref().expect("sized above");
             let multiply = blend_index(layer.blend) == 2;
             let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -565,6 +625,15 @@ impl GpuCompositor {
     /// Blocks until the GPU is done.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn read_yuv420(&self, y: &mut Vec<u8>, u: &mut Vec<u8>, v: &mut Vec<u8>) -> Result<(), GpuError> {
+        let read = self.start_yuv420()?;
+        self.device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| GpuError::Readback(e.to_string()))?;
+        read.finish(y, u, v)
+    }
+
+    /// Starts reading the last frame back as 4:2:0 ([`read_yuv420`](Self::read_yuv420) without
+    /// the wait): the conversion is queued and the copy mapped, and the result is there once
+    /// [`YuvReadback::ready`] says so. The browser, which cannot block, waits for that.
+    pub fn start_yuv420(&self) -> Result<YuvReadback, GpuError> {
         let frame = self.frame.as_ref().ok_or_else(|| GpuError::Readback("nothing rendered yet".into()))?;
         let (Some(luma), Some(chroma)) = (&self.luma_pipeline, &self.chroma_pipeline) else {
             return Err(GpuError::Readback("this device has no compute shaders".into()));
@@ -573,11 +642,7 @@ impl GpuCompositor {
         let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
         let (ls, cs) = (w.div_ceil(4), cw.div_ceil(4));
         let (lsize, csize) = ((ls * h * 4) as u64, (cs * ch * 4) as u64);
-        let dims = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("dims"),
-            contents: bytemuck::cast_slice(&[w, h, ls, cs]),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let dims = self.uniform("dims", bytemuck::cast_slice(&[w, h, ls, cs]));
         let planes = |label, size| {
             self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -627,18 +692,12 @@ impl GpuCompositor {
         enc.copy_buffer_to_buffer(&ub, 0, &read, lsize, csize);
         enc.copy_buffer_to_buffer(&vb, 0, &read, lsize + csize, csize);
         self.queue.submit([enc.finish()]);
-        let data = self.map(&read)?;
-        let rows = |out: &mut Vec<u8>, bytes: &[u8], stride: u32, width: u32, height: u32| {
-            out.clear();
-            for r in bytes.chunks((stride * 4) as usize).take(height as usize) {
-                out.extend_from_slice(&r[..width as usize]);
-            }
-        };
-        let (l, c) = (lsize as usize, csize as usize);
-        rows(y, &data[..l], ls, w, h);
-        rows(u, &data[l..l + c], cs, cw, ch);
-        rows(v, &data[l + c..], cs, cw, ch);
-        Ok(())
+        let done: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>> = Default::default();
+        let flag = done.clone();
+        read.map_async(wgpu::MapMode::Read, .., move |r| {
+            *flag.lock().unwrap_or_else(|e| e.into_inner()) = Some(r.map_err(|e| e.to_string()));
+        });
+        Ok(YuvReadback { buffer: read, done, size: [w, h], strides: [ls, cs], sizes: [lsize, csize] })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -652,6 +711,20 @@ impl GpuCompositor {
         let data = buffer.get_mapped_range(..).map_err(|e| GpuError::Readback(e.to_string()))?.to_vec();
         buffer.unmap();
         Ok(data)
+    }
+
+    /// A uniform buffer holding `bytes`, filled through the queue: Chrome's WebGPU can refuse
+    /// buffers mapped at creation (a `RangeError` even for a few hundred bytes), which would
+    /// panic inside wgpu.
+    fn uniform(&self, label: &str, bytes: &[u8]) -> wgpu::Buffer {
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: (bytes.len() as u64).next_multiple_of(16),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&buffer, 0, bytes);
+        buffer
     }
 
     fn ensure_frame(&mut self, width: u32, height: u32) {

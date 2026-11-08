@@ -113,6 +113,8 @@ mod web {
         video_encoding,
     };
     use reelforge_model::Project;
+    use reelforge_render::Quality;
+    use reelforge_render::gpu::GpuCompositor;
     use reelforge_renderspec::VideoCodec;
     use wasm_bindgen::prelude::*;
 
@@ -131,7 +133,14 @@ export function rf_save(name, bytes) {
         fn rf_save(name: &str, bytes: &[u8]);
     }
 
-    pub(super) fn start(p: &Project, media: Arc<Footage>, ctx: egui::Context) -> Result<ExportJob, String> {
+    /// Exports in the background. `gpu` draws the frames when given (a sibling of the preview's
+    /// compositor, on WebGPU); the CPU renderer draws them otherwise.
+    pub(super) fn start(
+        p: &Project,
+        media: Arc<Footage>,
+        ctx: egui::Context,
+        mut gpu: Option<GpuCompositor>,
+    ) -> Result<ExportJob, String> {
         let spec = compile(p, &CompileOptions { encode: true }).map_err(|e| e.to_string())?;
         let missing = reelforge_render::unsupported_features(&spec);
         if !missing.is_empty() {
@@ -165,7 +174,21 @@ export function rf_save(name, bytes) {
                     if cancel.load(Ordering::Relaxed) {
                         return Err(CANCELLED.to_string());
                     }
-                    draw_frame(&spec, &media, i, &mut yuv).map_err(step)?;
+                    match &mut gpu {
+                        Some(g) => {
+                            let scale = video_encoding(&spec).scale(spec.output.width);
+                            let t = spec.output.fps.tick_of(i as i64);
+                            g.render(&spec, t, scale, &*media, Quality::Final).map_err(|e| e.to_string())?;
+                            let back = g.start_yuv420().map_err(|e| e.to_string())?;
+                            // the browser maps the copy when the GPU is done; give it the turn
+                            while !back.ready() {
+                                sleep(0).await;
+                            }
+                            yuv.width = back.size()[0] as usize;
+                            back.finish(&mut yuv.y, &mut yuv.u, &mut yuv.v).map_err(|e| e.to_string())?;
+                        }
+                        None => draw_frame(&spec, &media, i, &mut yuv).map_err(step)?,
+                    }
                     w.push(&spec, &media, i, &yuv).map_err(step)?;
                     // let the encoder catch up, and the page draw
                     while w.backlog() > 3 {
@@ -182,7 +205,7 @@ export function rf_save(name, bytes) {
                 }
                 let (out, _) = w.finish(&spec, &media).map_err(step)?;
                 rf_save(&name, &out.into_inner());
-                Ok(encoder)
+                Ok(if gpu.is_some() { format!("{encoder} · GPU") } else { encoder })
             }
             .await;
             *result.lock().expect("result lock") = Some(r);
@@ -372,8 +395,14 @@ impl EditorApp {
         if go {
             #[cfg(not(target_arch = "wasm32"))]
             let started = native::start(&p, &self.export_dir);
+            // the preview's device draws the frames where it can convert them to 4:2:0 (WebGPU)
             #[cfg(target_arch = "wasm32")]
-            let started = web::start(&p, self.media.clone(), ctx.clone());
+            let started = web::start(
+                &p,
+                self.media.clone(),
+                ctx.clone(),
+                self.gpu.as_ref().map(|g| g.compositor.sibling()).filter(|g| g.converts_yuv()),
+            );
             match started {
                 Ok(job) => self.export = Some(job),
                 Err(e) => self.status = fill(self.s().export_failed, &[&e]),
