@@ -294,6 +294,14 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["clip", "start"],
         ),
+        "clip.roll" => {
+            object(vec![clip(), ("by", time("How far the cut moves; negative is earlier."))], &["clip", "by"])
+        }
+        "clip.slip" => object(
+            vec![clip(), ("by", time("How much later in the media the clip shows; negative is earlier."))],
+            &["clip", "by"],
+        ),
+        "clip.detachAudio" => object(vec![clip()], &["clip"]),
         "track.move" => object(
             vec![
                 ("track", ident("Track id, such as t2.")),

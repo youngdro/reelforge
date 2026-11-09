@@ -297,7 +297,7 @@ impl Clip {
 impl ClipContent {
     /// A media clip from `source_in` at normal speed.
     pub fn media(media: impl Into<String>, source_in: Tick) -> ClipContent {
-        ClipContent::Media { media: media.into(), source_in, speed: 1.0, reversed: false, curve: vec![] }
+        ClipContent::Media { media: media.into(), source_in, speed: 1.0, reversed: false, curve: vec![], silent: false }
     }
 }
 
@@ -319,6 +319,9 @@ pub enum ClipContent {
         /// A speed curve across the clip ([`timing`]); empty is a steady speed.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         curve: Vec<CurvePoint>,
+        /// Its sound is not played: it was detached to a clip of its own.
+        #[serde(default, skip_serializing_if = "is_no")]
+        silent: bool,
     },
     /// A colour filling the frame.
     Solid {

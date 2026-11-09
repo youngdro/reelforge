@@ -936,6 +936,13 @@ impl EditorApp {
         }
     }
 
+    /// Moves the sound of the selected video clips to clips of their own on audio tracks.
+    fn detach_audio(&mut self) {
+        let p = self.project();
+        let ids: Vec<String> = self.selection().into_iter().filter(|c| timeline::detachable(&p, c)).collect();
+        self.each(ids, "clip.detachAudio", |c| json!({"clip": c}));
+    }
+
     fn duplicate(&mut self) {
         let all = self.selection();
         if !all.is_empty()
@@ -976,6 +983,7 @@ impl EditorApp {
             Action::TrimStart => self.trim_to_playhead(false),
             Action::TrimEnd => self.trim_to_playhead(true),
             Action::SelectAll => self.select_all(),
+            Action::DetachAudio => self.detach_audio(),
         }
     }
 
@@ -1068,6 +1076,9 @@ impl EditorApp {
         }
         if pressed(cmd, Key::D) {
             self.duplicate();
+        }
+        if pressed(Modifiers::ALT, Key::D) {
+            self.detach_audio();
         }
         if pressed(cmd, Key::A) {
             self.select_all();
@@ -2692,6 +2703,12 @@ impl eframe::App for EditorApp {
                 params["end"] = json!(t);
             }
             let _ = self.execute("clip.trim", params);
+        }
+        if let Some((clip, by)) = out.rolled {
+            let _ = self.execute("clip.roll", json!({"clip": clip, "by": by}));
+        }
+        if let Some((clip, by)) = out.slipped {
+            let _ = self.execute("clip.slip", json!({"clip": clip, "by": by}));
         }
         match asked {
             Some(assets::Action::Import) => self.pick_files(&ctx),
