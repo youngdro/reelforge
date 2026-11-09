@@ -95,6 +95,12 @@ pub struct EditorApp {
     sound: audio::Playback,
     sound_spec: Option<(u64, Arc<reelforge_renderspec::RenderSpec>)>,
     selected: Option<String>,
+    /// The other selected clips, besides `selected` (which the inspector and preview show).
+    also: Vec<String>,
+    /// What Copy or Cut took (`clip.copy`'s clipboard).
+    clipboard: Option<Value>,
+    /// How fast, and which way, the preview plays: 1 is normal (with sound); J and L change it.
+    rate: f64,
     status: String,
     preview: Option<egui::TextureHandle>,
     preview_key: Option<PreviewKey>,
@@ -277,6 +283,9 @@ impl EditorApp {
             sound: audio::Playback::default(),
             sound_spec: None,
             selected: None,
+            also: Vec::new(),
+            clipboard: None,
+            rate: 1.0,
             status: String::new(),
             preview: None,
             preview_key: None,
@@ -430,12 +439,20 @@ impl EditorApp {
     fn set_playing(&mut self, playing: bool) {
         self.playing = playing;
         if playing {
-            if self.playhead >= self.project().duration() {
+            let end = self.project().duration();
+            if self.rate > 0.0 && self.playhead >= end {
                 self.playhead = Tick::ZERO;
+            } else if self.rate < 0.0 && self.playhead <= Tick::ZERO {
+                self.playhead = end;
             }
-            self.sound.start(self.playhead);
-            if let Some(why) = self.sound.take_problem() {
-                self.status = fill(self.s().no_sound, &[&why]);
+            if self.rate == 1.0 {
+                self.sound.start(self.playhead);
+                if let Some(why) = self.sound.take_problem() {
+                    self.status = fill(self.s().no_sound, &[&why]);
+                }
+            } else {
+                // faster or backwards plays without sound
+                self.sound.stop();
             }
         } else {
             self.sound.stop();
@@ -459,12 +476,13 @@ impl EditorApp {
         }
         self.playhead = match self.sound.clock() {
             Some(t) => t,
-            None => self.playhead + Tick::from_seconds(dt),
+            None => self.playhead + Tick::from_seconds(dt * self.rate),
         };
         let end = p.duration();
-        if self.playhead >= end {
-            self.playhead = end;
+        if self.playhead >= end || self.playhead <= Tick::ZERO && self.rate < 0.0 {
+            self.playhead = self.playhead.max(Tick::ZERO).min(end);
             self.set_playing(false);
+            self.rate = 1.0;
             return;
         }
         if let Some((_, spec)) = &self.sound_spec {
@@ -769,25 +787,167 @@ impl EditorApp {
         }
     }
 
-    fn split(&mut self) {
-        if let Some(sel) = self.selected.clone() {
-            let _ = self.execute("clip.split", json!({"clip": sel, "at": self.playhead}));
+    /// Every selected clip that still exists, the inspector's first.
+    fn selection(&self) -> Vec<String> {
+        let Some(first) = &self.selected else { return Vec::new() };
+        let p = self.project();
+        std::iter::once(first)
+            .chain(self.also.iter().filter(|id| *id != first))
+            .filter(|id| p.clip(id).is_some())
+            .cloned()
+            .collect()
+    }
+
+    fn select(&mut self, change: timeline::Select) {
+        use timeline::Select;
+        let mut all = self.selection();
+        match change {
+            Select::Only(id) => all = vec![id],
+            Select::Toggle(id) => match all.iter().position(|c| *c == id) {
+                Some(i) => {
+                    all.remove(i);
+                }
+                None => all.insert(0, id),
+            },
+            Select::Set(ids) => all = ids,
+        }
+        let mut all = all.into_iter();
+        self.selected = all.next();
+        self.also = all.collect();
+    }
+
+    /// The selected clips the playhead is strictly inside.
+    fn under_playhead(&self) -> Vec<String> {
+        let p = self.project();
+        self.selection()
+            .into_iter()
+            .filter(|id| p.clip(id).is_some_and(|(_, c)| c.start < self.playhead && self.playhead < c.end()))
+            .collect()
+    }
+
+    /// Runs one command per id as one undo step.
+    fn each(&mut self, ids: Vec<String>, id: &str, params: impl Fn(&str) -> Value) {
+        match ids.len() {
+            0 => {}
+            1 => {
+                let _ = self.execute(id, params(&ids[0]));
+            }
+            _ => {
+                let steps: Vec<Value> = ids.iter().map(|c| json!({"id": id, "params": params(c)})).collect();
+                let _ = self.execute("edit.batch", json!({"steps": steps, "label": id}));
+            }
         }
     }
 
+    fn split(&mut self) {
+        let at = self.playhead;
+        self.each(self.under_playhead(), "clip.split", |c| json!({"clip": c, "at": at}));
+    }
+
+    /// Q and W: cuts off what is before (or after) the playhead.
+    fn trim_to_playhead(&mut self, end: bool) {
+        let at = self.playhead;
+        let key = if end { "end" } else { "start" };
+        self.each(self.under_playhead(), "clip.trim", |c| json!({"clip": c, key: at}));
+    }
+
     fn delete(&mut self, ripple: bool) {
-        if let Some(sel) = self.selected.clone()
-            && self.execute("clip.remove", json!({"clips": sel, "ripple": ripple})).is_ok()
-        {
+        let all = self.selection();
+        if !all.is_empty() && self.execute("clip.remove", json!({"clips": all, "ripple": ripple})).is_ok() {
             self.selected = None;
+            self.also.clear();
             self.inspector = None;
         }
+    }
+
+    fn copy(&mut self) -> bool {
+        let all = self.selection();
+        if all.is_empty() {
+            return false;
+        }
+        match self.execute("clip.copy", json!({"clips": all})) {
+            Ok(board) => {
+                self.status = fill(self.s().copied, &[&all.len()]);
+                self.clipboard = Some(board);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Pastes at the playhead; the copies become the selection.
+    fn paste(&mut self) {
+        let Some(board) = self.clipboard.clone() else { return };
+        if let Ok(v) = self.execute("clip.paste", json!({"clipboard": board, "at": self.playhead})) {
+            self.select_placed(&v);
+        }
+    }
+
+    fn duplicate(&mut self) {
+        let all = self.selection();
+        if !all.is_empty()
+            && let Ok(v) = self.execute("clip.duplicate", json!({"clips": all}))
+        {
+            self.select_placed(&v);
+        }
+    }
+
+    fn select_placed(&mut self, v: &Value) {
+        let ids =
+            v["clips"].as_array().map(|a| a.iter().filter_map(|c| c["clip"].as_str().map(str::to_string)).collect());
+        self.select(timeline::Select::Set(ids.unwrap_or_default()));
+        self.inspector = None;
+    }
+
+    fn select_all(&mut self) {
+        let ids = self.project().tracks.iter().flat_map(|t| t.clips.iter().map(|c| c.id.clone())).collect();
+        self.select(timeline::Select::Set(ids));
+    }
+
+    fn act(&mut self, action: timeline::Action) {
+        use timeline::Action;
+        match action {
+            Action::Split => self.split(),
+            Action::Copy => {
+                self.copy();
+            }
+            Action::Cut => {
+                if self.copy() {
+                    self.delete(false);
+                }
+            }
+            Action::Paste => self.paste(),
+            Action::Duplicate => self.duplicate(),
+            Action::Delete => self.delete(false),
+            Action::RippleDelete => self.delete(true),
+            Action::TrimStart => self.trim_to_playhead(false),
+            Action::TrimEnd => self.trim_to_playhead(true),
+            Action::SelectAll => self.select_all(),
+        }
+    }
+
+    /// J and L: plays backwards or forwards, faster each time the same key is pressed again.
+    fn shuttle(&mut self, forwards: bool) {
+        let same = self.playing && (self.rate > 0.0) == forwards;
+        self.rate = match (same, forwards) {
+            (true, _) => (self.rate * 2.0).clamp(-4.0, 4.0),
+            (false, true) => 1.0,
+            (false, false) => -1.0,
+        };
+        self.set_playing(true);
+    }
+
+    /// The previous (or next) place a clip starts or ends.
+    fn cut_point(&self, next: bool) -> Option<Tick> {
+        let p = self.project();
+        let points = p.tracks.iter().flat_map(|t| t.clips.iter().flat_map(|c| [c.start, c.end()])).chain([Tick::ZERO]);
+        if next { points.filter(|t| *t > self.playhead).min() } else { points.filter(|t| *t < self.playhead).max() }
     }
 
     fn seek(&mut self, t: Tick) {
         let p = self.project();
         self.playhead = p.canvas.fps.snap(t.max(Tick::ZERO).min(p.duration()));
-        if self.playing {
+        if self.playing && self.rate == 1.0 {
             self.sound.start(self.playhead);
         }
     }
@@ -802,7 +962,59 @@ impl EditorApp {
         let pressed = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
         let fps = self.project().canvas.fps;
         if pressed(Modifiers::NONE, Key::Space) {
+            self.rate = 1.0;
             self.set_playing(!self.playing);
+        }
+        if pressed(Modifiers::NONE, Key::L) {
+            self.shuttle(true);
+        }
+        if pressed(Modifiers::NONE, Key::J) {
+            self.shuttle(false);
+        }
+        if pressed(Modifiers::NONE, Key::K) {
+            self.set_playing(false);
+            self.rate = 1.0;
+        }
+        if pressed(cmd, Key::C) {
+            self.copy();
+        }
+        if pressed(cmd, Key::X) {
+            self.act(timeline::Action::Cut);
+        }
+        if pressed(cmd, Key::V) {
+            self.paste();
+        }
+        if pressed(cmd, Key::D) {
+            self.duplicate();
+        }
+        if pressed(cmd, Key::A) {
+            self.select_all();
+        }
+        if pressed(Modifiers::NONE, Key::Escape) {
+            self.select(timeline::Select::Set(Vec::new()));
+        }
+        if pressed(Modifiers::NONE, Key::Q) {
+            self.trim_to_playhead(false);
+        }
+        if pressed(Modifiers::NONE, Key::W) {
+            self.trim_to_playhead(true);
+        }
+        for (next, k) in [(false, Key::ArrowUp), (true, Key::ArrowDown)] {
+            if pressed(Modifiers::NONE, k)
+                && let Some(t) = self.cut_point(next)
+            {
+                self.seek(t);
+            }
+        }
+        if pressed(Modifiers::NONE, Key::Plus) || pressed(Modifiers::NONE, Key::Equals) {
+            self.timeline.zoom(1.5);
+        }
+        if pressed(Modifiers::NONE, Key::Minus) {
+            self.timeline.zoom(1.0 / 1.5);
+        }
+        if pressed(Modifiers::SHIFT, Key::Z) {
+            let width = ctx.content_rect().width();
+            self.timeline.fit(self.project().duration().seconds(), width);
         }
         if pressed(cmd | Modifiers::SHIFT, Key::Z) || pressed(cmd, Key::Y) {
             let _ = self.execute("edit.redo", json!({}));
@@ -1191,8 +1403,8 @@ impl EditorApp {
             ui.add_space(16.0);
             theme::section(ui, s.shortcuts, |ui| {
                 egui::Grid::new("keys").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
-                    for (k, what) in s.keys {
-                        ui.label(egui::RichText::new(k).monospace().color(theme::color::TEXT));
+                    for &(k, what) in s.keys {
+                        ui.label(egui::RichText::new(i18n::keys(ui.ctx(), k)).monospace().color(theme::color::TEXT));
                         ui.label(egui::RichText::new(what).color(theme::color::WEAK));
                         ui.end_row();
                     }
@@ -2018,6 +2230,7 @@ impl EditorApp {
         );
         if let Some(sel) = out.select {
             self.selected = sel;
+            self.also.clear();
         }
         if let Some((clip, t)) = out.commit {
             // only what the gesture changed, at the playhead, so keyframes change only there
@@ -2166,13 +2379,14 @@ impl eframe::App for EditorApp {
             .show(ui, |ui| self.status_bar(ui));
         let p = self.project();
         let (playing, lang, media) = (self.playing, self.lang, self.media.clone());
+        let (selection, can_paste) = (self.selection(), self.clipboard.is_some());
         let out = egui::Panel::bottom("timeline")
             .resizable(true)
             .default_size(280.0)
             .frame(egui::Frame::new().fill(theme::color::PANEL))
             .show(ui, |ui| {
                 egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| self.timeline_bar(ui));
-                self.timeline.show(ui, &p, self.playhead, self.selected.as_deref(), playing, lang, &media)
+                self.timeline.show(ui, &p, self.playhead, &selection, playing, can_paste, lang, &media)
             })
             .inner;
         if self.assets.wants_looks() && self.looks.is_none() {
@@ -2203,8 +2417,14 @@ impl eframe::App for EditorApp {
         if let Some(t) = out.seek {
             self.seek(t);
         }
-        if let Some(sel) = out.select {
-            self.selected = sel;
+        if let Some(change) = out.select {
+            self.select(change);
+        }
+        if let Some((clips, by)) = out.shifted {
+            let _ = self.execute("clip.shift", json!({"clips": clips, "by": by}));
+        }
+        if let Some(action) = out.action {
+            self.act(action);
         }
         if let Some((clip, start, track)) = out.moved {
             let _ = self.execute(

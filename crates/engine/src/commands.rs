@@ -264,6 +264,42 @@ static REGISTRY: &[CommandSpec] = &[
         run: clip_remove,
     },
     CommandSpec {
+        id: "clip.shift",
+        label: "Move",
+        params: r#"{"clips": id | [id], "by": time}"#,
+        doc: "Moves several clips together by the same time, each on its own track (negative `by` moves them earlier). Refused if any would start before 0 or overlap another clip.",
+        edits: true,
+        enabled: always,
+        run: clip_shift,
+    },
+    CommandSpec {
+        id: "clip.copy",
+        label: "Copy",
+        params: r#"{"clips": id | [id]}"#,
+        doc: "Returns the clips as a clipboard (`{\"clips\": [{\"track\", \"kind\", \"clip\"}]}`) for `clip.paste`. Changes nothing.",
+        edits: false,
+        enabled: always,
+        run: clip_copy,
+    },
+    CommandSpec {
+        id: "clip.paste",
+        label: "Paste",
+        params: r#"{"clipboard": object, "at": time}"#,
+        doc: "Places copies of a clipboard's clips (from `clip.copy`) with new ids, the earliest at `at` and the rest at the same distances. Each goes on its own track when there is room there, else on another track of its kind, else on a new one.",
+        edits: true,
+        enabled: always,
+        run: clip_paste,
+    },
+    CommandSpec {
+        id: "clip.duplicate",
+        label: "Duplicate",
+        params: r#"{"clips": id | [id]}"#,
+        doc: "Copies clips and places the copies right after the last of them, as `clip.paste` would.",
+        edits: true,
+        enabled: always,
+        run: clip_duplicate,
+    },
+    CommandSpec {
         id: "clip.setSpeed",
         label: "Speed",
         params: r#"{"clip": id, "speed"?: number, "keepPitch"?: bool}"#,
@@ -1148,6 +1184,117 @@ fn clip_remove(s: &mut Session, v: &Value) -> CmdResult {
         }
         Ok(json!({ "removed": ids }))
     })
+}
+
+fn clip_shift(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let ids = p.strings("clips")?;
+    let by = p.time("by")?;
+    s.edit("Move", |proj| {
+        for id in &ids {
+            let clip = proj.clip_mut(id).ok_or_else(|| not_found("clip", id))?;
+            clip.start += by;
+            if clip.start < Tick::ZERO {
+                return Err(EngineError::Refused("a clip would start before the timeline does".into()));
+            }
+        }
+        Ok(json!({ "clips": ids, "by": by }))
+    })
+}
+
+/// The clipboard of `clip.copy`: each clip with the track it was on and that track's kind.
+fn clipboard(proj: &Project, ids: &[String]) -> Result<Value, EngineError> {
+    let mut clips = Vec::new();
+    for id in ids {
+        let (ti, clip) = proj.clip(id).ok_or_else(|| not_found("clip", id))?;
+        let t = &proj.tracks[ti];
+        clips.push(json!({ "track": t.id, "kind": t.kind, "clip": clip }));
+    }
+    Ok(json!({ "clips": clips }))
+}
+
+fn clip_copy(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let ids = p.strings("clips")?;
+    clipboard(&s.project, &ids)
+}
+
+fn clip_paste(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let board = p.opt("clipboard").ok_or_else(|| EngineError::Params("missing `clipboard`".into()))?.clone();
+    let at = p.time("at")?;
+    if at < Tick::ZERO {
+        return Err(EngineError::Params("`at` must not be negative".into()));
+    }
+    s.edit("Paste", |proj| paste(proj, &board, at))
+}
+
+fn clip_duplicate(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let ids = p.strings("clips")?;
+    s.edit("Duplicate", |proj| {
+        let board = clipboard(proj, &ids)?;
+        let end = ids.iter().filter_map(|id| proj.clip(id)).map(|(_, c)| c.end()).max().unwrap_or(Tick::ZERO);
+        paste(proj, &board, end)
+    })
+}
+
+/// Places a clipboard's clips from `at`; returns their new ids, in the clipboard's order.
+fn paste(proj: &mut Project, board: &Value, at: Tick) -> Result<Value, EngineError> {
+    let bad = || EngineError::Params("`clipboard` must be what `clip.copy` returned".into());
+    let entries = board.get("clips").and_then(Value::as_array).filter(|a| !a.is_empty()).ok_or_else(bad)?;
+    let mut parsed = Vec::new();
+    for e in entries {
+        let clip: Clip = serde_json::from_value(e.get("clip").cloned().ok_or_else(bad)?).map_err(|_| bad())?;
+        let kind: TrackKind = serde_json::from_value(e.get("kind").cloned().ok_or_else(bad)?).map_err(|_| bad())?;
+        let track = e.get("track").and_then(Value::as_str).unwrap_or_default().to_string();
+        if let ClipContent::Media { media, .. } = &clip.content
+            && !proj.media.contains_key(media)
+        {
+            return Err(not_found("media", media));
+        }
+        parsed.push((track, kind, clip));
+    }
+    let base = parsed.iter().map(|(_, _, c)| c.start).min().expect("not empty");
+    let mut placed = Vec::new();
+    for (track, kind, mut clip) in parsed {
+        clip.start = at + (clip.start - base);
+        clip.id = proj.mint("c");
+        let range = clip.range();
+        let fits = |t: &Track| t.kind == kind && (t.magnetic || !t.clips.iter().any(|c| c.range().overlaps(range)));
+        // its own track first, then the others of its kind, then a new one
+        let index =
+            proj.tracks.iter().position(|t| t.id == track && fits(t)).or_else(|| proj.tracks.iter().position(fits));
+        let index = match index {
+            Some(i) => i,
+            None => {
+                let id = proj.mint("t");
+                let n = proj.tracks.iter().filter(|t| t.kind == kind).count() + 1;
+                let word = match kind {
+                    TrackKind::Video => "Video",
+                    TrackKind::Text => "Text",
+                    TrackKind::Audio => "Audio",
+                };
+                let i = proj.tracks.iter().rposition(|t| t.kind == kind).map_or(proj.tracks.len(), |i| i + 1);
+                proj.tracks.insert(
+                    i,
+                    Track {
+                        id,
+                        kind,
+                        name: format!("{word} {n}"),
+                        hidden: false,
+                        muted: false,
+                        magnetic: false,
+                        clips: vec![],
+                    },
+                );
+                i
+            }
+        };
+        placed.push(json!({ "clip": clip.id, "track": proj.tracks[index].id, "start": clip.start }));
+        proj.tracks[index].clips.push(clip);
+    }
+    Ok(json!({ "clips": placed }))
 }
 
 fn clip_set_speed(s: &mut Session, v: &Value) -> CmdResult {

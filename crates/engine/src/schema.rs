@@ -293,6 +293,33 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["clip", "start"],
         ),
+        "clip.shift" => object(
+            vec![
+                (
+                    "clips",
+                    json!({"description": "A clip id or a list of them.", "oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}, "minItems": 1}]}),
+                ),
+                ("by", time("How far to move them; negative is earlier.")),
+            ],
+            &["clips", "by"],
+        ),
+        "clip.copy" | "clip.duplicate" => object(
+            vec![(
+                "clips",
+                json!({"description": "A clip id or a list of them.", "oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}, "minItems": 1}]}),
+            )],
+            &["clips"],
+        ),
+        "clip.paste" => object(
+            vec![
+                (
+                    "clipboard",
+                    json!({"type": "object", "description": "What `clip.copy` returned.", "properties": {"clips": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"track": {"type": "string"}, "kind": {"enum": ["video", "text", "audio"]}, "clip": {"type": "object"}}, "required": ["kind", "clip"]}}}, "required": ["clips"]}),
+                ),
+                ("at", time("Where the earliest clip starts.")),
+            ],
+            &["clipboard", "at"],
+        ),
         "clip.remove" => object(
             vec![
                 (
