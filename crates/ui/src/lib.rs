@@ -52,8 +52,26 @@ use reelforge_time::Tick;
 use serde_json::{Value, json};
 use theme::icon;
 
-/// Longest side of the preview render, in pixels.
+/// Longest side of the preview render on the CPU (no GPU, or WebGL2), in pixels: the CPU cannot
+/// keep up with more.
 const PREVIEW_LONG_SIDE: f32 = 640.0;
+/// Longest side of a playing preview in Smooth quality, in pixels.
+const SMOOTH_LONG_SIDE: f32 = 720.0;
+
+/// The render scale a preview shown `on_screen` pixels long (its longest side) draws at, for a
+/// canvas `long` pixels long: as sharp as the screen shows it, never above the canvas, and lower
+/// while playing in Smooth quality. Rounded to 1/32 so that resizing the window by a few points
+/// does not draw again.
+fn preview_scale(long: f32, on_screen: f32, gpu: bool, playing: bool, full: bool) -> f32 {
+    let mut side = on_screen;
+    if !gpu {
+        side = side.min(PREVIEW_LONG_SIDE);
+    } else if playing && !full {
+        side = side.min(SMOOTH_LONG_SIDE);
+    }
+    let scale = (side / long.max(1.0)).clamp(0.05, 1.0);
+    ((scale * 32.0).ceil() / 32.0).min(1.0)
+}
 
 /// A preview gesture's placement so far (`x`, `y`, scale, rotation as bits), if one runs.
 type Moving = Option<[u32; 4]>;
@@ -61,8 +79,9 @@ type Moving = Option<[u32; 4]>;
 /// A compiled edit, shared.
 type Spec = Arc<reelforge_renderspec::RenderSpec>;
 
-/// What the preview was last drawn for: revision, frame, remote media epoch, gesture, playing.
-type PreviewKey = (u64, i64, u64, Moving, bool);
+/// What the preview was last drawn for: revision, frame, remote media epoch, gesture, playing,
+/// render scale (bits).
+type PreviewKey = (u64, i64, u64, Moving, bool, u32);
 
 /// A file the browser finished reading: its name, its bytes, and whether it goes on the timeline
 /// too (a drop) or only into the project's media (picked with Import).
@@ -109,6 +128,10 @@ pub struct EditorApp {
     preview_spec: Option<((u64, Moving), Option<Spec>)>,
     /// Decodes the frames a playing preview reaches next.
     ahead: ahead::Ahead,
+    /// Full quality: a playing preview stays as sharp as a paused one (else it draws smaller).
+    full_quality: bool,
+    /// The preview quality was switched and is not written to storage yet.
+    quality_unsaved: bool,
     /// Where the visible layers land in the preview's frame, bottom first.
     outlines: Vec<(String, reelforge_render::Outline)>,
     /// A drag on the preview in progress.
@@ -290,6 +313,8 @@ impl EditorApp {
             preview: None,
             preview_key: None,
             preview_spec: None,
+            full_quality: false,
+            quality_unsaved: false,
             outlines: Vec::new(),
             gesture: None,
             gpu: None,
@@ -366,6 +391,7 @@ impl EditorApp {
             self.lang = lang;
             self.lang_chosen = true;
         }
+        self.full_quality = cc.storage.and_then(|s| s.get_string(QUALITY_KEY)).as_deref() == Some("full");
         if let Some(rs) = &cc.wgpu_render_state {
             let info = rs.adapter.get_info();
             if info.backend != eframe::wgpu::Backend::Gl {
@@ -1161,6 +1187,13 @@ impl EditorApp {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(egui::RichText::new(fill(s.frame, &[&frame])).monospace().color(theme::color::WEAK));
+                ui.add_space(8.0);
+                let label = if self.full_quality { s.quality_full } else { s.quality_smooth };
+                if ui.add(egui::Button::new(egui::RichText::new(label).small())).on_hover_text(s.quality_tip).clicked()
+                {
+                    self.full_quality = !self.full_quality;
+                    self.quality_unsaved = true;
+                }
             });
         });
     }
@@ -2129,11 +2162,16 @@ impl EditorApp {
         let frame = p.canvas.fps.frame_at(self.playhead);
         let moving = self.gesture.as_ref().map(|g| [g.now.x, g.now.y, g.now.scale, g.now.rotation].map(f32::to_bits));
         let revision = self.session.revision();
-        let key = (revision, frame, self.remote.as_ref().map_or(0, remote::Remote::media_epoch), moving, self.playing);
+        let long = p.canvas.width.max(p.canvas.height) as f32;
+        // as many pixels as the frame covers on this screen
+        let area = ui.available_rect_before_wrap();
+        let fit = (area.width() / p.canvas.width.max(1) as f32).min(area.height() / p.canvas.height.max(1) as f32);
+        let on_screen = long * fit * ui.ctx().pixels_per_point();
+        let scale = preview_scale(long, on_screen, self.gpu.is_some(), self.playing, self.full_quality);
+        let epoch = self.remote.as_ref().map_or(0, remote::Remote::media_epoch);
+        let key = (revision, frame, epoch, moving, self.playing, scale.to_bits());
         let changed = self.preview_key != Some(key);
         self.preview_key = Some(key);
-        let long = p.canvas.width.max(p.canvas.height) as f32;
-        let scale = (PREVIEW_LONG_SIDE / long).min(1.0);
         let at = p.canvas.fps.snap(self.playhead);
         // an empty timeline does not compile: the background is drawn alone
         if changed && self.preview_spec.as_ref().is_none_or(|(k, _)| *k != (revision, moving)) {
@@ -2185,7 +2223,7 @@ impl EditorApp {
                         &img.to_srgba8(),
                     ),
                     None => {
-                        let s = PREVIEW_LONG_SIDE / long;
+                        let s = scale;
                         let (w, h) = ((p.canvas.width as f32 * s) as usize, (p.canvas.height as f32 * s) as usize);
                         let bg = p.canvas.background.map(|c| (c * 255.0) as u8);
                         egui::ColorImage::new(
@@ -2281,17 +2319,20 @@ fn is_subrip(name: &str) -> bool {
 
 /// Where the picked language is kept between runs.
 const LANG_KEY: &str = "reelforge.lang";
+/// Where the preview quality is kept between runs (`full` or `smooth`).
+const QUALITY_KEY: &str = "reelforge.preview";
 
 impl eframe::App for EditorApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         if self.lang_chosen {
             storage.set_string(LANG_KEY, self.lang.code().to_string());
         }
+        storage.set_string(QUALITY_KEY, if self.full_quality { "full" } else { "smooth" }.to_string());
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        if std::mem::take(&mut self.lang_unsaved)
+        if (std::mem::take(&mut self.lang_unsaved) | std::mem::take(&mut self.quality_unsaved))
             && let Some(storage) = frame.storage_mut()
         {
             self.save(storage);
