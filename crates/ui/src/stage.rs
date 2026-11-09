@@ -1,6 +1,8 @@
 //! Direct manipulation in the preview: click what you see to select it; drag it to move, a corner to
-//! scale, the knob above it to turn. Moves stick to the frame's centre lines; Shift turns in 15°
-//! steps.
+//! scale, the knob above it to turn. A move sticks to the frame's edges and centre lines, the safe
+//! area 5 % inside the edges, and the edges and centres of the other layers, and draws the line it
+//! sticks to; Shift turns in 15° steps. Alt-click takes the layer under the selected one at that
+//! point (and again, the one under that); a double-click on a title asks to edit its words.
 //!
 //! While a gesture runs the preview is drawn from a copy of the project with the clip's new
 //! placement; letting go commits it as one `clip.set`, so it is one undo step.
@@ -15,8 +17,10 @@ use crate::theme::color;
 const HANDLE_REACH: f32 = 9.0;
 /// How far above the box the turning knob sits, in points.
 const KNOB: f32 = 26.0;
-/// How close, in points, a move sticks to a centre line.
+/// How close, in points, a move sticks to a line.
 const SNAP: f32 = 6.0;
+/// The safe area's margin, as a fraction of the frame.
+const SAFE: f32 = 0.05;
 
 /// What a drag is doing.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -37,8 +41,10 @@ pub(crate) struct Gesture {
     start: ClipTransform,
     /// The placement so far.
     pub(crate) now: ClipTransform,
-    /// Which centre lines the move sticks to: `[vertical, horizontal]`.
-    snapped: [bool; 2],
+    /// The lines the move sticks to, in output pixels: `[x of a vertical one, y of a horizontal one]`.
+    guides: [Option<f32>; 2],
+    /// The clip's box when the gesture began (output pixels, upright bounds).
+    bounds: Option<Rect>,
 }
 
 /// What the person did in the preview this frame.
@@ -46,6 +52,8 @@ pub(crate) struct Gesture {
 pub(crate) struct StageOutput {
     /// Change the selection (`Some(None)` clears it).
     pub select: Option<Option<String>>,
+    /// A layer was double-clicked: edit its words, if it is a title.
+    pub edit: Option<String>,
     /// A gesture ended: the clip's new placement.
     pub commit: Option<(String, ClipTransform)>,
 }
@@ -66,6 +74,31 @@ impl View {
     fn quad(&self, o: &Outline) -> [Pos2; 4] {
         o.map(|p| self.point(p))
     }
+}
+
+/// The upright bounds of an outline, in output pixels.
+fn bounds(o: &Outline) -> Rect {
+    let (mut lo, mut hi) = (pos2(f32::MAX, f32::MAX), pos2(f32::MIN, f32::MIN));
+    for [x, y] in o {
+        lo = lo.min(pos2(*x, *y));
+        hi = hi.max(pos2(*x, *y));
+    }
+    Rect::from_min_max(lo, hi)
+}
+
+/// Where a box moved by `d` sticks along one axis: the shift to add and the line it sticks to.
+/// `edges` are the box's low edge, centre and high edge; `lines` what they may stick to.
+fn stick(edges: [f32; 3], d: f32, lines: &[f32], reach: f32) -> Option<(f32, f32)> {
+    let mut best: Option<(f32, f32)> = None;
+    for e in edges {
+        for &l in lines {
+            let off = l - (e + d);
+            if off.abs() <= reach && best.is_none_or(|(b, _)| off.abs() < b.abs()) {
+                best = Some((off, l));
+            }
+        }
+    }
+    best
 }
 
 fn centre(q: &[Pos2; 4]) -> Pos2 {
@@ -137,10 +170,26 @@ pub(crate) fn interact(
         }
     }
 
-    if response.clicked()
+    if response.double_clicked()
+        && let Some(p) = pointer
+        && let Some(id) = topmost(p)
+    {
+        out.edit = Some(id);
+    } else if response.clicked()
         && let Some(p) = pointer
     {
-        let hit = take(p).map(|t| t.0);
+        let hit = if ui.input(|i| i.modifiers.alt) {
+            // the layer under the selected one here, top first, round again at the bottom
+            let under: Vec<&String> =
+                outlines.iter().rev().filter(|(_, o)| inside(&view.quad(o), p)).map(|(id, _)| id).collect();
+            let at = selected.and_then(|s| under.iter().position(|id| *id == s));
+            match at {
+                Some(i) => under.get((i + 1) % under.len()).map(|id| (*id).clone()),
+                None => under.first().map(|id| (*id).clone()),
+            }
+        } else {
+            take(p).map(|t| t.0)
+        };
         if hit.as_deref() != selected {
             out.select = Some(hit);
         }
@@ -155,7 +204,8 @@ pub(crate) fn interact(
         if Some(clip.as_str()) != selected {
             out.select = Some(Some(clip.clone()));
         }
-        *gesture = Some(Gesture { clip, kind, from: p, centre: c, start, now: start, snapped: [false; 2] });
+        let bounds = outlines.iter().find(|(l, _)| *l == clip).map(|(_, o)| bounds(o));
+        *gesture = Some(Gesture { clip, kind, from: p, centre: c, start, now: start, guides: [None; 2], bounds });
     }
 
     if let Some(g) = gesture.as_mut()
@@ -165,18 +215,30 @@ pub(crate) fn interact(
         g.now = g.start;
         match g.kind {
             Kind::Move => {
-                let d = (p - g.from) / view.k;
-                let (mut x, mut y) = (g.start.x + d.x / canvas[0], g.start.y + d.y / canvas[1]);
-                // the clip's centre near the frame's centre lines sticks to them
+                let mut d = (p - g.from) / view.k;
                 let reach = SNAP / view.k;
-                g.snapped = [(x * canvas[0]).abs() < reach, (y * canvas[1]).abs() < reach];
-                if g.snapped[0] {
-                    x = 0.0;
+                g.guides = [None; 2];
+                if let Some(b) = g.bounds {
+                    // the frame's edges, centre and safe area, and the other layers' edges and centres
+                    let mut xs = vec![0.0, canvas[0] * SAFE, canvas[0] * 0.5, canvas[0] * (1.0 - SAFE), canvas[0]];
+                    let mut ys = vec![0.0, canvas[1] * SAFE, canvas[1] * 0.5, canvas[1] * (1.0 - SAFE), canvas[1]];
+                    for (id, o) in outlines {
+                        if *id != g.clip {
+                            let r = bounds(o);
+                            xs.extend([r.left(), r.center().x, r.right()]);
+                            ys.extend([r.top(), r.center().y, r.bottom()]);
+                        }
+                    }
+                    if let Some((off, line)) = stick([b.left(), b.center().x, b.right()], d.x, &xs, reach) {
+                        d.x += off;
+                        g.guides[0] = Some(line);
+                    }
+                    if let Some((off, line)) = stick([b.top(), b.center().y, b.bottom()], d.y, &ys, reach) {
+                        d.y += off;
+                        g.guides[1] = Some(line);
+                    }
                 }
-                if g.snapped[1] {
-                    y = 0.0;
-                }
-                (g.now.x, g.now.y) = (x, y);
+                (g.now.x, g.now.y) = (g.start.x + d.x / canvas[0], g.start.y + d.y / canvas[1]);
             }
             Kind::Scale => {
                 let ratio = p.distance(g.centre) / g.from.distance(g.centre).max(1.0);
@@ -219,12 +281,17 @@ fn paint(ui: &egui::Ui, view: View, outlines: &[(String, Outline)], selected: Op
     {
         let guide = Stroke::new(1.0, color::PLAYHEAD.gamma_multiply(0.8));
         let f = view.frame;
-        if g.snapped[0] {
-            painter.line_segment([pos2(f.center().x, f.top()), pos2(f.center().x, f.bottom())], guide);
+        if let Some(x) = g.guides[0] {
+            let x = view.point([x, 0.0]).x;
+            painter.line_segment([pos2(x, f.top()), pos2(x, f.bottom())], guide);
         }
-        if g.snapped[1] {
-            painter.line_segment([pos2(f.left(), f.center().y), pos2(f.right(), f.center().y)], guide);
+        if let Some(y) = g.guides[1] {
+            let y = view.point([0.0, y]).y;
+            painter.line_segment([pos2(f.left(), y), pos2(f.right(), y)], guide);
         }
+        // the safe area, faintly, while moving
+        let safe = Rect::from_min_max(f.min + f.size() * SAFE, f.max - f.size() * SAFE);
+        painter.rect_stroke(safe, 0.0, Stroke::new(1.0, Color32::from_white_alpha(40)), egui::StrokeKind::Middle);
     }
     let Some((_, o)) = selected.and_then(|id| outlines.iter().find(|(l, _)| l == id)) else { return };
     let q = view.quad(o);
@@ -258,5 +325,16 @@ mod tests {
     fn the_knob_sits_above_the_top_edge() {
         let q = [pos2(0.0, 0.0), pos2(20.0, 0.0), pos2(20.0, 10.0), pos2(0.0, 10.0)];
         assert_eq!(knob(&q), (pos2(10.0, 0.0), pos2(10.0, -KNOB)));
+    }
+
+    #[test]
+    fn a_moved_box_sticks_to_the_nearest_line() {
+        // a box from 100 to 200 moved 47 right: its right edge (247) is 3 from 250
+        assert_eq!(stick([100.0, 150.0, 200.0], 47.0, &[0.0, 250.0, 540.0], 6.0), Some((3.0, 250.0)));
+        // its centre is nearer another line than its edges are to theirs
+        assert_eq!(stick([100.0, 150.0, 200.0], 389.0, &[540.0, 295.0], 6.0), Some((1.0, 540.0)));
+        assert_eq!(stick([100.0, 150.0, 200.0], 20.0, &[540.0], 6.0), None);
+        let o: Outline = [[10.0, 0.0], [20.0, 10.0], [10.0, 20.0], [0.0, 10.0]];
+        assert_eq!(bounds(&o), Rect::from_min_max(pos2(0.0, 0.0), pos2(20.0, 20.0)));
     }
 }
