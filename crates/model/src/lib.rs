@@ -372,6 +372,9 @@ pub struct TitleStyle {
     /// A shadow beneath the glyphs and outlines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadow: Option<Shadow>,
+    /// The box goes behind each line, hugging it (as subtitles have it), not the whole title.
+    #[serde(default, skip_serializing_if = "is_no")]
+    pub line_boxes: bool,
 }
 
 fn is_zero(v: &f32) -> bool {
@@ -411,6 +414,7 @@ impl Default for TitleStyle {
             gradient: None,
             outer: None,
             shadow: None,
+            line_boxes: false,
         }
     }
 }

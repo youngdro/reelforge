@@ -58,6 +58,7 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "mask.shape/1",
     "text/1",
     "text/2",
+    "text/3",
     "time.hold/1",
     "time.ramp/1",
     "time.reverse/1",

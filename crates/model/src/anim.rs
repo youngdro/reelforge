@@ -142,11 +142,13 @@ pub enum AnimKind {
     Pop,
     /// Turns a quarter turn into place while growing.
     Spin,
+    /// Types a title in a character at a time (or erases it as it leaves); titles only.
+    Typewriter,
 }
 
 impl AnimKind {
     /// Every preset, in menu order.
-    pub const ALL: [AnimKind; 9] = [
+    pub const ALL: [AnimKind; 10] = [
         AnimKind::Fade,
         AnimKind::SlideUp,
         AnimKind::SlideDown,
@@ -156,6 +158,7 @@ impl AnimKind {
         AnimKind::ZoomOut,
         AnimKind::Pop,
         AnimKind::Spin,
+        AnimKind::Typewriter,
     ];
 
     /// The name commands use.
@@ -170,7 +173,13 @@ impl AnimKind {
             AnimKind::ZoomOut => "zoomOut",
             AnimKind::Pop => "pop",
             AnimKind::Spin => "spin",
+            AnimKind::Typewriter => "typewriter",
         }
+    }
+
+    /// Whether only titles take it.
+    pub fn titles_only(self) -> bool {
+        self == AnimKind::Typewriter
     }
 
     /// The preset a command names.
@@ -207,6 +216,8 @@ impl AnimKind {
                 o.rotation = -90.0 * away;
                 o.scale = 0.5 + 0.5 * e;
             }
+            // the text itself changes (`reveal`), not its placement
+            AnimKind::Typewriter => o = Offset::REST,
         }
         o
     }

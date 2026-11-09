@@ -538,6 +538,11 @@ pub struct TextContent {
     /// With `text/2`: a soft shadow of the glyphs and their outlines, beneath them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadow: Option<TextShadow>,
+    /// With `text/3`: how much of the text shows, 0 to 1, counted in characters from the start
+    /// (a typewriter). The lines stay where the whole text puts them; a box behind each line
+    /// grows with what shows of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reveal: Option<Animated<f32>>,
 }
 
 fn regular() -> u16 {
@@ -560,6 +565,7 @@ impl TextContent {
             gradient: None,
             outer: None,
             shadow: None,
+            reveal: None,
         }
     }
 }
@@ -599,6 +605,9 @@ pub struct TextBackground {
     /// With `text/2`: corner radius, in ems.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub radius: f32,
+    /// With `text/3`: a box behind each line, hugging it, instead of one behind the block.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub lines: bool,
 }
 
 fn is_zero(v: &f32) -> bool {
@@ -625,6 +634,11 @@ impl TextContent {
             || self.outer.is_some()
             || self.shadow.is_some()
             || self.background.as_ref().is_some_and(|b| b.radius != 0.0)
+    }
+
+    /// Whether it uses anything beyond `text/2`.
+    pub fn needs_v3(&self) -> bool {
+        self.reveal.is_some() || self.background.as_ref().is_some_and(|b| b.lines)
     }
 }
 
@@ -929,6 +943,9 @@ impl RenderSpec {
                 out.insert("text/1".to_string());
                 if t.needs_v2() {
                     out.insert("text/2".to_string());
+                }
+                if t.needs_v3() {
+                    out.insert("text/3".to_string());
                 }
             }
             if let LayerContent::Media { time, .. } = &layer.content {

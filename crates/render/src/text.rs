@@ -150,8 +150,18 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
         width: text.width,
         ..ParagraphStyle::default()
     };
-    let l = filmcraft_text::layout(&text.text, &style, &para);
+    let mut l = filmcraft_text::layout(&text.text, &style, &para);
     let b = l.bounds;
+    // a typewriter: the glyphs of the first characters only, where the whole text puts them
+    let cut = shown_bytes(text);
+    if cut == 0 {
+        return None;
+    }
+    if cut < text.text.len() {
+        let mut part = (*l).clone();
+        part.glyphs.retain(|g| g.cluster < cut);
+        l = Arc::new(part);
+    }
     // the block's centre goes to the layer's centre, scaled and turned about it
     let s = k * layer.scale;
     if s <= 0.0 {
@@ -169,18 +179,36 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
         let em = text.size * s;
         ((sh.offset[0] * em).round() as i32, (sh.offset[1] * em).round() as i32, sh.blur * em)
     });
-    let backing = text.background.as_ref().map(|bg| {
-        // the box hugs the inked lines, not the wrap width
+    // the box (or one per line) hugs the inked lines, not the wrap width
+    let backing: Vec<Path> = text.background.as_ref().map_or(vec![], |bg| {
         let pad = bg.padding * text.size;
+        let r = bg.radius * text.size;
+        if bg.lines {
+            return l
+                .lines
+                .iter()
+                .filter(|ln| ln.range.start < cut && ln.width > 0.0)
+                .map(|ln| {
+                    // as far as the line shows
+                    let end = if cut >= ln.range.end {
+                        ln.x + ln.width
+                    } else {
+                        ln.carets.iter().filter(|(at, _)| *at <= cut).map(|(_, x)| *x).fold(ln.x, f32::max)
+                    };
+                    let (top, bottom) = (ln.baseline - ln.ascent, ln.baseline + ln.descent);
+                    Path::round_rect(ln.x - pad, top - pad * 0.5, end + pad, bottom + pad * 0.5, r).transformed(&m)
+                })
+                .collect();
+        }
         let (x0, x1) = l.lines.iter().fold((f32::MAX, f32::MIN), |(a, z), ln| (a.min(ln.x), z.max(ln.x + ln.width)));
         let (x0, x1) = if x0 <= x1 { (x0, x1) } else { (b[0], b[2]) };
-        Path::round_rect(x0 - pad, b[1] - pad, x1 + pad, b[3] + pad, bg.radius * text.size).transformed(&m)
+        vec![Path::round_rect(x0 - pad, b[1] - pad, x1 + pad, b[3] + pad, r).transformed(&m)]
     });
     let mut d = device_bounds(&l, &m);
     let reach = shadow.map_or(0.0, |(dx, dy, sigma)| dx.abs().max(dy.abs()) as f32 + 3.0 * sigma);
     let grow = (stroke_px + outer_px + reach).ceil() + 2.0;
     d = [d[0] - grow, d[1] - grow, d[2] + grow, d[3] + grow];
-    if let Some((x0, y0, x1, y1)) = backing.as_ref().and_then(Path::bounds) {
+    for (x0, y0, x1, y1) in backing.iter().filter_map(Path::bounds) {
         d = [d[0].min(x0), d[1].min(y0), d[2].max(x1), d[3].max(y1)];
     }
     // only what lands in the frame (plus the stroke's reach, so edges stroke correctly)
@@ -204,10 +232,15 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
         }
         blur(&offset(&shape, dx, dy), sigma)
     });
-    let behind = backing.map(|p| {
-        let mut mk = Mask::new(r.w, r.h);
-        fill_into(&p, &mut mk, -r.x as f32, -r.y as f32);
-        mk
+    // each box filled on its own and joined, so where line boxes meet they do not cancel out
+    let behind = (!backing.is_empty()).then(|| {
+        let mut all = Mask::new(r.w, r.h);
+        for p in &backing {
+            let mut mk = Mask::new(r.w, r.h);
+            fill_into(p, &mut mk, -r.x as f32, -r.y as f32);
+            all.max_with(&mk);
+        }
+        all
     });
 
     let fill_c = premultiply_srgb(text.color.0);
@@ -255,6 +288,17 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
         *px = over(c, fill.a[i].clamp(0.0, 1.0), *px);
     }
     Some(Sprite { x: r.x, y: r.y, image: Arc::new(image) })
+}
+
+/// How many bytes of `text` show: all of it, or the characters a `reveal` lets through.
+fn shown_bytes(text: &TextContent) -> usize {
+    let Some(r) = &text.reveal else { return text.text.len() };
+    let shown = r.sample(reelforge_time::Tick::ZERO).clamp(0.0, 1.0);
+    if shown >= 1.0 {
+        return text.text.len();
+    }
+    let n = (text.text.chars().count() as f32 * shown).round() as usize;
+    text.text.char_indices().nth(n).map_or(text.text.len(), |(i, _)| i)
 }
 
 #[cfg(test)]

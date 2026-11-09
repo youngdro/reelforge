@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use reelforge_time::Tick;
 use thiserror::Error;
 
-use crate::{Animated, AssetKind, LayerContent, RenderSpec, SPEC_VERSION, TimeMap};
+use crate::{Animated, AssetKind, LayerContent, RenderSpec, SPEC_VERSION, TextContent, TimeMap};
 
 /// Why a spec was refused. The message names the field.
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -168,6 +168,9 @@ pub fn validate(spec: &RenderSpec) -> Result<(), ValidationError> {
             asset_of_kind(spec, &format!("{path}.mask"), mask, &[AssetKind::MaskSequence])?;
         }
         keys_ok(&format!("{path}.opacity"), &layer.opacity, layer.dur)?;
+        if let LayerContent::Text(TextContent { reveal: Some(r), .. }) = &layer.content {
+            keys_ok(&format!("{path}.content.reveal"), r, layer.dur)?;
+        }
         keys_ok(&format!("{path}.transform.position"), &layer.transform.position, layer.dur)?;
         keys_ok(&format!("{path}.transform.scale"), &layer.transform.scale, layer.dur)?;
         keys_ok(&format!("{path}.transform.rotation"), &layer.transform.rotation, layer.dur)?;
@@ -335,7 +338,8 @@ mod tests {
         text.weight = 700;
         text.width = Some(900.0);
         text.stroke = Some(TextStroke { color: Color([0.0, 0.0, 0.0, 1.0]), width: 6.0 });
-        text.background = Some(TextBackground { color: Color([0.0, 0.0, 0.0, 0.5]), padding: 0.25, radius: 0.0 });
+        text.background =
+            Some(TextBackground { color: Color([0.0, 0.0, 0.0, 0.5]), padding: 0.25, radius: 0.0, lines: false });
         s.layers[0].content = LayerContent::Text(text.clone());
         assert_eq!(RenderSpec::from_json(&s.to_json()).unwrap(), s);
         // the optional styling has defaults, so a minimal text layer still reads
