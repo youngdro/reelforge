@@ -166,6 +166,12 @@ pub struct EditorApp {
     lang_chosen: bool,
     /// A pick not written to storage yet (the window may sleep past eframe's autosave).
     lang_unsaved: bool,
+    /// Whether the project lives only in this editor (no file, no server), so it is kept in
+    /// eframe's storage as it changes and brought back after a crash or a reload
+    /// ([`EditorApp::with_recovery`]).
+    recovery: bool,
+    /// The revision last kept there, and when (in the window's seconds) the next keep is due.
+    kept: (u64, Option<f64>),
     /// The window, once it is known, for a remote's answers to wake it.
     window: Arc<std::sync::OnceLock<egui::Context>>,
 }
@@ -352,6 +358,8 @@ impl EditorApp {
             lang: Lang::detect(),
             lang_chosen: false,
             lang_unsaved: false,
+            recovery: false,
+            kept: (0, None),
             window: Arc::default(),
         }
     }
@@ -432,6 +440,35 @@ impl EditorApp {
                 });
             }
         }
+        self
+    }
+
+    /// Keeps the project in eframe's storage (a file in the app's data folder on the desktop, the
+    /// page's local storage in the browser) a moment after each change, and takes back the one kept
+    /// there last, if any: an editor whose project has no file and no server loses nothing to a
+    /// crash, a closed window or a reload. Media the browser handed over is not kept; dropping the
+    /// same files in again brings it back. Call after [`EditorApp::with_gpu`].
+    pub fn with_recovery(self, cc: &eframe::CreationContext<'_>) -> EditorApp {
+        self.recover(cc.storage.and_then(|s| s.get_string(RECOVERY_KEY)))
+    }
+
+    /// [`EditorApp::with_recovery`] with what storage held.
+    fn recover(mut self, kept: Option<String>) -> EditorApp {
+        self.recovery = true;
+        if let Some(project) = kept.and_then(|text| serde_json::from_str::<reelforge_model::Project>(&text).ok())
+            && project.check().is_ok()
+        {
+            let missing = recovered_missing(&project);
+            // the same session (a server the desktop app hosts holds it too), now on the kept project
+            self.session.adopt(project, "project.recover", "editor");
+            self.seen = self.session.revision();
+            let s = self.s();
+            self.status = s.recovered.to_string();
+            if missing > 0 {
+                self.status.push_str(&fill(s.draft_offline, &[&missing]));
+            }
+        }
+        self.kept = (self.session.revision(), None);
         self
     }
 
@@ -551,6 +588,17 @@ impl EditorApp {
         }
     }
 
+    /// Empties the project (`project.new`; undo brings it back) and starts at its beginning.
+    fn new_project(&mut self) {
+        if self.execute("project.new", json!({})).is_ok() {
+            self.set_playing(false);
+            self.selected = None;
+            self.also.clear();
+            self.playhead = Tick::ZERO;
+            self.status = self.s().new_project_done.to_string();
+        }
+    }
+
     /// Imports a file on disk and, when `place`, places it at the playhead.
     #[cfg(not(target_arch = "wasm32"))]
     fn import_path(&mut self, path: &std::path::Path, place: bool) {
@@ -603,6 +651,11 @@ impl EditorApp {
                 return;
             }
         };
+        if let Some(m) = self.project().media.values().find(|m| m.sha256.as_deref() == Some(sha.as_str())) {
+            // the project has it already (taken back after a reload): its pictures are back
+            self.status = fill(self.s().relinked, &[&m.name]);
+            return;
+        }
         let kind = match probe.kind {
             reelforge_renderspec::AssetKind::Video => "video",
             reelforge_renderspec::AssetKind::Image => "image",
@@ -1227,6 +1280,9 @@ impl EditorApp {
                     self.lang = lang;
                     self.lang_chosen = true;
                     self.lang_unsaved = true;
+                }
+                if theme::tool(ui, icon::ADD, s.new_project, s.new_project_tip, true).clicked() {
+                    self.new_project();
                 }
                 if theme::tool(ui, icon::REDO, "", s.redo_tip, true).clicked() {
                     let _ = self.execute("edit.redo", json!({}));
@@ -2591,6 +2647,21 @@ fn is_subrip(name: &str) -> bool {
 const LANG_KEY: &str = "reelforge.lang";
 /// Where the preview quality is kept between runs (`full` or `smooth`).
 const QUALITY_KEY: &str = "reelforge.preview";
+/// Where a project with no file and no server is kept ([`EditorApp::with_recovery`]).
+const RECOVERY_KEY: &str = "reelforge.project";
+/// How long after a change the project is kept, in seconds.
+const RECOVERY_DELAY: f64 = 1.0;
+
+/// How many files of a project taken back from storage must be handed over again: in the browser,
+/// every imported one (the page kept only the project); on the desktop, none (they are read from
+/// their paths).
+fn recovered_missing(p: &reelforge_model::Project) -> usize {
+    if cfg!(target_arch = "wasm32") {
+        p.media.values().filter(|m| m.sha256.is_some() && !m.uri.starts_with(reelforge_media::library::SCHEME)).count()
+    } else {
+        0
+    }
+}
 
 impl eframe::App for EditorApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -2598,6 +2669,10 @@ impl eframe::App for EditorApp {
             storage.set_string(LANG_KEY, self.lang.code().to_string());
         }
         storage.set_string(QUALITY_KEY, if self.full_quality { "full" } else { "smooth" }.to_string());
+        if self.recovery {
+            storage.set_string(RECOVERY_KEY, serde_json::to_string(&*self.project()).expect("serialises"));
+            self.kept = (self.session.revision(), None);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -2607,6 +2682,19 @@ impl eframe::App for EditorApp {
         {
             self.save(storage);
             storage.flush();
+        }
+        if self.recovery && self.session.revision() != self.kept.0 {
+            // a moment after the last change, so a drag is kept once, at its end
+            let now = ctx.input(|i| i.time);
+            let due = *self.kept.1.get_or_insert(now + RECOVERY_DELAY);
+            if now >= due {
+                if let Some(storage) = frame.storage_mut() {
+                    self.save(storage);
+                    storage.flush();
+                }
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(due - now));
+            }
         }
         if !self.fonts {
             self.fonts = true;

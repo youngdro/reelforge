@@ -128,8 +128,8 @@ fn object(props: Vec<(&'static str, Value)>, required: &[&str]) -> Value {
 pub fn input_schema(id: &str) -> Option<Value> {
     let clip = || ("clip", ident("Clip id, such as c4."));
     Some(match id {
-        "commands.list" | "project.inspect" | "edit.undo" | "edit.redo" | "title.templates" | "sound.library"
-        | "timeline.list" => object(vec![], &[]),
+        "commands.list" | "project.inspect" | "project.new" | "edit.undo" | "edit.redo" | "title.templates"
+        | "sound.library" | "timeline.list" => object(vec![], &[]),
         "sound.add" => object(
             vec![
                 (

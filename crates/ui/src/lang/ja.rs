@@ -7,6 +7,7 @@ pub(super) static JA: Strings = Strings {
     lang_name: "日本語",
     lang_tip: "表示言語",
     commands: &[
+        ("project.new", "新規プロジェクト"),
         ("project.setCanvas", "キャンバス設定"),
         ("media.import", "読み込み"),
         ("media.remove", "素材の削除"),
@@ -101,6 +102,10 @@ pub(super) static JA: Strings = Strings {
     imported: "{} を読み込みました",
     undo_tip: "元に戻す  (Ctrl+Z)",
     redo_tip: "やり直し  (Ctrl+Shift+Z)",
+    new_project: "新規",
+    new_project_tip: "空のプロジェクトを始めます（キャンバス設定はそのまま。元に戻すで今のプロジェクトに戻れます）",
+    new_project_done: "新しいプロジェクトです。元に戻すで前のものに戻れます",
+    recovered: "前回のプロジェクトを復元しました",
     connecting: "接続中",
     live: "ライブ",
     syncing: "同期中",
