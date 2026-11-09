@@ -27,7 +27,7 @@ jobs:
           REELFORGE_REQUIRE_GPU: "1"
       # the GL backend with WebGL2's limits: the browser preview without WebGPU
       - name: GPU compositor as on WebGL2
-        run: cargo test -p reelforge-render --features gpu gpu::
+        run: "cargo test -p reelforge-render --features gpu gpu::"
         env:
           REELFORGE_REQUIRE_GPU: "1"
           WGPU_BACKEND: gl
