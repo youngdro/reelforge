@@ -873,3 +873,43 @@ fn media_leaves_the_project_only_when_no_clip_uses_it() {
     s.execute("edit.undo", &json!({})).unwrap();
     assert!(s.project().media.contains_key(&m));
 }
+
+#[test]
+fn clips_copy_paste_duplicate_and_shift_together() {
+    let mut s = Session::default();
+    let a = add_red(&mut s, 0.0, 1.0);
+    let b = add_red(&mut s, 2.0, 1.0);
+    let track = video_track(&s);
+    let tracks_before = s.project().tracks.len();
+
+    // copying changes nothing; pasting where there is room keeps the clips on their track
+    let rev = s.revision();
+    let board = s.execute("clip.copy", &json!({"clips": [a, b]})).unwrap();
+    assert_eq!(s.revision(), rev);
+    let pasted = s.execute("clip.paste", &json!({"clipboard": board, "at": {"seconds": 4}})).unwrap();
+    let placed = pasted["clips"].as_array().unwrap();
+    assert_eq!(placed.len(), 2);
+    assert_eq!(placed[0]["track"], track.as_str());
+    let starts: Vec<f64> =
+        placed.iter().map(|c| s.project().clip(c["clip"].as_str().unwrap()).unwrap().1.start.seconds()).collect();
+    assert_eq!(starts, [4.0, 6.0], "the same distance apart");
+    assert_ne!(placed[0]["clip"], a.as_str(), "new ids");
+
+    // where they would overlap, they go on another track of the kind
+    s.execute("clip.paste", &json!({"clipboard": board, "at": 0})).unwrap();
+    assert_eq!(s.project().tracks.len(), tracks_before + 1);
+    assert!(s.project().check().is_ok());
+
+    // a copy lands right after the last of the clips
+    let d = s.execute("clip.duplicate", &json!({"clips": b})).unwrap();
+    let copy = d["clips"][0]["clip"].as_str().unwrap().to_string();
+    let end_of_b = s.project().clip(&b).unwrap().1.end();
+    assert_eq!(s.project().clip(&copy).unwrap().1.start, end_of_b);
+
+    // several clips move together, and never before the start
+    s.execute("clip.shift", &json!({"clips": [b, copy], "by": {"seconds": -0.5}})).unwrap();
+    assert_eq!(s.project().clip(&b).unwrap().1.start.seconds(), 1.5);
+    assert_eq!(s.project().clip(&copy).unwrap().1.start.seconds(), 2.5);
+    assert!(s.execute("clip.shift", &json!({"clips": [a], "by": {"seconds": -1}})).is_err());
+    assert!(s.execute("clip.paste", &json!({"clipboard": {"clips": []}, "at": 0})).is_err());
+}

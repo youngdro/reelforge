@@ -3,7 +3,9 @@
 //!
 //! The wheel pans, Ctrl + wheel (or a pinch) zooms around the pointer. Dragging a clip moves it,
 //! to another track too; dragging one of its edges trims it. Both snap to the playhead, to the
-//! start and to other clips' edges when snapping is on.
+//! start and to other clips' edges when snapping is on. Shift- or Ctrl-clicking adds a clip to the
+//! selection (or takes it out), dragging over empty lanes selects the clips the box touches, and
+//! dragging one of several selected clips moves them all. Right-click opens the clip's menu.
 
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
 use reelforge_media::Footage;
@@ -32,6 +34,8 @@ pub(crate) struct TimelineView {
     /// Snap moves and trims to edges and the playhead.
     pub(crate) snap: bool,
     strips: Strips,
+    /// The open menu was opened on a clip (else on empty lanes).
+    menu_on_clip: bool,
 }
 
 #[derive(Clone)]
@@ -42,11 +46,46 @@ enum Drag {
     Trim { clip: String, end: bool },
     /// The playhead.
     Scrub,
+    /// A selection box from where the drag began; adding to the selection when `add`.
+    Marquee { from: Pos2, add: bool },
+}
+
+/// How the selection changes.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Select {
+    /// Only this clip.
+    Only(String),
+    /// This clip joins the selection, or leaves it.
+    Toggle(String),
+    /// Exactly these clips (none clears it).
+    Set(Vec<String>),
+}
+
+/// Something picked in a clip's menu (or the menu of empty lanes).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(crate) enum Action {
+    Split,
+    Copy,
+    Cut,
+    Paste,
+    Duplicate,
+    Delete,
+    RippleDelete,
+    TrimStart,
+    TrimEnd,
+    SelectAll,
 }
 
 impl Default for TimelineView {
     fn default() -> TimelineView {
-        TimelineView { px_per_second: 80.0, offset: 0.0, drag: None, snap: true, strips: Strips::default() }
+        TimelineView {
+            px_per_second: 80.0,
+            offset: 0.0,
+            drag: None,
+            snap: true,
+            strips: Strips::default(),
+            menu_on_clip: false,
+        }
     }
 }
 
@@ -55,8 +94,12 @@ impl Default for TimelineView {
 pub(crate) struct TimelineOutput {
     /// Move the playhead here.
     pub seek: Option<Tick>,
-    /// Change the selection (`Some(None)` clears it).
-    pub select: Option<Option<String>>,
+    /// Change the selection.
+    pub select: Option<Select>,
+    /// Several selected clips were dropped this much later (or earlier), each on its own track.
+    pub shifted: Option<(Vec<String>, Tick)>,
+    /// Picked in a menu.
+    pub action: Option<Action>,
     /// A clip was dropped: `(clip, new start, track)`.
     pub moved: Option<(String, Tick, String)>,
     /// A clip's edge was dropped: `(clip, new start, new end)`, one of them set.
@@ -101,8 +144,9 @@ impl TimelineView {
         ui: &mut egui::Ui,
         p: &Project,
         playhead: Tick,
-        selected: Option<&str>,
+        selected: &[String],
         playing: bool,
+        can_paste: bool,
         lang: Lang,
         media: &Footage,
     ) -> TimelineOutput {
@@ -216,11 +260,19 @@ impl TimelineView {
             Some(Drag::Move { clip, .. } | Drag::Trim { clip, .. }) => Some(clip.clone()),
             _ => None,
         };
+        // dragging one of several selected clips moves them all
+        let group: Vec<String> = match &dragged_clip {
+            Some(c) if matches!(self.drag, Some(Drag::Move { .. })) && selected.len() > 1 && selected.contains(c) => {
+                selected.to_vec()
+            }
+            _ => Vec::new(),
+        };
+        let earliest = group.iter().filter_map(|id| p.clip(id)).map(|(_, c)| c.start).min();
         let targets: Vec<Tick> = if self.snap {
             let mut t = vec![Tick::ZERO, playhead];
             for track in &p.tracks {
                 for c in &track.clips {
-                    if dragged_clip.as_deref() != Some(c.id.as_str()) {
+                    if dragged_clip.as_deref() != Some(c.id.as_str()) && !group.contains(&c.id) {
                         t.extend([c.start, c.end()]);
                     }
                 }
@@ -253,7 +305,12 @@ impl TimelineView {
                             snapped_at = Some(e);
                             start = (e - len).max(Tick::ZERO);
                         }
-                        let to = row_at(pos.y).map_or(track.clone(), |i| p.tracks[i].id.clone());
+                        let mut to = row_at(pos.y).map_or(track.clone(), |i| p.tracks[i].id.clone());
+                        if let Some(first) = earliest {
+                            // a group stays on its tracks, and never starts before 0
+                            to = track.clone();
+                            start = start.max(c.start - first);
+                        }
                         ghost = Some((clip.clone(), start, start + len, to));
                     }
                 }
@@ -270,9 +327,14 @@ impl TimelineView {
                         ghost = Some((clip.clone(), a, b, p.tracks[ti].id.clone()));
                     }
                 }
-                Drag::Scrub => {}
+                Drag::Scrub | Drag::Marquee { .. } => {}
             }
         }
+        // how far a dragged group has moved
+        let group_by: Option<Tick> = match (&ghost, &dragged_clip) {
+            (Some((_, a, _, _)), Some(c)) if !group.is_empty() => p.clip(c).map(|(_, clip)| *a - clip.start),
+            _ => None,
+        };
 
         // Something from the asset panel held over the lanes: where it would land.
         let incoming = egui::DragAndDrop::payload::<Item>(ui.ctx());
@@ -304,7 +366,11 @@ impl TimelineView {
             let dim = track.hidden || track.muted;
             for clip in &track.clips {
                 let (mut a, mut b) = (clip.start, clip.end());
-                if let Some((g, ga, gb, gt)) = &ghost
+                if let Some(by) = group_by
+                    && group.contains(&clip.id)
+                {
+                    (a, b) = (a + by, b + by);
+                } else if let Some((g, ga, gb, gt)) = &ghost
                     && *g == clip.id
                 {
                     if *gt != track.id {
@@ -327,9 +393,10 @@ impl TimelineView {
                     clip,
                     start,
                     Look {
-                        selected: selected == Some(clip.id.as_str()),
+                        selected: selected.contains(&clip.id),
                         dim,
-                        dragging: ghost.as_ref().is_some_and(|g| g.0 == clip.id),
+                        dragging: ghost.as_ref().is_some_and(|g| g.0 == clip.id)
+                            || (group_by.is_some() && group.contains(&clip.id)),
                     },
                     words,
                     &mut self.strips,
@@ -498,20 +565,57 @@ impl TimelineView {
         // egui calls it a drag only once the pointer has travelled a few points, so what was grabbed
         // is read where the button went down: an edge is only a few points wide.
         let pressed_at = ui.input(|i| i.pointer.press_origin());
+        let adding = ui.input(|i| i.modifiers.shift || i.modifiers.command);
         if response.drag_started()
             && let Some(pos) = pressed_at.or(response.interact_pointer_pos())
             && in_lanes(pos)
         {
             self.drag = Some(match hit_at(pos) {
-                Some(h) if pos.y > ruler.bottom() => {
-                    out.select = Some(Some(h.clip.clone()));
-                    match h.edge {
-                        Some(end) => Drag::Trim { clip: h.clip, end },
-                        None => Drag::Move { clip: h.clip, grab: h.grab, track: h.track },
+                Some(h) if pos.y > ruler.bottom() => match h.edge {
+                    Some(end) => {
+                        out.select = Some(Select::Only(h.clip.clone()));
+                        Drag::Trim { clip: h.clip, end }
                     }
-                }
+                    None => {
+                        // grabbing one of a selection keeps it, to move them all
+                        if !selected.contains(&h.clip) {
+                            out.select = Some(Select::Only(h.clip.clone()));
+                        }
+                        Drag::Move { clip: h.clip, grab: h.grab, track: h.track }
+                    }
+                },
+                _ if pos.y > ruler.bottom() => Drag::Marquee { from: pos, add: adding },
                 _ => Drag::Scrub,
             });
+        }
+        // the selection box: every clip it touches
+        if let (Some(Drag::Marquee { from, add }), Some(pos)) = (&self.drag, response.interact_pointer_pos())
+            && (response.dragged() || response.drag_stopped())
+        {
+            let boxed = Rect::from_two_pos(*from, pos);
+            painter.with_clip_rect(lanes).rect(
+                boxed,
+                CornerRadius::same(2),
+                color::ACCENT.gamma_multiply(0.12),
+                Stroke::new(1.0, color::ACCENT),
+                StrokeKind::Inside,
+            );
+            if response.drag_stopped() {
+                let mut ids: Vec<String> = if *add { selected.to_vec() } else { Vec::new() };
+                for (row, &i) in order.iter().enumerate() {
+                    let top = rect.top() + RULER + row as f32 * ROW;
+                    for c in &p.tracks[i].clips {
+                        let r = Rect::from_min_max(
+                            egui::pos2(x_of(c.start), top + 5.0),
+                            egui::pos2(x_of(c.end()), top + ROW - 5.0),
+                        );
+                        if r.intersects(boxed) && !ids.contains(&c.id) {
+                            ids.push(c.id.clone());
+                        }
+                    }
+                }
+                out.select = Some(Select::Set(ids));
+            }
         }
         if response.dragged()
             && matches!(self.drag, Some(Drag::Scrub))
@@ -522,10 +626,13 @@ impl TimelineView {
         if response.drag_stopped() {
             if let (Some(drag), Some((clip, a, b, track))) = (self.drag.take(), ghost) {
                 match drag {
+                    Drag::Move { .. } if group_by.is_some() => {
+                        out.shifted = group_by.filter(|by| *by != Tick::ZERO).map(|by| (group.clone(), by));
+                    }
                     Drag::Move { .. } => out.moved = Some((clip, a, track)),
                     Drag::Trim { end: true, .. } => out.trimmed = Some((clip, None, Some(b))),
                     Drag::Trim { end: false, .. } => out.trimmed = Some((clip, Some(a), None)),
-                    Drag::Scrub => {}
+                    Drag::Scrub | Drag::Marquee { .. } => {}
                 }
             }
             self.drag = None;
@@ -538,14 +645,61 @@ impl TimelineView {
                 out.seek = Some(t_of(pos.x).max(Tick::ZERO));
             } else {
                 match hit {
-                    Some(h) => out.select = Some(Some(h.clip)),
+                    Some(h) if adding => out.select = Some(Select::Toggle(h.clip)),
+                    Some(h) => out.select = Some(Select::Only(h.clip)),
                     None => {
-                        out.select = Some(None);
+                        if !adding {
+                            out.select = Some(Select::Set(Vec::new()));
+                        }
                         out.seek = Some(t_of(pos.x).max(Tick::ZERO));
                     }
                 }
             }
         }
+        // Right-click: the clip's menu (it becomes the selection unless it is part of it already).
+        if response.secondary_clicked()
+            && let Some(pos) = response.interact_pointer_pos()
+            && in_lanes(pos)
+            && pos.y > ruler.bottom()
+        {
+            self.menu_on_clip = match hit_at(pos) {
+                Some(h) => {
+                    if !selected.contains(&h.clip) {
+                        out.select = Some(Select::Only(h.clip.clone()));
+                    }
+                    true
+                }
+                None => false,
+            };
+        }
+        let on_clip = self.menu_on_clip;
+        response.context_menu(|ui| {
+            ui.set_min_width(190.0);
+            let mut item = |ui: &mut egui::Ui, label: &str, keys: &str, action: Action, enabled: bool| {
+                let button = egui::Button::new(label).shortcut_text(crate::i18n::keys(ui.ctx(), keys));
+                if ui.add_enabled(enabled, button).clicked() {
+                    out.action = Some(action);
+                    ui.close();
+                }
+            };
+            if on_clip {
+                item(ui, words.split, "S", Action::Split, true);
+                item(ui, words.trim_start, "Q", Action::TrimStart, true);
+                item(ui, words.trim_end, "W", Action::TrimEnd, true);
+                ui.separator();
+                item(ui, words.copy, "Ctrl+C", Action::Copy, true);
+                item(ui, words.cut, "Ctrl+X", Action::Cut, true);
+            }
+            item(ui, words.paste, "Ctrl+V", Action::Paste, can_paste);
+            if on_clip {
+                item(ui, words.duplicate, "Ctrl+D", Action::Duplicate, true);
+                ui.separator();
+                item(ui, words.delete, "Delete", Action::Delete, true);
+                item(ui, words.ripple_delete, "Shift+Delete", Action::RippleDelete, true);
+            } else {
+                item(ui, words.select_all, "Ctrl+A", Action::SelectAll, true);
+            }
+        });
         if self.strips.work(ui.ctx(), media, playing) {
             ui.ctx().request_repaint();
         }
@@ -772,11 +926,17 @@ mod tests {
         ctx: egui::Context,
         view: TimelineView,
         session: Session,
+        selected: Vec<String>,
     }
 
     impl Rig {
         fn new() -> Rig {
-            Rig { ctx: egui::Context::default(), view: TimelineView::default(), session: Session::default() }
+            Rig {
+                ctx: egui::Context::default(),
+                view: TimelineView::default(),
+                session: Session::default(),
+                selected: vec![],
+            }
         }
 
         fn run(&mut self, cmd: &str, params: Value) -> Value {
@@ -792,10 +952,25 @@ mod tests {
             };
             let mut out = None;
             let mut full = self.ctx.run_ui(input, |ui| {
-                out = Some(self.view.show(ui, &p, Tick::ZERO, None, false, Lang::En, &Footage::new()));
+                out = Some(self.view.show(ui, &p, Tick::ZERO, &self.selected, false, false, Lang::En, &Footage::new()));
             });
             full.textures_delta.clear();
             let out = out.expect("drawn");
+            match out.select {
+                Some(Select::Only(id)) => self.selected = vec![id],
+                Some(Select::Toggle(id)) => {
+                    if let Some(i) = self.selected.iter().position(|s| *s == id) {
+                        self.selected.remove(i);
+                    } else {
+                        self.selected.push(id);
+                    }
+                }
+                Some(Select::Set(ids)) => self.selected = ids,
+                None => {}
+            }
+            if let Some((clips, by)) = out.shifted {
+                self.run("clip.shift", json!({"clips": clips, "by": by}));
+            }
             if let Some((clip, start, track)) = out.moved {
                 self.run("clip.move", json!({"clip": clip, "start": start, "track": track}));
             }
@@ -885,5 +1060,28 @@ mod tests {
         rig.drag(rig.at(&low, 0.0) + vec2(2.0, 0.0), rig.at(&low, 0.5));
         let c = rig.session.project().clip(&clip).expect("there").1.clone();
         assert_eq!((c.start, c.end()), (Tick::from_seconds(0.5), Tick::from_seconds(1.5)));
+    }
+
+    #[test]
+    fn a_box_over_empty_lanes_selects_what_it_touches_and_the_group_moves_together() {
+        let (mut rig, low, high, first) = setup();
+        rig.view.snap = false;
+        let second = rig.run(
+            "clip.add",
+            json!({"track": high, "color": [0, 1, 0], "start": {"seconds": 3}, "duration": {"seconds": 1}}),
+        );
+        let second = second["clip"].as_str().unwrap().to_string();
+        rig.frame(vec![]);
+        // from empty space after both clips, back over both rows
+        rig.drag(rig.at(&high, 5.0) - vec2(0.0, 20.0), rig.at(&low, 1.0) + vec2(0.0, 10.0));
+        assert_eq!(rig.selected.len(), 2, "{:?}", rig.selected);
+        assert!(rig.selected.contains(&first) && rig.selected.contains(&second));
+        // dragging one of them moves both by the same time, each on its own track
+        rig.drag(rig.at(&low, 1.0), rig.at(&high, 2.0));
+        let p = rig.session.project();
+        let (ti, a) = p.clip(&first).unwrap();
+        assert_eq!((p.tracks[ti].id.as_str(), a.start), (low.as_str(), Tick::from_seconds(1.0)));
+        assert_eq!(p.clip(&second).unwrap().1.start, Tick::from_seconds(4.0));
+        assert_eq!(rig.selected.len(), 2, "the selection stays");
     }
 }

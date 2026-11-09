@@ -77,6 +77,15 @@ impl Lang {
     }
 }
 
+/// A key combination as written on this system: on a Mac, Ctrl (egui's command key) is ⌘.
+pub fn keys(ctx: &eframe::egui::Context, combo: &str) -> String {
+    if ctx.os() == eframe::egui::os::OperatingSystem::Mac {
+        combo.replace("Ctrl+", "⌘").replace("Shift+", "⇧")
+    } else {
+        combo.to_string()
+    }
+}
+
 /// `template` with each `{}` replaced by the next of `values`.
 pub fn fill(template: &str, values: &[&dyn std::fmt::Display]) -> String {
     let mut out = String::with_capacity(template.len() + 16);
@@ -149,7 +158,7 @@ pub(crate) struct Strings {
     pub(crate) no_sound: &'static str,
     pub(crate) select_hint: &'static str,
     pub(crate) shortcuts: &'static str,
-    pub(crate) keys: [(&'static str, &'static str); 9],
+    pub(crate) keys: &'static [(&'static str, &'static str)],
     pub(crate) kind_video: &'static str,
     pub(crate) kind_picture: &'static str,
     pub(crate) kind_sound: &'static str,
@@ -216,6 +225,15 @@ pub(crate) struct Strings {
     pub(crate) frozen: &'static str,
     pub(crate) ripple_delete: &'static str,
     pub(crate) ripple_delete_tip: &'static str,
+    pub(crate) copy: &'static str,
+    pub(crate) cut: &'static str,
+    pub(crate) paste: &'static str,
+    pub(crate) duplicate: &'static str,
+    pub(crate) trim_start: &'static str,
+    pub(crate) trim_end: &'static str,
+    pub(crate) select_all: &'static str,
+    /// `{}`: how many clips.
+    pub(crate) copied: &'static str,
     pub(crate) magnetic_on: &'static str,
     pub(crate) magnetic_off: &'static str,
     pub(crate) fade_in: &'static str,
@@ -331,6 +349,10 @@ static EN: Strings = Strings {
         ("clip.trim", "Trim"),
         ("clip.move", "Move"),
         ("clip.remove", "Delete"),
+        ("clip.shift", "Move"),
+        ("clip.copy", "Copy"),
+        ("clip.paste", "Paste"),
+        ("clip.duplicate", "Duplicate"),
         ("clip.setSpeed", "Speed"),
         ("clip.setColor", "Colour"),
         ("clip.setCrop", "Crop"),
@@ -428,15 +450,25 @@ static EN: Strings = Strings {
     no_sound: "No sound: {}",
     select_hint: "Select a clip to edit it",
     shortcuts: "SHORTCUTS",
-    keys: [
+    keys: &[
         ("Space", "Play / pause"),
+        ("J / K / L", "Play backwards / stop / forwards (again: faster)"),
         ("S", "Split at the playhead"),
-        ("Delete", "Remove the clip"),
+        ("Q / W", "Trim the start / end to the playhead"),
+        ("Delete", "Remove the clips"),
         ("Shift+Delete", "Remove and close the gap"),
+        ("Ctrl+C / X / V", "Copy / cut / paste at the playhead"),
+        ("Ctrl+D", "Duplicate"),
+        ("Ctrl+A", "Select every clip"),
+        ("Shift+click", "Add to the selection"),
+        ("Esc", "Select nothing"),
         ("Ctrl+Z", "Undo"),
         ("Ctrl+Shift+Z", "Redo"),
         ("← / →", "One frame"),
         ("Shift+← / →", "One second"),
+        ("↑ / ↓", "Previous / next cut"),
+        ("+ / −", "Zoom the timeline"),
+        ("Shift+Z", "Fit the timeline"),
         ("Ctrl+wheel", "Zoom the timeline"),
     ],
     kind_video: "Video",
@@ -528,6 +560,14 @@ static EN: Strings = Strings {
     frozen: "A freeze frame: it holds one picture and is silent. Change its length on the timeline.",
     ripple_delete: "Ripple delete",
     ripple_delete_tip: "Remove the clip and close the gap  (Shift+Delete)",
+    copy: "Copy",
+    cut: "Cut",
+    paste: "Paste",
+    duplicate: "Duplicate",
+    trim_start: "Trim start to playhead",
+    trim_end: "Trim end to playhead",
+    select_all: "Select all",
+    copied: "Copied {} clips",
     magnetic_on: "Magnetic: clips stay end to end. Click to turn off",
     magnetic_off: "Make magnetic: clips stay end to end",
     fade_in: "Fade in",
@@ -650,6 +690,10 @@ static ZH: Strings = Strings {
         ("clip.trim", "修剪"),
         ("clip.move", "移动"),
         ("clip.remove", "删除"),
+        ("clip.shift", "移动"),
+        ("clip.copy", "复制"),
+        ("clip.paste", "粘贴"),
+        ("clip.duplicate", "创建副本"),
         ("clip.setSpeed", "变速"),
         ("clip.setColor", "调色"),
         ("clip.setCrop", "裁剪"),
@@ -747,15 +791,25 @@ static ZH: Strings = Strings {
     no_sound: "没有声音：{}",
     select_hint: "选中一个片段来编辑",
     shortcuts: "快捷键",
-    keys: [
+    keys: &[
         ("空格", "播放 / 暂停"),
+        ("J / K / L", "倒放 / 停止 / 播放（再按加速）"),
         ("S", "在播放头处分割"),
+        ("Q / W", "向左 / 向右裁剪到播放头"),
         ("Delete", "删除片段"),
         ("Shift+Delete", "删除并合拢空隙"),
+        ("Ctrl+C / X / V", "复制 / 剪切 / 粘贴到播放头"),
+        ("Ctrl+D", "创建副本"),
+        ("Ctrl+A", "全选片段"),
+        ("Shift+点击", "加选"),
+        ("Esc", "取消选择"),
         ("Ctrl+Z", "撤销"),
         ("Ctrl+Shift+Z", "重做"),
         ("← / →", "前后一帧"),
         ("Shift+← / →", "前后一秒"),
+        ("↑ / ↓", "上一个 / 下一个剪辑点"),
+        ("+ / −", "缩放时间线"),
+        ("Shift+Z", "时间线适应窗口"),
         ("Ctrl+滚轮", "缩放时间线"),
     ],
     kind_video: "视频",
@@ -837,6 +891,14 @@ static ZH: Strings = Strings {
     frozen: "定格画面：停在一帧，没有声音。在时间线上拖动边缘改变时长。",
     ripple_delete: "波纹删除",
     ripple_delete_tip: "删除片段并合拢空隙  (Shift+Delete)",
+    copy: "复制",
+    cut: "剪切",
+    paste: "粘贴",
+    duplicate: "创建副本",
+    trim_start: "向左裁剪",
+    trim_end: "向右裁剪",
+    select_all: "全选",
+    copied: "已复制 {} 个片段",
     magnetic_on: "磁吸已开：片段首尾相接。点击关闭",
     magnetic_off: "开启磁吸：片段首尾相接",
     fade_in: "淡入",
