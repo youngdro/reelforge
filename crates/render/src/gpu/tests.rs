@@ -1,7 +1,9 @@
 //! The wgpu compositor against the CPU reference, frame by frame.
 //!
 //! These need an adapter. Without one they say so and pass, unless `REELFORGE_REQUIRE_GPU` is set,
-//! as CI sets it (it installs Mesa's software Vulkan, lavapipe).
+//! as CI sets it (it installs Mesa's software Vulkan, lavapipe). `REELFORGE_GPU_LIMITS=webgl2`
+//! asks for WebGL2's limits (no compute, 2048-pixel textures), and `WGPU_BACKEND=gl` for the GL
+//! backend, which together stand in for a browser without WebGPU.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -13,7 +15,7 @@ use crate::*;
 
 fn gpu() -> Option<std::sync::MutexGuard<'static, GpuCompositor>> {
     static GPU: OnceLock<Option<Mutex<GpuCompositor>>> = OnceLock::new();
-    let g = GPU.get_or_init(|| match GpuCompositor::headless() {
+    let g = GPU.get_or_init(|| match webgl2().unwrap_or_else(GpuCompositor::headless) {
         Ok(g) => {
             eprintln!("GPU tests on {}", g.adapter());
             Some(Mutex::new(g))
@@ -25,6 +27,26 @@ fn gpu() -> Option<std::sync::MutexGuard<'static, GpuCompositor>> {
         }
     });
     g.as_ref().map(|m| m.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// A compositor on a device with WebGL2's limits, when `REELFORGE_GPU_LIMITS=webgl2` says so.
+fn webgl2() -> Option<Result<GpuCompositor, super::GpuError>> {
+    if std::env::var("REELFORGE_GPU_LIMITS").ok()? != "webgl2" {
+        return None;
+    }
+    let unavailable = |e: String| super::GpuError::Unavailable(e);
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    Some((|| {
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
+            .map_err(|e| unavailable(e.to_string()))?;
+        let limits = wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
+        let (device, queue) = pollster::block_on(
+            adapter.request_device(&wgpu::DeviceDescriptor { required_limits: limits, ..Default::default() }),
+        )
+        .map_err(|e| unavailable(e.to_string()))?;
+        assert!(GpuCompositor::supports(&adapter));
+        Ok(GpuCompositor::new(device, queue, &adapter.get_info()))
+    })())
 }
 
 /// Renders `spec` at `t` on both compositors and checks every 8-bit value is within one code.
@@ -260,6 +282,10 @@ fn drafts_draw_the_same_slate_and_report() {
 #[test]
 fn yuv_matches_the_cpu_conversion() {
     let Some(mut g) = gpu() else { return };
+    if !g.converts_yuv() {
+        // no compute shaders (WebGL2): exports there are drawn on the CPU
+        return;
+    }
     // odd sizes: the last chroma column and row average fewer pixels
     let mut s = base(37, 21);
     with_picture(&mut s, Fit::Stretch);
@@ -411,4 +437,21 @@ fn video_pictures_converted_on_the_gpu_match_the_cpu() {
         s.layers[0].transform.scale = Animated::Constant(0.7);
         same(&s, Tick::ZERO, 0.5, &video, Quality::Final);
     }
+}
+
+#[test]
+fn pictures_larger_than_the_device_takes_are_fitted_and_frames_refused() {
+    let Some(mut g) = gpu() else { return };
+    let side = g.max_side();
+    // a picture one pixel wider than a texture may be, with no probe to say so ahead
+    let wide = Arc::new(Image::filled(side + 1, 2, [0.5, 0.25, 0.0, 1.0]));
+    let mut s = base(64, 36);
+    with_picture(&mut s, Fit::Stretch);
+    g.render(&s, Tick::ZERO, 1.0, &Pictures(wide), Quality::Final).expect("drawn from a smaller copy");
+    let (w, _, px) = g.read_srgba8().expect("reads back");
+    let mid = &px[((18 * w + 32) * 4) as usize..][..4];
+    assert!(mid[0] > 150 && mid[1] > 100 && mid[2] < 40, "{mid:?}");
+    // a frame larger than that is refused, not a device error
+    let huge = base(side + 1, 16);
+    assert!(g.render(&huge, Tick::ZERO, 1.0, &NoMedia, Quality::Draft).is_err());
 }

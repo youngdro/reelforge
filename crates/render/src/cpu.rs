@@ -30,16 +30,31 @@ pub(crate) enum Resolved {
     Nothing,
 }
 
+/// What a compositor can take from [`resolve`].
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct Takes {
+    /// Video pictures still in Y'CbCr.
+    pub yuv: bool,
+    /// The longest side a picture may have (a GPU's texture limit).
+    pub side: u32,
+}
+
+impl Takes {
+    /// The CPU compositor's: converted pictures of any size.
+    pub const CPU: Takes = Takes { yuv: false, side: u32::MAX };
+}
+
 /// Fetches what `layer` needs and draws its text. Placeholders go in `report` (drafts) or fail
-/// the frame (finals). With `yuv`, a video picture may come back unconverted, when the media
-/// source has it so and nothing has to be done to it on the CPU.
+/// the frame (finals). A video picture may come back unconverted, when the compositor `takes`
+/// that, the media source has it so and nothing has to be done to it on the CPU; one larger than
+/// the compositor takes is asked for smaller.
 pub(crate) fn resolve(
     spec: &RenderSpec,
     plan: &FramePlan,
     layer: &PlannedLayer,
     media: &dyn MediaSource,
     quality: Quality,
-    yuv: bool,
+    takes: Takes,
     report: &mut FrameReport,
 ) -> Result<Resolved, RenderError> {
     let mut placeholder = |reason: &str| -> Result<(), RenderError> {
@@ -55,14 +70,23 @@ pub(crate) fn resolve(
             let Some(def) = spec.assets.get(asset) else {
                 return Err(RenderError::Media(format!("unknown asset {asset:?}")));
             };
-            if yuv
+            let size = def.probe.as_ref().and_then(|p| Some((p.width?, p.height?)));
+            // a picture too big for the compositor is asked for smaller
+            let mut fit = 1;
+            if let Some((w, h)) = size {
+                while fit < 64 && w.max(h).div_ceil(fit) > takes.side {
+                    fit *= 2;
+                }
+            }
+            if takes.yuv
+                && fit == 1
                 && blur_radius(layer).is_none()
                 && let Some(y) = media.yuv(asset, def, *at).map_err(RenderError::Media)?
                 && y.is_whole()
             {
                 return Ok(Resolved::Yuv(y));
             }
-            let shrink = if quality == Quality::Draft { draft_shrink(def, plan, layer) } else { 1 };
+            let shrink = if quality == Quality::Draft { draft_shrink(def, plan, layer).max(fit) } else { fit };
             let pic =
                 if shrink > 1 { media.picture_shrunk(asset, def, *at, shrink) } else { media.picture(asset, def, *at) };
             match pic.map_err(RenderError::Media)? {
@@ -158,7 +182,7 @@ pub fn composite(
     let mut report = FrameReport::default();
     let target = [plan.width as f32, plan.height as f32];
     for layer in &plan.layers {
-        let what = resolve(spec, plan, layer, media, quality, false, &mut report)?;
+        let what = resolve(spec, plan, layer, media, quality, Takes::CPU, &mut report)?;
         let lut = resolve_lut(spec, layer, media, quality, &mut report)?;
         let lut = lut.as_deref();
         match what {

@@ -441,6 +441,22 @@ impl GpuCompositor {
         self.luma_pipeline.is_some() && self.chroma_pipeline.is_some()
     }
 
+    /// The longest side a picture or frame may have on this device.
+    pub fn max_side(&self) -> u32 {
+        self.device.limits().max_texture_dimension_2d
+    }
+
+    /// Whether an adapter has what the compositor needs: a working picture (`Rgba16Float`) it can
+    /// draw and blend into. WebGPU, Vulkan, Metal and DX12 have it; WebGL2 has it with
+    /// `EXT_color_buffer_float`, which most browsers offer.
+    pub fn supports(adapter: &wgpu::Adapter) -> bool {
+        let work = adapter.get_texture_format_features(WORK);
+        let picture = adapter.get_texture_format_features(PICTURE);
+        work.allowed_usages.contains(wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING)
+            && work.flags.contains(wgpu::TextureFormatFeatureFlags::BLENDABLE)
+            && picture.allowed_usages.contains(wgpu::TextureUsages::TEXTURE_BINDING)
+    }
+
     /// The adapter in use, for logs and reports.
     pub fn adapter(&self) -> &str {
         &self.adapter
@@ -475,11 +491,19 @@ impl GpuCompositor {
         media: &dyn MediaSource,
         quality: Quality,
     ) -> Result<FrameReport, RenderError> {
+        let side = self.max_side();
+        if plan.width.max(plan.height) > side {
+            return Err(RenderError::Media(format!(
+                "a {}×{} frame is larger than this GPU draws ({side})",
+                plan.width, plan.height
+            )));
+        }
         self.count += 1;
         let mut report = FrameReport::default();
         let mut resolved = Vec::with_capacity(plan.layers.len());
         for layer in &plan.layers {
-            let what = resolve(spec, plan, layer, media, quality, true, &mut report)?;
+            let takes = crate::cpu::Takes { yuv: true, side: self.max_side() };
+            let what = resolve(spec, plan, layer, media, quality, takes, &mut report)?;
             resolved.push((what, resolve_lut(spec, layer, media, quality, &mut report)?));
         }
         self.ensure_frame(plan.width, plan.height);
@@ -502,6 +526,7 @@ impl GpuCompositor {
                     (layer.matrix(cw, ch, target), [cw, ch], [w as f32, h as f32], [cw, ch], 2, color, None)
                 }
                 Resolved::Picture(pic) => {
+                    let pic = self.fitting(pic);
                     let (w, h) = (pic.width as f32, pic.height as f32);
                     let (cw, ch) = layer.visible(w, h);
                     let view = self.picture(&pic);
@@ -792,6 +817,17 @@ impl GpuCompositor {
             under,
             display,
         });
+    }
+
+    /// `pic`, or a smaller copy when it is larger than the device takes (a picture whose size
+    /// was not known ahead, on WebGL2).
+    fn fitting(&self, pic: Arc<Image>) -> Arc<Image> {
+        let side = self.max_side();
+        if pic.width.max(pic.height) <= side {
+            return pic;
+        }
+        let k = pic.width.max(pic.height).div_ceil(side);
+        Arc::new(crate::image::shrink(&pic, pic.width.div_ceil(k), pic.height.div_ceil(k)))
     }
 
     /// The texture of a picture, uploaded once while frames keep using it.

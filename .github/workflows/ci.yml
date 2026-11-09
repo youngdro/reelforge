@@ -18,10 +18,17 @@ jobs:
           targets: wasm32-unknown-unknown
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      # Mesa's software Vulkan (lavapipe), so the wgpu compositor is tested against the CPU one; ALSA headers for sound
+      # Mesa's software Vulkan (lavapipe) and GLES, so the wgpu compositor is tested against the CPU one; ALSA headers for sound
       - name: software GPU
-        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libegl1 libgles2 libegl-mesa0 libasound2-dev
       - name: fmt, clippy, tests, layers, wasm
         run: cargo xtask ci
         env:
           REELFORGE_REQUIRE_GPU: "1"
+      # the GL backend with WebGL2's limits: the browser preview without WebGPU
+      - name: GPU compositor as on WebGL2
+        run: cargo test -p reelforge-render --features gpu gpu::
+        env:
+          REELFORGE_REQUIRE_GPU: "1"
+          WGPU_BACKEND: gl
+          REELFORGE_GPU_LIMITS: webgl2

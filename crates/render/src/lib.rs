@@ -161,7 +161,7 @@ pub fn layer_outlines(spec: &RenderSpec, t: Tick, media: &dyn MediaSource) -> Ve
                 upright.rotation = 0.0;
                 let mut report = FrameReport::default();
                 let Ok(cpu::Resolved::Sprite(sp)) =
-                    cpu::resolve(spec, &plan, &upright, media, Quality::Draft, false, &mut report)
+                    cpu::resolve(spec, &plan, &upright, media, Quality::Draft, cpu::Takes::CPU, &mut report)
                 else {
                     continue;
                 };

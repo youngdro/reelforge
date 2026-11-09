@@ -81,13 +81,15 @@ In rough priority order for short videos:
    (the two bundled CJK faces add 5 MB to the wasm). `text/1` itself is in place: FilmCraft's
    pure-Rust text engine (harfrust shaping, UAX #14 line breaking, its own rasteriser) with a
    bundled Noto Sans SC subset; system fonts are never consulted, so renders match everywhere.
-3. GPU, next steps: decoded video uploaded as Y'CbCr planes and converted in a shader (today
-   `Footage` converts to linear RGB on the CPU), blurs and other effects that read neighbouring pixels (the colour ones, `color.grade@1` and `color.lut@1` included, are per-pixel WGSL already, as are crops, mirrors, shape masks and the `blend/2` modes, which read the layers below from a copy), and the
-   WebGL2 fallback (no float render targets there, so the browser preview without WebGPU stays on
-   the CPU). The wgpu compositor itself is in place: the same frame plan, tested against the CPU
-   reference to one 8-bit code, drawing the editor's preview on eframe's own device and exports on
-   a headless one, with the sRGB and 4:2:0 conversions in shaders.
-4. Audio, next steps: scrubbing sound, and mixing on a worker thread (in the browser, an
+3. GPU, next steps: blurs and other effects that read neighbouring pixels on the GPU (the colour
+   ones, `color.grade@1` and `color.lut@1` included, are per-pixel WGSL already, as are crops,
+   mirrors, shape masks and the `blend/2` modes, which read the layers below from a copy; a blurred
+   layer's picture is still made on the CPU). The wgpu compositor itself is in place: the same
+   frame plan, tested against the CPU reference to one 8-bit code (on Vulkan, and on GL with
+   WebGL2's limits), drawing the editor's preview on eframe's own device (WebGL2 included, where
+   the browser can draw into float pictures) and exports on a headless one, with decoded video
+   converted from Y'CbCr and the sRGB and 4:2:0 conversions in shaders.
+4. Audio, next steps: mixing on a worker thread (in the browser, an
    AudioWorklet). In place: fades and volume keyframes (lowered to `gain_db` keys), speed changes
    that keep the pitch (`audio.stretch/1`, WSOLA in `reelforge_media::stretch`, chained in fixed
    blocks so a mix made in slices matches one made whole), sound played backwards or along a speed curve
