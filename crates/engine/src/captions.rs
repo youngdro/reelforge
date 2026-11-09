@@ -135,6 +135,7 @@ pub(crate) fn place(
                 hidden: false,
                 muted: false,
                 magnetic: false,
+                locked: false,
                 clips: vec![],
             };
             proj.tracks.insert(at, track);

@@ -271,7 +271,10 @@ fn tracks_are_renamed_hidden_and_muted() {
     let mut s = Session::default();
     let t = s.project().tracks[0].id.clone();
     let out = s.execute("track.set", &json!({"track": t, "hidden": true, "name": "B-roll"})).unwrap();
-    assert_eq!(out, json!({"track": t, "name": "B-roll", "hidden": true, "muted": false, "magnetic": false}));
+    assert_eq!(
+        out,
+        json!({"track": t, "name": "B-roll", "hidden": true, "muted": false, "magnetic": false, "locked": false})
+    );
     s.execute("track.set", &json!({"track": t, "muted": true})).unwrap();
     let track = s.project().tracks[0].clone();
     assert!(track.hidden && track.muted && track.name == "B-roll");
@@ -943,4 +946,34 @@ fn a_canvas_blur_puts_a_blurred_copy_behind_the_clip() {
     s.execute("clip.setBackdrop", &json!({"clip": a, "blur": null})).unwrap();
     assert_eq!(s.project().clip(&a).unwrap().1.look.backdrop, None);
     assert!(s.execute("clip.setBackdrop", &json!({"clip": a, "blur": 2})).is_err());
+}
+
+#[test]
+fn locked_tracks_markers_and_track_order() {
+    let mut s = Session::default();
+    let a = add_red(&mut s, 0.0, 1.0);
+    let track = video_track(&s);
+    s.execute("track.set", &json!({"track": track, "locked": true})).unwrap();
+    assert!(s.execute("clip.move", &json!({"clip": a, "start": {"seconds": 2}})).is_err(), "locked");
+    assert!(s.execute("clip.remove", &json!({"clips": a})).is_err());
+    s.execute("track.set", &json!({"track": track, "locked": false})).unwrap();
+    s.execute("clip.move", &json!({"clip": a, "start": {"seconds": 2}})).unwrap();
+
+    // markers stay in time order and snap to frames
+    let m2 = s.execute("marker.add", &json!({"at": {"seconds": 2}, "note": "drop"})).unwrap()["marker"].clone();
+    let m1 = s.execute("marker.add", &json!({"at": {"seconds": 1}})).unwrap()["marker"].clone();
+    assert_eq!(s.project().markers.iter().map(|m| json!(m.id)).collect::<Vec<_>>(), [m1.clone(), m2.clone()]);
+    s.execute("marker.set", &json!({"marker": m1, "at": {"seconds": 3}})).unwrap();
+    assert_eq!(s.project().markers[1].id, m1.as_str().unwrap());
+    s.execute("marker.remove", &json!({"marker": m2})).unwrap();
+    assert_eq!(s.project().markers.len(), 1);
+
+    // a second video track moves below the first; the last of a kind stays
+    let t2 = s.execute("track.add", &json!({"kind": "video"})).unwrap()["track"].as_str().unwrap().to_string();
+    s.execute("track.move", &json!({"track": t2, "index": 0})).unwrap();
+    let videos: Vec<String> =
+        s.project().tracks.iter().filter(|t| t.kind == TrackKind::Video).map(|t| t.id.clone()).collect();
+    assert_eq!(videos, [t2.clone(), track.clone()]);
+    s.execute("track.remove", &json!({"track": t2})).unwrap();
+    assert!(s.execute("track.remove", &json!({"track": track})).is_err());
 }

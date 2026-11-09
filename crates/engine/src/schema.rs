@@ -252,6 +252,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
                     "magnetic",
                     json!({"type": "boolean", "description": "Keep the clips end to end from the start: removing or trimming closes gaps, moving reorders."}),
                 ),
+                ("locked", json!({"type": "boolean", "description": "Lock the track's clips against changes."})),
             ],
             &["track"],
         ),
@@ -293,6 +294,30 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["clip", "start"],
         ),
+        "track.move" => object(
+            vec![
+                ("track", ident("Track id, such as t2.")),
+                (
+                    "index",
+                    json!({"type": "integer", "minimum": 0, "description": "Place among the tracks of its kind, 0 at the bottom."}),
+                ),
+            ],
+            &["track", "index"],
+        ),
+        "track.remove" => object(vec![("track", ident("Track id, such as t2."))], &["track"]),
+        "marker.add" => object(
+            vec![("at", time("Where.")), ("note", json!({"type": "string", "description": "What it is for."}))],
+            &["at"],
+        ),
+        "marker.set" => object(
+            vec![
+                ("marker", ident("Marker id, such as mk7.")),
+                ("at", time("Where it goes.")),
+                ("note", json!({"type": "string", "description": "What it is for."})),
+            ],
+            &["marker"],
+        ),
+        "marker.remove" => object(vec![("marker", ident("Marker id, such as mk7."))], &["marker"]),
         "clip.shift" => object(
             vec![
                 (

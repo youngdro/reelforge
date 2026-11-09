@@ -59,6 +59,21 @@ pub struct Project {
     /// Id of the timeline being edited (its tracks are `tracks`); empty while `timelines` is.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub timeline: String,
+    /// Marks on the timeline being edited, in time order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<Marker>,
+}
+
+/// A mark on a timeline: a place to come back to, and to snap to.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Marker {
+    /// Id (`m…`).
+    pub id: String,
+    /// Where it is.
+    pub at: Tick,
+    /// What it is for.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
 }
 
 /// The output canvas.
@@ -135,6 +150,9 @@ pub struct Track {
     /// gap and a move reorders.
     #[serde(default, skip_serializing_if = "is_no")]
     pub magnetic: bool,
+    /// Locked: its clips cannot be changed until it is unlocked.
+    #[serde(default, skip_serializing_if = "is_no")]
+    pub locked: bool,
     /// Clips in time order, never overlapping.
     pub clips: Vec<Clip>,
 }
@@ -506,6 +524,7 @@ impl Project {
             export: ExportSettings::default(),
             timelines: Vec::new(),
             timeline: String::new(),
+            markers: Vec::new(),
         };
         p.tracks = timeline::empty_tracks(&mut p);
         p
@@ -548,6 +567,15 @@ impl Project {
         for t in &mut self.tracks {
             t.clips.sort_by_key(|c| c.start);
         }
+        self.markers.sort_by_key(|m| m.at);
+    }
+
+    /// The first locked track whose clips differ between `before` and this project, if any.
+    pub fn changed_locked_track(&self, before: &Project) -> Option<&Track> {
+        before.tracks.iter().filter(|t| t.locked).find_map(|old| match self.tracks.iter().find(|t| t.id == old.id) {
+            Some(now) if now.locked && now.clips != old.clips => Some(now),
+            _ => None,
+        })
     }
 
     /// Lays the clips of each magnetic track end to end from the start, in their current order.

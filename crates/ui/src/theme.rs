@@ -74,6 +74,14 @@ pub(crate) mod icon {
     pub const FIT: &str = "\u{e534}";
     pub const SHOWN: &str = "\u{e220}";
     pub const HIDDEN: &str = "\u{e224}";
+    pub const LOCKED: &str = "\u{e2fa}";
+    pub const UNLOCKED: &str = "\u{e306}";
+    pub const LOOP: &str = "\u{e3f6}";
+    pub const ROW_HEIGHT: &str = "\u{eb04}";
+    pub const MARKER: &str = "\u{e244}";
+    pub const DETACH: &str = "\u{e2e4}";
+    pub const WAVEFORM: &str = "\u{e802}";
+    pub const ROLL: &str = "\u{e0a0}";
 }
 
 static ICONS: &[u8] = include_bytes!("../fonts/phosphor-icons.ttf");

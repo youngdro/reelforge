@@ -19,7 +19,7 @@ use crate::theme::{color, icon};
 
 const RULER: f32 = 26.0;
 const ROW: f32 = 54.0;
-const HEADER: f32 = 132.0;
+const HEADER: f32 = 156.0;
 /// How close, in points, a drag must come to a snap target to stick to it.
 const SNAP_POINTS: f32 = 8.0;
 /// How close to a clip's edge, in points, a drag trims instead of moving.
@@ -36,7 +36,17 @@ pub(crate) struct TimelineView {
     strips: Strips,
     /// The open menu was opened on a clip (else on empty lanes).
     menu_on_clip: bool,
+    /// The open menu was opened on this track's header, or on this marker in the ruler.
+    menu_track: Option<String>,
+    menu_marker: Option<String>,
+    /// Where the open menu was opened.
+    menu_at: Tick,
+    /// How tall a track's row is, in points.
+    pub(crate) row: f32,
 }
+
+/// The heights a row cycles through.
+pub(crate) const ROW_HEIGHTS: [f32; 3] = [40.0, ROW, 76.0];
 
 #[derive(Clone)]
 enum Drag {
@@ -59,6 +69,22 @@ pub(crate) enum Select {
     Toggle(String),
     /// Exactly these clips (none clears it).
     Set(Vec<String>),
+}
+
+/// Something picked in a track header's menu.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(crate) enum TrackAction {
+    /// One place up among its kind (drawn above).
+    Up,
+    Down,
+    Delete,
+}
+
+/// Something done to the markers in the ruler.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum MarkerAction {
+    Add(Tick),
+    Remove(String),
 }
 
 /// Something picked in a clip's menu (or the menu of empty lanes).
@@ -85,6 +111,10 @@ impl Default for TimelineView {
             snap: true,
             strips: Strips::default(),
             menu_on_clip: false,
+            menu_track: None,
+            menu_marker: None,
+            menu_at: Tick::ZERO,
+            row: ROW,
         }
     }
 }
@@ -100,6 +130,10 @@ pub(crate) struct TimelineOutput {
     pub shifted: Option<(Vec<String>, Tick)>,
     /// Picked in a menu.
     pub action: Option<Action>,
+    /// Picked in a track header's menu: `(track, what)`.
+    pub track_action: Option<(String, TrackAction)>,
+    /// Picked in the ruler's menu.
+    pub marker: Option<MarkerAction>,
     /// A clip was dropped: `(clip, new start, track)`.
     pub moved: Option<(String, Tick, String)>,
     /// A clip's edge was dropped: `(clip, new start, new end)`, one of them set.
@@ -147,13 +181,15 @@ impl TimelineView {
         selected: &[String],
         playing: bool,
         can_paste: bool,
+        range: Option<(Tick, Tick)>,
         lang: Lang,
         media: &Footage,
     ) -> TimelineOutput {
         let words = lang.strings();
         let mut out = TimelineOutput::default();
+        let row_h = self.row;
         // only what the rows need: taking all the panel offers would make a resizable panel grow every frame
-        let height = RULER + ROW * p.tracks.len() as f32 + 6.0;
+        let height = RULER + row_h * p.tracks.len() as f32 + 6.0;
         let width = ui.available_width().max(HEADER + 120.0);
         let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click_and_drag());
         let painter = ui.painter_at(rect);
@@ -219,6 +255,41 @@ impl TimelineView {
             Stroke::new(1.0, color::LINE),
         );
 
+        // The range that loops, and the markers.
+        if let Some((a, b)) = range {
+            let r = Rect::from_min_max(egui::pos2(x_of(a), ruler.top()), egui::pos2(x_of(b), ruler.bottom()));
+            ruler_painter.rect_filled(r, 0.0, color::ACCENT.gamma_multiply(0.18));
+            for x in [r.left(), r.right()] {
+                ruler_painter.line_segment(
+                    [egui::pos2(x, ruler.top()), egui::pos2(x, ruler.bottom())],
+                    Stroke::new(1.5, color::ACCENT),
+                );
+            }
+        }
+        for m in &p.markers {
+            let x = x_of(m.at);
+            let flag = [
+                egui::pos2(x, ruler.bottom() - 2.0),
+                egui::pos2(x - 5.0, ruler.bottom() - 10.0),
+                egui::pos2(x + 5.0, ruler.bottom() - 10.0),
+            ];
+            ruler_painter.add(egui::Shape::convex_polygon(flag.to_vec(), color::WARN, Stroke::NONE));
+            ruler_painter.line_segment(
+                [egui::pos2(x, ruler.bottom() - 10.0), egui::pos2(x, ruler.top() + 2.0)],
+                Stroke::new(1.0, color::WARN),
+            );
+            if !m.note.is_empty() {
+                ruler_painter.text(
+                    egui::pos2(x + 4.0, ruler.top() + 2.0),
+                    Align2::LEFT_TOP,
+                    &m.note,
+                    FontId::proportional(10.0),
+                    color::WARN,
+                );
+            }
+        }
+        let marker_at = |x: f32| p.markers.iter().find(|m| (x_of(m.at) - x).abs() <= 5.0);
+
         // Where the pointer is.
         let pointer = response.interact_pointer_pos().or(response.hover_pos());
         // picture and title tracks top layer first, as they stack; sound below them
@@ -228,7 +299,7 @@ impl TimelineView {
             .chain((0..p.tracks.len()).filter(|&i| p.tracks[i].kind == TrackKind::Audio))
             .collect();
         let row_at = |y: f32| {
-            let row = ((y - rect.top() - RULER) / ROW).floor();
+            let row = ((y - rect.top() - RULER) / row_h).floor();
             (row >= 0.0).then(|| order.get(row as usize).copied()).flatten()
         };
         let hit_at = |pos: Pos2| -> Option<Hit> {
@@ -270,6 +341,7 @@ impl TimelineView {
         let earliest = group.iter().filter_map(|id| p.clip(id)).map(|(_, c)| c.start).min();
         let targets: Vec<Tick> = if self.snap {
             let mut t = vec![Tick::ZERO, playhead];
+            t.extend(p.markers.iter().map(|m| m.at));
             for track in &p.tracks {
                 for c in &track.clips {
                     if dragged_clip.as_deref() != Some(c.id.as_str()) && !group.contains(&c.id) {
@@ -357,8 +429,8 @@ impl TimelineView {
 
         // Rows.
         for (row, (index, track)) in order.iter().map(|&i| (i, &p.tracks[i])).enumerate() {
-            let top = rect.top() + RULER + row as f32 * ROW;
-            let row_rect = Rect::from_min_size(egui::pos2(lanes.left(), top), vec2(lanes.width(), ROW));
+            let top = rect.top() + RULER + row as f32 * row_h;
+            let row_rect = Rect::from_min_size(egui::pos2(lanes.left(), top), vec2(lanes.width(), row_h));
             painter.rect_filled(row_rect, 0.0, if row % 2 == 0 { color::ROW } else { color::ROW_ALT });
             painter.line_segment([row_rect.left_bottom(), row_rect.right_bottom()], Stroke::new(1.0, color::LINE));
 
@@ -381,7 +453,7 @@ impl TimelineView {
                 }
                 let r = Rect::from_min_max(
                     egui::pos2(x_of(a), top + 5.0),
-                    egui::pos2(x_of(b).max(x_of(a) + 3.0), top + ROW - 5.0),
+                    egui::pos2(x_of(b).max(x_of(a) + 3.0), top + row_h - 5.0),
                 );
                 // a moved clip carries its source along; a trimmed one keeps it in place
                 let start = if b - a == clip.duration { a } else { clip.start };
@@ -411,7 +483,7 @@ impl TimelineView {
                     {
                         let len = t.duration.min(pair[0].duration).min(pair[1].duration);
                         let w = x_of(pair[1].start + len) - x_of(pair[1].start);
-                        paint_cut(&lane, x_of(pair[1].start), top + ROW / 2.0, w);
+                        paint_cut(&lane, x_of(pair[1].start), top + row_h / 2.0, w);
                     }
                 }
             }
@@ -421,7 +493,7 @@ impl TimelineView {
                 && !track.clips.iter().any(|c| c.id == *g)
                 && let Some((from, clip)) = p.clip(g)
             {
-                let r = Rect::from_min_max(egui::pos2(x_of(*ga), top + 5.0), egui::pos2(x_of(*gb), top + ROW - 5.0));
+                let r = Rect::from_min_max(egui::pos2(x_of(*ga), top + 5.0), egui::pos2(x_of(*gb), top + row_h - 5.0));
                 let look = Look { selected: true, dim: false, dragging: true };
                 paint_clip(&lane, r, p, p.tracks[from].kind, clip, *ga, look, words, &mut self.strips, &seconds_of);
             }
@@ -432,7 +504,7 @@ impl TimelineView {
             {
                 let r = Rect::from_min_max(
                     egui::pos2(x_of(start), top + 5.0),
-                    egui::pos2(x_of(start + item.length(p)).max(x_of(start) + 3.0), top + ROW - 5.0),
+                    egui::pos2(x_of(start + item.length(p)).max(x_of(start) + 3.0), top + row_h - 5.0),
                 );
                 lane.rect_filled(r, CornerRadius::same(5), color::ACCENT.gamma_multiply(0.25));
                 lane.rect_stroke(r, CornerRadius::same(5), Stroke::new(1.5, color::ACCENT), StrokeKind::Inside);
@@ -446,7 +518,7 @@ impl TimelineView {
             }
 
             // Header.
-            let head = Rect::from_min_size(egui::pos2(rect.left(), top), vec2(HEADER, ROW));
+            let head = Rect::from_min_size(egui::pos2(rect.left(), top), vec2(HEADER, row_h));
             painter.rect_filled(head, 0.0, color::PANEL);
             painter.line_segment([head.right_top(), head.right_bottom()], Stroke::new(1.0, color::LINE));
             painter.line_segment([head.left_bottom(), head.right_bottom()], Stroke::new(1.0, color::LINE));
@@ -490,6 +562,25 @@ impl TimelineView {
                 .on_hover_text(tip);
             if r.clicked() {
                 out.toggled = Some((track.id.clone(), key, !on));
+            }
+            // a locked track's clips stay as they are
+            let lock = toggle.translate(vec2(if track.kind == TrackKind::Video { -52.0 } else { -26.0 }, 0.0));
+            let r = ui
+                .put(
+                    lock,
+                    egui::Button::new(
+                        egui::RichText::new(if track.locked { icon::LOCKED } else { icon::UNLOCKED })
+                            .size(14.0)
+                            .color(if track.locked { color::WARN } else { color::WEAK }),
+                    )
+                    .frame(false),
+                )
+                .on_hover_text(if track.locked { words.unlock } else { words.lock });
+            if r.clicked() {
+                out.toggled = Some((track.id.clone(), "locked", !track.locked));
+            }
+            if track.locked {
+                lane.rect_filled(row_rect, 0.0, Color32::from_black_alpha(70));
             }
             // a magnetic track keeps its clips end to end
             if track.kind == TrackKind::Video {
@@ -570,7 +661,12 @@ impl TimelineView {
             && let Some(pos) = pressed_at.or(response.interact_pointer_pos())
             && in_lanes(pos)
         {
+            let locked = |h: &Hit| p.track(&h.track).is_some_and(|t| t.locked);
             self.drag = Some(match hit_at(pos) {
+                Some(h) if pos.y > ruler.bottom() && locked(&h) => {
+                    out.select = Some(Select::Only(h.clip.clone()));
+                    Drag::Marquee { from: pos, add: adding }
+                }
                 Some(h) if pos.y > ruler.bottom() => match h.edge {
                     Some(end) => {
                         out.select = Some(Select::Only(h.clip.clone()));
@@ -603,11 +699,11 @@ impl TimelineView {
             if response.drag_stopped() {
                 let mut ids: Vec<String> = if *add { selected.to_vec() } else { Vec::new() };
                 for (row, &i) in order.iter().enumerate() {
-                    let top = rect.top() + RULER + row as f32 * ROW;
+                    let top = rect.top() + RULER + row as f32 * row_h;
                     for c in &p.tracks[i].clips {
                         let r = Rect::from_min_max(
                             egui::pos2(x_of(c.start), top + 5.0),
-                            egui::pos2(x_of(c.end()), top + ROW - 5.0),
+                            egui::pos2(x_of(c.end()), top + row_h - 5.0),
                         );
                         if r.intersects(boxed) && !ids.contains(&c.id) {
                             ids.push(c.id.clone());
@@ -642,7 +738,7 @@ impl TimelineView {
             && in_lanes(pos)
         {
             if pos.y <= ruler.bottom() {
-                out.seek = Some(t_of(pos.x).max(Tick::ZERO));
+                out.seek = Some(marker_at(pos.x).map_or(t_of(pos.x).max(Tick::ZERO), |m| m.at));
             } else {
                 match hit {
                     Some(h) if adding => out.select = Some(Select::Toggle(h.clip)),
@@ -659,6 +755,20 @@ impl TimelineView {
         // Right-click: the clip's menu (it becomes the selection unless it is part of it already).
         if response.secondary_clicked()
             && let Some(pos) = response.interact_pointer_pos()
+        {
+            self.menu_track = None;
+            self.menu_marker = None;
+            self.menu_on_clip = false;
+            self.menu_at = fps.snap(t_of(pos.x).max(Tick::ZERO));
+            if !in_lanes(pos) {
+                self.menu_track =
+                    (pos.y > ruler.bottom()).then(|| row_at(pos.y)).flatten().map(|i| p.tracks[i].id.clone());
+            } else if pos.y <= ruler.bottom() {
+                self.menu_marker = Some(marker_at(pos.x).map(|m| m.id.clone()).unwrap_or_default());
+            }
+        }
+        if response.secondary_clicked()
+            && let Some(pos) = response.interact_pointer_pos()
             && in_lanes(pos)
             && pos.y > ruler.bottom()
         {
@@ -673,8 +783,37 @@ impl TimelineView {
             };
         }
         let on_clip = self.menu_on_clip;
+        let (menu_track, menu_marker, menu_at) = (self.menu_track.clone(), self.menu_marker.clone(), self.menu_at);
         response.context_menu(|ui| {
             ui.set_min_width(190.0);
+            if let Some(track) = &menu_track {
+                let kind = p.track(track).map(|t| t.kind);
+                let same: Vec<&str> = p.tracks.iter().filter(|t| Some(t.kind) == kind).map(|t| t.id.as_str()).collect();
+                let at = same.iter().position(|t| t == track).unwrap_or(0);
+                for (label, what, ok) in [
+                    (words.track_up, TrackAction::Up, at + 1 < same.len()),
+                    (words.track_down, TrackAction::Down, at > 0),
+                    (words.track_delete, TrackAction::Delete, same.len() > 1),
+                ] {
+                    if ui.add_enabled(ok, egui::Button::new(label)).clicked() {
+                        out.track_action = Some((track.clone(), what));
+                        ui.close();
+                    }
+                }
+                return;
+            }
+            if let Some(marker) = &menu_marker {
+                if marker.is_empty() {
+                    if ui.add(egui::Button::new(words.marker_add).shortcut_text("M")).clicked() {
+                        out.marker = Some(MarkerAction::Add(menu_at));
+                        ui.close();
+                    }
+                } else if ui.button(words.marker_remove).clicked() {
+                    out.marker = Some(MarkerAction::Remove(marker.clone()));
+                    ui.close();
+                }
+                return;
+            }
             let mut item = |ui: &mut egui::Ui, label: &str, keys: &str, action: Action, enabled: bool| {
                 let button = egui::Button::new(label).shortcut_text(crate::i18n::keys(ui.ctx(), keys));
                 if ui.add_enabled(enabled, button).clicked() {
@@ -952,7 +1091,17 @@ mod tests {
             };
             let mut out = None;
             let mut full = self.ctx.run_ui(input, |ui| {
-                out = Some(self.view.show(ui, &p, Tick::ZERO, &self.selected, false, false, Lang::En, &Footage::new()));
+                out = Some(self.view.show(
+                    ui,
+                    &p,
+                    Tick::ZERO,
+                    &self.selected,
+                    false,
+                    false,
+                    None,
+                    Lang::En,
+                    &Footage::new(),
+                ));
             });
             full.textures_delta.clear();
             let out = out.expect("drawn");
