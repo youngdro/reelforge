@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use filmcraft_media::{FrameRequest, MediaKind, SharedSource};
-use reelforge_render::{Image, Lut, MediaSource, StillImages};
+use reelforge_render::{Image, Lut, MediaSource, StillImages, Yuv};
 use reelforge_renderspec::{Asset, AssetKind};
 use reelforge_time::{FrameRate, Tick};
 
@@ -103,6 +103,7 @@ type Made = (Tick, Arc<Image>);
 
 /// A decoded frame and the picture made from it.
 type Converted = (Arc<filmcraft_frame::VideoFrame>, Arc<Image>);
+type Wrapped = (Arc<filmcraft_frame::VideoFrame>, Arc<Yuv>);
 
 /// Footage for the renderer: stills, decoded video frames and sound, cached by content hash.
 #[derive(Default)]
@@ -114,6 +115,9 @@ pub struct Footage {
     /// (a held frame, a slow clip, a paused playhead) does not convert it again. Holding the
     /// decoded frame keeps the pointer comparison sound.
     last: Mutex<HashMap<String, Converted>>,
+    /// The last frame handed over unconverted per asset, the same way: a compositor keeps what it
+    /// uploaded by the picture's address.
+    last_yuv: Mutex<HashMap<String, Wrapped>>,
     /// Font files by asset key.
     fonts: Mutex<HashMap<String, Arc<[u8]>>>,
     /// Lookup tables by asset key.
@@ -205,6 +209,7 @@ impl Footage {
         self.ahead.lock().expect("ahead lock").clear();
         self.sources.lock().expect("sources lock").clear();
         self.last.lock().expect("frame lock").clear();
+        self.last_yuv.lock().expect("frame lock").clear();
         self.fonts.lock().expect("fonts lock").clear();
         self.luts.lock().expect("luts lock").clear();
         self.bump();
@@ -398,17 +403,64 @@ impl MediaSource for Footage {
             _ => Ok(None),
         }
     }
+
+    fn yuv(&self, _: &str, asset: &Asset, at: Tick) -> Result<Option<Arc<Yuv>>, String> {
+        if asset.kind != AssetKind::Video {
+            return Ok(None);
+        }
+        let k = key(asset);
+        // a picture made already (for an export, or ahead) is used as it is
+        if self.prepared.lock().expect("prepared lock").get(&k).is_some_and(|m| m.contains_key(&at))
+            || self.ahead.lock().expect("ahead lock").get(&k).is_some_and(|v| v.iter().any(|(t, _)| *t == at))
+        {
+            return Ok(None);
+        }
+        let Some(frame) = self.frame(asset, at)? else { return Ok(None) };
+        if let Some((held, y)) = self.last_yuv.lock().expect("frame lock").get(&k)
+            && Arc::ptr_eq(held, &frame)
+        {
+            return Ok(Some(y.clone()));
+        }
+        let Some(y) = as_yuv(&frame) else { return Ok(None) };
+        let y = Arc::new(y);
+        self.last_yuv.lock().expect("frame lock").insert(k, (frame, y.clone()));
+        Ok(Some(y))
+    }
+}
+
+/// A decoded frame's planes as they are, when the compositor's shader can convert them: 8-bit,
+/// no alpha, a display (BT.709 or sRGB) transfer.
+fn as_yuv(frame: &filmcraft_frame::VideoFrame) -> Option<Yuv> {
+    use filmcraft_color::{Range, Transfer};
+    use filmcraft_frame::PixelData;
+    let PixelData::Yuv8 { planes, chroma, alpha: None } = &frame.data else { return None };
+    if !matches!(frame.color.transfer, Transfer::Bt709 | Transfer::Srgb) {
+        return None;
+    }
+    let y = Yuv {
+        width: frame.width,
+        height: frame.height,
+        planes: planes.clone(),
+        shift: chroma.shifts(),
+        kr_kb: frame.color.matrix.kr_kb(),
+        full_range: frame.color.range == Range::Full,
+    };
+    y.is_whole().then_some(y)
 }
 
 impl Footage {
     /// Decodes and converts `asset`'s picture at `at` (a video), reusing the last one converted
     /// when the decoder hands back the same frame.
-    fn decode_picture(&self, asset: &Asset, k: &str, at: Tick) -> Result<Option<Arc<Image>>, String> {
+    /// The decoded frame of `asset` (a video) at `at`; past the end the last frame holds.
+    fn frame(&self, asset: &Asset, at: Tick) -> Result<Option<Arc<filmcraft_frame::VideoFrame>>, String> {
         let Some(src) = self.source(asset) else { return Ok(None) };
         let duration = from_ft(src.info().duration);
-        // past the end the last frame holds
         let at = at.max(Tick::ZERO).min(duration - Tick(1)).max(Tick::ZERO);
-        let frame = src.video_frame(FrameRequest::full(to_ft(at))).map_err(|e| e.to_string())?;
+        src.video_frame(FrameRequest::full(to_ft(at))).map(Some).map_err(|e| e.to_string())
+    }
+
+    fn decode_picture(&self, asset: &Asset, k: &str, at: Tick) -> Result<Option<Arc<Image>>, String> {
+        let Some(frame) = self.frame(asset, at)? else { return Ok(None) };
         if let Some((held, img)) = self.last.lock().expect("frame lock").get(k)
             && Arc::ptr_eq(held, &frame)
         {

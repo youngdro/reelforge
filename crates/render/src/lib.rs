@@ -27,6 +27,7 @@ pub mod lut;
 pub mod media;
 pub mod plan;
 pub mod text;
+pub mod yuv;
 
 #[cfg(test)]
 mod text_tests;
@@ -39,6 +40,7 @@ pub use crate::image::Image;
 pub use lut::Lut;
 pub use media::{MediaSource, NoMedia, StillImages};
 pub use plan::{FramePlan, PlannedLayer, PlannedSource, plan_frame};
+pub use yuv::Yuv;
 
 /// Feature ids this renderer implements; see `RenderSpec::required_features`. (`audio.stretch/1` is
 /// `reelforge-media`'s mix, which every reelforge renderer of sound uses.)
@@ -159,7 +161,7 @@ pub fn layer_outlines(spec: &RenderSpec, t: Tick, media: &dyn MediaSource) -> Ve
                 upright.rotation = 0.0;
                 let mut report = FrameReport::default();
                 let Ok(cpu::Resolved::Sprite(sp)) =
-                    cpu::resolve(spec, &plan, &upright, media, Quality::Draft, &mut report)
+                    cpu::resolve(spec, &plan, &upright, media, Quality::Draft, false, &mut report)
                 else {
                     continue;
                 };

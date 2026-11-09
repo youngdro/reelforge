@@ -19,6 +19,8 @@ pub(crate) const SLATE: [f32; 4] = [0.18, 0.02, 0.03, 1.0];
 pub(crate) enum Resolved {
     /// A picture fitted by the layer.
     Picture(Arc<Image>),
+    /// A video picture still in Y'CbCr, fitted by the layer (only when asked for).
+    Yuv(Arc<crate::Yuv>),
     /// One colour: stretched over the frame (`None`), or a `w` by `h` picture of it fitted by the
     /// layer (the offline slate).
     Flat([f32; 4], Option<(u32, u32)>),
@@ -29,13 +31,15 @@ pub(crate) enum Resolved {
 }
 
 /// Fetches what `layer` needs and draws its text. Placeholders go in `report` (drafts) or fail
-/// the frame (finals).
+/// the frame (finals). With `yuv`, a video picture may come back unconverted, when the media
+/// source has it so and nothing has to be done to it on the CPU.
 pub(crate) fn resolve(
     spec: &RenderSpec,
     plan: &FramePlan,
     layer: &PlannedLayer,
     media: &dyn MediaSource,
     quality: Quality,
+    yuv: bool,
     report: &mut FrameReport,
 ) -> Result<Resolved, RenderError> {
     let mut placeholder = |reason: &str| -> Result<(), RenderError> {
@@ -51,6 +55,13 @@ pub(crate) fn resolve(
             let Some(def) = spec.assets.get(asset) else {
                 return Err(RenderError::Media(format!("unknown asset {asset:?}")));
             };
+            if yuv
+                && blur_radius(layer).is_none()
+                && let Some(y) = media.yuv(asset, def, *at).map_err(RenderError::Media)?
+                && y.is_whole()
+            {
+                return Ok(Resolved::Yuv(y));
+            }
             match media.picture(asset, def, *at).map_err(RenderError::Media)? {
                 Some(pic) => match blur_radius(layer) {
                     Some(r) => Resolved::Picture(std::sync::Arc::new(crate::image::blurred(&pic, r))),
@@ -135,7 +146,7 @@ pub fn composite(
     let mut report = FrameReport::default();
     let target = [plan.width as f32, plan.height as f32];
     for layer in &plan.layers {
-        let what = resolve(spec, plan, layer, media, quality, &mut report)?;
+        let what = resolve(spec, plan, layer, media, quality, false, &mut report)?;
         let lut = resolve_lut(spec, layer, media, quality, &mut report)?;
         let lut = lut.as_deref();
         match what {
@@ -144,6 +155,7 @@ pub fn composite(
                 draw(&mut out, layer, &Image::filled(w, h, color), target, false, lut)
             }
             Resolved::Picture(pic) => draw(&mut out, layer, &pic, target, false, lut),
+            Resolved::Yuv(y) => draw(&mut out, layer, &y.to_image(), target, false, lut),
             Resolved::Sprite(sp) => crate::text::draw_sprite(&mut out, layer, &sp, lut),
             Resolved::Nothing => {}
         }

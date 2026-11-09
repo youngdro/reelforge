@@ -4,10 +4,15 @@
 //! cache. Each request replaces the last, so the worker follows the playhead and never runs behind
 //! it after a seek.
 //!
+//! When the preview is drawn on the GPU, which converts video pictures itself, nothing is made into
+//! pictures ahead: the frames are only decoded ([`Ahead::pictures`]).
+//!
 //! In the browser there are no threads to spare: there, [`Ahead`] does nothing and the preview
 //! decodes as it draws, as before.
 
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use reelforge_media::Footage;
 use reelforge_renderspec::RenderSpec;
@@ -24,6 +29,8 @@ const DECODED: i64 = 12;
 pub(crate) struct Ahead {
     #[cfg(not(target_arch = "wasm32"))]
     tx: std::sync::mpsc::Sender<(Arc<RenderSpec>, Tick)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pictures: Arc<AtomicBool>,
 }
 
 impl Ahead {
@@ -31,6 +38,8 @@ impl Ahead {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn new(media: Arc<Footage>) -> Ahead {
         let (tx, rx) = std::sync::mpsc::channel::<(Arc<RenderSpec>, Tick)>();
+        let pictures = Arc::new(AtomicBool::new(true));
+        let make = pictures.clone();
         let _ = std::thread::Builder::new().name("preview-ahead".into()).spawn(move || {
             let mut next = None;
             loop {
@@ -43,10 +52,19 @@ impl Ahead {
                 };
                 // only the newest request matters
                 let (spec, from) = rx.try_iter().last().unwrap_or(job);
-                next = read_ahead(&spec, from, &media, &rx);
+                next = read_ahead(&spec, from, &media, make.load(Ordering::Relaxed), &rx);
             }
         });
-        Ahead { tx }
+        Ahead { tx, pictures }
+    }
+
+    /// Whether frames ahead are made into pictures (the CPU preview), or only decoded (the GPU
+    /// preview converts them itself).
+    pub(crate) fn pictures(&self, make: bool) {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.pictures.store(make, Ordering::Relaxed);
+        #[cfg(target_arch = "wasm32")]
+        let _ = make;
     }
 
     /// In the browser: nothing.
@@ -70,6 +88,7 @@ fn read_ahead(
     spec: &RenderSpec,
     from: Tick,
     media: &Footage,
+    pictures: bool,
     rx: &std::sync::mpsc::Receiver<(Arc<RenderSpec>, Tick)>,
 ) -> Option<(Arc<RenderSpec>, Tick)> {
     let fps = spec.output.fps;
@@ -81,7 +100,7 @@ fn read_ahead(
         }
         for (asset, at) in sources_at(spec, t) {
             let Some(def) = spec.assets.get(&asset) else { continue };
-            if step <= PICTURES {
+            if pictures && step <= PICTURES {
                 media.prefetch(def, at);
             } else {
                 media.warm(def, at);

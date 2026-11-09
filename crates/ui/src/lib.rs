@@ -419,6 +419,8 @@ impl EditorApp {
             let info = rs.adapter.get_info();
             if info.backend != eframe::wgpu::Backend::Gl {
                 let compositor = reelforge_render::gpu::GpuCompositor::new(rs.device.clone(), rs.queue.clone(), &info);
+                // the GPU converts video pictures itself: read ahead only decodes
+                self.ahead.pictures(false);
                 self.gpu = Some(GpuPreview {
                     compositor,
                     renderer: rs.renderer.clone(),

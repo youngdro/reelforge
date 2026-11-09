@@ -22,7 +22,7 @@ use reelforge_time::Tick;
 
 use crate::cpu::{Resolved, resolve, resolve_lut};
 use crate::plan::{Affine, FramePlan, PlannedLayer, invert, plan_frame};
-use crate::{FrameReport, Image, Lut, MediaSource, Quality, RenderError, unsupported_features};
+use crate::{FrameReport, Image, Lut, MediaSource, Quality, RenderError, Yuv, unsupported_features};
 
 /// The working picture's format.
 const WORK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -89,7 +89,17 @@ pub struct GpuCompositor {
     pictures: HashMap<usize, Cached>,
     /// Uploaded lookup tables by `Arc` address, kept the same way.
     luts: HashMap<usize, CachedLut>,
+    /// Converts video pictures from Y'CbCr.
+    yuv_pipeline: wgpu::RenderPipeline,
+    /// Converted video pictures by `Arc` address, kept the same way.
+    yuvs: HashMap<usize, CachedYuv>,
     count: u64,
+}
+
+struct CachedYuv {
+    _yuv: Arc<Yuv>,
+    view: wgpu::TextureView,
+    used: u64,
 }
 
 struct CachedLut {
@@ -353,6 +363,32 @@ impl GpuCompositor {
             })
         };
         let (luma_pipeline, chroma_pipeline) = (compute_pipeline("luma"), compute_pipeline("chroma"));
+        let yuv = device.create_shader_module(wgpu::include_wgsl!("yuv.wgsl"));
+        let yuv_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("yuv"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &yuv,
+                entry_point: Some("vs_full"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &yuv,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: WORK,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         let usage = wgpu::TextureUsages::TEXTURE_BINDING;
         let no_picture = texture(&device, "no picture", 1, 1, PICTURE, usage).create_view(&Default::default());
         let no_under = texture(&device, "no under", 1, 1, WORK, usage).create_view(&Default::default());
@@ -372,6 +408,8 @@ impl GpuCompositor {
             frame: None,
             pictures: HashMap::new(),
             luts: HashMap::new(),
+            yuv_pipeline,
+            yuvs: HashMap::new(),
             count: 0,
         }
     }
@@ -441,7 +479,7 @@ impl GpuCompositor {
         let mut report = FrameReport::default();
         let mut resolved = Vec::with_capacity(plan.layers.len());
         for layer in &plan.layers {
-            let what = resolve(spec, plan, layer, media, quality, &mut report)?;
+            let what = resolve(spec, plan, layer, media, quality, true, &mut report)?;
             resolved.push((what, resolve_lut(spec, layer, media, quality, &mut report)?));
         }
         self.ensure_frame(plan.width, plan.height);
@@ -467,6 +505,12 @@ impl GpuCompositor {
                     let (w, h) = (pic.width as f32, pic.height as f32);
                     let (cw, ch) = layer.visible(w, h);
                     let view = self.picture(&pic);
+                    (layer.matrix(cw, ch, target), [cw, ch], [w, h], [cw, ch], 0, [0.0; 4], Some(view))
+                }
+                Resolved::Yuv(y) => {
+                    let (w, h) = (y.width as f32, y.height as f32);
+                    let (cw, ch) = layer.visible(w, h);
+                    let view = self.yuv_picture(&y);
                     (layer.matrix(cw, ch, target), [cw, ch], [w, h], [cw, ch], 0, [0.0; 4], Some(view))
                 }
                 Resolved::Sprite(sp) => {
@@ -545,6 +589,7 @@ impl GpuCompositor {
         let count = self.count;
         self.pictures.retain(|_, c| c.used == count);
         self.luts.retain(|_, c| c.used == count);
+        self.yuvs.retain(|_, c| c.used == count);
         Ok(report)
     }
 
@@ -758,6 +803,75 @@ impl GpuCompositor {
         }
         let view = self.upload(pic, "picture");
         self.pictures.insert(key, Cached { _image: pic.clone(), view: view.clone(), used: self.count });
+        view
+    }
+
+    /// The texture of a video picture: its planes uploaded and converted on the GPU, once while
+    /// frames keep using it.
+    fn yuv_picture(&mut self, y: &Arc<Yuv>) -> wgpu::TextureView {
+        let key = Arc::as_ptr(y) as usize;
+        if let Some(c) = self.yuvs.get_mut(&key) {
+            c.used = self.count;
+            return c.view.clone();
+        }
+        let (w, h) = (y.width.max(1), y.height.max(1));
+        let (cw, ch) = y.chroma_size();
+        let plane = |label: &str, bytes: &[u8], pw: u32, ph: u32| {
+            let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
+            let tex = texture(&self.device, label, pw.max(1), ph.max(1), wgpu::TextureFormat::R8Unorm, usage);
+            self.queue.write_texture(
+                tex.as_image_copy(),
+                &bytes[..(pw * ph) as usize],
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(pw), rows_per_image: Some(ph) },
+                wgpu::Extent3d { width: pw.max(1), height: ph.max(1), depth_or_array_layers: 1 },
+            );
+            tex.create_view(&Default::default())
+        };
+        let planes =
+            [plane("luma", &y.planes[0], w, h), plane("cb", &y.planes[1], cw, ch), plane("cr", &y.planes[2], cw, ch)];
+        let (ys, yo, cs) = y.range();
+        let params: [f32; 8] = [y.kr_kb.0, y.kr_kb.1, ys, yo, cs, y.shift.0 as f32, y.shift.1 as f32, 0.0];
+        let uniform = self.uniform("yuv", bytemuck::cast_slice(&params));
+        let out = texture(
+            &self.device,
+            "video picture",
+            w,
+            h,
+            WORK,
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        );
+        let view = out.create_view(&Default::default());
+        let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() }];
+        for (i, p) in planes.iter().enumerate() {
+            entries
+                .push(wgpu::BindGroupEntry { binding: i as u32 + 1, resource: wgpu::BindingResource::TextureView(p) });
+        }
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("yuv"),
+            layout: &self.yuv_pipeline.get_bind_group_layout(0),
+            entries: &entries,
+        });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("yuv") });
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("yuv"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.yuv_pipeline);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        self.queue.submit([enc.finish()]);
+        self.yuvs.insert(key, CachedYuv { _yuv: y.clone(), view: view.clone(), used: self.count });
         view
     }
 

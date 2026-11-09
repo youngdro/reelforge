@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use reelforge_renderspec::{Asset, AssetKind};
 use reelforge_time::Tick;
 
-use crate::Image;
 use crate::lut::Lut;
+use crate::{Image, Yuv};
 
 /// Supplies decoded pictures to the planner.
 ///
@@ -17,6 +17,14 @@ pub trait MediaSource {
     /// The picture of `asset` at source time `at`. `Ok(None)` means "not available yet" (offline,
     /// still loading, or a kind this source does not decode).
     fn picture(&self, asset_id: &str, asset: &Asset, at: Tick) -> Result<Option<Arc<Image>>, String>;
+
+    /// The picture of a video `asset` at source time `at` as the decoder made it, for a compositor
+    /// that converts Y'CbCr itself (the GPU's). `Ok(None)` means "use [`picture`](Self::picture)":
+    /// the default, and what a source answers for stills or pictures in other forms.
+    fn yuv(&self, asset_id: &str, asset: &Asset, at: Tick) -> Result<Option<Arc<Yuv>>, String> {
+        let _ = (asset_id, asset, at);
+        Ok(None)
+    }
 
     /// The bytes of a `font` asset (TrueType or OpenType). `Ok(None)` means not available; the
     /// default implementation has no fonts.
