@@ -550,3 +550,33 @@ fn h264_files_open_for_the_browser_decoder_and_prepared_pictures_win() {
     let again = media.picture("a", &asset, Tick::SECOND).expect("picture").expect("some");
     assert!(!Arc::ptr_eq(&again, &marker));
 }
+
+#[test]
+fn pictures_made_ahead_are_the_ones_drawn_and_only_a_few_are_kept() {
+    let (path, _) = export_to_file(&two_colours(), &Footage::new(), "ahead.mp4");
+    let asset = Asset {
+        kind: AssetKind::Video,
+        sha256: sha(10),
+        uri: path.to_string_lossy().into_owned(),
+        of: None,
+        probe: None,
+    };
+    let media = Footage::new();
+    let frame = |i: i64| FrameRate::FPS_30.tick_of(i);
+    assert!(media.prefetch(&asset, frame(40)));
+    let made = media.picture("v", &asset, frame(40)).expect("picture").expect("some");
+    // the decoder hands back the same picture for that instant: made ahead, not again
+    let again = media.picture("v", &asset, frame(40)).expect("picture").expect("some");
+    assert!(Arc::ptr_eq(&made, &again));
+    assert!(near(centre(&made), [0, 0, 255]), "{:?}", centre(&made));
+    for i in 41..41 + crate::AHEAD_PICTURES as i64 {
+        assert!(media.prefetch(&asset, frame(i)));
+    }
+    assert_eq!(media.ahead.lock().unwrap().values().next().map(Vec::len), Some(crate::AHEAD_PICTURES));
+    assert!(!media.ahead.lock().unwrap().values().next().unwrap().iter().any(|(t, _)| *t == frame(40)), "oldest went");
+    media.clear_ahead();
+    assert!(media.ahead.lock().unwrap().is_empty());
+    let still = Asset { kind: AssetKind::Image, ..asset.clone() };
+    assert!(!media.prefetch(&still, frame(0)), "only videos are made ahead");
+    media.warm(&asset, frame(10));
+}
