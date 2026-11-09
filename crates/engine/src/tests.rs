@@ -1073,3 +1073,21 @@ fn titles_type_themselves_in_and_box_each_line() {
     let err = s.execute("clip.setAnimation", &json!({"clip": pic, "slot": "in", "kind": "typewriter"})).unwrap_err();
     assert!(err.to_string().contains("titles"), "{err}");
 }
+
+#[test]
+fn a_new_project_keeps_the_canvas_and_undoes_back() {
+    let mut s = Session::default();
+    let video = s.project().tracks[0].id.clone();
+    s.execute("project.setCanvas", &json!({"width": 720, "height": 1280})).unwrap();
+    s.execute("clip.add", &json!({"track": video, "color": [1, 0, 0], "duration": {"seconds": 2}})).unwrap();
+    s.execute("marker.add", &json!({"at": {"seconds": 1}})).ok();
+    let before = s.project();
+    let out = s.execute("project.new", &json!({})).unwrap();
+    let p = s.project();
+    assert!(p.tracks.iter().all(|t| t.clips.is_empty()) && p.media.is_empty() && p.markers.is_empty());
+    assert_eq!((p.canvas.width, p.canvas.height), (720, 1280));
+    assert!(p.tracks.iter().all(|t| before.tracks.iter().all(|o| o.id != t.id)), "fresh track ids");
+    assert_eq!(out["tracks"].as_array().unwrap().len(), p.tracks.len());
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(*s.project(), *before);
+}

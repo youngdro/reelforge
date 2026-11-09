@@ -52,11 +52,11 @@ mod web {
                 canvas,
                 eframe::WebOptions::default(),
                 Box::new(move |cc| {
-                    let app = match &server {
-                        Some(base) => EditorApp::join(base, token, "web"),
-                        None => EditorApp::demo(),
-                    };
-                    Ok(Box::new(app.with_gpu(cc)))
+                    // without a server, the project is kept in the page's storage and survives a reload
+                    Ok(Box::new(match &server {
+                        Some(base) => EditorApp::join(base, token, "web").with_gpu(cc),
+                        None => EditorApp::demo().with_gpu(cc).with_recovery(cc),
+                    }))
                 }),
             )
             .await?;

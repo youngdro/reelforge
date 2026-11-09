@@ -120,6 +120,15 @@ static REGISTRY: &[CommandSpec] = &[
         run: project_inspect,
     },
     CommandSpec {
+        id: "project.new",
+        label: "New Project",
+        params: "{}",
+        doc: "Empties the project: no media, one timeline with an empty video, text and audio track, no markers. The canvas and export settings stay. One undo step brings the old project back.",
+        edits: true,
+        enabled: always,
+        run: project_new,
+    },
+    CommandSpec {
         id: "project.setCanvas",
         label: "Canvas Settings",
         params: r#"{"width"?: u32, "height"?: u32, "fps"?: [num, den], "background"?: [r,g,b,a]}"#,
@@ -709,6 +718,19 @@ fn project_inspect(s: &mut Session, _: &Value) -> CmdResult {
     Ok(
         json!({ "revision": s.revision, "duration": p.duration(), "project": serde_json::to_value(&*p).expect("serialises") }),
     )
+}
+
+fn project_new(s: &mut Session, _: &Value) -> CmdResult {
+    s.edit("New Project", |p| {
+        p.media.clear();
+        p.timelines.clear();
+        p.timeline.clear();
+        p.markers.clear();
+        // ids keep counting up, so nothing still pointing at an old track finds a new one
+        p.tracks = model_timeline::empty_tracks(p);
+        Ok(())
+    })?;
+    Ok(json!({ "tracks": s.project().tracks.iter().map(|t| t.id.clone()).collect::<Vec<_>>() }))
 }
 
 fn project_set_export(s: &mut Session, v: &Value) -> CmdResult {

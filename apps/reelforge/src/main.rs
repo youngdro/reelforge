@@ -1,7 +1,7 @@
 //! The desktop editor.
 //!
 //! ```sh
-//! reelforge                                  # a demo project
+//! reelforge                                  # the last unsaved project, or a demo
 //! reelforge cut.reel.json                    # open (or create) a project; every edit is saved
 //! reelforge cut.reel.json --serve            # and let agents edit it too: MCP at http://127.0.0.1:7878/mcp
 //! reelforge cut.reel.json --serve 0.0.0.0:7878 --token SECRET --web dist   # and people in a browser
@@ -83,7 +83,16 @@ fn main() -> eframe::Result {
         std::thread::spawn(move || server.run());
     }
 
-    eframe::run_native("reelforge", options, Box::new(|cc| Ok(Box::new(app.with_gpu(cc)))))
+    // without a file, the project is kept in the app's storage and comes back next time
+    let unsaved = path.is_none();
+    eframe::run_native(
+        "reelforge",
+        options,
+        Box::new(move |cc| {
+            let app = app.with_gpu(cc);
+            Ok(Box::new(if unsaved { app.with_recovery(cc) } else { app }))
+        }),
+    )
 }
 
 #[cfg(target_arch = "wasm32")]

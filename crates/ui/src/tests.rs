@@ -240,3 +240,40 @@ fn the_preview_draws_as_sharp_as_the_screen_shows_it() {
     // a few points of resizing draw nothing new
     assert_eq!(preview_scale(1920.0, 950.0, true, false, false), preview_scale(1920.0, 955.0, true, false, false));
 }
+
+#[test]
+fn an_unsaved_project_comes_back_and_files_dropped_again_relink() {
+    let wav = tone_wav(48_000, 0.5);
+    let mut app = EditorApp::demo();
+    app.import_bytes("tone.wav", wav.clone(), true);
+    let kept = serde_json::to_string(&*app.project()).unwrap();
+
+    // the next run: a demo at first, then what storage held, on the same session a server would hold
+    let fresh = EditorApp::demo();
+    let shared = fresh.session().clone();
+    let mut back = fresh.recover(Some(kept.clone()));
+    assert!(Arc::ptr_eq(&shared, back.session()));
+    assert_eq!(serde_json::to_string(&*back.project()).unwrap(), kept);
+    assert!(back.status.contains("last project"), "{}", back.status);
+
+    // the browser kept only the project: the same file dropped in again is not added twice
+    let media = back.project().media.len();
+    back.import_bytes("tone.wav", wav, false);
+    assert_eq!(back.project().media.len(), media);
+    assert!(back.status.contains("relinked"), "{}", back.status);
+
+    // nothing usable kept: the demo stays
+    let demo = EditorApp::demo().recover(Some("{not json".into()));
+    assert_eq!(demo.project().tracks.iter().map(|t| t.clips.len()).sum::<usize>(), 4);
+}
+
+#[test]
+fn new_empties_the_project_and_undo_brings_it_back() {
+    let mut app = EditorApp::demo();
+    let before = app.project();
+    app.new_project();
+    assert!(app.project().tracks.iter().all(|t| t.clips.is_empty()));
+    assert_eq!(app.project().canvas, before.canvas);
+    app.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*app.project(), *before);
+}
