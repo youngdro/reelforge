@@ -359,3 +359,56 @@ fn crops_flips_masks_and_every_blend_match() {
         same(&s, Tick::ZERO, 1.0, &Pictures(picture(48, 48)), Quality::Final);
     }
 }
+
+/// A video source that has its pictures as Y'CbCr: the GPU converts them, the CPU is handed
+/// [`Yuv::to_image`].
+struct Video(Arc<Yuv>);
+
+impl MediaSource for Video {
+    fn picture(&self, _: &str, _: &Asset, _: Tick) -> Result<Option<Arc<Image>>, String> {
+        Ok(Some(Arc::new(self.0.to_image())))
+    }
+    fn yuv(&self, _: &str, _: &Asset, _: Tick) -> Result<Option<Arc<Yuv>>, String> {
+        Ok(Some(self.0.clone()))
+    }
+}
+
+fn yuv(w: u32, h: u32, shift: (u32, u32), full_range: bool) -> Arc<Yuv> {
+    let (cw, ch) = (w.div_ceil(1 << shift.0), h.div_ceil(1 << shift.1));
+    let luma = (0..h).flat_map(|y| (0..w).map(move |x| (16 + (x * 7 + y * 3) % 220) as u8)).collect();
+    let cb = (0..ch).flat_map(|y| (0..cw).map(move |x| (16 + (x * 13 + y * 29) % 224) as u8)).collect();
+    let cr = (0..ch).flat_map(|y| (0..cw).map(move |x| (16 + (x * 31 + y * 11) % 224) as u8)).collect();
+    Arc::new(Yuv {
+        width: w,
+        height: h,
+        planes: [Arc::new(luma), Arc::new(cb), Arc::new(cr)],
+        shift,
+        kr_kb: (0.2126, 0.0722),
+        full_range,
+    })
+}
+
+#[test]
+fn video_pictures_converted_on_the_gpu_match_the_cpu() {
+    for (shift, full) in [((1, 1), false), ((1, 0), true), ((0, 0), false)] {
+        let video = Video(yuv(51, 31, shift, full));
+        let mut s = base(51, 31);
+        s.assets.insert(
+            "v".into(),
+            Asset {
+                kind: AssetKind::Video,
+                sha256: "2".repeat(64),
+                uri: "file:///v.mp4".into(),
+                of: None,
+                probe: None,
+            },
+        );
+        s.layers
+            .push(layer("v", LayerContent::Media { asset: "v".into(), time: TimeMap::default(), fit: Fit::Stretch }));
+        same(&s, Tick::ZERO, 1.0, &video, Quality::Final);
+        // turned and smaller, over the background
+        s.layers[0].transform.rotation = Animated::Constant(17.0);
+        s.layers[0].transform.scale = Animated::Constant(0.7);
+        same(&s, Tick::ZERO, 0.5, &video, Quality::Final);
+    }
+}
