@@ -977,3 +977,54 @@ fn locked_tracks_markers_and_track_order() {
     s.execute("track.remove", &json!({"track": t2})).unwrap();
     assert!(s.execute("track.remove", &json!({"track": track})).is_err());
 }
+
+#[test]
+fn roll_slip_and_detach_audio() {
+    let mut s = Session::default();
+    let m = s
+        .execute(
+            "media.import",
+            &json!({"path": "/nowhere/a.mp4", "duration": {"seconds": 10}, "sha256": "cd".repeat(32)}),
+        )
+        .unwrap()["media"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let t = video_track(&s);
+    let a = s
+        .execute("clip.add", &json!({"track": t, "media": m, "sourceIn": {"seconds": 2}, "duration": {"seconds": 3}}))
+        .unwrap()["clip"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = s.execute("clip.split", &json!({"clip": a, "at": {"seconds": 1}})).unwrap();
+    let b = r["right"].as_str().unwrap().to_string();
+
+    // roll: the cut moves, the pair keeps its length
+    s.execute("clip.roll", &json!({"clip": a, "by": {"seconds": 0.5}})).unwrap();
+    let p = s.project();
+    assert_eq!(p.clip(&a).unwrap().1.duration, Tick::from_seconds(1.5));
+    let right = p.clip(&b).unwrap().1;
+    assert_eq!((right.start, right.duration), (Tick::from_seconds(1.5), Tick::from_seconds(1.5)));
+    assert!(s.execute("clip.roll", &json!({"clip": b, "by": 1})).is_err(), "nothing follows b");
+
+    // slip: same place on the timeline, other source frames
+    s.execute("clip.slip", &json!({"clip": a, "by": {"seconds": -1}})).unwrap();
+    let p = s.project();
+    let ClipContent::Media { source_in, .. } = &p.clip(&a).unwrap().1.content else { panic!() };
+    assert_eq!(*source_in, Tick::SECOND);
+    assert!(s.execute("clip.slip", &json!({"clip": a, "by": {"seconds": -2}})).is_err(), "before the start");
+    assert!(s.execute("clip.slip", &json!({"clip": a, "by": {"seconds": 9}})).is_err(), "past the end");
+
+    // detach: the sound moves to an audio track, the video goes quiet
+    let r = s.execute("clip.detachAudio", &json!({"clip": a})).unwrap();
+    let audio = r["audio"].as_str().unwrap();
+    let p = s.project();
+    let (ti, sound) = p.clip(audio).unwrap();
+    assert_eq!(p.tracks[ti].kind, TrackKind::Audio);
+    assert_eq!((sound.start, sound.duration), (Tick::ZERO, Tick::from_seconds(1.5)));
+    assert!(matches!(p.clip(&a).unwrap().1.content, ClipContent::Media { silent: true, .. }));
+    assert!(s.execute("clip.detachAudio", &json!({"clip": a})).is_err(), "already detached");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(matches!(s.project().clip(&a).unwrap().1.content, ClipContent::Media { silent: false, .. }));
+}

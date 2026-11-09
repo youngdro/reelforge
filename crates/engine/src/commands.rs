@@ -264,6 +264,33 @@ static REGISTRY: &[CommandSpec] = &[
         run: clip_remove,
     },
     CommandSpec {
+        id: "clip.roll",
+        label: "Roll",
+        params: r#"{"clip": id, "by": time}"#,
+        doc: "Moves the cut between a clip and the clip that starts where it ends: one gets longer by `by`, the other shorter, and nothing else moves.",
+        edits: true,
+        enabled: always,
+        run: clip_roll,
+    },
+    CommandSpec {
+        id: "clip.slip",
+        label: "Slip",
+        params: r#"{"clip": id, "by": time}"#,
+        doc: "Shows a later (or, negative, earlier) part of a clip's media in the same place and length on the timeline.",
+        edits: true,
+        enabled: always,
+        run: clip_slip,
+    },
+    CommandSpec {
+        id: "clip.detachAudio",
+        label: "Detach Audio",
+        params: r#"{"clip": id}"#,
+        doc: "Moves a video clip's sound to a clip of its own on an audio track (same source, timing, volume and fades); the video clip plays silent.",
+        edits: true,
+        enabled: always,
+        run: clip_detach_audio,
+    },
+    CommandSpec {
         id: "track.move",
         label: "Move Track",
         params: r#"{"track": id, "index": number}"#,
@@ -1197,24 +1224,130 @@ fn clip_trim(s: &mut Session, v: &Value) -> CmdResult {
         let clip = proj.clip_mut(&id).ok_or_else(|| not_found("clip", &id))?;
         let start = new_start.unwrap_or(clip.start);
         let end = new_end.unwrap_or(clip.end());
-        if end <= start {
-            return Err(EngineError::Params("the clip would have no length".into()));
-        }
-        let delta = start - clip.start;
-        let old_end = clip.end();
-        if let ClipContent::Media { source_in, speed, reversed, .. } = &mut clip.content {
-            // the source runs from the clip's start, or backwards from its end
-            let moved =
-                if *reversed { *source_in - (end - old_end).scale(*speed) } else { *source_in + delta.scale(*speed) };
-            if moved < Tick::ZERO {
-                return Err(EngineError::Refused("the clip cannot start before its media does".into()));
-            }
-            *source_in = moved;
-        }
-        clip.shift_keys(-delta);
-        clip.start = start;
-        clip.duration = end - start;
+        trim(clip, start, end)?;
         Ok(json!({ "clip": id, "start": start, "duration": end - start }))
+    })
+}
+
+/// Moves a clip's edges to `start` and `end`, keeping its media in sync.
+fn trim(clip: &mut Clip, start: Tick, end: Tick) -> Result<(), EngineError> {
+    if end <= start {
+        return Err(EngineError::Params("the clip would have no length".into()));
+    }
+    let delta = start - clip.start;
+    let old_end = clip.end();
+    if let ClipContent::Media { source_in, speed, reversed, .. } = &mut clip.content {
+        // the source runs from the clip's start, or backwards from its end
+        let moved =
+            if *reversed { *source_in - (end - old_end).scale(*speed) } else { *source_in + delta.scale(*speed) };
+        if moved < Tick::ZERO {
+            return Err(EngineError::Refused("the clip cannot start before its media does".into()));
+        }
+        *source_in = moved;
+    }
+    clip.shift_keys(-delta);
+    clip.start = start;
+    clip.duration = end - start;
+    Ok(())
+}
+
+fn clip_roll(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let by = p.time("by")?;
+    s.edit("Roll", |proj| {
+        let (ti, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        let end = clip.end();
+        let next = proj.tracks[ti]
+            .clips
+            .iter()
+            .find(|c| c.start == end)
+            .map(|c| c.id.clone())
+            .ok_or_else(|| EngineError::Refused("no clip starts where this one ends".into()))?;
+        let cut = end + by;
+        let a = proj.clip_mut(&id).expect("found");
+        trim(a, a.start, cut)?;
+        let b = proj.clip_mut(&next).expect("found");
+        trim(b, cut, b.end())?;
+        Ok(json!({ "clip": id, "next": next, "cut": cut }))
+    })
+}
+
+fn clip_slip(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let by = p.time("by")?;
+    s.edit("Slip", |proj| {
+        let (_, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        let ClipContent::Media { media, .. } = &clip.content else {
+            return Err(EngineError::Params("only video and sound clips slip".into()));
+        };
+        let length = proj.media.get(media).and_then(|m| m.duration);
+        let span = clip.timing().map(|t| Tick(t.travel(clip.duration).0.abs())).unwrap_or(Tick::ZERO);
+        let clip = proj.clip_mut(&id).expect("found");
+        let ClipContent::Media { source_in, speed, .. } = &mut clip.content else { unreachable!() };
+        if *speed == 0.0 {
+            return Err(EngineError::Refused("a freeze frame has nothing to slip".into()));
+        }
+        let moved = *source_in + by.scale(*speed);
+        if moved < Tick::ZERO || length.is_some_and(|l| moved + span > l) {
+            return Err(EngineError::Refused("the clip would run past its media".into()));
+        }
+        *source_in = moved;
+        Ok(json!({ "clip": id, "sourceIn": moved }))
+    })
+}
+
+fn clip_detach_audio(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    s.edit("Detach Audio", |proj| {
+        let (ti, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        let video = matches!(&clip.content, ClipContent::Media { media, silent: false, .. }
+            if proj.media.get(media).is_some_and(|m| m.kind == MediaKind::Video));
+        if proj.tracks[ti].kind != TrackKind::Video || !video {
+            return Err(EngineError::Params("only a video clip with its sound can have it detached".into()));
+        }
+        // the sound as a clip of its own: same source, timing, volume and fades
+        let mut sound = clip.clone();
+        sound.id = proj.mint("c");
+        sound.transform = ClipTransform::default();
+        sound.opacity = 1.0;
+        sound.effects.clear();
+        sound.keys.retain(|prop, _| *prop == Prop::VolumeDb);
+        sound.anim = Default::default();
+        sound.transition = None;
+        sound.color = Default::default();
+        sound.look = Default::default();
+        let range = sound.range();
+        let track = match proj
+            .tracks
+            .iter()
+            .position(|t| t.kind == TrackKind::Audio && !t.clips.iter().any(|c| c.range().overlaps(range)))
+        {
+            Some(i) => i,
+            None => {
+                let tid = proj.mint("t");
+                let n = proj.tracks.iter().filter(|t| t.kind == TrackKind::Audio).count() + 1;
+                proj.tracks.push(Track {
+                    id: tid,
+                    kind: TrackKind::Audio,
+                    name: format!("Audio {n}"),
+                    hidden: false,
+                    muted: false,
+                    magnetic: false,
+                    locked: false,
+                    clips: vec![],
+                });
+                proj.tracks.len() - 1
+            }
+        };
+        let (sid, tid) = (sound.id.clone(), proj.tracks[track].id.clone());
+        proj.tracks[track].clips.push(sound);
+        if let ClipContent::Media { silent, .. } = &mut proj.clip_mut(&id).expect("found").content {
+            *silent = true;
+        }
+        Ok(json!({ "clip": id, "audio": sid, "track": tid }))
     })
 }
 

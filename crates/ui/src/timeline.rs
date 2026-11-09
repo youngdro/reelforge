@@ -6,6 +6,10 @@
 //! start and to other clips' edges when snapping is on. Shift- or Ctrl-clicking adds a clip to the
 //! selection (or takes it out), dragging over empty lanes selects the clips the box touches, and
 //! dragging one of several selected clips moves them all. Right-click opens the clip's menu.
+//!
+//! With Alt held, dragging the cut between two touching clips rolls it (one gets longer, the other
+//! shorter, nothing else moves), and dragging a video or sound clip slips it (it stays in place and
+//! shows other frames of its source).
 
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
 use reelforge_media::Footage;
@@ -36,6 +40,8 @@ pub(crate) struct TimelineView {
     strips: Strips,
     /// The open menu was opened on a clip (else on empty lanes).
     menu_on_clip: bool,
+    /// The clip the open menu is for can have its sound detached.
+    menu_detachable: bool,
     /// The open menu was opened on this track's header, or on this marker in the ruler.
     menu_track: Option<String>,
     menu_marker: Option<String>,
@@ -54,6 +60,10 @@ enum Drag {
     Move { clip: String, grab: f32, track: String },
     /// One edge of a clip.
     Trim { clip: String, end: bool },
+    /// The cut between two touching clips on a track.
+    Roll { left: String, right: String },
+    /// A video or sound clip's source under it, grabbed at `from` (x).
+    Slip { clip: String, from: f32 },
     /// The playhead.
     Scrub,
     /// A selection box from where the drag began; adding to the selection when `add`.
@@ -100,6 +110,7 @@ pub(crate) enum Action {
     TrimStart,
     TrimEnd,
     SelectAll,
+    DetachAudio,
 }
 
 impl Default for TimelineView {
@@ -111,6 +122,7 @@ impl Default for TimelineView {
             snap: true,
             strips: Strips::default(),
             menu_on_clip: false,
+            menu_detachable: false,
             menu_track: None,
             menu_marker: None,
             menu_at: Tick::ZERO,
@@ -138,6 +150,10 @@ pub(crate) struct TimelineOutput {
     pub moved: Option<(String, Tick, String)>,
     /// A clip's edge was dropped: `(clip, new start, new end)`, one of them set.
     pub trimmed: Option<(String, Option<Tick>, Option<Tick>)>,
+    /// The cut after a clip was dragged: `(clip, by)`.
+    pub rolled: Option<(String, Tick)>,
+    /// A clip was slipped: `(clip, by)`, how much later in its source it now starts.
+    pub slipped: Option<(String, Tick)>,
     /// A track's eye or speaker was clicked: `(track, "hidden" | "muted", new value)`.
     pub toggled: Option<(String, &'static str, bool)>,
     /// Something from the asset panel was dropped: `(item, start, track)`; no track when it was
@@ -328,7 +344,12 @@ impl TimelineView {
 
         // Snap targets: the start, the playhead and every other clip's edges.
         let dragged_clip = match &self.drag {
-            Some(Drag::Move { clip, .. } | Drag::Trim { clip, .. }) => Some(clip.clone()),
+            Some(Drag::Move { clip, .. } | Drag::Trim { clip, .. } | Drag::Slip { clip, .. }) => Some(clip.clone()),
+            Some(Drag::Roll { left, .. }) => Some(left.clone()),
+            _ => None,
+        };
+        let rolled_right = match &self.drag {
+            Some(Drag::Roll { right, .. }) => Some(right.as_str()),
             _ => None,
         };
         // dragging one of several selected clips moves them all
@@ -344,7 +365,10 @@ impl TimelineView {
             t.extend(p.markers.iter().map(|m| m.at));
             for track in &p.tracks {
                 for c in &track.clips {
-                    if dragged_clip.as_deref() != Some(c.id.as_str()) && !group.contains(&c.id) {
+                    if dragged_clip.as_deref() != Some(c.id.as_str())
+                        && rolled_right != Some(c.id.as_str())
+                        && !group.contains(&c.id)
+                    {
                         t.extend([c.start, c.end()]);
                     }
                 }
@@ -362,6 +386,9 @@ impl TimelineView {
         // The drag in progress, as it would land now. egui no longer counts the frame the button
         // comes up on as dragged, so that frame is asked for too: it is where the drop happens.
         let mut ghost: Option<(String, Tick, Tick, String)> = None;
+        // a cut being rolled: `(left, right, where)`; a clip being slipped: `(clip, by)`
+        let mut cut: Option<(String, String, Tick)> = None;
+        let mut slip: Option<(String, Tick)> = None;
         if let (Some(drag), Some(pos)) = (&self.drag, response.interact_pointer_pos())
             && (response.dragged() || response.drag_stopped())
         {
@@ -397,6 +424,25 @@ impl TimelineView {
                         let (a, b) =
                             if *end { (c.start, t.max(c.start + one)) } else { (t.min(c.end() - one), c.end()) };
                         ghost = Some((clip.clone(), a, b, p.tracks[ti].id.clone()));
+                    }
+                }
+                Drag::Roll { left, right } => {
+                    if let (Some((_, l)), Some((_, r))) = (p.clip(left), p.clip(right)) {
+                        let mut t = fps.snap(t_of(pos.x).max(Tick::ZERO));
+                        if let Some(s) = snap_to(t) {
+                            snapped_at = Some(s);
+                            t = s;
+                        }
+                        let one = fps.frame_duration();
+                        let t = t.max(l.start + one).min(r.end() - one);
+                        cut = Some((left.clone(), right.clone(), t));
+                    }
+                }
+                Drag::Slip { clip, from } => {
+                    if let Some((_, c)) = p.clip(clip) {
+                        // the picture follows the pointer: dragging right shows earlier frames
+                        let by = Tick(-(t_of(pos.x) - t_of(*from)).0);
+                        slip = Some((clip.clone(), slip_range(p, c).map_or(Tick::ZERO, |(lo, hi)| by.max(lo).min(hi))));
                     }
                 }
                 Drag::Scrub | Drag::Marquee { .. } => {}
@@ -450,13 +496,24 @@ impl TimelineView {
                         continue;
                     }
                     (a, b) = (*ga, *gb);
+                } else if let Some((l, r, at)) = &cut {
+                    if *l == clip.id {
+                        b = *at;
+                    } else if *r == clip.id {
+                        a = *at;
+                    }
                 }
                 let r = Rect::from_min_max(
                     egui::pos2(x_of(a), top + 5.0),
                     egui::pos2(x_of(b).max(x_of(a) + 3.0), top + row_h - 5.0),
                 );
                 // a moved clip carries its source along; a trimmed one keeps it in place
-                let start = if b - a == clip.duration { a } else { clip.start };
+                let mut start = if b - a == clip.duration { a } else { clip.start };
+                if let Some((s, by)) = &slip
+                    && *s == clip.id
+                {
+                    start -= *by;
+                }
                 paint_clip(
                     &lane,
                     r,
@@ -468,6 +525,8 @@ impl TimelineView {
                         selected: selected.contains(&clip.id),
                         dim,
                         dragging: ghost.as_ref().is_some_and(|g| g.0 == clip.id)
+                            || cut.as_ref().is_some_and(|(l, r, _)| *l == clip.id || *r == clip.id)
+                            || slip.as_ref().is_some_and(|(s, _)| *s == clip.id)
                             || (group_by.is_some() && group.contains(&clip.id)),
                     },
                     words,
@@ -476,7 +535,7 @@ impl TimelineView {
                 );
             }
             // transitions on the cuts they play on
-            if track.kind == TrackKind::Video && ghost.is_none() {
+            if track.kind == TrackKind::Video && ghost.is_none() && cut.is_none() {
                 for pair in track.clips.windows(2) {
                     if let Some(t) = pair[1].transition
                         && pair[0].end() == pair[1].start
@@ -648,6 +707,8 @@ impl TimelineView {
         match &self.drag {
             Some(Drag::Trim { .. }) => ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal),
             Some(Drag::Move { .. }) => ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing),
+            Some(Drag::Roll { .. }) => ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn),
+            Some(Drag::Slip { .. }) => ui.ctx().set_cursor_icon(egui::CursorIcon::AllScroll),
             _ => {}
         }
 
@@ -657,6 +718,7 @@ impl TimelineView {
         // is read where the button went down: an edge is only a few points wide.
         let pressed_at = ui.input(|i| i.pointer.press_origin());
         let adding = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+        let alt = ui.input(|i| i.modifiers.alt);
         if response.drag_started()
             && let Some(pos) = pressed_at.or(response.interact_pointer_pos())
             && in_lanes(pos)
@@ -668,6 +730,15 @@ impl TimelineView {
                     Drag::Marquee { from: pos, add: adding }
                 }
                 Some(h) if pos.y > ruler.bottom() => match h.edge {
+                    Some(end) if alt && touching(p, &h.clip, end).is_some() => {
+                        out.select = Some(Select::Only(h.clip.clone()));
+                        let (left, right) = touching(p, &h.clip, end).expect("checked");
+                        Drag::Roll { left, right }
+                    }
+                    None if alt && p.clip(&h.clip).is_some_and(|(_, c)| slip_range(p, c).is_some()) => {
+                        out.select = Some(Select::Only(h.clip.clone()));
+                        Drag::Slip { clip: h.clip, from: pos.x }
+                    }
                     Some(end) => {
                         out.select = Some(Select::Only(h.clip.clone()));
                         Drag::Trim { clip: h.clip, end }
@@ -720,6 +791,17 @@ impl TimelineView {
             out.seek = Some(t_of(pos.x).max(Tick::ZERO));
         }
         if response.drag_stopped() {
+            if let Some((left, _, at)) = cut.take()
+                && let Some((_, l)) = p.clip(&left)
+                && at != l.end()
+            {
+                out.rolled = Some((left.clone(), at - l.end()));
+            }
+            if let Some((clip, by)) = slip.take()
+                && by != Tick::ZERO
+            {
+                out.slipped = Some((clip, by));
+            }
             if let (Some(drag), Some((clip, a, b, track))) = (self.drag.take(), ghost) {
                 match drag {
                     Drag::Move { .. } if group_by.is_some() => {
@@ -728,7 +810,7 @@ impl TimelineView {
                     Drag::Move { .. } => out.moved = Some((clip, a, track)),
                     Drag::Trim { end: true, .. } => out.trimmed = Some((clip, None, Some(b))),
                     Drag::Trim { end: false, .. } => out.trimmed = Some((clip, Some(a), None)),
-                    Drag::Scrub | Drag::Marquee { .. } => {}
+                    Drag::Scrub | Drag::Marquee { .. } | Drag::Roll { .. } | Drag::Slip { .. } => {}
                 }
             }
             self.drag = None;
@@ -759,6 +841,7 @@ impl TimelineView {
             self.menu_track = None;
             self.menu_marker = None;
             self.menu_on_clip = false;
+            self.menu_detachable = false;
             self.menu_at = fps.snap(t_of(pos.x).max(Tick::ZERO));
             if !in_lanes(pos) {
                 self.menu_track =
@@ -777,12 +860,14 @@ impl TimelineView {
                     if !selected.contains(&h.clip) {
                         out.select = Some(Select::Only(h.clip.clone()));
                     }
+                    self.menu_detachable = detachable(p, &h.clip);
                     true
                 }
                 None => false,
             };
         }
         let on_clip = self.menu_on_clip;
+        let can_detach = self.menu_detachable;
         let (menu_track, menu_marker, menu_at) = (self.menu_track.clone(), self.menu_marker.clone(), self.menu_at);
         response.context_menu(|ui| {
             ui.set_min_width(190.0);
@@ -825,6 +910,9 @@ impl TimelineView {
                 item(ui, words.split, "S", Action::Split, true);
                 item(ui, words.trim_start, "Q", Action::TrimStart, true);
                 item(ui, words.trim_end, "W", Action::TrimEnd, true);
+                if can_detach {
+                    item(ui, words.detach_audio, "Alt+D", Action::DetachAudio, true);
+                }
                 ui.separator();
                 item(ui, words.copy, "Ctrl+C", Action::Copy, true);
                 item(ui, words.cut, "Ctrl+X", Action::Cut, true);
@@ -1050,6 +1138,40 @@ pub(crate) fn paint_cut(painter: &egui::Painter, x: f32, mid: f32, w: f32) {
 pub(crate) fn diamond(painter: &egui::Painter, c: egui::Pos2, h: f32, fill: Color32, stroke: Stroke) {
     let pts = vec![c + vec2(0.0, -h), c + vec2(h, 0.0), c + vec2(0.0, h), c + vec2(-h, 0.0)];
     painter.add(egui::Shape::convex_polygon(pts, fill, stroke));
+}
+
+/// The two clips either side of the cut at `clip`'s end (or start): `(left, right)`.
+fn touching(p: &Project, clip: &str, end: bool) -> Option<(String, String)> {
+    let (ti, c) = p.clip(clip)?;
+    let clips = &p.tracks[ti].clips;
+    if end {
+        clips.iter().find(|o| o.start == c.end()).map(|o| (c.id.clone(), o.id.clone()))
+    } else {
+        clips.iter().find(|o| o.end() == c.start && o.id != c.id).map(|o| (o.id.clone(), c.id.clone()))
+    }
+}
+
+/// How far a video or sound clip can slip, earlier and later: `(lo, hi)`; none for other clips,
+/// freeze frames and clips whose source has no length to spare.
+pub(crate) fn slip_range(p: &Project, c: &reelforge_model::Clip) -> Option<(Tick, Tick)> {
+    let ClipContent::Media { media, source_in, speed, .. } = &c.content else { return None };
+    if *speed <= 0.0 {
+        return None;
+    }
+    let length = p.media.get(media)?.duration?;
+    let span = c.timing().map(|t| Tick(t.travel(c.duration).0.abs()))?;
+    let lo = Tick(-source_in.0).scale(1.0 / speed);
+    let hi = (length - span - *source_in).scale(1.0 / speed);
+    (lo < hi).then_some((lo, hi.max(Tick::ZERO)))
+}
+
+/// Whether `clip` is a video clip that still plays its own sound.
+pub(crate) fn detachable(p: &Project, clip: &str) -> bool {
+    p.clip(clip).is_some_and(|(ti, c)| {
+        p.tracks[ti].kind == TrackKind::Video
+            && matches!(&c.content, ClipContent::Media { media, silent: false, .. }
+                if p.media.get(media).is_some_and(|m| m.kind == MediaKind::Video))
+    })
 }
 
 #[cfg(test)]

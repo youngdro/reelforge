@@ -294,7 +294,9 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
             }
             let sound = !track.muted
                 && match &clip.content {
-                    ClipContent::Media { media, .. } => project.media[media].kind != MediaKind::Image,
+                    ClipContent::Media { media, silent, .. } => {
+                        !silent && project.media[media].kind != MediaKind::Image
+                    }
                     _ => false,
                 };
             // a freeze frame is silent

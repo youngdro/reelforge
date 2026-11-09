@@ -283,6 +283,7 @@ fn read_draft(proj: &mut Project, draft: &Value, folder: Option<&str>) -> Result
                         speed: if mk == MediaKind::Image { 1.0 } else { speed },
                         reversed: seg["reverse"].as_bool().unwrap_or(false),
                         curve: vec![],
+                        silent: false,
                     }
                 }
                 TrackKind::Text => {
