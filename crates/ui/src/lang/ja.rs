@@ -127,6 +127,8 @@ pub(super) static JA: Strings = Strings {
     zoom_out_tip: "縮小",
     snap_on: "スナップ：オン",
     snap_off: "スナップ：オフ",
+    scrub_on: "スクラブ再生：オン",
+    scrub_off: "スクラブ再生：オフ",
     gpu_preview: "GPU プレビュー · {}",
     cpu_preview: "CPU プレビュー",
     preview_failed: "プレビュー：{}",

@@ -112,6 +112,8 @@ pub struct EditorApp {
     playing: bool,
     /// Preview sound, and the project revision its mix was compiled from.
     sound: audio::Playback,
+    /// Whether moving the playhead while paused plays a moment of sound.
+    scrub_sound: bool,
     sound_spec: Option<(u64, Arc<reelforge_renderspec::RenderSpec>)>,
     selected: Option<String>,
     /// The other selected clips, besides `selected` (which the inspector and preview show).
@@ -317,6 +319,7 @@ impl EditorApp {
             playhead: Tick::ZERO,
             playing: false,
             sound: audio::Playback::default(),
+            scrub_sound: true,
             sound_spec: None,
             selected: None,
             also: Vec::new(),
@@ -1034,6 +1037,24 @@ impl EditorApp {
         if next { points.filter(|t| *t > self.playhead).min() } else { points.filter(|t| *t < self.playhead).max() }
     }
 
+    /// Plays a moment of sound at the playhead, as it is dragged while paused.
+    fn scrub(&mut self) {
+        if let Some(spec) = self.sound_spec() {
+            self.sound.scrub(&spec, &self.media, self.playhead);
+        }
+    }
+
+    /// The project compiled for sound, compiled again after an edit.
+    fn sound_spec(&mut self) -> Option<Spec> {
+        let revision = self.session.revision();
+        if self.sound_spec.as_ref().is_none_or(|(r, _)| *r != revision) {
+            let p = self.project();
+            self.sound_spec =
+                compile(&p, &CompileOptions { encode: false }).ok().map(|spec| (revision, Arc::new(spec)));
+        }
+        self.sound_spec.as_ref().map(|(_, spec)| spec.clone())
+    }
+
     fn seek(&mut self, t: Tick) {
         let p = self.project();
         self.playhead = p.canvas.fps.snap(t.max(Tick::ZERO).min(p.duration()));
@@ -1485,6 +1506,16 @@ impl EditorApp {
                 }
                 if theme::tool(ui, icon::ZOOM_OUT, "", s.zoom_out_tip, true).clicked() {
                     self.timeline.zoom(1.0 / 1.5);
+                }
+                let scrub = self.scrub_sound;
+                let ear = egui::Button::new(egui::RichText::new(icon::WAVEFORM).size(14.0).color(if scrub {
+                    theme::color::ACCENT
+                } else {
+                    theme::color::WEAK
+                }))
+                .selected(scrub);
+                if ui.add(ear).on_hover_text(if scrub { s.scrub_on } else { s.scrub_off }).clicked() {
+                    self.scrub_sound = !scrub;
                 }
                 let snap = self.timeline.snap;
                 let magnet = egui::Button::new(egui::RichText::new(icon::SNAP).size(14.0).color(if snap {
@@ -2665,7 +2696,11 @@ impl eframe::App for EditorApp {
             .show(ui, |ui| self.preview(ui));
 
         if let Some(t) = out.seek {
+            let before = self.playhead;
             self.seek(t);
+            if self.scrub_sound && !self.playing && self.playhead != before {
+                self.scrub();
+            }
         }
         if let Some(change) = out.select {
             self.select(change);

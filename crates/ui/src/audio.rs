@@ -19,6 +19,10 @@ use reelforge_time::{TICKS_PER_SECOND, Tick};
 const AHEAD_SECONDS: f64 = 0.25;
 /// Samples mixed at a time.
 const CHUNK: usize = 1024;
+/// How long a scrub plays, in seconds: a moment of sound where the playhead was dropped or dragged.
+const SCRUB_SECONDS: f64 = 0.09;
+/// The fade at either end of a scrub, in seconds, so it does not click.
+const SCRUB_FADE: f64 = 0.008;
 /// The rate used when there is no device.
 const FALLBACK_RATE: u32 = 48_000;
 
@@ -116,6 +120,27 @@ impl Playback {
     /// Why there is no sound, once (for the status bar, which says that there is none).
     pub fn take_problem(&mut self) -> Option<String> {
         self.problem.take()
+    }
+
+    /// While paused, plays a moment of `spec` from `at`, faded in and out, in place of whatever was
+    /// queued. Nothing happens until the device is open (the desktop opens it at start; the
+    /// browser only after the first Play).
+    pub fn scrub(&mut self, spec: &RenderSpec, media: &Footage, at: Tick) {
+        if !matches!(self.device, Device::Open(_)) && !cfg!(test) {
+            return;
+        }
+        let n = (self.rate as f64 * SCRUB_SECONDS) as usize;
+        let Ok(planar) = reelforge_media::export::mix(spec, media, self.rate, sample_at(at, self.rate), n) else {
+            return;
+        };
+        let fade = ((self.rate as f64 * SCRUB_FADE) as usize).max(1);
+        let right = planar.len().min(2).saturating_sub(1);
+        let gain = |i: usize| (i.min(n - 1 - i) as f32 / fade as f32).min(1.0);
+        let mut q = self.lock();
+        q.frames.clear();
+        q.frames.extend((0..n).map(|i| [planar[0][i] * gain(i), planar[right][i] * gain(i)]));
+        q.played = 0;
+        q.running = true;
     }
 
     /// Mixes `spec` until the queue holds a little more than the device needs. A clip whose file
