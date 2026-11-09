@@ -200,6 +200,30 @@ fn the_preview_plays_the_mix_and_follows_edits() {
 }
 
 #[test]
+fn dragging_the_playhead_while_paused_plays_a_moment_of_sound() {
+    let wav = std::env::temp_dir().join(format!("reelforge-ui-scrub-{}.wav", std::process::id()));
+    std::fs::write(&wav, tone_wav(44_100, 3.0)).unwrap();
+    let mut app = EditorApp::new(Session::default());
+    app.sound = crate::audio::Playback::silent(48_000);
+    let m = app.execute("media.import", json!({"path": wav})).unwrap()["media"]["id"].as_str().unwrap().to_string();
+    let audio = first_track(&app, reelforge_model::TrackKind::Audio);
+    app.execute("clip.add", json!({"track": audio, "media": m})).unwrap();
+
+    app.seek(Tick::from_seconds(1.0));
+    app.scrub();
+    let (heard, _) = app.sound.take(9_600);
+    // faded in, a tone in the middle, then nothing once the moment is over
+    assert!(heard[0][0].abs() < 0.01);
+    assert!(rms(&heard[1_000..3_000], 0) > 0.3, "{}", rms(&heard[1_000..3_000], 0));
+    assert_eq!(rms(&heard[4_400..], 0), 0.0);
+
+    // after the end of the sound: silence
+    app.seek(Tick::from_seconds(2.99));
+    app.scrub();
+    assert!(rms(&app.sound.take(4_320).0[2_000..], 0) == 0.0);
+}
+
+#[test]
 fn the_preview_draws_as_sharp_as_the_screen_shows_it() {
     use crate::preview_scale;
     // a 1080×1920 canvas shown 960 pixels tall on a Retina screen (480 points × 2)
