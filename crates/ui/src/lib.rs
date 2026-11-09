@@ -236,6 +236,8 @@ struct LookEdit {
     flip: [bool; 2],
     blend: BlendMode,
     mask: Option<Mask>,
+    /// The canvas blur behind it, when it can have one (a video or picture on a video track).
+    backdrop: Option<Option<f32>>,
 }
 
 /// A picture clip's colour, as the inspector edits it.
@@ -1536,6 +1538,10 @@ impl EditorApp {
                     flip: [clip.look.flip_x, clip.look.flip_y],
                     blend: clip.look.blend,
                     mask: clip.look.mask,
+                    backdrop: (matches!(&clip.content, ClipContent::Media { media, .. }
+                        if p.media.get(media).is_some_and(|m| m.kind != MediaKind::Audio))
+                        && p.clip(&id).is_some_and(|(ti, _)| p.tracks[ti].kind == TrackKind::Video))
+                    .then_some(clip.look.backdrop),
                 }
             }),
             title: match &clip.content {
@@ -1847,6 +1853,27 @@ impl EditorApp {
                             actions.push(("clip.setBlend", json!({"clip": id, "mode": picked.name()})));
                         }
                         ui.end_row();
+                        if let Some(backdrop) = &mut l.backdrop {
+                            ui.label(egui::RichText::new(s.canvas_blur).color(theme::color::WEAK));
+                            ui.horizontal(|ui| {
+                                let mut on = backdrop.is_some();
+                                if ui.checkbox(&mut on, "").on_hover_text(s.canvas_blur_tip).changed() {
+                                    let blur = if on { json!(0.5) } else { Value::Null };
+                                    actions.push(("clip.setBackdrop", json!({"clip": id, "blur": blur})));
+                                }
+                                if let Some(amount) = backdrop {
+                                    let r = ui.add(egui::Slider::new(amount, 0.0..=1.0).show_value(false));
+                                    if changed(&r) {
+                                        actions.push(("clip.setBackdrop", json!({"clip": id, "blur": *amount})));
+                                    }
+                                }
+                                if ui.small_button(s.apply_all).on_hover_text(s.apply_all_tip).clicked() {
+                                    let blur = backdrop.map_or(Value::Null, |b| json!(b));
+                                    actions.push(("clip.setBackdrop", json!({"clip": id, "blur": blur, "all": true})));
+                                }
+                            });
+                            ui.end_row();
+                        }
                         if l.media {
                             for (i, edge) in ["left", "top", "right", "bottom"].into_iter().enumerate() {
                                 ui.label(egui::RichText::new(s.crop_edges[i]).color(theme::color::WEAK));

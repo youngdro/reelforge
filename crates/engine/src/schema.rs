@@ -441,6 +441,17 @@ pub fn input_schema(id: &str) -> Option<Value> {
             props.push(("flipY", json!({"type": "boolean", "description": "Mirrored top to bottom."})));
             object(props, &["clip"])
         }
+        "clip.setBackdrop" => object(
+            vec![
+                clip(),
+                (
+                    "blur",
+                    json!({"description": "From 0 (a little blurred) to 1 (very); null removes the backdrop.", "oneOf": [{"type": "number", "minimum": 0, "maximum": 1}, {"type": "null"}]}),
+                ),
+                ("all", json!({"type": "boolean", "description": "Every video and picture clip on the clip's track."})),
+            ],
+            &["clip", "blur"],
+        ),
         "clip.setBlend" => object(
             vec![
                 clip(),

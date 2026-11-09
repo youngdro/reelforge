@@ -775,7 +775,13 @@ pub struct Effect {
 ///   blacks) and `vignette` (0 to 1, darkens towards the corners of the layer's picture).
 /// - `color.lut@1`: a 3-D lookup table (`asset`, a `lut` in the `.cube` format, applied to
 ///   sRGB-encoded colour), mixed in by `amount` (0 to 1, default 1). One per layer.
+/// - `blur.gaussian@1`: blurs a media layer's picture before it is placed; `radius` is the blur's
+///   standard deviation as a fraction of the picture's shorter side (default 0.02). Text and colour
+///   layers are left as they are. Editors use it for a blurred copy of a clip behind it (a
+///   "canvas blur" background).
 pub mod effects {
+    /// A blur of the layer's picture.
+    pub const BLUR: &str = "blur.gaussian@1";
     /// Brightness.
     pub const BRIGHTNESS: &str = "color.brightness@1";
     /// Saturation.

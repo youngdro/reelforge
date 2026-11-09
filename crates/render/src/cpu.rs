@@ -52,7 +52,10 @@ pub(crate) fn resolve(
                 return Err(RenderError::Media(format!("unknown asset {asset:?}")));
             };
             match media.picture(asset, def, *at).map_err(RenderError::Media)? {
-                Some(pic) => Resolved::Picture(pic),
+                Some(pic) => match blur_radius(layer) {
+                    Some(r) => Resolved::Picture(std::sync::Arc::new(crate::image::blurred(&pic, r))),
+                    None => Resolved::Picture(pic),
+                },
                 None => {
                     placeholder("media offline or not decodable yet")?;
                     let size = def
@@ -87,6 +90,13 @@ pub(crate) fn resolve(
             }
         }
     })
+}
+
+/// The radius of `layer`'s `blur.gaussian@1`, as a fraction of its picture's shorter side.
+fn blur_radius(layer: &PlannedLayer) -> Option<f32> {
+    let (_, params) = layer.fx.iter().find(|(id, _)| id == effects::BLUR)?;
+    let r = params.iter().find(|(k, _)| k == "radius").map_or(0.02, |(_, v)| *v);
+    (r > 0.0).then_some(r)
 }
 
 /// The lookup table `layer` reads, if any. Missing, it is skipped and reported (drafts) or fails

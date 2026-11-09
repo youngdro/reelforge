@@ -110,3 +110,107 @@ mod tests {
         assert_eq!(img.to_srgba8(), bytes);
     }
 }
+
+/// `img` blurred with a standard deviation of `radius` times its shorter side, edges held. The
+/// blur runs on a copy shrunk until the deviation is about two pixels (three box blurs there come
+/// within a few per cent of a Gaussian), so the result is small: a compositor scales it back up
+/// as it samples any picture, which smooths it further. CPU and GPU draw the same picture.
+pub fn blurred(img: &Image, radius: f32) -> Image {
+    let sigma = radius.max(0.0) * img.width.min(img.height) as f32;
+    let f = if sigma > 2.0 { 2.0 / sigma } else { 1.0 };
+    let (w, h) = (((img.width as f32 * f).round() as u32).max(4), ((img.height as f32 * f).round() as u32).max(4));
+    let mut small = shrink(img, w.min(img.width), h.min(img.height));
+    let s = sigma * small.width as f32 / img.width.max(1) as f32;
+    // three boxes of half-width r: variance 3 * ((2r+1)^2 - 1) / 12
+    let r = (((4.0 * s * s + 1.0).sqrt() - 1.0) / 2.0).round().max(1.0) as i64;
+    if sigma > 0.0 {
+        for _ in 0..3 {
+            box_pass(&mut small, r, true);
+            box_pass(&mut small, r, false);
+        }
+    }
+    small
+}
+
+/// `img` shrunk to `w × h`, each pixel the mean of the pixels it covers.
+fn shrink(img: &Image, w: u32, h: u32) -> Image {
+    if (w, h) == (img.width, img.height) {
+        return img.clone();
+    }
+    let (sw, sh) = (img.width as usize, img.height as usize);
+    let mut pixels = Vec::with_capacity(w as usize * h as usize);
+    for ty in 0..h as usize {
+        let (y0, y1) = (ty * sh / h as usize, ((ty + 1) * sh / h as usize).max(ty * sh / h as usize + 1).min(sh));
+        for tx in 0..w as usize {
+            let (x0, x1) = (tx * sw / w as usize, ((tx + 1) * sw / w as usize).max(tx * sw / w as usize + 1).min(sw));
+            let mut sum = [0.0f32; 4];
+            for y in y0..y1 {
+                for p in &img.pixels[y * sw + x0..y * sw + x1] {
+                    for c in 0..4 {
+                        sum[c] += p[c];
+                    }
+                }
+            }
+            let n = ((y1 - y0) * (x1 - x0)).max(1) as f32;
+            pixels.push(sum.map(|v| v / n));
+        }
+    }
+    Image { width: w, height: h, pixels }
+}
+
+/// One running-sum box blur of half-width `r` along rows (`across`) or columns, edges held.
+fn box_pass(img: &mut Image, r: i64, across: bool) {
+    let (w, h) = (img.width as i64, img.height as i64);
+    let (len, lines) = if across { (w, h) } else { (h, w) };
+    let at = |line: i64, i: i64| -> usize {
+        let i = i.clamp(0, len - 1);
+        (if across { line * w + i } else { i * w + line }) as usize
+    };
+    let n = (2 * r + 1) as f32;
+    let mut out = vec![[0.0f32; 4]; len as usize];
+    for line in 0..lines {
+        let mut sum = [0.0f32; 4];
+        for i in -r..=r {
+            let p = img.pixels[at(line, i)];
+            for c in 0..4 {
+                sum[c] += p[c];
+            }
+        }
+        for i in 0..len {
+            out[i as usize] = sum.map(|v| v / n);
+            let (add, drop) = (img.pixels[at(line, i + r + 1)], img.pixels[at(line, i - r)]);
+            for c in 0..4 {
+                sum[c] += add[c] - drop[c];
+            }
+        }
+        for i in 0..len {
+            img.pixels[at(line, i)] = out[i as usize];
+        }
+    }
+}
+
+#[cfg(test)]
+mod blur_tests {
+    use super::*;
+
+    #[test]
+    fn a_blur_spreads_an_edge_keeps_the_mean_and_shrinks_the_picture() {
+        // left half black, right half white, 400 × 200
+        let mut img = Image::filled(400, 200, [0.0, 0.0, 0.0, 1.0]);
+        for y in 0..200 {
+            for x in 200..400 {
+                img.pixels[y * 400 + x] = [1.0; 4];
+            }
+        }
+        let b = blurred(&img, 0.05);
+        assert!(b.width < 400 && (b.width as f32 / b.height as f32 - 2.0).abs() < 0.1, "{}×{}", b.width, b.height);
+        let row = |x: u32| b.pixels[(b.height / 2 * b.width + x) as usize][0];
+        assert!(row(0) < 0.02 && row(b.width - 1) > 0.98, "edges held: {} {}", row(0), row(b.width - 1));
+        let mid = row(b.width / 2);
+        assert!((0.2..0.8).contains(&mid), "the edge is soft: {mid}");
+        let mean: f32 = b.pixels.iter().map(|p| p[0]).sum::<f32>() / b.pixels.len() as f32;
+        assert!((mean - 0.5).abs() < 0.02, "{mean}");
+        // no blur, no change
+        assert_eq!(blurred(&img, 0.0), img);
+    }
+}

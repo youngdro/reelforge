@@ -209,6 +209,34 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                         ..TextContent::new(text.clone(), *size, Color(*color))
                     }),
                 };
+                // a blurred copy filling the frame behind it
+                if let (Some(amount), LayerContent::Media { asset, time, .. }) = (clip.look.backdrop, &content) {
+                    let mut fx = color_fx(clip, &mut asset_for)?;
+                    fx.push(Effect {
+                        id: effects::BLUR.into(),
+                        params: [(
+                            "radius".to_string(),
+                            Animated::Constant(reelforge_model::look::backdrop_radius(amount)),
+                        )]
+                        .into(),
+                        asset: None,
+                    });
+                    spec.layers.push(Layer {
+                        id: format!("{}~backdrop", clip.id),
+                        at: clip.start - shape.lead,
+                        dur: shape.len,
+                        content: LayerContent::Media { asset: asset.clone(), time: time.clone(), fit: Fit::Cover },
+                        transform: Transform::default(),
+                        opacity: motion::lower(clip, Prop::Opacity, &shape, step),
+                        blend: Blend::Normal,
+                        mask: None,
+                        crop: None,
+                        flip_x: clip.look.flip_x,
+                        flip_y: clip.look.flip_y,
+                        shape_mask: None,
+                        fx,
+                    });
+                }
                 spec.layers.push(Layer {
                     id: clip.id.clone(),
                     at: clip.start - shape.lead,

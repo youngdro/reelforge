@@ -22,6 +22,15 @@ pub struct Look {
     /// A shape that shows part of it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mask: Option<Mask>,
+    /// A blurred copy of the clip filling the frame behind it (剪映's 画布模糊), this blurry: 0
+    /// a little to 1 very (media clips).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backdrop: Option<f32>,
+}
+
+/// How far a backdrop of blur `amount` (0 to 1) blurs, as a fraction of the picture's shorter side.
+pub fn backdrop_radius(amount: f32) -> f32 {
+    0.01 + amount.clamp(0.0, 1.0) * 0.07
 }
 
 fn is_false(b: &bool) -> bool {
@@ -40,6 +49,9 @@ impl Look {
         let edges = [c.left, c.top, c.right, c.bottom];
         if edges.iter().any(|e| !(0.0..1.0).contains(e)) || c.left + c.right > 0.99 || c.top + c.bottom > 0.99 {
             return Some("a crop must leave at least 1 % of the picture");
+        }
+        if self.backdrop.is_some_and(|b| !(0.0..=1.0).contains(&b)) {
+            return Some("a backdrop's blur is from 0 to 1");
         }
         if let Some(m) = &self.mask {
             let v = [m.center[0], m.center[1], m.size[0], m.size[1], m.rotation, m.feather];
