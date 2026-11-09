@@ -98,6 +98,9 @@ fn open_path(path: &std::path::Path) -> Result<SharedSource, String> {
     .map_err(|e| e.to_string())
 }
 
+/// A picture made ahead and the source instant it shows.
+type Made = (Tick, Arc<Image>);
+
 /// A decoded frame and the picture made from it.
 type Converted = (Arc<filmcraft_frame::VideoFrame>, Arc<Image>);
 
@@ -122,7 +125,14 @@ pub struct Footage {
     /// Pictures decoded elsewhere (the browser's decoder), by asset key and source instant: a
     /// [`picture`](MediaSource::picture) asking for exactly that instant gets them.
     prepared: Mutex<HashMap<String, HashMap<Tick, Arc<Image>>>>,
+    /// Pictures made ahead of the playhead ([`prefetch`](Footage::prefetch)), by asset key: the
+    /// few source instants a playing preview reaches next, oldest first.
+    ahead: Mutex<HashMap<String, Vec<Made>>>,
 }
+
+/// How many pictures [`Footage::prefetch`] keeps per asset. Full-size pictures are large (a
+/// 1080×1920 one is 33 MB), so only the next few frames.
+pub const AHEAD_PICTURES: usize = 4;
 
 /// Whether a file name is a lookup table (`.cube`).
 pub fn is_lut(name: &str) -> bool {
@@ -192,6 +202,7 @@ impl Footage {
     /// Forgets everything decoded so far (files changed on disk).
     pub fn clear(&self) {
         self.prepared.lock().expect("prepared lock").clear();
+        self.ahead.lock().expect("ahead lock").clear();
         self.sources.lock().expect("sources lock").clear();
         self.last.lock().expect("frame lock").clear();
         self.fonts.lock().expect("fonts lock").clear();
@@ -372,23 +383,85 @@ impl MediaSource for Footage {
                 {
                     return Ok(Some(img.clone()));
                 }
-                let Some(src) = self.source(asset) else { return Ok(None) };
-                let duration = from_ft(src.info().duration);
-                // past the end the last frame holds
-                let at = at.max(Tick::ZERO).min(duration - Tick(1)).max(Tick::ZERO);
-                let frame = src.video_frame(FrameRequest::full(to_ft(at))).map_err(|e| e.to_string())?;
                 let k = key(asset);
-                if let Some((held, img)) = self.last.lock().expect("frame lock").get(&k)
-                    && Arc::ptr_eq(held, &frame)
+                if let Some(img) = self
+                    .ahead
+                    .lock()
+                    .expect("ahead lock")
+                    .get(&k)
+                    .and_then(|v| v.iter().find(|(t, _)| *t == at).map(|(_, img)| img.clone()))
                 {
-                    return Ok(Some(img.clone()));
+                    return Ok(Some(img));
                 }
-                let img = Arc::new(Image::from_srgba8(frame.width, frame.height, &frame.to_rgba8()));
-                self.last.lock().expect("frame lock").insert(k, (frame, img.clone()));
-                Ok(Some(img))
+                self.decode_picture(asset, &k, at)
             }
             _ => Ok(None),
         }
+    }
+}
+
+impl Footage {
+    /// Decodes and converts `asset`'s picture at `at` (a video), reusing the last one converted
+    /// when the decoder hands back the same frame.
+    fn decode_picture(&self, asset: &Asset, k: &str, at: Tick) -> Result<Option<Arc<Image>>, String> {
+        let Some(src) = self.source(asset) else { return Ok(None) };
+        let duration = from_ft(src.info().duration);
+        // past the end the last frame holds
+        let at = at.max(Tick::ZERO).min(duration - Tick(1)).max(Tick::ZERO);
+        let frame = src.video_frame(FrameRequest::full(to_ft(at))).map_err(|e| e.to_string())?;
+        if let Some((held, img)) = self.last.lock().expect("frame lock").get(k)
+            && Arc::ptr_eq(held, &frame)
+        {
+            return Ok(Some(img.clone()));
+        }
+        let img = Arc::new(Image::from_srgba8(frame.width, frame.height, &frame.to_rgba8()));
+        self.last.lock().expect("frame lock").insert(k.to_string(), (frame, img.clone()));
+        Ok(Some(img))
+    }
+
+    /// Makes `asset`'s picture at source instant `at` ahead of time, on the calling thread, so a
+    /// later [`picture`](MediaSource::picture) for exactly that instant only looks it up. For a
+    /// playing preview: a worker thread calls this for the frames the playhead reaches next. Only
+    /// videos are made ahead (stills are kept anyway); the oldest picture goes past
+    /// [`AHEAD_PICTURES`]. Returns whether a picture is now ready.
+    pub fn prefetch(&self, asset: &Asset, at: Tick) -> bool {
+        if asset.kind != AssetKind::Video {
+            return false;
+        }
+        let k = key(asset);
+        if self.prepared.lock().expect("prepared lock").get(&k).is_some_and(|m| m.contains_key(&at)) {
+            return true;
+        }
+        if self.ahead.lock().expect("ahead lock").get(&k).is_some_and(|v| v.iter().any(|(t, _)| *t == at)) {
+            return true;
+        }
+        let Ok(Some(img)) = self.decode_picture(asset, &k, at) else { return false };
+        let mut ahead = self.ahead.lock().expect("ahead lock");
+        let list = ahead.entry(k).or_default();
+        if !list.iter().any(|(t, _)| *t == at) {
+            list.push((at, img));
+            if list.len() > AHEAD_PICTURES {
+                list.remove(0);
+            }
+        }
+        true
+    }
+
+    /// Only decodes `asset`'s frame at `at` (a video), filling the decoder's own frame cache
+    /// without converting it: further ahead than [`prefetch`](Self::prefetch) keeps pictures.
+    pub fn warm(&self, asset: &Asset, at: Tick) {
+        if asset.kind != AssetKind::Video {
+            return;
+        }
+        let Some(src) = self.source(asset) else { return };
+        let duration = from_ft(src.info().duration);
+        let at = at.max(Tick::ZERO).min(duration - Tick(1)).max(Tick::ZERO);
+        let _ = src.video_frame(FrameRequest::full(to_ft(at)));
+    }
+
+    /// Forgets the pictures made ahead (the preview stopped playing).
+    pub fn clear_ahead(&self) {
+        self.ahead.lock().expect("ahead lock").clear();
     }
 }
 

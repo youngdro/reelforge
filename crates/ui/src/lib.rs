@@ -19,6 +19,7 @@
 //! [`EditorApp::join`] edits a session a server holds instead, with agents and other editors: see
 //! [`remote`].
 
+mod ahead;
 mod assets;
 mod audio;
 mod export_job;
@@ -54,6 +55,15 @@ use theme::icon;
 /// Longest side of the preview render, in pixels.
 const PREVIEW_LONG_SIDE: f32 = 640.0;
 
+/// A preview gesture's placement so far (`x`, `y`, scale, rotation as bits), if one runs.
+type Moving = Option<[u32; 4]>;
+
+/// A compiled edit, shared.
+type Spec = Arc<reelforge_renderspec::RenderSpec>;
+
+/// What the preview was last drawn for: revision, frame, remote media epoch, gesture, playing.
+type PreviewKey = (u64, i64, u64, Moving, bool);
+
 /// A file the browser finished reading: its name, its bytes, and whether it goes on the timeline
 /// too (a drop) or only into the project's media (picked with Import).
 pub(crate) type Arrival = (String, Result<Vec<u8>, String>, bool);
@@ -87,7 +97,12 @@ pub struct EditorApp {
     selected: Option<String>,
     status: String,
     preview: Option<egui::TextureHandle>,
-    preview_key: Option<(u64, i64, u64, Option<[u32; 4]>)>,
+    preview_key: Option<PreviewKey>,
+    /// The RenderSpec the preview draws, and the revision and gesture it was compiled for: a
+    /// playing preview compiles once, not every frame.
+    preview_spec: Option<((u64, Moving), Option<Spec>)>,
+    /// Decodes the frames a playing preview reaches next.
+    ahead: ahead::Ahead,
     /// Where the visible layers land in the preview's frame, bottom first.
     outlines: Vec<(String, reelforge_render::Outline)>,
     /// A drag on the preview in progress.
@@ -241,10 +256,12 @@ impl EditorApp {
     /// An editor on a session other clients edit too (agents through a server the app hosts). Their
     /// changes show as they commit.
     pub fn shared(session: Arc<SharedSession>) -> EditorApp {
+        let media = Arc::new(Footage::new());
         EditorApp {
             seen: session.revision(),
             session,
-            media: Arc::new(Footage::new()),
+            ahead: ahead::Ahead::new(media.clone()),
+            media,
             arrivals: Arc::default(),
             export: None,
             export_open: false,
@@ -263,6 +280,7 @@ impl EditorApp {
             status: String::new(),
             preview: None,
             preview_key: None,
+            preview_spec: None,
             outlines: Vec::new(),
             gesture: None,
             gpu: None,
@@ -421,6 +439,7 @@ impl EditorApp {
             }
         } else {
             self.sound.stop();
+            self.media.clear_ahead();
         }
     }
 
@@ -1897,15 +1916,25 @@ impl EditorApp {
         }
         let frame = p.canvas.fps.frame_at(self.playhead);
         let moving = self.gesture.as_ref().map(|g| [g.now.x, g.now.y, g.now.scale, g.now.rotation].map(f32::to_bits));
-        let key = (self.session.revision(), frame, self.remote.as_ref().map_or(0, remote::Remote::media_epoch), moving);
+        let revision = self.session.revision();
+        let key = (revision, frame, self.remote.as_ref().map_or(0, remote::Remote::media_epoch), moving, self.playing);
         let changed = self.preview_key != Some(key);
         self.preview_key = Some(key);
         let long = p.canvas.width.max(p.canvas.height) as f32;
         let scale = (PREVIEW_LONG_SIDE / long).min(1.0);
         let at = p.canvas.fps.snap(self.playhead);
         // an empty timeline does not compile: the background is drawn alone
-        let spec = if changed { compile(&p, &CompileOptions { encode: false }).ok() } else { None };
-        if changed {
+        if changed && self.preview_spec.as_ref().is_none_or(|(k, _)| *k != (revision, moving)) {
+            let spec = compile(&p, &CompileOptions { encode: false }).ok().map(Arc::new);
+            self.preview_spec = Some(((revision, moving), spec));
+        }
+        let spec = if changed { self.preview_spec.as_ref().and_then(|(_, s)| s.clone()) } else { None };
+        if changed && self.playing {
+            // nothing can be picked while playing; read ahead instead
+            if let Some(spec) = &spec {
+                self.ahead.follow(spec, at);
+            }
+        } else if changed {
             // layers that are not clips (a transition's colour dip) cannot be picked
             self.outlines = spec
                 .as_ref()
