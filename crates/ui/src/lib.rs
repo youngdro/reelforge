@@ -52,8 +52,26 @@ use reelforge_time::Tick;
 use serde_json::{Value, json};
 use theme::icon;
 
-/// Longest side of the preview render, in pixels.
+/// Longest side of the preview render on the CPU (no GPU, or WebGL2), in pixels: the CPU cannot
+/// keep up with more.
 const PREVIEW_LONG_SIDE: f32 = 640.0;
+/// Longest side of a playing preview in Smooth quality, in pixels.
+const SMOOTH_LONG_SIDE: f32 = 720.0;
+
+/// The render scale a preview shown `on_screen` pixels long (its longest side) draws at, for a
+/// canvas `long` pixels long: as sharp as the screen shows it, never above the canvas, and lower
+/// while playing in Smooth quality. Rounded to 1/32 so that resizing the window by a few points
+/// does not draw again.
+fn preview_scale(long: f32, on_screen: f32, gpu: bool, playing: bool, full: bool) -> f32 {
+    let mut side = on_screen;
+    if !gpu {
+        side = side.min(PREVIEW_LONG_SIDE);
+    } else if playing && !full {
+        side = side.min(SMOOTH_LONG_SIDE);
+    }
+    let scale = (side / long.max(1.0)).clamp(0.05, 1.0);
+    ((scale * 32.0).ceil() / 32.0).min(1.0)
+}
 
 /// A preview gesture's placement so far (`x`, `y`, scale, rotation as bits), if one runs.
 type Moving = Option<[u32; 4]>;
@@ -61,8 +79,9 @@ type Moving = Option<[u32; 4]>;
 /// A compiled edit, shared.
 type Spec = Arc<reelforge_renderspec::RenderSpec>;
 
-/// What the preview was last drawn for: revision, frame, remote media epoch, gesture, playing.
-type PreviewKey = (u64, i64, u64, Moving, bool);
+/// What the preview was last drawn for: revision, frame, remote media epoch, gesture, playing,
+/// render scale (bits).
+type PreviewKey = (u64, i64, u64, Moving, bool, u32);
 
 /// A file the browser finished reading: its name, its bytes, and whether it goes on the timeline
 /// too (a drop) or only into the project's media (picked with Import).
@@ -109,6 +128,17 @@ pub struct EditorApp {
     preview_spec: Option<((u64, Moving), Option<Spec>)>,
     /// Decodes the frames a playing preview reaches next.
     ahead: ahead::Ahead,
+    /// Full quality: a playing preview stays as sharp as a paused one (else it draws smaller).
+    full_quality: bool,
+    /// The preview's zoom (1 fits the frame in the panel) and how far it is panned, in points.
+    zoom: f32,
+    pan: egui::Vec2,
+    /// A title whose words are being edited in the preview, and the words so far.
+    editing: Option<(String, String)>,
+    /// Only the preview shows (the panels and timeline are hidden).
+    preview_only: bool,
+    /// The preview quality was switched and is not written to storage yet.
+    quality_unsaved: bool,
     /// Where the visible layers land in the preview's frame, bottom first.
     outlines: Vec<(String, reelforge_render::Outline)>,
     /// A drag on the preview in progress.
@@ -290,6 +320,12 @@ impl EditorApp {
             preview: None,
             preview_key: None,
             preview_spec: None,
+            full_quality: false,
+            zoom: 1.0,
+            pan: egui::Vec2::ZERO,
+            editing: None,
+            preview_only: false,
+            quality_unsaved: false,
             outlines: Vec::new(),
             gesture: None,
             gpu: None,
@@ -366,6 +402,7 @@ impl EditorApp {
             self.lang = lang;
             self.lang_chosen = true;
         }
+        self.full_quality = cc.storage.and_then(|s| s.get_string(QUALITY_KEY)).as_deref() == Some("full");
         if let Some(rs) = &cc.wgpu_render_state {
             let info = rs.adapter.get_info();
             if info.backend != eframe::wgpu::Backend::Gl {
@@ -993,6 +1030,9 @@ impl EditorApp {
         if pressed(Modifiers::NONE, Key::Escape) {
             self.select(timeline::Select::Set(Vec::new()));
         }
+        if pressed(Modifiers::NONE, Key::F) {
+            self.preview_only = !self.preview_only;
+        }
         if pressed(Modifiers::NONE, Key::Q) {
             self.trim_to_playhead(false);
         }
@@ -1161,6 +1201,17 @@ impl EditorApp {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(egui::RichText::new(fill(s.frame, &[&frame])).monospace().color(theme::color::WEAK));
+                ui.add_space(8.0);
+                let tip = if self.preview_only { s.preview_exit_tip } else { s.preview_only_tip };
+                if theme::tool(ui, icon::SCREEN, "", tip, true).clicked() {
+                    self.preview_only = !self.preview_only;
+                }
+                let label = if self.full_quality { s.quality_full } else { s.quality_smooth };
+                if ui.add(egui::Button::new(egui::RichText::new(label).small())).on_hover_text(s.quality_tip).clicked()
+                {
+                    self.full_quality = !self.full_quality;
+                    self.quality_unsaved = true;
+                }
             });
         });
     }
@@ -2129,11 +2180,16 @@ impl EditorApp {
         let frame = p.canvas.fps.frame_at(self.playhead);
         let moving = self.gesture.as_ref().map(|g| [g.now.x, g.now.y, g.now.scale, g.now.rotation].map(f32::to_bits));
         let revision = self.session.revision();
-        let key = (revision, frame, self.remote.as_ref().map_or(0, remote::Remote::media_epoch), moving, self.playing);
+        let long = p.canvas.width.max(p.canvas.height) as f32;
+        // as many pixels as the frame covers on this screen
+        let area = ui.available_rect_before_wrap();
+        let fit = (area.width() / p.canvas.width.max(1) as f32).min(area.height() / p.canvas.height.max(1) as f32);
+        let on_screen = long * fit * self.zoom * ui.ctx().pixels_per_point();
+        let scale = preview_scale(long, on_screen, self.gpu.is_some(), self.playing, self.full_quality);
+        let epoch = self.remote.as_ref().map_or(0, remote::Remote::media_epoch);
+        let key = (revision, frame, epoch, moving, self.playing, scale.to_bits());
         let changed = self.preview_key != Some(key);
         self.preview_key = Some(key);
-        let long = p.canvas.width.max(p.canvas.height) as f32;
-        let scale = (PREVIEW_LONG_SIDE / long).min(1.0);
         let at = p.canvas.fps.snap(self.playhead);
         // an empty timeline does not compile: the background is drawn alone
         if changed && self.preview_spec.as_ref().is_none_or(|(k, _)| *k != (revision, moving)) {
@@ -2185,7 +2241,7 @@ impl EditorApp {
                         &img.to_srgba8(),
                     ),
                     None => {
-                        let s = PREVIEW_LONG_SIDE / long;
+                        let s = scale;
                         let (w, h) = ((p.canvas.width as f32 * s) as usize, (p.canvas.height as f32 * s) as usize);
                         let bg = p.canvas.background.map(|c| (c * 255.0) as u8);
                         egui::ColorImage::new(
@@ -2203,15 +2259,44 @@ impl EditorApp {
         };
         let Some((id, [w, h])) = shown else { return };
         let area = ui.available_rect_before_wrap();
-        let s = (area.width() / w).min(area.height() / h);
-        let frame_rect = egui::Rect::from_center_size(area.center(), egui::vec2(w * s, h * s));
         let response = ui.allocate_rect(area, egui::Sense::click_and_drag());
-        ui.painter().image(
+        // Ctrl + wheel (or a pinch) zooms around the pointer; the middle button pans
+        if response.hovered() {
+            let (z, pointer) = ui.input(|i| (i.zoom_delta(), i.pointer.hover_pos()));
+            if z != 1.0 {
+                let zoom = (self.zoom * z).clamp(0.25, 8.0);
+                let at = pointer.unwrap_or(area.center()) - area.center();
+                self.pan = at - (at - self.pan) * (zoom / self.zoom);
+                self.zoom = zoom;
+            }
+        }
+        if response.dragged_by(egui::PointerButton::Middle) {
+            self.pan += response.drag_delta();
+        }
+        if self.zoom == 1.0 && self.pan.length() < 1.0 {
+            self.pan = egui::Vec2::ZERO;
+        }
+        let s = (area.width() / w).min(area.height() / h) * self.zoom;
+        let frame_rect = egui::Rect::from_center_size(area.center() + self.pan, egui::vec2(w * s, h * s));
+        ui.painter_at(area).image(
             id,
             frame_rect,
             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
             egui::Color32::WHITE,
         );
+        // back to fitting the panel
+        if self.zoom != 1.0 || self.pan != egui::Vec2::ZERO {
+            let label = format!("{}  {:.0}%", icon::FIT, self.zoom * 100.0);
+            let r = egui::Rect::from_min_size(area.left_top() + egui::vec2(6.0, 6.0), egui::vec2(84.0, 22.0));
+            if ui
+                .put(r, egui::Button::new(egui::RichText::new(label).small()))
+                .on_hover_text(self.s().fit_tip)
+                .clicked()
+            {
+                self.zoom = 1.0;
+                self.pan = egui::Vec2::ZERO;
+            }
+        }
         if self.playing {
             return;
         }
@@ -2232,6 +2317,15 @@ impl EditorApp {
             self.selected = sel;
             self.also.clear();
         }
+        if let Some(clip) = out.edit
+            && let Some((_, c)) = committed.clip(&clip)
+            && let ClipContent::Text { text, .. } = &c.content
+        {
+            self.selected = Some(clip.clone());
+            self.also.clear();
+            self.editing = Some((clip, text.clone()));
+        }
+        self.edit_words(ui, view);
         if let Some((clip, t)) = out.commit {
             // only what the gesture changed, at the playhead, so keyframes change only there
             let was = committed.clip(&clip).map(|(_, c)| placement_at(c, at)).unwrap_or_default();
@@ -2247,6 +2341,51 @@ impl EditorApp {
                 }
             }
             let _ = self.execute("clip.set", params);
+        }
+    }
+}
+
+impl EditorApp {
+    /// The box for a title's words, over the title in the preview: Enter keeps them (Shift+Enter
+    /// starts a new line), Esc or a click elsewhere without changes leaves them as they were.
+    fn edit_words(&mut self, ui: &mut egui::Ui, view: stage::View) {
+        let Some((clip, mut words)) = self.editing.take() else { return };
+        let Some((_, o)) = self.outlines.iter().find(|(id, _)| *id == clip) else { return };
+        let mid = view.frame.min + egui::vec2((o[0][0] + o[2][0]) * 0.5, (o[0][1] + o[2][1]) * 0.5) * view.k;
+        let width = (view.frame.width() * 0.8).max(160.0);
+        let (mut done, mut keep) = (false, false);
+        egui::Area::new(egui::Id::unique("edit-words")).fixed_pos(mid - egui::vec2(width * 0.5, 18.0)).show(
+            ui.ctx(),
+            |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    let edit = ui.add(
+                        egui::TextEdit::multiline(&mut words)
+                            .desired_width(width)
+                            .desired_rows(1)
+                            .return_key(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter)),
+                    );
+                    if !edit.has_focus() && !edit.lost_focus() {
+                        edit.request_focus();
+                    }
+                    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
+                    let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                    if enter || edit.lost_focus() {
+                        (done, keep) = (true, !esc);
+                    }
+                });
+            },
+        );
+        if !done {
+            self.editing = Some((clip, words));
+            return;
+        }
+        let before = self.project().clip(&clip).and_then(|(_, c)| match &c.content {
+            ClipContent::Text { text, .. } => Some(text.clone()),
+            _ => None,
+        });
+        let words = words.trim_end_matches('\n').to_string();
+        if keep && !words.trim().is_empty() && before.as_deref() != Some(words.as_str()) {
+            let _ = self.execute("clip.set", json!({"clip": clip, "text": words}));
         }
     }
 }
@@ -2281,17 +2420,20 @@ fn is_subrip(name: &str) -> bool {
 
 /// Where the picked language is kept between runs.
 const LANG_KEY: &str = "reelforge.lang";
+/// Where the preview quality is kept between runs (`full` or `smooth`).
+const QUALITY_KEY: &str = "reelforge.preview";
 
 impl eframe::App for EditorApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         if self.lang_chosen {
             storage.set_string(LANG_KEY, self.lang.code().to_string());
         }
+        storage.set_string(QUALITY_KEY, if self.full_quality { "full" } else { "smooth" }.to_string());
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        if std::mem::take(&mut self.lang_unsaved)
+        if (std::mem::take(&mut self.lang_unsaved) | std::mem::take(&mut self.quality_unsaved))
             && let Some(storage) = frame.storage_mut()
         {
             self.save(storage);
@@ -2380,15 +2522,17 @@ impl eframe::App for EditorApp {
         let p = self.project();
         let (playing, lang, media) = (self.playing, self.lang, self.media.clone());
         let (selection, can_paste) = (self.selection(), self.clipboard.is_some());
+        let shown = !self.preview_only;
         let out = egui::Panel::bottom("timeline")
             .resizable(true)
             .default_size(280.0)
             .frame(egui::Frame::new().fill(theme::color::PANEL))
-            .show(ui, |ui| {
+            .show_collapsible(ui, &mut shown.clone(), |ui| {
                 egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| self.timeline_bar(ui));
                 self.timeline.show(ui, &p, self.playhead, &selection, playing, can_paste, lang, &media)
             })
-            .inner;
+            .map(|r| r.inner)
+            .unwrap_or_default();
         if self.assets.wants_looks() && self.looks.is_none() {
             self.looks = Some(looks::previews(&ctx));
         }
@@ -2399,13 +2543,13 @@ impl eframe::App for EditorApp {
             .default_size(300.0)
             .size_range(220.0..=520.0)
             .frame(egui::Frame::new().fill(theme::color::PANEL).inner_margin(egui::Margin::same(10)))
-            .show(ui, |ui| self.assets.show(ui, &p, &media, s, &looks, playing))
-            .inner;
+            .show_collapsible(ui, &mut shown.clone(), |ui| self.assets.show(ui, &p, &media, s, &looks, playing))
+            .and_then(|r| r.inner);
         egui::Panel::right("inspector")
             .resizable(true)
             .default_size(290.0)
             .frame(egui::Frame::new().fill(theme::color::PANEL).inner_margin(egui::Margin::same(12)))
-            .show(ui, |ui| self.inspector(ui));
+            .show_collapsible(ui, &mut shown.clone(), |ui| self.inspector(ui));
         egui::Panel::bottom("transport")
             .exact_size(46.0)
             .frame(bar(theme::color::STAGE).inner_margin(egui::Margin::symmetric(16, 6)))

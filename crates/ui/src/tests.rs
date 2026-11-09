@@ -198,3 +198,21 @@ fn the_preview_plays_the_mix_and_follows_edits() {
     app.advance(0.1);
     assert!(!app.playing && !app.sound.running());
 }
+
+#[test]
+fn the_preview_draws_as_sharp_as_the_screen_shows_it() {
+    use crate::preview_scale;
+    // a 1080×1920 canvas shown 960 pixels tall on a Retina screen (480 points × 2)
+    let paused = preview_scale(1920.0, 960.0, true, false, false);
+    assert!((paused - 0.5).abs() < 1.0 / 32.0, "{paused}");
+    // never above the canvas
+    assert_eq!(preview_scale(1920.0, 4000.0, true, false, false), 1.0);
+    // playing in Smooth quality draws at most 720 pixels long; Full quality does not
+    let smooth = preview_scale(1920.0, 1600.0, true, true, false);
+    assert!(smooth * 1920.0 <= 720.0 + 1920.0 / 32.0, "{smooth}");
+    assert!(preview_scale(1920.0, 1600.0, true, true, true) * 1920.0 >= 1600.0);
+    // the CPU keeps to 640
+    assert!(preview_scale(1920.0, 1600.0, false, false, true) * 1920.0 <= 640.0 + 1920.0 / 32.0);
+    // a few points of resizing draw nothing new
+    assert_eq!(preview_scale(1920.0, 950.0, true, false, false), preview_scale(1920.0, 955.0, true, false, false));
+}
