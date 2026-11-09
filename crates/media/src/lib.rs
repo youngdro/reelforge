@@ -13,6 +13,7 @@
 
 pub mod export;
 pub mod library;
+mod shrunk;
 pub mod stretch;
 pub mod webcodecs;
 mod yuv;
@@ -145,6 +146,11 @@ pub fn is_lut(name: &str) -> bool {
 
 fn key(asset: &Asset) -> String {
     if asset.sha256.is_empty() { asset.uri.clone() } else { asset.sha256.clone() }
+}
+
+/// The key of an asset's pictures made `shrink` times smaller.
+fn sized(key: &str, shrink: u32) -> String {
+    if shrink > 1 { format!("{key}@{shrink}") } else { key.to_string() }
 }
 
 impl Footage {
@@ -398,10 +404,37 @@ impl MediaSource for Footage {
                 {
                     return Ok(Some(img));
                 }
-                self.decode_picture(asset, &k, at)
+                self.decode_picture(asset, &k, at, 1)
             }
             _ => Ok(None),
         }
+    }
+
+    fn picture_shrunk(
+        &self,
+        asset_id: &str,
+        asset: &Asset,
+        at: Tick,
+        shrink: u32,
+    ) -> Result<Option<Arc<Image>>, String> {
+        if asset.kind != AssetKind::Video || shrink <= 1 {
+            return self.picture(asset_id, asset, at);
+        }
+        // pictures prepared for an export are full size: they are used as they are
+        if let Some(img) = self.prepared.lock().expect("prepared lock").get(&key(asset)).and_then(|m| m.get(&at)) {
+            return Ok(Some(img.clone()));
+        }
+        let k = sized(&key(asset), shrink);
+        if let Some(img) = self
+            .ahead
+            .lock()
+            .expect("ahead lock")
+            .get(&k)
+            .and_then(|v| v.iter().find(|(t, _)| *t == at).map(|(_, img)| img.clone()))
+        {
+            return Ok(Some(img));
+        }
+        self.decode_picture(asset, &k, at, shrink)
     }
 
     fn yuv(&self, _: &str, asset: &Asset, at: Tick) -> Result<Option<Arc<Yuv>>, String> {
@@ -449,8 +482,6 @@ fn as_yuv(frame: &filmcraft_frame::VideoFrame) -> Option<Yuv> {
 }
 
 impl Footage {
-    /// Decodes and converts `asset`'s picture at `at` (a video), reusing the last one converted
-    /// when the decoder hands back the same frame.
     /// The decoded frame of `asset` (a video) at `at`; past the end the last frame holds.
     fn frame(&self, asset: &Asset, at: Tick) -> Result<Option<Arc<filmcraft_frame::VideoFrame>>, String> {
         let Some(src) = self.source(asset) else { return Ok(None) };
@@ -459,14 +490,22 @@ impl Footage {
         src.video_frame(FrameRequest::full(to_ft(at))).map(Some).map_err(|e| e.to_string())
     }
 
-    fn decode_picture(&self, asset: &Asset, k: &str, at: Tick) -> Result<Option<Arc<Image>>, String> {
+    /// Decodes and converts `asset`'s picture at `at` (a video), `shrink` times smaller each way,
+    /// reusing the last one converted when the decoder hands back the same frame. `k` is
+    /// [`sized`]`(key, shrink)`.
+    fn decode_picture(&self, asset: &Asset, k: &str, at: Tick, shrink: u32) -> Result<Option<Arc<Image>>, String> {
         let Some(frame) = self.frame(asset, at)? else { return Ok(None) };
         if let Some((held, img)) = self.last.lock().expect("frame lock").get(k)
             && Arc::ptr_eq(held, &frame)
         {
             return Ok(Some(img.clone()));
         }
-        let img = Arc::new(Image::from_srgba8(frame.width, frame.height, &frame.to_rgba8()));
+        let img = Arc::new(if shrink > 1 {
+            let (w, h, bytes) = shrunk::srgba8(&frame, shrink as usize);
+            Image::from_srgba8(w, h, &bytes)
+        } else {
+            Image::from_srgba8(frame.width, frame.height, &frame.to_rgba8())
+        });
         self.last.lock().expect("frame lock").insert(k.to_string(), (frame, img.clone()));
         Ok(Some(img))
     }
@@ -476,7 +515,8 @@ impl Footage {
     /// playing preview: a worker thread calls this for the frames the playhead reaches next. Only
     /// videos are made ahead (stills are kept anyway); the oldest picture goes past
     /// [`AHEAD_PICTURES`]. Returns whether a picture is now ready.
-    pub fn prefetch(&self, asset: &Asset, at: Tick) -> bool {
+    /// `shrink` is as for [`MediaSource::picture_shrunk`] (1: full size).
+    pub fn prefetch(&self, asset: &Asset, at: Tick, shrink: u32) -> bool {
         if asset.kind != AssetKind::Video {
             return false;
         }
@@ -484,10 +524,11 @@ impl Footage {
         if self.prepared.lock().expect("prepared lock").get(&k).is_some_and(|m| m.contains_key(&at)) {
             return true;
         }
+        let k = sized(&k, shrink);
         if self.ahead.lock().expect("ahead lock").get(&k).is_some_and(|v| v.iter().any(|(t, _)| *t == at)) {
             return true;
         }
-        let Ok(Some(img)) = self.decode_picture(asset, &k, at) else { return false };
+        let Ok(Some(img)) = self.decode_picture(asset, &k, at, shrink) else { return false };
         let mut ahead = self.ahead.lock().expect("ahead lock");
         let list = ahead.entry(k).or_default();
         if !list.iter().any(|(t, _)| *t == at) {

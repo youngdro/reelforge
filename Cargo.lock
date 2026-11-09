@@ -2876,6 +2876,7 @@ dependencies = [
  "filmcraft-isobmff",
  "filmcraft-media",
  "filmcraft-time",
+ "rayon",
  "reelforge-render",
  "reelforge-renderspec",
  "reelforge-time",
