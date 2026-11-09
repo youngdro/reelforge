@@ -1028,3 +1028,48 @@ fn roll_slip_and_detach_audio() {
     s.execute("edit.undo", &json!({})).unwrap();
     assert!(matches!(s.project().clip(&a).unwrap().1.content, ClipContent::Media { silent: false, .. }));
 }
+
+#[test]
+fn titles_type_themselves_in_and_box_each_line() {
+    let mut s = Session::default();
+    let text = s.project().tracks.iter().find(|t| t.kind == TrackKind::Text).unwrap().id.clone();
+    let id = s
+        .execute("clip.add", &json!({"track": text, "text": "第一行\n二", "duration": {"seconds": 2}, "background": [0, 0, 0, 0.5], "lineBoxes": true}))
+        .unwrap()["clip"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    s.execute(
+        "clip.setAnimation",
+        &json!({"clip": id, "slot": "in", "kind": "typewriter", "duration": {"seconds": 1}}),
+    )
+    .unwrap();
+    s.execute(
+        "clip.setAnimation",
+        &json!({"clip": id, "slot": "out", "kind": "typewriter", "duration": {"seconds": 0.5}}),
+    )
+    .unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let content = &spec["layers"][0]["content"];
+    assert_eq!(content["background"]["lines"], json!(true));
+    // typed in over the first second, erased over the last half
+    let keys: Vec<(i64, f64)> = content["reveal"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| (k["t"].as_i64().unwrap(), k["v"].as_f64().unwrap()))
+        .collect();
+    let at = |secs: f64| Tick::from_seconds(secs).0;
+    assert_eq!(keys, [(0, 0.0), (at(1.0), 1.0), (at(1.5), 1.0), (at(2.0), 0.0)]);
+    // the opacity is left alone
+    assert_eq!(spec["layers"][0]["opacity"], json!(1.0));
+
+    // pictures do not type
+    let video = video_track(&s);
+    let pic = s.execute("clip.add", &json!({"track": video, "color": [1, 0, 0]})).unwrap()["clip"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let err = s.execute("clip.setAnimation", &json!({"clip": pic, "slot": "in", "kind": "typewriter"})).unwrap_err();
+    assert!(err.to_string().contains("titles"), "{err}");
+}

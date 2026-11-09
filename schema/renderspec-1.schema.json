@@ -4,13 +4,8 @@
       "anyOf": [
         {
           "description": "The same value throughout.",
-          "items": {
-            "format": "float",
-            "type": "number"
-          },
-          "maxItems": 2,
-          "minItems": 2,
-          "type": "array"
+          "format": "float",
+          "type": "number"
         },
         {
           "description": "Keyframes, sorted by time; before the first and after the last the value holds.",
@@ -26,8 +21,13 @@
       "anyOf": [
         {
           "description": "The same value throughout.",
-          "format": "float",
-          "type": "number"
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
         },
         {
           "description": "Keyframes, sorted by time; before the first and after the last the value holds.",
@@ -133,7 +133,7 @@
           "description": "How long it plays; positive."
         },
         "gain_db": {
-          "$ref": "#/$defs/Animated2",
+          "$ref": "#/$defs/Animated",
           "default": 0.0,
           "description": "Gain in dB; keyframe times are relative to the clip's start."
         },
@@ -348,7 +348,7 @@
         },
         "params": {
           "additionalProperties": {
-            "$ref": "#/$defs/Animated2"
+            "$ref": "#/$defs/Animated"
           },
           "default": {},
           "description": "Parameters by name.",
@@ -438,13 +438,8 @@
         },
         "v": {
           "description": "Value at that time.",
-          "items": {
-            "format": "float",
-            "type": "number"
-          },
-          "maxItems": 2,
-          "minItems": 2,
-          "type": "array"
+          "format": "float",
+          "type": "number"
         }
       },
       "required": [
@@ -468,8 +463,13 @@
         },
         "v": {
           "description": "Value at that time.",
-          "format": "float",
-          "type": "number"
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
         }
       },
       "required": [
@@ -537,7 +537,7 @@
           ]
         },
         "opacity": {
-          "$ref": "#/$defs/Animated2",
+          "$ref": "#/$defs/Animated",
           "default": 1.0,
           "description": "Opacity, 0 to 1."
         },
@@ -679,6 +679,17 @@
                 }
               ],
               "description": "With `text/2`: a second outline, outside `stroke` (its width counts from `stroke`'s edge)."
+            },
+            "reveal": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Animated"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `text/3`: how much of the text shows, 0 to 1, counted in characters from the start\n(a typewriter). The lines stay where the whole text puts them; a box behind each line\ngrows with what shows of it."
             },
             "shadow": {
               "anyOf": [
@@ -974,6 +985,10 @@
           "$ref": "#/$defs/Color",
           "description": "Colour."
         },
+        "lines": {
+          "description": "With `text/3`: a box behind each line, hugging it, instead of one behind the block.",
+          "type": "boolean"
+        },
         "padding": {
           "default": 0.25,
           "description": "Space between the text and the box edge, in ems.",
@@ -1077,7 +1092,7 @@
       "description": "A layer's placement, about the frame's centre.",
       "properties": {
         "position": {
-          "$ref": "#/$defs/Animated",
+          "$ref": "#/$defs/Animated2",
           "default": [
             0.0,
             0.0
@@ -1085,12 +1100,12 @@
           "description": "Offset of the layer's centre from the frame's centre, as fractions of the frame (x right,\ny down)."
         },
         "rotation": {
-          "$ref": "#/$defs/Animated2",
+          "$ref": "#/$defs/Animated",
           "default": 0.0,
           "description": "Clockwise rotation in degrees."
         },
         "scale": {
-          "$ref": "#/$defs/Animated2",
+          "$ref": "#/$defs/Animated",
           "default": 1.0,
           "description": "Uniform scale; 1 is the fitted size."
         }

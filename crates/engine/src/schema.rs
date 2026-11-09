@@ -92,6 +92,10 @@ fn title_props() -> Vec<(&'static str, Value)> {
             })),
         ),
         (
+            "lineBoxes",
+            json!({"type": "boolean", "description": "The box goes behind each line, hugging it, as subtitles have it."}),
+        ),
+        (
             "template",
             json!({"type": "string", "description": "A title template id from title.templates (classic, variety, sticker, candy, fire, neon, retro, soft, boxed, label); other parameters given override it."}),
         ),
@@ -427,7 +431,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ),
                 (
                     "kind",
-                    json!({"description": "Preset; null removes the animation.", "oneOf": [{"enum": ["fade", "slideUp", "slideDown", "slideLeft", "slideRight", "zoomIn", "zoomOut", "pop", "spin"]}, {"type": "null"}]}),
+                    json!({"description": "Preset; null removes the animation. typewriter (titles only) types the words in, or erases them as the title leaves.", "oneOf": [{"enum": ["fade", "slideUp", "slideDown", "slideLeft", "slideRight", "zoomIn", "zoomOut", "pop", "spin", "typewriter"]}, {"type": "null"}]}),
                 ),
                 ("duration", time("How long it plays; 0.5 s by default.")),
             ],

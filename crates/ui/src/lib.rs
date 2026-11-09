@@ -289,6 +289,8 @@ struct Title {
     bold: bool,
     outline: bool,
     boxed: bool,
+    shadow: bool,
+    line_boxes: bool,
 }
 
 impl EditorApp {
@@ -1664,6 +1666,8 @@ impl EditorApp {
                     bold: style.weight >= 600,
                     outline: style.outline.is_some(),
                     boxed: style.background.is_some(),
+                    shadow: style.shadow.is_some(),
+                    line_boxes: style.background.is_some() && style.line_boxes,
                 }),
                 _ => None,
             },
@@ -1775,6 +1779,14 @@ impl EditorApp {
                         commit |= ui.toggle_value(&mut t.bold, s.bold).changed();
                         commit |= ui.toggle_value(&mut t.outline, s.outline).changed();
                         commit |= ui.toggle_value(&mut t.boxed, s.boxed).changed();
+                    });
+                    ui.horizontal(|ui| {
+                        commit |= ui.toggle_value(&mut t.shadow, s.shadowed).changed();
+                        if ui.toggle_value(&mut t.line_boxes, s.line_boxes).changed() {
+                            // boxes per line need a box
+                            t.boxed |= t.line_boxes;
+                            commit = true;
+                        }
                     });
                 });
                 ui.add_space(6.0);
@@ -2144,6 +2156,7 @@ impl EditorApp {
                     });
                 });
             }
+            let titled = edit.title.is_some();
             if let Some(slots) = &mut edit.anim {
                 ui.add_space(6.0);
                 theme::section(ui, s.sec_motion, |ui| {
@@ -2164,7 +2177,9 @@ impl EditorApp {
                                 |ui| {
                                     ui.selectable_value(&mut picked, None, s.anim_none);
                                     for (k, name) in AnimKind::ALL.into_iter().zip(names.iter()) {
-                                        ui.selectable_value(&mut picked, Some(k), *name);
+                                        if !k.titles_only() || titled {
+                                            ui.selectable_value(&mut picked, Some(k), *name);
+                                        }
                                     }
                                 },
                             );
@@ -2295,6 +2310,16 @@ impl EditorApp {
                 }
                 if was.is_some_and(|w| w.boxed != t.boxed) {
                     params["background"] = if t.boxed { json!([0.0, 0.0, 0.0, 0.55]) } else { Value::Null };
+                }
+                if was.is_some_and(|w| w.shadow != t.shadow) {
+                    params["shadow"] = if t.shadow {
+                        json!({"color": [0.0, 0.0, 0.0, 0.6], "offset": [0.03, 0.06], "blur": 0.08})
+                    } else {
+                        Value::Null
+                    };
+                }
+                if was.is_some_and(|w| w.line_boxes != t.line_boxes) {
+                    params["lineBoxes"] = json!(t.line_boxes);
                 }
             }
             if self.execute("clip.set", params).is_err() {

@@ -221,7 +221,7 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.add",
         label: "Add Clip",
-        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "template"?: id}"#,
+        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "template"?: id}"#,
         doc: "Places media, text or a colour on a track; starts at the track's end unless `start` is given. Titles default to bold white with a black outline, wrapping at 90 % of the canvas.",
         edits: true,
         enabled: always,
@@ -410,7 +410,7 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.set",
         label: "Clip Properties",
-        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "at"?: time, "fadeIn"?: time, "fadeOut"?: time, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "template"?: id}"#,
+        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "at"?: time, "fadeIn"?: time, "fadeOut"?: time, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "template"?: id}"#,
         doc: "Sets a clip's placement, opacity, volume, sound fades or title. A property with keyframes is set at `at` (a timeline time), adding or changing the keyframe there.",
         edits: true,
         enabled: always,
@@ -500,8 +500,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.setAnimation",
         label: "Animation",
-        params: r#"{"clip": id, "slot": "in"|"out", "kind": "fade"|"slideUp"|"slideDown"|"slideLeft"|"slideRight"|"zoomIn"|"zoomOut"|"pop"|"spin"|null, "duration"?: time}"#,
-        doc: "Puts an in or out animation on a picture clip (null removes it); 0.5 s unless `duration` is given.",
+        params: r#"{"clip": id, "slot": "in"|"out", "kind": "fade"|"slideUp"|"slideDown"|"slideLeft"|"slideRight"|"zoomIn"|"zoomOut"|"pop"|"spin"|"typewriter"|null, "duration"?: time}"#,
+        doc: "Puts an in or out animation on a picture or title clip (null removes it); 0.5 s unless `duration` is given. `typewriter` is for titles: their words type in, or erase themselves as the title leaves.",
         edits: true,
         enabled: always,
         run: clip_set_animation,
@@ -1620,8 +1620,19 @@ fn clip_set_speed(s: &mut Session, v: &Value) -> CmdResult {
     })
 }
 
-const STYLE_KEYS: [&str; 10] =
-    ["weight", "align", "wrap", "outline", "background", "radius", "gradient", "outer", "shadow", "template"];
+const STYLE_KEYS: [&str; 11] = [
+    "weight",
+    "align",
+    "wrap",
+    "outline",
+    "background",
+    "radius",
+    "gradient",
+    "outer",
+    "shadow",
+    "lineBoxes",
+    "template",
+];
 
 /// `base` with the title style parameters in `p` applied (`null` removes an outline or box).
 fn title_style(p: &P, base: TitleStyle) -> Result<TitleStyle, EngineError> {
@@ -1698,6 +1709,9 @@ fn title_style(p: &P, base: TitleStyle) -> Result<TitleStyle, EngineError> {
             });
         }
         None => {}
+    }
+    if let Some(b) = p.opt_bool("lineBoxes")? {
+        st.line_boxes = b;
     }
     Ok(st)
 }
@@ -1928,6 +1942,11 @@ fn clip_set_animation(s: &mut Session, v: &Value) -> CmdResult {
         let (ti, _) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
         if proj.tracks[ti].kind == TrackKind::Audio {
             return Err(EngineError::Params("animations apply to picture and title clips".into()));
+        }
+        if kind.is_some_and(AnimKind::titles_only)
+            && !matches!(proj.clip(&id).map(|(_, c)| &c.content), Some(ClipContent::Text { .. }))
+        {
+            return Err(EngineError::Params("typewriter applies to titles".into()));
         }
         let clip = proj.clip_mut(&id).expect("found above");
         let slot_ref = if slot == "in" { &mut clip.anim.enter } else { &mut clip.anim.exit };

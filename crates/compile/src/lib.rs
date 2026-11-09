@@ -194,6 +194,7 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                             color: Color(c),
                             padding: 0.25,
                             radius: style.radius,
+                            lines: style.line_boxes,
                         }),
                         gradient: style.gradient.map(Color),
                         outer: style
@@ -206,6 +207,7 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                             offset: sh.offset,
                             blur: sh.blur,
                         }),
+                        reveal: motion::reveal(clip, &shape),
                         ..TextContent::new(text.clone(), *size, Color(*color))
                     }),
                 };

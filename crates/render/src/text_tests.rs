@@ -123,7 +123,8 @@ fn outline_and_box_draw_behind_the_fill() {
     assert!(o[0] + 4 <= p[0] && o[2] >= p[2] + 4, "the outline reaches beyond the glyphs");
 
     t.stroke = None;
-    t.background = Some(TextBackground { color: Color([0.0, 1.0, 0.0, 1.0]), padding: 0.25, radius: 0.0 });
+    t.background =
+        Some(TextBackground { color: Color([0.0, 1.0, 0.0, 1.0]), padding: 0.25, radius: 0.0, lines: false });
     let boxed = draw(&spec_with(t), 1.0).to_srgba8();
     let at = |x: u32, y: u32| {
         let i = ((y * W + x) * 4) as usize;
@@ -136,7 +137,8 @@ fn outline_and_box_draw_behind_the_fill() {
     // with a wrap width far wider than the words, the box still hugs them
     let mut t = white("字幕", 72.0);
     t.width = Some(460.0);
-    t.background = Some(TextBackground { color: Color([0.0, 1.0, 0.0, 1.0]), padding: 0.25, radius: 0.0 });
+    t.background =
+        Some(TextBackground { color: Color([0.0, 1.0, 0.0, 1.0]), padding: 0.25, radius: 0.0, lines: false });
     let wide = draw(&spec_with(t), 1.0).to_srgba8();
     let green = |x: u32| wide[((H / 2 * W + x) * 4) as usize + 1] == 255 && wide[((H / 2 * W + x) * 4) as usize] == 0;
     assert!(!green(30) && !green(W - 30), "no box far from the words");
@@ -255,9 +257,62 @@ fn second_outlines_shadows_gradients_and_round_boxes() {
 
     // a round box leaves its corners to the background
     let mut t = white("花字", 80.0);
-    t.background = Some(TextBackground { color: Color([0.0, 1.0, 0.0, 1.0]), padding: 0.3, radius: 0.5 });
+    t.background = Some(TextBackground { color: Color([0.0, 1.0, 0.0, 1.0]), padding: 0.3, radius: 0.5, lines: false });
     let rounded = draw(&spec_with(t.clone()), 1.0);
     t.background.as_mut().expect("set").radius = 0.0;
     let square = draw(&spec_with(t), 1.0);
     assert!(count(&rounded, [0, 255, 0]) + 200 < count(&square, [0, 255, 0]), "the corners are cut");
+}
+
+#[test]
+fn a_typewriter_shows_the_first_characters_where_the_whole_text_puts_them() {
+    let mut t = white("ABCDEFGH", 60.0);
+    let whole = draw(&spec_with(t.clone()), 1.0);
+    t.reveal = Some(Animated::Constant(0.5));
+    let half = draw(&spec_with(t.clone()), 1.0);
+    let (w, h) = (ink_box(&whole), ink_box(&half));
+    // the first four letters, not moved: the same left edge, ending about half way
+    assert_eq!(w[0], h[0]);
+    assert!(h[2] < (w[0] + w[2]) / 2 + 10 && h[2] > w[0] + (w[2] - w[0]) / 3, "{w:?} {h:?}");
+    assert!(ink(&half) < ink(&whole) * 0.6);
+    // it moves with time: keys from nothing to all of it
+    t.reveal = Some(Animated::Keys(vec![
+        Key { t: Tick::ZERO, v: 0.0, ease: Ease::Linear },
+        Key { t: Tick::from_seconds(0.5), v: 1.0, ease: Ease::Linear },
+    ]));
+    let s = spec_with(t);
+    assert!(s.required_features().contains("text/3"));
+    let at = |t: Tick| ink(&render_frame(&s, t, 1.0, &NoMedia, Quality::Final).unwrap().0);
+    assert_eq!(at(Tick::ZERO), 0.0, "nothing typed yet");
+    assert!(at(Tick::from_seconds(0.25)) > 0.0 && at(Tick::from_seconds(0.25)) < at(Tick::from_seconds(0.75)));
+    assert_eq!(at(Tick::from_seconds(0.75)), ink(&whole));
+}
+
+#[test]
+fn line_boxes_hug_each_line() {
+    let green_at = |img: &[u8], x: u32, y: u32| {
+        let i = ((y * W + x) * 4) as usize;
+        img[i] == 0 && img[i + 1] == 255
+    };
+    let mut t = white("WWWWWWWW\nW", 40.0);
+    t.background =
+        Some(TextBackground { color: Color([0.0, 1.0, 0.0, 1.0]), padding: 0.25, radius: 0.0, lines: false });
+    let block = draw(&spec_with(t.clone()), 1.0);
+    let b = ink_box(&block);
+    t.background.as_mut().unwrap().lines = true;
+    let s = spec_with(t.clone());
+    assert!(s.required_features().contains("text/3"));
+    let lines = draw(&s, 1.0);
+    // beside the short second line: the block's box covers it, the line's does not
+    let (x, y) = (b[0] + 8, b[3] - 10);
+    assert!(green_at(&block.to_srgba8(), x, y));
+    assert!(!green_at(&lines.to_srgba8(), x, y));
+    // the long first line is boxed either way
+    assert!(green_at(&lines.to_srgba8(), b[0] - 4, b[1] + 14));
+
+    // typing in, a line's box grows with what shows of it
+    t.reveal = Some(Animated::Constant(0.3));
+    let typing = draw(&spec_with(t), 1.0).to_srgba8();
+    assert!(green_at(&typing, b[0] - 4, b[1] + 14), "the first line has begun");
+    assert!(!green_at(&typing, b[2] - 4, b[1] + 14), "but not reached its end");
 }

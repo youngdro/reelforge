@@ -1,6 +1,6 @@
 //! What is on screen at an instant. Pure: no pixels, no IO.
 
-use reelforge_renderspec::{Blend, Fit, LayerContent, RenderSpec, ShapeMask, TextContent, effects};
+use reelforge_renderspec::{Animated, Blend, Fit, LayerContent, RenderSpec, ShapeMask, TextContent, effects};
 use reelforge_time::Tick;
 
 use crate::image::premultiply_srgb;
@@ -147,7 +147,14 @@ pub fn plan_frame(spec: &RenderSpec, t: Tick, scale: f32) -> FramePlan {
                 (PlannedSource::Media { asset: asset.clone(), at: time.source_at(local) }, *fit)
             }
             LayerContent::Solid { color } => (PlannedSource::Solid(premultiply_srgb(color.0)), Fit::Stretch),
-            LayerContent::Text(text) => (PlannedSource::Text(text.clone()), Fit::Contain),
+            LayerContent::Text(text) => {
+                let mut text = text.clone();
+                // how much shows is a value of this instant: the sprite is drawn for it
+                if let Some(r) = &text.reveal {
+                    text.reveal = Some(Animated::Constant(r.sample(local).clamp(0.0, 1.0)));
+                }
+                (PlannedSource::Text(text), Fit::Contain)
+            }
         };
         let pos = layer.transform.position.sample(local);
         layers.push(PlannedLayer {

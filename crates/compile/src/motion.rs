@@ -20,13 +20,44 @@ use reelforge_time::Tick;
 fn moves(kind: reelforge_model::AnimKind, p: Prop) -> bool {
     use reelforge_model::AnimKind::*;
     match p {
-        Prop::Opacity => true,
+        Prop::Opacity => kind != Typewriter,
         Prop::X => matches!(kind, SlideLeft | SlideRight),
         Prop::Y => matches!(kind, SlideUp | SlideDown),
         Prop::Scale => matches!(kind, ZoomIn | ZoomOut | Pop | Spin),
         Prop::Rotation => matches!(kind, Spin),
         Prop::VolumeDb => false,
     }
+}
+
+/// How much of a title shows over its layer (`reveal`), when it types in or erases itself out: 0
+/// to 1, in a straight line over each animation. `None` when neither does.
+pub fn reveal(clip: &Clip, shape: &Shape) -> Option<Animated<f32>> {
+    use reelforge_model::AnimKind::Typewriter;
+    let enter = clip.anim.enter.filter(|a| a.kind == Typewriter).map(|a| a.duration.min(shape.len));
+    let exit = clip.anim.exit.filter(|a| a.kind == Typewriter).map(|a| a.duration.min(shape.len));
+    if enter.is_none() && exit.is_none() {
+        return None;
+    }
+    let key = |t: Tick, v: f32| Key { t, v, ease: Ease::Linear };
+    let mut keys = Vec::new();
+    // where typing ends and erasing starts, when they would cross
+    let (mut typed, mut erase) = (enter.unwrap_or(Tick::ZERO), shape.len - exit.unwrap_or(Tick::ZERO));
+    if typed > erase {
+        let mid = Tick((typed.0 + erase.0) / 2);
+        (typed, erase) = (mid, mid);
+    }
+    if enter.is_some() {
+        keys.push(key(Tick::ZERO, 0.0));
+    }
+    keys.push(key(typed, 1.0));
+    if erase > typed {
+        keys.push(key(erase, 1.0));
+    }
+    if exit.is_some() {
+        keys.push(key(shape.len, 0.0));
+    }
+    keys.dedup_by_key(|k| k.t);
+    Some(Animated::Keys(keys))
 }
 
 /// Whether a transition changes `p` on the incoming or outgoing clip.
