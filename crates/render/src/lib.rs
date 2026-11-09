@@ -45,6 +45,7 @@ pub use plan::{FramePlan, PlannedLayer, PlannedSource, plan_frame};
 pub const SUPPORTED_FEATURES: &[&str] = &[
     "audio.stretch/1",
     "blend/2",
+    "blur.gaussian@1",
     "color.brightness@1",
     "color.grade@1",
     "color.lut@1",
@@ -340,7 +341,7 @@ mod tests {
     #[test]
     fn final_renders_refuse_what_drafts_mark() {
         let mut s = spec();
-        s.layers[0].fx.push(Effect { id: "blur.gaussian@1".into(), params: Default::default(), asset: None });
+        s.layers[0].fx.push(Effect { id: "blur.motion@1".into(), params: Default::default(), asset: None });
         assert!(matches!(
             render_frame(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Final),
             Err(RenderError::Unsupported(_))

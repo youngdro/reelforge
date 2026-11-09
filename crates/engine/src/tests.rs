@@ -913,3 +913,34 @@ fn clips_copy_paste_duplicate_and_shift_together() {
     assert!(s.execute("clip.shift", &json!({"clips": [a], "by": {"seconds": -1}})).is_err());
     assert!(s.execute("clip.paste", &json!({"clipboard": {"clips": []}, "at": 0})).is_err());
 }
+
+#[test]
+fn a_canvas_blur_puts_a_blurred_copy_behind_the_clip() {
+    let mut s = Session::default();
+    let media = s
+        .execute(
+            "media.import",
+            &json!({"path": "/nowhere/a.mp4", "duration": {"seconds": 4}, "sha256": "cd".repeat(32)}),
+        )
+        .unwrap()["media"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let track = video_track(&s);
+    let a =
+        s.execute("clip.add", &json!({"track": track, "media": media})).unwrap()["clip"].as_str().unwrap().to_string();
+    let b =
+        s.execute("clip.add", &json!({"track": track, "media": media})).unwrap()["clip"].as_str().unwrap().to_string();
+    s.execute("clip.setBackdrop", &json!({"clip": a, "blur": 0.5, "all": true})).unwrap();
+    assert_eq!(s.project().clip(&b).unwrap().1.look.backdrop, Some(0.5));
+    let spec = s.execute("render.compile", &json!({"encode": false})).unwrap();
+    let layers = spec["layers"].as_array().unwrap();
+    let at = |id: &str| layers.iter().position(|l| l["id"] == id).unwrap();
+    assert!(at(&format!("{a}~backdrop")) < at(&a), "behind the clip");
+    let back = &layers[at(&format!("{a}~backdrop"))];
+    assert_eq!(back["content"]["fit"], "cover");
+    assert!(back["fx"].to_string().contains("blur.gaussian@1"));
+    s.execute("clip.setBackdrop", &json!({"clip": a, "blur": null})).unwrap();
+    assert_eq!(s.project().clip(&a).unwrap().1.look.backdrop, None);
+    assert!(s.execute("clip.setBackdrop", &json!({"clip": a, "blur": 2})).is_err());
+}

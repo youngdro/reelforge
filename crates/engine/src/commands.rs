@@ -363,6 +363,15 @@ static REGISTRY: &[CommandSpec] = &[
         run: clip_set_crop,
     },
     CommandSpec {
+        id: "clip.setBackdrop",
+        label: "Canvas Blur",
+        params: r#"{"clip": id, "blur": number | null, "all"?: bool}"#,
+        doc: "Fills the frame behind a video or picture clip with a blurred copy of it (剪映's canvas blur): `blur` from 0 (a little) to 1 (very); null removes it. With `all`, every video and picture clip on the clip's track gets the same.",
+        edits: true,
+        enabled: always,
+        run: clip_set_backdrop,
+    },
+    CommandSpec {
         id: "clip.setBlend",
         label: "Blend Mode",
         params: r#"{"clip": id, "mode": "normal"|"add"|"multiply"|"screen"|"overlay"|"darken"|"lighten"|"softLight"|"hardLight"|"difference"|"colorDodge"|"colorBurn"}"#,
@@ -1885,6 +1894,36 @@ fn clip_set_mask(s: &mut Session, v: &Value) -> CmdResult {
 }
 
 /// The clip `id` on a picture track, for what `what` needs.
+fn clip_set_backdrop(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let blur = match v.get("blur") {
+        None => return Err(EngineError::Params("missing `blur` (a number from 0 to 1, or null)".into())),
+        Some(Value::Null) => None,
+        Some(_) => match p.opt_f64("blur")? {
+            Some(b) if (0.0..=1.0).contains(&b) => Some(b as f32),
+            _ => return Err(EngineError::Params("`blur` must be from 0 to 1, or null".into())),
+        },
+    };
+    let all = p.opt_bool("all")?.unwrap_or(false);
+    s.edit("Canvas Blur", |proj| {
+        let (ti, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        let is_picture = |c: &Clip| matches!(c.content, ClipContent::Media { .. });
+        if proj.tracks[ti].kind != TrackKind::Video || !is_picture(clip) {
+            return Err(EngineError::Params("only video and picture clips have a canvas blur".into()));
+        }
+        let ids: Vec<String> = if all {
+            proj.tracks[ti].clips.iter().filter(|c| is_picture(c)).map(|c| c.id.clone()).collect()
+        } else {
+            vec![id.clone()]
+        };
+        for c in &ids {
+            proj.clip_mut(c).expect("on the track").look.backdrop = blur;
+        }
+        Ok(json!({ "clips": ids, "blur": blur }))
+    })
+}
+
 fn picture_clip<'a>(proj: &'a mut Project, id: &str, what: &str) -> Result<&'a mut Clip, EngineError> {
     let (ti, _) = proj.clip(id).ok_or_else(|| not_found("clip", id))?;
     if proj.tracks[ti].kind == TrackKind::Audio {
