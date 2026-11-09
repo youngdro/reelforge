@@ -85,6 +85,20 @@ impl PlannedLayer {
         (x + self.crop[0] * w, y + self.crop[1] * h)
     }
 
+    /// How many times smaller (1, 2, 4 or 8 each way) a `w` by `h` picture can be and still have
+    /// a pixel for every target pixel it covers: a preview drawn small, a layer scaled down.
+    pub fn shrink(&self, w: f32, h: f32, target: [f32; 2]) -> u32 {
+        let (cw, ch) = self.visible(w, h);
+        let m = self.matrix(cw, ch, target);
+        // target pixels per picture pixel, along each of the picture's axes
+        let per = m[0].hypot(m[3]).max(m[1].hypot(m[4]));
+        let mut k = 1;
+        while k < 8 && per * (2 * k) as f32 <= 1.0 {
+            k *= 2;
+        }
+        k
+    }
+
     /// The map from content pixels (a `w` by `h` picture) to target pixels.
     pub fn matrix(&self, w: f32, h: f32, target: [f32; 2]) -> Affine {
         let (sx, sy) = match self.fit {

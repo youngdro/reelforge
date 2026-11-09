@@ -18,6 +18,19 @@ pub trait MediaSource {
     /// still loading, or a kind this source does not decode).
     fn picture(&self, asset_id: &str, asset: &Asset, at: Tick) -> Result<Option<Arc<Image>>, String>;
 
+    /// [`picture`](Self::picture), but it may be `shrink` (2, 4 or 8) times smaller each way: what a
+    /// draft needs where the picture is drawn that much smaller. The default ignores `shrink`.
+    fn picture_shrunk(
+        &self,
+        asset_id: &str,
+        asset: &Asset,
+        at: Tick,
+        shrink: u32,
+    ) -> Result<Option<Arc<Image>>, String> {
+        let _ = shrink;
+        self.picture(asset_id, asset, at)
+    }
+
     /// The picture of a video `asset` at source time `at` as the decoder made it, for a compositor
     /// that converts Y'CbCr itself (the GPU's). `Ok(None)` means "use [`picture`](Self::picture)":
     /// the default, and what a source answers for stills or pictures in other forms.

@@ -2339,7 +2339,7 @@ impl EditorApp {
         if changed && self.playing {
             // nothing can be picked while playing; read ahead instead
             if let Some(spec) = &spec {
-                self.ahead.follow(spec, at);
+                self.ahead.follow(spec, at, scale);
             }
         } else if changed {
             // layers that are not clips (a transition's colour dip) cannot be picked

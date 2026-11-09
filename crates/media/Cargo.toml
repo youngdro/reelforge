@@ -19,6 +19,7 @@ filmcraft-codecs = { workspace = true }
 filmcraft-time = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-color = { workspace = true }
+rayon = { workspace = true }
 filmcraft-h264enc = { workspace = true }
 filmcraft-aac = { workspace = true }
 filmcraft-isobmff = { workspace = true }

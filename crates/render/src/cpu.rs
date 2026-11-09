@@ -62,7 +62,10 @@ pub(crate) fn resolve(
             {
                 return Ok(Resolved::Yuv(y));
             }
-            match media.picture(asset, def, *at).map_err(RenderError::Media)? {
+            let shrink = if quality == Quality::Draft { draft_shrink(def, plan, layer) } else { 1 };
+            let pic =
+                if shrink > 1 { media.picture_shrunk(asset, def, *at, shrink) } else { media.picture(asset, def, *at) };
+            match pic.map_err(RenderError::Media)? {
                 Some(pic) => match blur_radius(layer) {
                     Some(r) => Resolved::Picture(std::sync::Arc::new(crate::image::blurred(&pic, r))),
                     None => Resolved::Picture(pic),
@@ -101,6 +104,15 @@ pub(crate) fn resolve(
             }
         }
     })
+}
+
+/// How many times smaller a draft may fetch the picture of `asset` for `layer`
+/// ([`MediaSource::picture_shrunk`]): from the size the asset was probed at, 1 when unknown.
+pub fn draft_shrink(asset: &reelforge_renderspec::Asset, plan: &FramePlan, layer: &PlannedLayer) -> u32 {
+    match asset.probe.as_ref().and_then(|p| Some((p.width?, p.height?))) {
+        Some((w, h)) => layer.shrink(w as f32, h as f32, [plan.width as f32, plan.height as f32]),
+        None => 1,
+    }
 }
 
 /// The radius of `layer`'s `blur.gaussian@1`, as a fraction of its picture's shorter side.

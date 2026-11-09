@@ -236,6 +236,50 @@ mod tests {
         [b[i], b[i + 1], b[i + 2], b[i + 3]]
     }
 
+    /// Answers every picture with a 1×1 picture and remembers how much smaller it was asked for.
+    struct Asked(std::sync::Mutex<Vec<u32>>);
+
+    impl MediaSource for Asked {
+        fn picture(&self, id: &str, a: &Asset, at: Tick) -> Result<Option<Arc<Image>>, String> {
+            self.picture_shrunk(id, a, at, 1)
+        }
+        fn picture_shrunk(&self, _: &str, _: &Asset, _: Tick, shrink: u32) -> Result<Option<Arc<Image>>, String> {
+            self.0.lock().unwrap().push(shrink);
+            Ok(Some(Arc::new(Image::filled(1, 1, [1.0; 4]))))
+        }
+    }
+
+    #[test]
+    fn drafts_ask_for_pictures_as_small_as_they_are_drawn() {
+        let mut s = spec();
+        s.assets.insert(
+            "v".into(),
+            Asset {
+                kind: AssetKind::Video,
+                sha256: "3".repeat(64),
+                uri: "file:///v.mp4".into(),
+                of: None,
+                probe: Some(Probe { width: Some(400), height: Some(200), duration: None }),
+            },
+        );
+        s.layers[0].content = LayerContent::Media { asset: "v".into(), time: TimeMap::default(), fit: Fit::Contain };
+        s.layers[0].transform.scale = Animated::Constant(1.0);
+        let asked = Asked(Default::default());
+        let ask = |scale: f32, quality: Quality| {
+            asked.0.lock().unwrap().clear();
+            render_frame(&s, Tick::ZERO, scale, &asked, quality).unwrap();
+            asked.0.lock().unwrap()[0]
+        };
+        // 400 wide, drawn 40 wide: ten times smaller, so 8 (the most)
+        assert_eq!(ask(1.0, Quality::Draft), 8);
+        // drawn 400 wide: full size
+        assert_eq!(ask(10.0, Quality::Draft), 1);
+        // drawn 160 wide: 2 (4 would leave too few pixels)
+        assert_eq!(ask(4.0, Quality::Draft), 2);
+        // a final frame always has the whole picture
+        assert_eq!(ask(1.0, Quality::Final), 1);
+    }
+
     #[test]
     fn outlines_say_where_layers_land() {
         let mut s = spec();
