@@ -22,6 +22,9 @@ pub struct Timeline {
     /// are the project's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tracks: Vec<Track>,
+    /// Its marks while another timeline is being edited.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<crate::Marker>,
 }
 
 /// A timeline as listed: id, name, length and whether it is the one being edited.
@@ -53,6 +56,7 @@ pub fn empty_tracks(p: &mut Project) -> Vec<Track> {
             hidden: false,
             muted: false,
             magnetic: false,
+            locked: false,
             clips: Vec::new(),
         })
         .collect()
@@ -88,7 +92,12 @@ impl Project {
     pub fn name_first_timeline(&mut self, name: &str) {
         if self.timelines.is_empty() {
             let id = self.mint("s");
-            self.timelines.push(Timeline { id: id.clone(), name: name.into(), tracks: Vec::new() });
+            self.timelines.push(Timeline {
+                id: id.clone(),
+                name: name.into(),
+                tracks: Vec::new(),
+                markers: Vec::new(),
+            });
             self.timeline = id;
         }
     }
@@ -102,8 +111,11 @@ impl Project {
         let Some(to) = self.timelines.iter().position(|t| t.id == id) else { return false };
         let incoming = std::mem::take(&mut self.timelines[to].tracks);
         let outgoing = std::mem::replace(&mut self.tracks, incoming);
+        let marks_in = std::mem::take(&mut self.timelines[to].markers);
+        let marks_out = std::mem::replace(&mut self.markers, marks_in);
         if let Some(from) = self.timelines.iter_mut().find(|t| t.id == self.timeline) {
             from.tracks = outgoing;
+            from.markers = marks_out;
         }
         self.timeline = id.into();
         true
@@ -134,7 +146,7 @@ mod tests {
         let first = p.timeline.clone();
         let copy = p.copy_tracks();
         let id = p.mint("s");
-        p.timelines.push(super::Timeline { id: id.clone(), name: "Timeline 2".into(), tracks: copy });
+        p.timelines.push(super::Timeline { id: id.clone(), name: "Timeline 2".into(), tracks: copy, markers: vec![] });
         p.check().unwrap();
         let before = p.tracks.clone();
         assert!(p.switch_timeline(&id));

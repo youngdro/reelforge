@@ -114,6 +114,9 @@ impl Session {
         next.sort_clips();
         next.pack_magnetic();
         next.check().map_err(|e| EngineError::Refused(e.to_string()))?;
+        if let Some(t) = next.changed_locked_track(&self.project) {
+            return Err(EngineError::Refused(format!("track {:?} is locked", t.name)));
+        }
         let old = std::mem::replace(&mut self.project, Arc::new(next));
         self.undo.push((label.to_string(), old));
         if self.undo.len() > UNDO_DEPTH {

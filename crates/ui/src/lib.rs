@@ -120,6 +120,10 @@ pub struct EditorApp {
     clipboard: Option<Value>,
     /// How fast, and which way, the preview plays: 1 is normal (with sound); J and L change it.
     rate: f64,
+    /// The range set with I and O, and whether playing loops (over it, or the whole timeline).
+    range_in: Option<Tick>,
+    range_out: Option<Tick>,
+    looping: bool,
     status: String,
     preview: Option<egui::TextureHandle>,
     preview_key: Option<PreviewKey>,
@@ -318,6 +322,9 @@ impl EditorApp {
             also: Vec::new(),
             clipboard: None,
             rate: 1.0,
+            range_in: None,
+            range_out: None,
+            looping: false,
             status: String::new(),
             preview: None,
             preview_key: None,
@@ -518,6 +525,13 @@ impl EditorApp {
             None => self.playhead + Tick::from_seconds(dt * self.rate),
         };
         let end = p.duration();
+        if self.looping && self.rate > 0.0 {
+            let (a, b) = self.range().unwrap_or((Tick::ZERO, end));
+            if self.playhead >= b {
+                self.seek(a);
+                return;
+            }
+        }
         if self.playhead >= end || self.playhead <= Tick::ZERO && self.rate < 0.0 {
             self.playhead = self.playhead.max(Tick::ZERO).min(end);
             self.set_playing(false);
@@ -965,6 +979,16 @@ impl EditorApp {
         }
     }
 
+    /// The range set with I and O, when it has both ends the right way round.
+    fn range(&self) -> Option<(Tick, Tick)> {
+        match (self.range_in, self.range_out) {
+            (Some(a), Some(b)) if a < b => Some((a, b)),
+            (Some(a), None) if a < self.project().duration() => Some((a, self.project().duration())),
+            (None, Some(b)) if b > Tick::ZERO => Some((Tick::ZERO, b)),
+            _ => None,
+        }
+    }
+
     /// J and L: plays backwards or forwards, faster each time the same key is pressed again.
     fn shuttle(&mut self, forwards: bool) {
         let same = self.playing && (self.rate > 0.0) == forwards;
@@ -976,10 +1000,29 @@ impl EditorApp {
         self.set_playing(true);
     }
 
-    /// The previous (or next) place a clip starts or ends.
+    /// Moves a track up or down among its kind, or deletes it.
+    fn track_action(&mut self, track: &str, what: timeline::TrackAction) {
+        let p = self.project();
+        let Some(kind) = p.track(track).map(|t| t.kind) else { return };
+        let at = p.tracks.iter().filter(|t| t.kind == kind).position(|t| t.id == track).unwrap_or(0);
+        let _ = match what {
+            timeline::TrackAction::Up => self.execute("track.move", json!({"track": track, "index": at + 1})),
+            timeline::TrackAction::Down => {
+                self.execute("track.move", json!({"track": track, "index": at.saturating_sub(1)}))
+            }
+            timeline::TrackAction::Delete => self.execute("track.remove", json!({"track": track})),
+        };
+    }
+
+    /// The previous (or next) place a clip starts or ends, or a marker is.
     fn cut_point(&self, next: bool) -> Option<Tick> {
         let p = self.project();
-        let points = p.tracks.iter().flat_map(|t| t.clips.iter().flat_map(|c| [c.start, c.end()])).chain([Tick::ZERO]);
+        let points = p
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter().flat_map(|c| [c.start, c.end()]))
+            .chain(p.markers.iter().map(|m| m.at))
+            .chain([Tick::ZERO]);
         if next { points.filter(|t| *t > self.playhead).min() } else { points.filter(|t| *t < self.playhead).max() }
     }
 
@@ -1031,6 +1074,18 @@ impl EditorApp {
         }
         if pressed(Modifiers::NONE, Key::Escape) {
             self.select(timeline::Select::Set(Vec::new()));
+        }
+        if pressed(Modifiers::NONE, Key::M) {
+            let _ = self.execute("marker.add", json!({"at": self.playhead}));
+        }
+        if pressed(Modifiers::NONE, Key::I) {
+            self.range_in = Some(self.playhead);
+        }
+        if pressed(Modifiers::NONE, Key::O) {
+            self.range_out = Some(self.playhead);
+        }
+        if pressed(Modifiers::ALT, Key::X) {
+            (self.range_in, self.range_out) = (None, None);
         }
         if pressed(Modifiers::NONE, Key::F) {
             self.preview_only = !self.preview_only;
@@ -1204,6 +1259,14 @@ impl EditorApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(egui::RichText::new(fill(s.frame, &[&frame])).monospace().color(theme::color::WEAK));
                 ui.add_space(8.0);
+                let looping = egui::Button::new(egui::RichText::new(icon::LOOP).size(14.0).color(if self.looping {
+                    theme::color::ACCENT
+                } else {
+                    theme::color::WEAK
+                }));
+                if ui.add(looping).on_hover_text(s.loop_tip).clicked() {
+                    self.looping = !self.looping;
+                }
                 let tip = if self.preview_only { s.preview_exit_tip } else { s.preview_only_tip };
                 if theme::tool(ui, icon::SCREEN, "", tip, true).clicked() {
                     self.preview_only = !self.preview_only;
@@ -1397,6 +1460,11 @@ impl EditorApp {
             }
             self.record_button(ui);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if theme::tool(ui, icon::ROW_HEIGHT, "", s.row_height_tip, true).clicked() {
+                    let sizes = timeline::ROW_HEIGHTS;
+                    let at = sizes.iter().position(|h| *h == self.timeline.row).unwrap_or(1);
+                    self.timeline.row = sizes[(at + 1) % sizes.len()];
+                }
                 if theme::tool(ui, icon::FIT, "", s.fit_tip, true).clicked() {
                     let width = ui.ctx().content_rect().width();
                     self.timeline.fit(self.project().duration().seconds(), width);
@@ -2548,7 +2616,7 @@ impl eframe::App for EditorApp {
             .show(ui, |ui| self.status_bar(ui));
         let p = self.project();
         let (playing, lang, media) = (self.playing, self.lang, self.media.clone());
-        let (selection, can_paste) = (self.selection(), self.clipboard.is_some());
+        let (selection, can_paste, range) = (self.selection(), self.clipboard.is_some(), self.range());
         let shown = !self.preview_only;
         let out = egui::Panel::bottom("timeline")
             .resizable(true)
@@ -2556,7 +2624,7 @@ impl eframe::App for EditorApp {
             .frame(egui::Frame::new().fill(theme::color::PANEL))
             .show_collapsible(ui, &mut shown.clone(), |ui| {
                 egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| self.timeline_bar(ui));
-                self.timeline.show(ui, &p, self.playhead, &selection, playing, can_paste, lang, &media)
+                self.timeline.show(ui, &p, self.playhead, &selection, playing, can_paste, range, lang, &media)
             })
             .map(|r| r.inner)
             .unwrap_or_default();
@@ -2596,6 +2664,18 @@ impl eframe::App for EditorApp {
         }
         if let Some(action) = out.action {
             self.act(action);
+        }
+        if let Some((track, what)) = out.track_action {
+            self.track_action(&track, what);
+        }
+        match out.marker {
+            Some(timeline::MarkerAction::Add(at)) => {
+                let _ = self.execute("marker.add", json!({"at": at}));
+            }
+            Some(timeline::MarkerAction::Remove(id)) => {
+                let _ = self.execute("marker.remove", json!({"marker": id}));
+            }
+            None => {}
         }
         if let Some((clip, start, track)) = out.moved {
             let _ = self.execute(

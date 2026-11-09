@@ -235,6 +235,7 @@ fn read_draft(proj: &mut Project, draft: &Value, folder: Option<&str>) -> Result
             // bit 0 of `attribute` is CapCut's mute
             muted: flag & 1 == 1,
             magnetic: false,
+            locked: false,
             clips: vec![],
         };
         let mut pending: Option<Transition> = None;
@@ -382,6 +383,7 @@ fn read_draft(proj: &mut Project, draft: &Value, folder: Option<&str>) -> Result
                 hidden: false,
                 muted: false,
                 magnetic: false,
+                locked: false,
                 clips: vec![],
             });
         }
@@ -429,7 +431,10 @@ pub(crate) fn capcut_import(s: &mut Session, v: &Value) -> CmdResult {
             proj.name_first_timeline("Timeline 1");
             let id = proj.mint("s");
             let at = proj.timelines.iter().position(|t| t.id == proj.timeline).map_or(proj.timelines.len(), |i| i + 1);
-            proj.timelines.insert(at, reelforge_model::Timeline { id: id.clone(), name: name.clone(), tracks: vec![] });
+            proj.timelines.insert(
+                at,
+                reelforge_model::Timeline { id: id.clone(), name: name.clone(), tracks: vec![], markers: vec![] },
+            );
             proj.switch_timeline(&id);
         }
         let report = read_draft(proj, &draft, folder.as_deref())?;

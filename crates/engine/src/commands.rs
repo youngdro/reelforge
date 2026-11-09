@@ -212,8 +212,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "track.set",
         label: "Track Settings",
-        params: r#"{"track": id, "name"?: string, "hidden"?: bool, "muted"?: bool, "magnetic"?: bool}"#,
-        doc: "Renames a track, hides its picture, mutes its sound or makes it magnetic (clips kept end to end from the start, so removing or trimming closes the gap and moving reorders).",
+        params: r#"{"track": id, "name"?: string, "hidden"?: bool, "muted"?: bool, "magnetic"?: bool, "locked"?: bool}"#,
+        doc: "Renames a track, hides its picture, mutes its sound, makes it magnetic (clips kept end to end from the start, so removing or trimming closes the gap and moving reorders) or locks it (its clips cannot change until it is unlocked).",
         edits: true,
         enabled: always,
         run: track_set,
@@ -262,6 +262,51 @@ static REGISTRY: &[CommandSpec] = &[
         edits: true,
         enabled: always,
         run: clip_remove,
+    },
+    CommandSpec {
+        id: "track.move",
+        label: "Move Track",
+        params: r#"{"track": id, "index": number}"#,
+        doc: "Moves a track among the tracks of its kind: `index` 0 is the bottom one (drawn first), and so on up.",
+        edits: true,
+        enabled: always,
+        run: track_move,
+    },
+    CommandSpec {
+        id: "track.remove",
+        label: "Delete Track",
+        params: r#"{"track": id}"#,
+        doc: "Removes a track and its clips. The last track of a kind stays.",
+        edits: true,
+        enabled: always,
+        run: track_remove,
+    },
+    CommandSpec {
+        id: "marker.add",
+        label: "Add Marker",
+        params: r#"{"at": time, "note"?: string}"#,
+        doc: "Marks a time on the timeline being edited, to come back to and to snap to.",
+        edits: true,
+        enabled: always,
+        run: marker_add,
+    },
+    CommandSpec {
+        id: "marker.set",
+        label: "Marker",
+        params: r#"{"marker": id, "at"?: time, "note"?: string}"#,
+        doc: "Moves a marker or changes its note.",
+        edits: true,
+        enabled: always,
+        run: marker_set,
+    },
+    CommandSpec {
+        id: "marker.remove",
+        label: "Delete Marker",
+        params: r#"{"marker": id}"#,
+        doc: "Removes a marker.",
+        edits: true,
+        enabled: always,
+        run: marker_remove,
     },
     CommandSpec {
         id: "clip.shift",
@@ -601,6 +646,7 @@ fn sound_add(s: &mut Session, v: &Value) -> CmdResult {
                             hidden: false,
                             muted: false,
                             magnetic: false,
+                            locked: false,
                             clips: vec![],
                         });
                         (t, at.unwrap_or(Tick::ZERO))
@@ -855,6 +901,7 @@ fn track_set(s: &mut Session, v: &Value) -> CmdResult {
     let id = p.str("track")?.to_string();
     let (name, hidden, muted) = (p.opt_str("name")?.map(str::to_string), p.opt_bool("hidden")?, p.opt_bool("muted")?);
     let magnetic = p.opt_bool("magnetic")?;
+    let locked = p.opt_bool("locked")?;
     if name.as_deref().is_some_and(|n| n.trim().is_empty()) {
         return Err(EngineError::Params("`name` must not be empty".into()));
     }
@@ -866,7 +913,8 @@ fn track_set(s: &mut Session, v: &Value) -> CmdResult {
         t.hidden = hidden.unwrap_or(t.hidden);
         t.muted = muted.unwrap_or(t.muted);
         t.magnetic = magnetic.unwrap_or(t.magnetic);
-        Ok(json!({ "track": id, "name": t.name, "hidden": t.hidden, "muted": t.muted, "magnetic": t.magnetic }))
+        t.locked = locked.unwrap_or(t.locked);
+        Ok(json!({ "track": id, "name": t.name, "hidden": t.hidden, "muted": t.muted, "magnetic": t.magnetic, "locked": t.locked }))
     })
 }
 
@@ -909,7 +957,16 @@ fn timeline_add(s: &mut Session, v: &Value) -> CmdResult {
             }
         });
         let at = proj.timelines.iter().position(|t| t.id == proj.timeline).map_or(proj.timelines.len(), |i| i + 1);
-        proj.timelines.insert(at, Timeline { id: id.clone(), name, tracks });
+        let markers = if copy {
+            let mut m = proj.markers.clone();
+            for k in &mut m {
+                k.id = proj.mint("mk");
+            }
+            m
+        } else {
+            vec![]
+        };
+        proj.timelines.insert(at, Timeline { id: id.clone(), name, tracks, markers });
         proj.switch_timeline(&id);
         Ok(json!({ "timeline": id }))
     })
@@ -984,7 +1041,16 @@ fn track_add(s: &mut Session, v: &Value) -> CmdResult {
         let at = proj.tracks.iter().rposition(|t| t.kind == kind).map_or(proj.tracks.len(), |i| i + 1);
         proj.tracks.insert(
             at,
-            Track { id: id.clone(), kind, name, hidden: false, muted: false, magnetic: false, clips: vec![] },
+            Track {
+                id: id.clone(),
+                kind,
+                name,
+                hidden: false,
+                muted: false,
+                magnetic: false,
+                locked: false,
+                clips: vec![],
+            },
         );
         Ok(json!({ "track": id }))
     })
@@ -1195,6 +1261,86 @@ fn clip_remove(s: &mut Session, v: &Value) -> CmdResult {
     })
 }
 
+fn track_move(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("track")?.to_string();
+    let index = p.opt_u32("index")?.ok_or_else(|| EngineError::Params("missing `index`".into()))? as usize;
+    s.edit("Move Track", |proj| {
+        let from = proj.tracks.iter().position(|t| t.id == id).ok_or_else(|| not_found("track", &id))?;
+        let kind = proj.tracks[from].kind;
+        let track = proj.tracks.remove(from);
+        // the places of its kind, bottom first, without it
+        let slots: Vec<usize> = (0..proj.tracks.len()).filter(|&i| proj.tracks[i].kind == kind).collect();
+        let at = match slots.get(index) {
+            Some(&i) => i,
+            None => slots.last().map_or(from.min(proj.tracks.len()), |&i| i + 1),
+        };
+        proj.tracks.insert(at, track);
+        let index = (0..=at).filter(|&i| proj.tracks[i].kind == kind).count() - 1;
+        Ok(json!({ "track": id, "index": index }))
+    })
+}
+
+fn track_remove(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("track")?.to_string();
+    s.edit("Delete Track", |proj| {
+        let at = proj.tracks.iter().position(|t| t.id == id).ok_or_else(|| not_found("track", &id))?;
+        let kind = proj.tracks[at].kind;
+        if proj.tracks.iter().filter(|t| t.kind == kind).count() == 1 {
+            return Err(EngineError::Refused("the last track of a kind stays".into()));
+        }
+        if proj.tracks[at].locked && !proj.tracks[at].clips.is_empty() {
+            return Err(EngineError::Refused(format!("track {:?} is locked", proj.tracks[at].name)));
+        }
+        proj.tracks.remove(at);
+        Ok(json!({ "removed": id }))
+    })
+}
+
+fn marker_add(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let at = p.time("at")?;
+    let note = p.opt_str("note")?.unwrap_or_default().to_string();
+    if at < Tick::ZERO {
+        return Err(EngineError::Params("`at` must not be negative".into()));
+    }
+    let at = fps(s).snap(at);
+    s.edit("Add Marker", |proj| {
+        let id = proj.mint("mk");
+        proj.markers.push(reelforge_model::Marker { id: id.clone(), at, note });
+        Ok(json!({ "marker": id, "at": at }))
+    })
+}
+
+fn marker_set(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("marker")?.to_string();
+    let at = p.opt_time("at")?.map(|t| fps(s).snap(t.max(Tick::ZERO)));
+    let note = p.opt_str("note")?.map(str::to_string);
+    s.edit("Marker", |proj| {
+        let m = proj.markers.iter_mut().find(|m| m.id == id).ok_or_else(|| not_found("marker", &id))?;
+        m.at = at.unwrap_or(m.at);
+        if let Some(n) = note {
+            m.note = n;
+        }
+        Ok(json!({ "marker": id, "at": m.at, "note": m.note }))
+    })
+}
+
+fn marker_remove(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("marker")?.to_string();
+    s.edit("Delete Marker", |proj| {
+        let before = proj.markers.len();
+        proj.markers.retain(|m| m.id != id);
+        if proj.markers.len() == before {
+            return Err(not_found("marker", &id));
+        }
+        Ok(json!({ "removed": id }))
+    })
+}
+
 fn clip_shift(s: &mut Session, v: &Value) -> CmdResult {
     let p = P::new(v, fps(s));
     let ids = p.strings("clips")?;
@@ -1294,6 +1440,7 @@ fn paste(proj: &mut Project, board: &Value, at: Tick) -> Result<Value, EngineErr
                         hidden: false,
                         muted: false,
                         magnetic: false,
+                        locked: false,
                         clips: vec![],
                     },
                 );
