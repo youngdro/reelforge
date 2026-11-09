@@ -133,7 +133,8 @@ pub fn blurred(img: &Image, radius: f32) -> Image {
 }
 
 /// `img` shrunk to `w × h`, each pixel the mean of the pixels it covers.
-fn shrink(img: &Image, w: u32, h: u32) -> Image {
+/// `img` averaged down to `w` by `h` (no larger than it).
+pub(crate) fn shrink(img: &Image, w: u32, h: u32) -> Image {
     if (w, h) == (img.width, img.height) {
         return img.clone();
     }

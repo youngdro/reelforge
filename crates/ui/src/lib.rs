@@ -7,9 +7,9 @@
 //! `reelforge-render`, the same path an export takes.
 //!
 //! Given eframe's wgpu device ([`EditorApp::with_gpu`]), the preview is drawn by the wgpu
-//! compositor into a texture egui shows as it is, so a frame never leaves the GPU. Without one (or
-//! on a WebGL2 fallback, which lacks what the compositor needs) it is drawn on the CPU and
-//! uploaded.
+//! compositor into a texture egui shows as it is, so a frame never leaves the GPU; WebGL2 too, when
+//! the browser can draw into float pictures (`EXT_color_buffer_float`, almost all can). Without
+//! one it is drawn on the CPU and uploaded.
 //!
 //! Files dropped on the window are imported (`media.import`) and placed at the playhead
 //! (`clip.add`); files picked with Import in the asset panel on the left (`assets`) only join the
@@ -52,7 +52,7 @@ use reelforge_time::Tick;
 use serde_json::{Value, json};
 use theme::icon;
 
-/// Longest side of the preview render on the CPU (no GPU, or WebGL2), in pixels: the CPU cannot
+/// Longest side of the preview render on the CPU (no usable GPU), in pixels: the CPU cannot
 /// keep up with more.
 const PREVIEW_LONG_SIDE: f32 = 640.0;
 /// Longest side of a playing preview in Smooth quality, in pixels.
@@ -407,8 +407,9 @@ impl EditorApp {
     }
 
     /// Takes what eframe gives at start: the language the person picked last time, and eframe's
-    /// device, to draw the preview with the wgpu compositor when it has what that needs (WebGPU,
-    /// Vulkan, Metal, DX12; not WebGL2).
+    /// device, to draw the preview with the wgpu compositor when it has what that needs
+    /// ([`GpuCompositor::supports`](reelforge_render::gpu::GpuCompositor::supports): WebGPU,
+    /// Vulkan, Metal, DX12, and WebGL2 with float render targets).
     pub fn with_gpu(mut self, cc: &eframe::CreationContext<'_>) -> EditorApp {
         if let Some(lang) = cc.storage.and_then(|s| s.get_string(LANG_KEY)).as_deref().and_then(Lang::from_code) {
             self.lang = lang;
@@ -417,7 +418,7 @@ impl EditorApp {
         self.full_quality = cc.storage.and_then(|s| s.get_string(QUALITY_KEY)).as_deref() == Some("full");
         if let Some(rs) = &cc.wgpu_render_state {
             let info = rs.adapter.get_info();
-            if info.backend != eframe::wgpu::Backend::Gl {
+            if reelforge_render::gpu::GpuCompositor::supports(&rs.adapter) {
                 let compositor = reelforge_render::gpu::GpuCompositor::new(rs.device.clone(), rs.queue.clone(), &info);
                 // the GPU converts video pictures itself: read ahead only decodes
                 self.ahead.pictures(false);
@@ -2324,7 +2325,11 @@ impl EditorApp {
         let area = ui.available_rect_before_wrap();
         let fit = (area.width() / p.canvas.width.max(1) as f32).min(area.height() / p.canvas.height.max(1) as f32);
         let on_screen = long * fit * self.zoom * ui.ctx().pixels_per_point();
-        let scale = preview_scale(long, on_screen, self.gpu.is_some(), self.playing, self.full_quality);
+        let mut scale = preview_scale(long, on_screen, self.gpu.is_some(), self.playing, self.full_quality);
+        if let Some(g) = &self.gpu {
+            // no larger than the device draws (2048 on WebGL2)
+            scale = scale.min((g.compositor.max_side() as f32 / long.max(1.0) * 32.0).floor() / 32.0);
+        }
         let epoch = self.remote.as_ref().map_or(0, remote::Remote::media_epoch);
         let key = (revision, frame, epoch, moving, self.playing, scale.to_bits());
         let changed = self.preview_key != Some(key);
