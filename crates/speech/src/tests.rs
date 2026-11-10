@@ -73,3 +73,12 @@ fn chinese_gets_a_simplified_prompt() {
     assert!(default_prompt("zh").unwrap().contains("简体"));
     assert_eq!(default_prompt("en"), None);
 }
+
+#[test]
+fn a_sentence_in_a_sliver_of_time_is_not_taken() {
+    // the model stamped its prompt into the last 10 ms of a recording
+    assert!(!could_be_said("这句话是普通话的语言。", Tick::from_seconds(0.01)));
+    assert!(could_be_said("这句话是普通话的语言。", Tick::from_seconds(1.5)));
+    assert!(could_be_said("嗯", Tick::from_seconds(0.1)));
+    assert!(could_be_said("……", Tick::from_seconds(0.0)));
+}
