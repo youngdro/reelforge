@@ -126,7 +126,19 @@ fn prop_schema() -> (&'static str, Value) {
 fn ease_schema() -> (&'static str, Value) {
     (
         "ease",
-        json!({"enum": ["linear", "hold", "inOut"], "description": "How the value moves on to the next keyframe: a straight line, a jump at the next key, or slow out and in."}),
+        json!({
+            "description": "How the value moves on to the next keyframe: a curve by name, or one drawn by hand.",
+            "oneOf": [
+                {
+                    "enum": reelforge_model::Ease::NAMED.map(|(n, _)| n),
+                    "description": "A straight line; a jump at the next key; slow out and in; slow away (in); slow to arrive (out); past the next key and back; back a little first.",
+                },
+                {
+                    "type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4,
+                    "description": "A cubic Bézier [x1, y1, x2, y2] from (0, 0) to (1, 1), as CSS's cubic-bezier: across is time (each x from 0 to 1), up is how far the value has got (each y from -1 to 2).",
+                },
+            ],
+        }),
     )
 }
 
@@ -622,6 +634,22 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ease_schema(),
             ],
             &["clip", "prop", "at"],
+        ),
+        "clip.setEase" => object(
+            vec![
+                clip(),
+                ("at", time("Timeline time of the keyframes the curve leaves from, to within half a frame.")),
+                ease_schema(),
+                (
+                    "props",
+                    json!({
+                        "type": "array", "minItems": 1,
+                        "items": {"enum": reelforge_model::Prop::ALL.map(reelforge_model::Prop::name)},
+                        "description": "Only these properties' keyframes; every property keyed at that time by default.",
+                    }),
+                ),
+            ],
+            &["clip", "at", "ease"],
         ),
         "clip.removeKey" => object(
             vec![clip(), prop_schema(), ("at", time("Timeline time of the keyframe, to within half a frame."))],

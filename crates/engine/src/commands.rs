@@ -671,11 +671,20 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.setKey",
         label: "Add Keyframe",
-        params: r#"{"clip": id, "prop": "x"|"y"|"scale"|"rotation"|"opacity"|"volumeDb"|"cropLeft"|"cropTop"|"cropRight"|"cropBottom"|"maskX"|"maskY"|"maskWidth"|"maskHeight"|"maskRotation"|"maskFeather"|"exposure"|"contrast"|"saturation"|"temperature"|"tint"|"highlights"|"shadows"|"fade"|"vignette", "at": time, "value"?: number, "ease"?: "linear"|"hold"|"inOut"}"#,
-        doc: "Sets a keyframe at a timeline time; without `value`, keeps the value the property has there. Once a property has keyframes, its value follows them: placement, opacity and volume, the crop's edges, the mask's centre, size, turn and soft edge, and the colour adjustments can all move.",
+        params: r#"{"clip": id, "prop": "x"|"y"|"scale"|"rotation"|"opacity"|"volumeDb"|"cropLeft"|"cropTop"|"cropRight"|"cropBottom"|"maskX"|"maskY"|"maskWidth"|"maskHeight"|"maskRotation"|"maskFeather"|"exposure"|"contrast"|"saturation"|"temperature"|"tint"|"highlights"|"shadows"|"fade"|"vignette", "at": time, "value"?: number, "ease"?: "linear"|"hold"|"inOut"|"in"|"out"|"overshoot"|"anticipate" | [x1, y1, x2, y2]}"#,
+        doc: "Sets a keyframe at a timeline time; without `value`, keeps the value the property has there. Once a property has keyframes, its value follows them: placement, opacity and volume, the crop's edges, the mask's centre, size, turn and soft edge, and the colour adjustments can all move. `ease` is how the value travels on to the next keyframe: a named curve, or one drawn by hand (see clip.setEase).",
         edits: true,
         enabled: always,
         run: clip_set_key,
+    },
+    CommandSpec {
+        id: "clip.setEase",
+        label: "Keyframe Curve",
+        params: r#"{"clip": id, "at": time, "ease": "linear"|"hold"|"inOut"|"in"|"out"|"overshoot"|"anticipate" | [x1, y1, x2, y2], "props"?: [string]}"#,
+        doc: "Sets how values travel from the keyframes at a timeline time (to within half a frame) on to the next ones: every property keyed there, or only `props`. A curve is a name (linear, hold: a jump at the next key, inOut, in: slow away, out: slow to arrive, overshoot: past the next key and back, anticipate: back a little first) or drawn by hand as a cubic Bézier `[x1, y1, x2, y2]` like CSS's cubic-bezier: across is time (each x from 0 to 1), up is how far the value has got (each y from -1 to 2).",
+        edits: true,
+        enabled: always,
+        run: clip_set_ease,
     },
     CommandSpec {
         id: "clip.removeKey",
@@ -2392,19 +2401,69 @@ fn prop(p: &P) -> Result<Prop, EngineError> {
         .ok_or_else(|| EngineError::Params(format!("`prop` must be one of {}", Prop::ALL.map(Prop::name).join(", "))))
 }
 
+/// The `ease` parameter: a curve by name, or drawn by hand as `[x1, y1, x2, y2]`.
+fn ease_of(p: &P) -> Result<Option<Ease>, EngineError> {
+    let Some(v) = p.opt("ease") else { return Ok(None) };
+    let names = || Ease::NAMED.map(|(n, _)| n).join(", ");
+    if let Some(name) = v.as_str() {
+        return Ease::named(name)
+            .map(Some)
+            .ok_or_else(|| EngineError::Params(format!("`ease` must be one of {}, or [x1, y1, x2, y2]", names())));
+    }
+    let points: [f32; 4] = serde_json::from_value(v.clone())
+        .map_err(|_| EngineError::Params(format!("`ease` must be one of {}, or [x1, y1, x2, y2]", names())))?;
+    let ease = Ease::Bezier(points);
+    if !ease.is_valid() {
+        let (lo, hi) = Ease::REACH;
+        return Err(EngineError::Params(format!(
+            "`ease` [x1, y1, x2, y2] goes forward in time: each x from 0 to 1, each y from {lo} to {hi}"
+        )));
+    }
+    Ok(Some(ease))
+}
+
+fn clip_set_ease(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let at = p.time("at")?;
+    let ease = ease_of(&p)?.ok_or_else(|| EngineError::Params("`ease` is required".into()))?;
+    let props: Option<Vec<Prop>> = match p.opt("props") {
+        None => None,
+        Some(list) => {
+            let names: Vec<String> = serde_json::from_value(list.clone())
+                .map_err(|_| EngineError::Params("`props` must be a list of property names".into()))?;
+            let props: Option<Vec<Prop>> = names.iter().map(|n| Prop::parse(n)).collect();
+            Some(props.filter(|l| !l.is_empty()).ok_or_else(|| {
+                EngineError::Params(format!("`props` must name some of {}", Prop::ALL.map(Prop::name).join(", ")))
+            })?)
+        }
+    };
+    let half = Tick(fps(s).frame_duration().0 / 2);
+    s.edit("Keyframe Curve", |proj| {
+        let clip = proj.clip_mut(&id).ok_or_else(|| not_found("clip", &id))?;
+        let t = at - clip.start;
+        let mut set = Vec::new();
+        for (prop, list) in clip.keys.iter_mut().filter(|(prop, _)| props.as_ref().is_none_or(|l| l.contains(prop))) {
+            let near = list.iter_mut().filter(|k| (k.t - t).0.abs() <= half.0).min_by_key(|k| (k.t - t).0.abs());
+            if let Some(k) = near {
+                k.ease = ease;
+                set.push(prop.name());
+            }
+        }
+        if set.is_empty() {
+            return Err(EngineError::Refused("no keyframe at that time to shape the curve from".into()));
+        }
+        Ok(json!({ "clip": id, "props": set, "ease": serde_json::to_value(ease).expect("serialises") }))
+    })
+}
+
 fn clip_set_key(s: &mut Session, v: &Value) -> CmdResult {
     let p = P::new(v, fps(s));
     let id = p.str("clip")?.to_string();
     let prop = prop(&p)?;
     let at = p.time("at")?;
     let value = p.opt_f64("value")?.map(|x| x as f32);
-    let ease: Option<Ease> = match p.opt_str("ease")? {
-        Some(e) => Some(
-            serde_json::from_value(json!(e))
-                .map_err(|_| EngineError::Params("`ease` must be linear, hold or inOut".into()))?,
-        ),
-        None => None,
-    };
+    let ease = ease_of(&p)?;
     if value.is_some_and(|v| !v.is_finite() || prop.range().is_some_and(|(lo, hi)| !(lo..=hi).contains(&v))) {
         return Err(EngineError::Params("`value` is out of range".into()));
     }

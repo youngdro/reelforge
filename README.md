@@ -26,7 +26,9 @@ speed, volume, placement, mirroring, fades and transitions; files the draft name
 show as offline and relink when dropped in. Titles
 render with shaping, wrapping, outlines, shadows, gradients and boxes, Chinese included (a bundled
 Noto Sans SC subset covering GB 2312), and ten title templates (花字) apply a look in one step
-(`title.templates`, `"template"` on `clip.add` / `clip.set`). A green (or any one-colour) screen is keyed out with `clip.setChromaKey`, and
+(`title.templates`, `"template"` on `clip.add` / `clip.set`). Between two keyframes a value travels along a curve: a named one
+(linear, hold, in, out, inOut, overshoot, anticipate) or one drawn by hand as a cubic Bézier, with `clip.setEase` or by dragging
+the two handles of the graph in the inspector's Keyframes panel. A green (or any one-colour) screen is keyed out with `clip.setChromaKey`, and
 `clip.pickChromaKey` finds the backdrop's colour in the frame by itself; picture effects (`fx.list`) include
 glitch, colour split, mosaic and wave next to the shakes, zooms and blurs. SubRip captions come in by dropping a
 `.srt` on the editor or `captions.import`, and go out with `captions.export`. Someone speaking is tightened up in one step (剪口播): `audio.cutPauses` hears the pauses,
@@ -91,6 +93,7 @@ cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t2", "t
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setAnimation '{"clip": "c6", "slot": "in", "kind": "pop"}' --save
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setAnimation '{"clip": "c6", "slot": "loop", "kind": "wave"}' --save   # its characters, round and round
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setKey '{"clip": "c5", "prop": "scale", "at": {"seconds": 4}, "value": 1.3, "ease": "inOut"}' --save
+cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setEase '{"clip": "c5", "at": {"seconds": 4}, "ease": [0.3, 1.5, 0.6, 1]}' --save   # on from that key: past the next one and back
 cargo run -q -r -p reelforge-cli -- export cut.reel.json -o cut.mp4      # a project, or a RenderSpec
 # frames are drawn on the GPU when there is one; --renderer cpu|gpu chooses
 cargo run -q -r -p reelforge-cli -- export cut.reel.json -o cut.gif --format gif   # or m4a, wav: the sound alone

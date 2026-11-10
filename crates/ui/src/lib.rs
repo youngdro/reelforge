@@ -23,6 +23,7 @@ mod ahead;
 mod assets;
 mod audio;
 mod captions;
+mod curve;
 mod export_job;
 pub mod i18n;
 mod looks;
@@ -2394,6 +2395,8 @@ impl EditorApp {
         let mut commit = false;
         // commands the panel asks for beyond the values above
         let mut actions: Vec<(&'static str, Value)> = vec![];
+        // the keyframes panel moves the playhead or shapes a curve
+        let mut curve_ask: Option<curve::Ask> = None;
         // the title asks for a font file
         let mut pick_font = false;
         // a value is committed when its drag ends or it is typed in
@@ -2564,6 +2567,13 @@ impl EditorApp {
                             ui.end_row();
                         }
                     });
+                });
+            }
+            // how the values travel between the keyframes around the playhead
+            if !clip.keys.is_empty() {
+                ui.add_space(6.0);
+                theme::section(ui, s.sec_keys, |ui| {
+                    curve_ask = curve::show(ui, s, clip, local, half);
                 });
             }
             if let Some(g) = &mut edit.grade {
@@ -3198,6 +3208,15 @@ impl EditorApp {
             } else {
                 let _ = self.execute(cmd, params);
             }
+        }
+        match curve_ask {
+            Some(curve::Ask::Jump(t)) => self.seek(clip.start + t),
+            Some(curve::Ask::Shape(t, ease)) => {
+                // a curve with a name is sent by it
+                let ease = ease.name().map_or_else(|| json!(ease.points()), |n| json!(n));
+                let _ = self.execute("clip.setEase", json!({"clip": id, "at": clip.start + t, "ease": ease}));
+            }
+            None => {}
         }
         // a key colour is sent once the pointer lets go of the picker
         let key_color = |i: &Inspector| i.look.as_ref().and_then(|l| l.chroma.flatten()).map(|k| k.color);
