@@ -236,6 +236,35 @@ pub(crate) fn aurora_button(
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// Keys as they are printed on them.
+pub(crate) fn keycap(ui: &mut egui::Ui, keys: &str) -> egui::Response {
+    egui::Frame::new()
+        .fill(color::RAISED)
+        .stroke(Stroke::new(1.0, Color32::from_white_alpha(18)))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(7, 2))
+        .show(ui, |ui| ui.label(egui::RichText::new(keys).monospace().size(11.5).color(color::TEXT)))
+        .response
+}
+
+/// Keys and what they are for, as one thing to click.
+pub(crate) fn hint_chip(ui: &mut egui::Ui, keys: &str, word: &str) -> egui::Response {
+    let text = format!("{keys}   {word}");
+    let galley = ui.painter().layout_no_wrap(text, FontId::proportional(12.5), color::WEAK);
+    let (rect, response) = ui.allocate_exact_size(galley.size() + egui::vec2(24.0, 12.0), egui::Sense::click());
+    let lit = ui.ctx().animate_bool(response.id, response.hovered());
+    let painter = ui.painter();
+    painter.rect(
+        rect,
+        CornerRadius::same(rect.height() as u8 / 2),
+        color::RAISED.lerp_to_gamma(color::HOVER, lit),
+        Stroke::new(1.0, color::ACCENT.gamma_multiply(0.15 + 0.5 * lit)),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(rect.center() - galley.size() / 2.0, galley, color::TEXT);
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// The mark and the name, at the start of the top bar.
 pub(crate) fn brand(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());

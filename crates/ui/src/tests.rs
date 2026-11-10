@@ -833,3 +833,39 @@ fn trimming_speech_lists_pauses_and_fillers_and_cuts_the_ticked_ones() {
     let kinds: Vec<_> = app.spoken.found.iter().map(|f| f.kind).collect();
     assert_eq!(kinds, [Filler]);
 }
+
+#[test]
+fn the_palette_finds_actions_titles_and_markers_and_does_what_is_chosen() {
+    use crate::palette::Run;
+    let mut app = EditorApp::new(Session::default());
+    let ctx = eframe::egui::Context::default();
+    let text = first_track(&app, reelforge_model::TrackKind::Text);
+    let at = Tick::from_seconds(2.0);
+    let added = app.execute("clip.add", json!({"track": text, "text": "Hello there", "start": at})).unwrap();
+    let title = added["clip"].as_str().unwrap().to_string();
+    app.execute("marker.add", json!({"at": Tick::from_seconds(1.0), "note": "beat"})).unwrap();
+
+    let entries = app.palette_entries();
+    let find = |label: &str| entries.iter().find(|e| e.label.contains(label)).unwrap_or_else(|| panic!("{label}"));
+    assert_eq!(find("Hello there").run, Run::Clip(title.clone(), at));
+    assert_eq!(find("beat").run, Run::Seek(Tick::from_seconds(1.0)));
+    // nothing is selected yet: there is nothing to delete, and one clip is no group
+    assert!(!find("Duplicate").enabled);
+    assert!(find("Split").enabled);
+
+    // a title chosen is selected, with the playhead at its start
+    app.palette_run(Run::Clip(title.clone(), at), &ctx);
+    assert_eq!(app.selection(), vec![title.clone()]);
+    assert_eq!(app.playhead, at);
+    assert!(app.palette_entries().iter().any(|e| e.label.contains("Duplicate") && e.enabled));
+    // an edit chosen is the edit the key makes
+    app.palette_run(Run::Act(crate::timeline::Action::Delete), &ctx);
+    assert!(app.session().project().clip(&title).is_none());
+    app.palette_run(Run::Undo, &ctx);
+    assert!(app.session().project().clip(&title).is_some());
+    // a time past the end stops at the end
+    app.palette_run(Run::Seek(Tick::from_seconds(99.0)), &ctx);
+    assert_eq!(app.playhead, app.session().project().duration());
+    app.palette_run(Run::Lang(crate::i18n::Lang::Zh), &ctx);
+    assert!(app.palette_entries().iter().any(|e| e.label == "分割"));
+}
