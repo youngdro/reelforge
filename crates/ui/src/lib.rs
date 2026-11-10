@@ -1480,6 +1480,16 @@ impl EditorApp {
                     self.selected = clip.as_str().map(str::to_string);
                 }
             }
+            assets::Item::Decor(id) => {
+                // over whatever shows there; on the track it was dropped on when that has room
+                let params = json!({"decor": id, "start": at, "name": item.label(&self.project(), s)});
+                let mut on_track = params.clone();
+                on_track["track"] = json!(track);
+                let dropped = track.and_then(|_| self.run("decor.add", &on_track).ok());
+                if let Some(v) = dropped.or_else(|| self.execute("decor.add", params).ok()) {
+                    self.selected = v["clip"].as_str().map(str::to_string);
+                }
+            }
             assets::Item::Effect(kind) => {
                 let fx: Vec<&str> = kind.iter().map(|k| k.name()).collect();
                 self.put_from(TrackKind::Video, track, true, move |t| {

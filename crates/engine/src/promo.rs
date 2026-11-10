@@ -226,7 +226,7 @@ pub(crate) fn promo_list(_: &mut Session, _: &Value) -> CmdResult {
 
 /// The first track at or above `from` of `kind` that is free from `start` for `dur`, or a new one
 /// put in at the top.
-fn free_track(proj: &mut Project, kind: TrackKind, from: usize, start: Tick, dur: Tick) -> usize {
+pub(crate) fn free_track(proj: &mut Project, kind: TrackKind, from: usize, start: Tick, dur: Tick) -> usize {
     let span = reelforge_time::TimeRange::new(start, dur);
     if let Some(i) = (from..proj.tracks.len()).find(|&i| {
         let t = &proj.tracks[i];

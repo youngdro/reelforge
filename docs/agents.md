@@ -117,6 +117,9 @@ media_import … then template_fill {"media": ["m4", "m5", "m6", "m7"]}
 storyboard_fill {"copy": {"cta": "马上带一双回家", "price": 49.9}}
                                                   → the button is as wide as its new words, the tag counts to 49.9
 voiceover_add with the scenes' `voice` lines, or storyboard_apply with "captions": true
+decor_add {"decor": "circleMark", "start": {"seconds": 14}, "x": 0.13, "y": 0.2, "scale": 0.6}
+                                                  → a ring drawn by hand round the price; decor_list has confetti,
+                                                    sparkles, a tap ring and the rest, in the brand's colours
 render_frame {"at": {"seconds": 14}, "scale": 0.3} → look, then fix: promo_set moves or rewrites one piece
 ```
 
@@ -142,6 +145,7 @@ before building.
 | Titles and fonts | `clip_add` / `clip_set` with `text` and style (`font` is an imported font's media id, `tracking`, `leading`, `italic`, `underline`…), `title_templates` and `template` |
 | Shapes, numbers and ready-made pieces | `clip_add` with `shape` (rectangle, ellipse, line, polygon, star, tag, arrow; gradient fill, outline, shadow), `clip_setShape` (`drawStart` / `drawEnd` and the `draw` animation draw the outline on), `clip_setCounter` (a title's `{n}` runs from one number to another: a price, a sales count, a countdown), `promo_list` (30 pieces by `category`: price, product, titles, action, rhythm; `about` says what each one's parameters mean), `promo_add` (`text`, `lines`, `value`, `values`, `color`, `color2`, `side`, placement; grouped clips, or one compound clip with `compound: true`), `promo_set` (gives a folded piece other words, lines, numbers, colours or another place and makes its inside again to fit; `promo_get` reads what it was made as), `brand_set` / `brand_get` (the colours, font and logo new pieces take after) |
 | Lottie animations | `media_import` a `.json` or `.lottie` file (kind `lottie`; `unsupported` in the reply lists what the file uses that is not drawn: expressions, effects…), then `clip_add` on a video track like a video. It is see-through where it draws nothing and goes round again when its clip is longer than it is |
+| Animated decorations | `decor_list` (twenty that come with the editor, free to use: confettiBurst, confettiRain, fireworks, sparkles, starBurst, heartBurst, tapRing, pulse, arrowBounce, swipeUp, emphasis, underline, circleMark, checkDraw, coinDrop, flame, bolt, giftShake, clockTick, loadingDots; for each its usual length, whether it plays once or goes round, its usual size and which colours it takes), `decor_add` (`decor`, `start`, `duration`, `color`, `color2`, `x`, `y`, `scale`, `rotation`, `opacity`, `track`: a Lottie clip on a free video track over whatever shows then, in the colours given, else the brand's, else its own red and yellow). The clip is like any other afterwards: `clip_set`, `clip_setAnimation`, keyframes |
 | Animations | `clip_setAnimation` (`in`, `out`, and `loop` for one that repeats; the `char*` kinds animate each character), `clip_setTransition` |
 | Captions | `captions_transcribe` (local Whisper on the server), `captions_add`, `captions_import` / `captions_export` (SubRip; `line: 2` for a second language), `captions_list`, `captions_split`, `captions_merge`, `captions_replace`, `captions_restyle`, `captions_shift` |
 | Talking-head cleanup | `audio_cutPauses`, `captions_fillers`, `captions_cutFillers` |
