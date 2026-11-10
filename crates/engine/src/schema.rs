@@ -608,6 +608,32 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["cues"],
         ),
+        "voiceover.add" => object(
+            vec![
+                (
+                    "lines",
+                    json!({
+                        "type": "array",
+                        "minItems": 1,
+                        "description": "The spoken lines, each a sound file and where it starts.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string", "description": "The sound file, as for media.import."},
+                                "start": time("Where on the timeline it starts."),
+                                "name": {"type": "string", "description": "Display name in the media list; the file name by default."},
+                                "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Content hash, when the file cannot be read here."},
+                                "duration": time("Length, when the file cannot be measured here.")
+                            },
+                            "required": ["path", "start"],
+                            "additionalProperties": false
+                        }
+                    }),
+                ),
+                ("track", ident("An audio track to put them all on; Voice-over tracks by default.")),
+            ],
+            &["lines"],
+        ),
         "captions.export" => object(vec![("track", ident("A text track; the Captions track by default."))], &[]),
         "clip.split" => object(vec![clip(), ("at", time("Timeline time inside the clip."))], &["clip", "at"]),
         "clip.trim" => {

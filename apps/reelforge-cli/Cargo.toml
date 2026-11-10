@@ -27,4 +27,5 @@ clap = { workspace = true }
 image = { workspace = true }
 reelforge-server = { workspace = true }
 reelforge-speech = { workspace = true }
+reelforge-voice = { workspace = true }
 ureq = { workspace = true }

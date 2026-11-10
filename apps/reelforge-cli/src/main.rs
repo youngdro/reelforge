@@ -139,14 +139,25 @@ enum Cmd {
         /// `.reelforge/models/whisper` in the home folder.
         #[arg(long, env = "REELFORGE_WHISPER")]
         whisper: Option<PathBuf>,
+        /// The Kokoro model folder for voice-over (voice.speak); by default
+        /// `.reelforge/models/kokoro` in the home folder.
+        #[arg(long, env = "REELFORGE_KOKORO")]
+        kokoro: Option<PathBuf>,
     },
-    /// Download a Whisper model for automatic captions from Hugging Face (openai/whisper-SIZE):
-    /// config.json, model.safetensors and tokenizer.json.
+    /// Download a model from Hugging Face: Whisper for automatic captions (openai/whisper-SIZE:
+    /// config.json, model.safetensors and tokenizer.json), or with --kokoro, Kokoro-82M for
+    /// voice-over (hexgrad/Kokoro-82M: config.json, kokoro-v1_0.pth and the voices).
     FetchModel {
         /// tiny, base, small, medium, large-v3 or large-v3-turbo. small is a good start for Chinese.
         #[arg(long, default_value = "small")]
         size: String,
-        /// Where to put it; the folder automatic captions look in by default.
+        /// Fetch the voice-over model instead.
+        #[arg(long)]
+        kokoro: bool,
+        /// With --kokoro, the voices to fetch (repeat it); four Mandarin ones by default.
+        #[arg(long = "voice")]
+        voices: Vec<String>,
+        /// Where to put it; the folder automatic captions (or voice-over) look in by default.
         #[arg(long)]
         to: Option<PathBuf>,
     },
@@ -373,14 +384,20 @@ fn run(cmd: Cmd) -> Result<(), String> {
             print(&reelforge_renderspec::json_schema());
             Ok(())
         }
-        Cmd::FetchModel { size, to } => fetch_model(&size, &to.unwrap_or_else(reelforge_speech::default_model_dir)),
-        Cmd::Serve { project, stdio, listen, token, web, whisper } => {
+        Cmd::FetchModel { kokoro: true, voices, to, .. } => {
+            fetch_kokoro(&voices, &to.unwrap_or_else(reelforge_voice::default_model_dir))
+        }
+        Cmd::FetchModel { size, to, .. } => fetch_model(&size, &to.unwrap_or_else(reelforge_speech::default_model_dir)),
+        Cmd::Serve { project, stdio, listen, token, web, whisper, kokoro } => {
             let mut hub = match &project {
                 Some(path) => Hub::open(path)?,
                 None => Hub::new(Session::default()),
             };
             if let Some(dir) = whisper {
                 hub = hub.with_speech_model(dir);
+            }
+            if let Some(dir) = kokoro {
+                hub = hub.with_voice_model(dir);
             }
             if stdio {
                 return reelforge_server::mcp::serve_stdio(&hub).map_err(|e| e.to_string());
@@ -485,26 +502,48 @@ fn param_value(v: &str) -> Value {
     serde_json::from_str(v).unwrap_or_else(|_| json!(v))
 }
 
-/// Downloads `openai/whisper-{size}` into `dir`, each file through a `.part` so a broken download
-/// never looks complete.
+/// Downloads `openai/whisper-{size}` into `dir`.
 fn fetch_model(size: &str, dir: &std::path::Path) -> Result<(), String> {
     if !size.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.') {
         return Err(format!("not a model size: {size:?}"));
     }
-    std::fs::create_dir_all(dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
+    let files = ["config.json", "tokenizer.json", "model.safetensors"].map(String::from);
+    download(&format!("https://huggingface.co/openai/whisper-{size}/resolve/main"), &files, dir)?;
+    eprintln!("Whisper {size} is in {}", dir.display());
+    Ok(())
+}
+
+/// Downloads `hexgrad/Kokoro-82M` with `voices` (four Mandarin ones when empty) into `dir`.
+fn fetch_kokoro(voices: &[String], dir: &std::path::Path) -> Result<(), String> {
+    let mandarin = ["zf_xiaoxiao", "zf_xiaoyi", "zm_yunxi", "zm_yunjian"].map(String::from);
+    let voices = if voices.is_empty() { &mandarin[..] } else { voices };
+    if let Some(v) = voices.iter().find(|v| v.is_empty() || !v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')) {
+        return Err(format!("not a voice name: {v:?}"));
+    }
+    let mut files = vec!["config.json".to_string(), "kokoro-v1_0.pth".to_string()];
+    files.extend(voices.iter().map(|v| format!("voices/{v}.pt")));
+    download("https://huggingface.co/hexgrad/Kokoro-82M/resolve/main", &files, dir)?;
+    eprintln!("Kokoro-82M is in {}", dir.display());
+    Ok(())
+}
+
+/// Downloads `base/FILE` to `dir/FILE` for each of `files`, each through a `.part` so a broken
+/// download never looks complete.
+fn download(base: &str, files: &[String], dir: &std::path::Path) -> Result<(), String> {
     let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(true).build().into();
-    for file in ["config.json", "tokenizer.json", "model.safetensors"] {
-        let url = format!("https://huggingface.co/openai/whisper-{size}/resolve/main/{file}");
+    for file in files {
+        let url = format!("{base}/{file}");
         eprintln!("fetching {url}");
         let resp = agent.get(&url).call().map_err(|e| format!("{url}: {e}"))?;
         let out = dir.join(file);
+        let folder = out.parent().expect("a file in dir");
+        std::fs::create_dir_all(folder).map_err(|e| format!("cannot make {}: {e}", folder.display()))?;
         let part = out.with_extension("part");
         let mut f = std::fs::File::create(&part).map_err(|e| format!("cannot write {}: {e}", part.display()))?;
         let n = std::io::copy(&mut resp.into_body().into_reader(), &mut f).map_err(|e| format!("{url}: {e}"))?;
         std::fs::rename(&part, &out).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
         eprintln!("  {} MB", n / 1_000_000);
     }
-    eprintln!("Whisper {size} is in {}", dir.display());
     Ok(())
 }
 

@@ -3168,6 +3168,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
+name = "pinyin"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e225f595052d9c46045755be4b8d7950b6d9f3c33e0c0b74ba58f11bbfa8c64b"
+
+[[package]]
 name = "pkg-config"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3515,6 +3521,7 @@ dependencies = [
  "reelforge-server",
  "reelforge-speech",
  "reelforge-time",
+ "reelforge-voice",
  "serde_json",
  "ureq",
 ]
@@ -3640,6 +3647,7 @@ dependencies = [
  "reelforge-renderspec",
  "reelforge-speech",
  "reelforge-time",
+ "reelforge-voice",
  "serde_json",
  "sha2",
  "tiny_http",
@@ -3688,6 +3696,7 @@ dependencies = [
  "reelforge-server",
  "reelforge-speech",
  "reelforge-time",
+ "reelforge-voice",
  "rfd",
  "serde",
  "serde_json",
@@ -3696,6 +3705,18 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-time",
+]
+
+[[package]]
+name = "reelforge-voice"
+version = "0.1.0"
+dependencies = [
+ "candle-core",
+ "candle-nn",
+ "pinyin",
+ "serde",
+ "serde_json",
+ "zip",
 ]
 
 [[package]]
