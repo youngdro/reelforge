@@ -212,7 +212,7 @@ mod tests {
             assert!(a.unsupported().is_empty(), "{}: {:?}", d.id, a.unsupported());
             let p = picture(d, 96).unwrap();
             assert_eq!(p.width.max(p.height), 96, "{}", d.id);
-            assert!(p.rgba.chunks_exact(4).filter(|px| px[3] > 128).count() > 40, "{} shows nothing", d.id);
+            assert!(p.rgba.as_chunks::<4>().0.iter().filter(|px| px[3] > 128).count() > 40, "{} shows nothing", d.id);
             // one that plays once is long enough to stay still past any clip of it
             assert_eq!(d.once, a.seconds() >= 10.0, "{}", d.id);
             assert!(d.seconds > 0.0 && d.scale.is_none_or(|s| s > 0.0 && s <= 1.0), "{}", d.id);
@@ -243,7 +243,7 @@ mod tests {
         let at = |uri: &str| {
             let a = open(uri).unwrap();
             let f = a.render(pulse.telling, 100, 100);
-            let px = f.chunks_exact(4).max_by_key(|px| px[3]).unwrap();
+            let px = f.as_chunks::<4>().0.iter().max_by_key(|px| px[3]).unwrap();
             [px[0], px[1], px[2]]
         };
         let (red, said) = (at("library:decor/pulse"), at(&blue));
