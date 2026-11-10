@@ -943,7 +943,7 @@ static REGISTRY: &[CommandSpec] = &[
         id: "storyboard.list",
         label: "Storyboards",
         params: r#"{"lang"?: "en"|"zh"|"ja"}"#,
-        doc: "Lists the built-in storyboards: whole marketing videos planned ahead (a launch, a flash sale, buy one get one, before and after, a roundup, a shop to visit). For each its id, name, what it is for, its length in seconds, how many pictures it takes (`slots`), its music, its `fields` (the words and numbers it is written from, each with a `name`, what it is called and the `value` it comes with) and its `scenes` (each with its name, length, `shot`: what to film for it, `voice`: the line to say with fields between braces, and the ready-made `pieces` over it). `lang` is the language of the names and the copy it comes with: zh by default.",
+        doc: "Lists the built-in storyboards: whole marketing videos planned ahead (a launch, a flash sale, buy one get one, before and after, a roundup, a shop to visit, a problem and its fix, an unboxing, buyers' reviews, a livestream teaser, a holiday sale, three steps). For each its id, name, what it is for, its length in seconds, how many pictures it takes (`slots`), its music, its `fields` (the words and numbers it is written from, each with a `name`, what it is called and the `value` it comes with) and its `scenes` (each with its name, length, `shot`: what to film for it, `voice`: the line to say with fields between braces, and the ready-made `pieces` over it). `lang` is the language of the names and the copy it comes with: zh by default.",
         edits: false,
         enabled: always,
         run: crate::storyboard::storyboard_list,

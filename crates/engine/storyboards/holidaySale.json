@@ -1,0 +1,252 @@
+{
+ "id": "holidaySale",
+ "name": {
+  "en": "Holiday sale",
+  "zh": "节日大促",
+  "ja": "祝日セール"
+ },
+ "about": {
+  "en": "The sale in very large words, the spend-and-save tiers, a price that flips to the sale price, and the deadline",
+  "zh": "大字报开场，满减档位，原价翻成到手价，再用截止时间催单",
+  "ja": "セールを大きな文字で見せ、まとめ割、価格の切り替え、締め切りで後押し"
+ },
+ "music": "upbeat",
+ "fields": [
+  {
+   "id": "offer",
+   "text": {
+    "en": "Holiday sale",
+    "zh": "双 11 狂欢",
+    "ja": "ホリデーセール"
+   }
+  },
+  {
+   "id": "slogan",
+   "text": {
+    "en": "50% off everything",
+    "zh": "全场 五折 起",
+    "ja": "全品 半額 から"
+   }
+  },
+  {
+   "id": "tier1",
+   "text": {
+    "en": "Spend 200, save 30",
+    "zh": "满 200 减 30",
+    "ja": "200 以上で 30 引き"
+   }
+  },
+  {
+   "id": "tier2",
+   "text": {
+    "en": "Spend 400, save 80",
+    "zh": "满 400 减 80",
+    "ja": "400 以上で 80 引き"
+   }
+  },
+  {
+   "id": "tier3",
+   "text": {
+    "en": "Spend 600, save 150",
+    "zh": "满 600 减 150",
+    "ja": "600 以上で 150 引き"
+   }
+  },
+  {
+   "id": "oldPrice",
+   "number": 199
+  },
+  {
+   "id": "price",
+   "number": 99
+  },
+  {
+   "id": "promise1",
+   "text": {
+    "en": "Free shipping",
+    "zh": "包邮",
+    "ja": "送料無料"
+   }
+  },
+  {
+   "id": "promise2",
+   "text": {
+    "en": "Genuine goods",
+    "zh": "正品保障",
+    "ja": "正規品保証"
+   }
+  },
+  {
+   "id": "promise3",
+   "text": {
+    "en": "7-day returns",
+    "zh": "七天无理由",
+    "ja": "7 日間返品可"
+   }
+  },
+  {
+   "id": "deadline",
+   "text": {
+    "en": "Ends Sunday at midnight",
+    "zh": "活动截至本周日 24:00",
+    "ja": "今週日曜 24:00 まで"
+   }
+  },
+  {
+   "id": "closing",
+   "text": {
+    "en": "Gone when it's gone",
+    "zh": "手慢无",
+    "ja": "なくなり次第終了"
+   }
+  },
+  {
+   "id": "cta",
+   "text": {
+    "en": "Shop now",
+    "zh": "立即抢购",
+    "ja": "今すぐ購入"
+   }
+  },
+  {
+   "id": "hint",
+   "text": {
+    "en": "Tap the link below",
+    "zh": "点击下方小黄车",
+    "ja": "下のリンクをタップ"
+   }
+  }
+ ],
+ "scenes": [
+  {
+   "id": "hook",
+   "seconds": 3.0,
+   "backdrop": "dark",
+   "voice": {
+    "en": "{offer}: {slogan}!",
+    "zh": "{offer}，{slogan}！",
+    "ja": "{offer}、{slogan}！"
+   },
+   "pieces": [
+    {
+     "kind": "banner",
+     "at": 0.1,
+     "text": "{offer}",
+     "y": -0.38
+    },
+    {
+     "kind": "posterWords",
+     "at": 0.3,
+     "text": "{slogan}",
+     "scale": 0.8,
+     "y": 0.0
+    }
+   ]
+  },
+  {
+   "id": "tiers",
+   "seconds": 4.5,
+   "shot": {
+    "en": "Products piled high, or the shelves",
+    "zh": "商品堆头或货架",
+    "ja": "商品を積み上げた様子、または売り場"
+   },
+   "cut": "circle",
+   "voice": {
+    "en": "{tier1}. {tier2}. {tier3}.",
+    "zh": "{tier1}，{tier2}，{tier3}。",
+    "ja": "{tier1}。{tier2}。{tier3}。"
+   },
+   "pieces": [
+    {
+     "kind": "tiers",
+     "at": 0.3,
+     "lines": [
+      "{tier1}",
+      "{tier2}",
+      "{tier3}"
+     ],
+     "y": -0.02
+    }
+   ]
+  },
+  {
+   "id": "price",
+   "seconds": 5.0,
+   "shot": {
+    "en": "The star product, close up",
+    "zh": "主推款特写",
+    "ja": "イチオシ商品のアップ"
+   },
+   "cut": "flip",
+   "voice": {
+    "en": "Was {oldPrice}, now {price}.",
+    "zh": "原价 {oldPrice}，到手只要 {price}。",
+    "ja": "通常 {oldPrice} 円が、今だけ {price} 円。"
+   },
+   "pieces": [
+    {
+     "kind": "flipCard",
+     "at": 0.3,
+     "text": {
+      "en": "Was ${oldPrice}",
+      "zh": "原价 ¥{oldPrice}",
+      "ja": "通常 ¥{oldPrice}"
+     },
+     "lines": [
+      {
+       "en": "Now ${price}",
+       "zh": "到手价 ¥{price}",
+       "ja": "今だけ ¥{price}"
+      }
+     ],
+     "y": -0.14
+    },
+    {
+     "kind": "trustBadges",
+     "at": 1.6,
+     "lines": [
+      "{promise1}",
+      "{promise2}",
+      "{promise3}"
+     ],
+     "y": 0.12
+    }
+   ]
+  },
+  {
+   "id": "cta",
+   "seconds": 3.5,
+   "backdrop": "brand",
+   "sweep": "up",
+   "voice": {
+    "en": "{closing}. {hint}.",
+    "zh": "{closing}，{hint}。",
+    "ja": "{closing}。{hint}。"
+   },
+   "pieces": [
+    {
+     "kind": "endCard",
+     "at": 0.1,
+     "text": "{closing}",
+     "lines": [
+      "{deadline}"
+     ],
+     "y": -0.22
+    },
+    {
+     "kind": "buyButton",
+     "at": 0.7,
+     "text": "{cta}",
+     "y": -0.01
+    },
+    {
+     "kind": "arrowHint",
+     "at": 1.0,
+     "text": "{hint}",
+     "y": 0.14
+    }
+   ]
+  }
+ ]
+}
