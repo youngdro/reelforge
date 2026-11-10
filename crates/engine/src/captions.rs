@@ -189,6 +189,7 @@ pub(crate) fn place(
             voice: Default::default(),
             group: None,
             slot: None,
+            steady: None,
         });
     }
     let track = proj.tracks.iter_mut().find(|t| t.id == track_id).expect("found or made above");

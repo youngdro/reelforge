@@ -12,12 +12,14 @@
 //! file bytes over with [`Footage::insert_bytes`]; natively a `file:` URI is read on demand.
 
 pub mod analysis;
+pub mod between;
 pub mod export;
 pub mod formats;
 pub mod library;
 pub mod picture;
 mod shrunk;
 pub mod sound;
+pub mod steady;
 pub mod stickers;
 pub mod stretch;
 pub mod webcodecs;
@@ -28,7 +30,7 @@ use std::sync::{Arc, Mutex};
 
 use filmcraft_media::{FrameRequest, MediaKind, SharedSource};
 use reelforge_render::{Image, Lut, MediaSource, StillImages, Yuv};
-use reelforge_renderspec::{Asset, AssetKind};
+use reelforge_renderspec::{Asset, AssetKind, Between};
 use reelforge_time::{FrameRate, Tick};
 
 pub use export::{
@@ -116,6 +118,23 @@ type Made = (Tick, Arc<Image>);
 type Converted = (Arc<filmcraft_frame::VideoFrame>, Arc<Image>);
 type Wrapped = (Arc<filmcraft_frame::VideoFrame>, Arc<Yuv>);
 
+/// What is kept of an asset's pictures made between its frames ([`MediaSource::picture_between`]).
+#[derive(Default)]
+struct Tween {
+    /// The frames last made pictures of, the two the last picture lies between: playing on, the
+    /// later one is the earlier one of the next pair.
+    frames: Vec<Converted>,
+    /// How the picture moved from one frame to the next, for the pair it was last looked for.
+    flow: Option<(Arc<filmcraft_frame::VideoFrame>, Arc<filmcraft_frame::VideoFrame>, Arc<between::Flow>)>,
+    /// The last pictures made, oldest first: a clip and its blurred backdrop ask for the same one.
+    made: Vec<(Tick, Between, Arc<Image>)>,
+}
+
+/// How many pictures made between frames are kept per asset: as many as are made ahead.
+const TWEEN_PICTURES: usize = AHEAD_PICTURES;
+/// An instant this near a frame (as a part of the way to the next) shows that frame as it is.
+const ON_A_FRAME: f32 = 0.04;
+
 /// Footage for the renderer: stills, decoded video frames and sound, cached by content hash.
 #[derive(Default)]
 pub struct Footage {
@@ -143,6 +162,8 @@ pub struct Footage {
     /// Pictures made ahead of the playhead ([`prefetch`](Footage::prefetch)), by asset key: the
     /// few source instants a playing preview reaches next, oldest first.
     ahead: Mutex<HashMap<String, Vec<Made>>>,
+    /// Pictures made between frames, and what they were made from, by asset key and size.
+    tween: Mutex<HashMap<String, Tween>>,
 }
 
 /// How many pictures [`Footage::prefetch`] keeps per asset. Full-size pictures are large (a
@@ -258,6 +279,7 @@ impl Footage {
         self.sources.lock().expect("sources lock").clear();
         self.last.lock().expect("frame lock").clear();
         self.last_yuv.lock().expect("frame lock").clear();
+        self.tween.lock().expect("tween lock").clear();
         self.fonts.lock().expect("fonts lock").clear();
         self.luts.lock().expect("luts lock").clear();
         self.bump();
@@ -490,6 +512,80 @@ impl MediaSource for Footage {
         self.decode_picture(asset, &k, at, shrink)
     }
 
+    fn picture_between(
+        &self,
+        asset_id: &str,
+        asset: &Asset,
+        at: Tick,
+        how: Between,
+        shrink: u32,
+    ) -> Result<Option<Arc<Image>>, String> {
+        let nearest = || {
+            if shrink > 1 {
+                self.picture_shrunk(asset_id, asset, at, shrink)
+            } else {
+                self.picture(asset_id, asset, at)
+            }
+        };
+        if asset.kind != AssetKind::Video || how.is_nearest() {
+            return nearest();
+        }
+        let k = sized(&key(asset), shrink);
+        let made = |t: &Tween| t.made.iter().find(|(t, h, _)| (*t, *h) == (at, how)).map(|(_, _, img)| img.clone());
+        if let Some(img) = self.tween.lock().expect("tween lock").get(&k).and_then(made) {
+            return Ok(Some(img));
+        }
+        // the frames at the instants of the file's own rate before and after: one frame length
+        // apart from the file's start
+        let Some(length) = self.frame_length(asset).filter(|l| *l > Tick::ZERO && at >= Tick::ZERO) else {
+            return nearest();
+        };
+        let start = length * (at.0 / length.0);
+        let (Some(first), Some(second)) = (self.frame(asset, start)?, self.frame(asset, start + length)?) else {
+            return nearest();
+        };
+        // the file's last frame has nothing after it
+        if Arc::ptr_eq(&first, &second) {
+            return nearest();
+        }
+        let gap = length;
+        let f = (((at - start).0 as f64 / gap.0 as f64) as f32).clamp(0.0, 1.0);
+        let (a, b) = (self.tween_picture(&k, &first, shrink), self.tween_picture(&k, &second, shrink));
+        let flow = |t: &Tween| match &t.flow {
+            Some((x, y, flow)) if Arc::ptr_eq(x, &first) && Arc::ptr_eq(y, &second) => Some(flow.clone()),
+            _ => None,
+        };
+        let mut flowed = None;
+        let img = if f < ON_A_FRAME {
+            a.clone()
+        } else if f > 1.0 - ON_A_FRAME {
+            b.clone()
+        } else if how == Between::Flow && (a.width, a.height) == (b.width, b.height) {
+            let flow = match self.tween.lock().expect("tween lock").get(&k).and_then(flow) {
+                Some(flow) => flow,
+                None => Arc::new(between::flow(&a, &b)),
+            };
+            let img = Arc::new(between::between(&a, &b, &flow, f));
+            flowed = Some(flow);
+            img
+        } else if (a.width, a.height) == (b.width, b.height) {
+            Arc::new(between::blend(&a, &b, f))
+        } else {
+            a.clone()
+        };
+        let mut tween = self.tween.lock().expect("tween lock");
+        let t = tween.entry(k).or_default();
+        if let Some(flow) = flowed {
+            t.flow = Some((first.clone(), second.clone(), flow));
+        }
+        t.frames = vec![(first, a), (second, b)];
+        t.made.push((at, how, img.clone()));
+        if t.made.len() > TWEEN_PICTURES {
+            t.made.remove(0);
+        }
+        Ok(Some(img))
+    }
+
     fn yuv(&self, _: &str, asset: &Asset, at: Tick) -> Result<Option<Arc<Yuv>>, String> {
         if asset.kind != AssetKind::Video {
             return Ok(None);
@@ -514,6 +610,16 @@ impl MediaSource for Footage {
     }
 }
 
+/// The picture of a decoded frame, `shrink` times smaller each way.
+fn converted(frame: &filmcraft_frame::VideoFrame, shrink: u32) -> Image {
+    if shrink > 1 {
+        let (w, h, bytes) = shrunk::srgba8(frame, shrink as usize);
+        Image::from_srgba8(w, h, &bytes)
+    } else {
+        Image::from_srgba8(frame.width, frame.height, &frame.to_rgba8())
+    }
+}
+
 /// A decoded frame's planes as they are, when the compositor's shader can convert them: 8-bit,
 /// no alpha, a display (BT.709 or sRGB) transfer.
 fn as_yuv(frame: &filmcraft_frame::VideoFrame) -> Option<Yuv> {
@@ -535,6 +641,32 @@ fn as_yuv(frame: &filmcraft_frame::VideoFrame) -> Option<Yuv> {
 }
 
 impl Footage {
+    /// How long one frame of `asset` (a video) lasts, when the file says.
+    pub fn frame_length(&self, asset: &Asset) -> Option<Tick> {
+        let src = self.source(asset)?;
+        let rate = src.info().video.as_ref()?.frame_rate;
+        let rate = FrameRate { num: rate.num as u32, den: rate.den as u32 };
+        rate.is_valid().then(|| rate.frame_duration())
+    }
+
+    /// The frame of `asset` (a video) at source instant `at`, small and grey, its longer side
+    /// about [`steady::SIDE`]: what the camera's movement is measured on. `Ok(None)` when the file
+    /// is offline.
+    pub fn gray(&self, asset: &Asset, at: Tick) -> Result<Option<steady::Gray>, String> {
+        let Some(frame) = self.frame(asset, at)? else { return Ok(None) };
+        let longer = frame.width.max(frame.height);
+        // the decoder's own planes shrunk first, where that is enough
+        let shrink = [8u32, 4, 2].into_iter().find(|s| longer / s >= steady::SIDE).unwrap_or(1);
+        let (w, h, bytes) = if shrink > 1 {
+            shrunk::srgba8(&frame, shrink as usize)
+        } else {
+            (frame.width, frame.height, frame.to_rgba8())
+        };
+        let to_height = (u64::from(h) * u64::from(steady::SIDE) / u64::from(w.max(h).max(1))).max(1) as u32;
+        let small = Thumbnail::shrink(w, h, &bytes, to_height);
+        Ok(Some(steady::Gray::from_rgba(small.width as usize, small.height as usize, &small.rgba)))
+    }
+
     /// The decoded frame of `asset` (a video) at `at`; past the end the last frame holds.
     fn frame(&self, asset: &Asset, at: Tick) -> Result<Option<Arc<filmcraft_frame::VideoFrame>>, String> {
         let Some(src) = self.source(asset) else { return Ok(None) };
@@ -553,14 +685,19 @@ impl Footage {
         {
             return Ok(Some(img.clone()));
         }
-        let img = Arc::new(if shrink > 1 {
-            let (w, h, bytes) = shrunk::srgba8(&frame, shrink as usize);
-            Image::from_srgba8(w, h, &bytes)
-        } else {
-            Image::from_srgba8(frame.width, frame.height, &frame.to_rgba8())
-        });
+        let img = Arc::new(converted(&frame, shrink));
         self.last.lock().expect("frame lock").insert(k.to_string(), (frame, img.clone()));
         Ok(Some(img))
+    }
+
+    /// The picture of `frame` for a picture made between frames: the one kept under `k` when it
+    /// is one of the last two, else made now.
+    fn tween_picture(&self, k: &str, frame: &Arc<filmcraft_frame::VideoFrame>, shrink: u32) -> Arc<Image> {
+        let kept = |t: &Tween| t.frames.iter().find(|(held, _)| Arc::ptr_eq(held, frame)).map(|(_, img)| img.clone());
+        if let Some(img) = self.tween.lock().expect("tween lock").get(k).and_then(kept) {
+            return img;
+        }
+        Arc::new(converted(frame, shrink))
     }
 
     /// Makes `asset`'s picture at source instant `at` ahead of time, on the calling thread, so a

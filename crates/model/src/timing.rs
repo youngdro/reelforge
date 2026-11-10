@@ -20,6 +20,45 @@ pub struct CurvePoint {
     pub m: f64,
 }
 
+/// What a video clip shows between two frames of its file (剪映's 补帧). Slowed down, or on a
+/// canvas of more frames a second than the file has, a clip has instants to show that the file
+/// has no frame for.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum Inbetween {
+    /// The frame before, held: slow motion in steps.
+    #[default]
+    Repeat,
+    /// The frames before and after, mixed (帧融合): smooth, with things that move showing twice.
+    Blend,
+    /// A frame made in between (光流): what moved is followed and drawn part of the way.
+    Flow,
+}
+
+impl Inbetween {
+    /// Every way, in menu order.
+    pub const ALL: [Inbetween; 3] = [Inbetween::Repeat, Inbetween::Blend, Inbetween::Flow];
+
+    /// The id commands use.
+    pub fn name(self) -> &'static str {
+        match self {
+            Inbetween::Repeat => "repeat",
+            Inbetween::Blend => "blend",
+            Inbetween::Flow => "flow",
+        }
+    }
+
+    /// The way with this id.
+    pub fn parse(s: &str) -> Option<Inbetween> {
+        Inbetween::ALL.into_iter().find(|p| p.name() == s)
+    }
+
+    /// Whether frames are shown as the file has them.
+    pub fn is_repeat(&self) -> bool {
+        *self == Inbetween::Repeat
+    }
+}
+
 /// The lowest and highest multiplier a curve may use.
 pub const CURVE_RANGE: (f64, f64) = (0.1, 10.0);
 

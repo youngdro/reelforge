@@ -66,6 +66,8 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "encode.gif/1",
     "encode.size/1",
     "flip/1",
+    "frames.blend/1",
+    "frames.flow/1",
     "key.chroma@1",
     "mask.shape/1",
     "mask.shape/2",
@@ -286,7 +288,12 @@ mod tests {
                 probe: Some(Probe { width: Some(400), height: Some(200), duration: None }),
             },
         );
-        s.layers[0].content = LayerContent::Media { asset: "v".into(), time: TimeMap::default(), fit: Fit::Contain };
+        s.layers[0].content = LayerContent::Media {
+            asset: "v".into(),
+            time: TimeMap::default(),
+            fit: Fit::Contain,
+            between: Default::default(),
+        };
         s.layers[0].transform.scale = Animated::Constant(1.0);
         let asked = Asked(Default::default());
         let ask = |scale: f32, quality: Quality| {
@@ -302,6 +309,63 @@ mod tests {
         assert_eq!(ask(4.0, Quality::Draft), 2);
         // a final frame always has the whole picture
         assert_eq!(ask(1.0, Quality::Final), 1);
+    }
+
+    #[test]
+    fn a_layer_that_wants_pictures_between_frames_asks_for_them_at_its_instant() {
+        use reelforge_renderspec::Between;
+        /// Answers a white picture for one made between frames and a black one otherwise, and
+        /// remembers what was asked.
+        struct Made(std::sync::Mutex<Vec<(Tick, Between, u32)>>);
+        impl MediaSource for Made {
+            fn picture(&self, _: &str, _: &Asset, _: Tick) -> Result<Option<Arc<Image>>, String> {
+                Ok(Some(Arc::new(Image::filled(4, 2, [0.0, 0.0, 0.0, 1.0]))))
+            }
+            fn picture_between(
+                &self,
+                _: &str,
+                _: &Asset,
+                at: Tick,
+                how: Between,
+                shrink: u32,
+            ) -> Result<Option<Arc<Image>>, String> {
+                self.0.lock().unwrap().push((at, how, shrink));
+                Ok(Some(Arc::new(Image::filled(4, 2, [1.0; 4]))))
+            }
+        }
+        let mut s = spec();
+        s.assets.insert(
+            "v".into(),
+            Asset {
+                kind: AssetKind::Video,
+                sha256: "3".repeat(64),
+                uri: "file:///v.mp4".into(),
+                of: None,
+                probe: None,
+            },
+        );
+        let quarter = TimeMap::new(Tick::SECOND, 0.25);
+        s.layers[0].content =
+            LayerContent::Media { asset: "v".into(), time: quarter.clone(), fit: Fit::Stretch, between: Between::Flow };
+        s.layers[0].transform = Transform::default();
+        assert!(s.required_features().contains("frames.flow/1") && SUPPORTED_FEATURES.contains(&"frames.flow/1"));
+        let made = Made(Default::default());
+        let t = Tick(Tick::SECOND.0 / 10);
+        let (img, _) = render_frame(&s, t, 1.0, &made, Quality::Final).unwrap();
+        assert_eq!(px(&img, 8, 10), [255, 255, 255, 255]);
+        // the source instant the layer's time gives, a fortieth of a second in: between two frames
+        assert_eq!(*made.0.lock().unwrap(), [(Tick::SECOND + Tick(t.0 / 4), Between::Flow, 1)]);
+        // frames as they are: the picture of that instant, as before
+        s.layers[0].content =
+            LayerContent::Media { asset: "v".into(), time: quarter, fit: Fit::Stretch, between: Between::Nearest };
+        assert!(!s.required_features().iter().any(|f| f.starts_with("frames.")));
+        let (img, _) = render_frame(&s, t, 1.0, &made, Quality::Final).unwrap();
+        assert_eq!(px(&img, 8, 10), [0, 0, 0, 255]);
+        assert_eq!(made.0.lock().unwrap().len(), 1);
+        // a source that makes none shows the frame of that instant
+        let asked = Asked(Default::default());
+        let between = asked.picture_between("v", &s.assets["v"], t, Between::Blend, 2).unwrap();
+        assert!(between.is_some() && *asked.0.lock().unwrap() == [2]);
     }
 
     #[test]
@@ -377,7 +441,12 @@ mod tests {
             "p".into(),
             Asset { kind: AssetKind::Image, sha256: "3".repeat(64), uri: "p.png".into(), of: None, probe: None },
         );
-        s.layers[0].content = LayerContent::Media { asset: "p".into(), time: TimeMap::default(), fit: Fit::Stretch };
+        s.layers[0].content = LayerContent::Media {
+            asset: "p".into(),
+            time: TimeMap::default(),
+            fit: Fit::Stretch,
+            between: Default::default(),
+        };
         s.layers[0].transform = Transform::default();
         let at = |s: &RenderSpec, x| px(&render_frame(s, Tick::ZERO, 1.0, &Halves, Quality::Final).unwrap().0, x, 10);
         assert_eq!(at(&s, 8), [255, 255, 255, 255]);
@@ -427,7 +496,12 @@ mod tests {
                 probe: None,
             },
         );
-        s.layers[0].content = LayerContent::Media { asset: "v".into(), time: TimeMap::default(), fit: Fit::Contain };
+        s.layers[0].content = LayerContent::Media {
+            asset: "v".into(),
+            time: TimeMap::default(),
+            fit: Fit::Contain,
+            between: Default::default(),
+        };
         assert!(matches!(
             render_frame(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Final),
             Err(RenderError::Missing { .. })

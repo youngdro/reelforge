@@ -2213,3 +2213,118 @@ fn recognised_lines_become_captions() {
     let missing = s.execute("captions.add", &json!({"cues": [{"start": 0, "text": "x"}]})).unwrap_err();
     assert!(missing.to_string().contains("cues[0]") && missing.to_string().contains("end"), "{missing}");
 }
+
+#[test]
+fn a_video_is_stabilized_with_a_measured_path_and_how_much_is_changed_alone() {
+    let mut s = Session::default();
+    let a = add_video(&mut s, 6.0);
+    let steady = |s: &Session| s.project().clip(&a).unwrap().1.steady.clone();
+    let path: Vec<[f64; 3]> = (0..60).map(|i| [0.01 * (f64::from(i) * 1.9).sin(), 0.0, 0.25]).collect();
+
+    // how much cannot be set before the camera's path is known; a path needs its step
+    let e = s.execute("clip.setStabilize", &json!({"clip": a, "amount": 0.5})).unwrap_err().to_string();
+    assert!(e.contains("clip.stabilize"), "{e}");
+    assert!(s.execute("clip.setStabilize", &json!({"clip": a, "amount": 0.5, "path": path})).is_err());
+    let step = json!({"seconds": 1.0 / 30.0});
+    let r = s
+        .execute(
+            "clip.setStabilize",
+            &json!({"clip": a, "amount": 0.5, "path": path, "from": {"seconds": 1}, "step": step}),
+        )
+        .unwrap();
+    assert_eq!(r["samples"], 60);
+    let set = steady(&s).unwrap();
+    assert_eq!((set.amount, set.from, set.path.len()), (0.5, Tick::SECOND, 60));
+    assert_eq!(set.path[1], [0.01 * 1.9f64.sin() as f32, 0.0, 0.25]);
+    // how much is changed without the path being given again
+    s.execute("clip.setStabilize", &json!({"clip": a, "amount": 1})).unwrap();
+    assert_eq!((steady(&s).unwrap().amount, steady(&s).unwrap().path), (1.0, set.path.clone()));
+    for bad in [
+        json!({"amount": 1.5}),
+        json!({"amount": 0.5, "path": [[0, 0]], "step": step}),
+        json!({"amount": 0.5, "path": [], "step": step}),
+        json!({"amount": 0.5, "path": "shaky", "step": step}),
+        json!({"amount": 0.5, "path": [[0, 0, 0]], "step": {"seconds": 0}}),
+        json!({}),
+    ] {
+        let mut params = bad.clone();
+        params["clip"] = json!(a);
+        assert!(s.execute("clip.setStabilize", &params).is_err(), "{bad}");
+    }
+    assert_eq!(steady(&s).unwrap().path, set.path);
+    // it is saved with the clip, and both halves of a cut keep it
+    let saved = serde_json::to_value(s.project()).unwrap();
+    let back: reelforge_model::Project = serde_json::from_value(saved).unwrap();
+    assert_eq!(back.clip(&a).unwrap().1.steady, steady(&s));
+    s.execute("clip.split", &json!({"clip": a, "at": {"seconds": 2}})).unwrap();
+    let halves: Vec<_> = s.project().tracks[0].clips.iter().map(|c| c.steady.clone()).collect();
+    assert_eq!(halves, vec![steady(&s), steady(&s)]);
+    s.execute("edit.undo", &json!({})).unwrap();
+    // the layer is moved a key a frame, and drawn larger
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let t = &spec["layers"][0]["transform"];
+    assert!(t["position"].as_array().is_some_and(|k| k.len() > 100 && k[40]["v"][0] != k[41]["v"][0]));
+    // only a video on a video track: not a colour, not a picture
+    let red = add_red(&mut s, 10.0, 2.0);
+    let still = import(&mut s, "p.png", "image", None);
+    let v = video_track(&s);
+    let pic = s.execute("clip.add", &json!({"track": v, "media": still, "start": {"seconds": 20}})).unwrap();
+    for clip in [red.as_str(), pic["clip"].as_str().unwrap()] {
+        let e =
+            s.execute("clip.setStabilize", &json!({"clip": clip, "amount": 0.5, "path": [[0, 0, 0]], "step": step}));
+        assert!(e.unwrap_err().to_string().contains("only a video"), "{clip}");
+    }
+    // another file in its place was shot another way: the path goes with the old one
+    let other = import(&mut s, "other.mp4", "video", Some(20.0));
+    s.execute("clip.replace", &json!({"clip": a, "media": other})).unwrap();
+    assert_eq!(steady(&s), None);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(steady(&s).unwrap().amount, 1.0);
+    // 0 takes it off, and undo brings it back
+    s.execute("clip.setStabilize", &json!({"clip": a, "amount": 0})).unwrap();
+    assert_eq!(steady(&s), None);
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert_eq!(spec["layers"][0]["transform"]["position"], json!([0.0, 0.0]));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(steady(&s).unwrap().path.len(), 60);
+}
+
+#[test]
+fn a_video_is_asked_for_frames_between_its_own() {
+    let mut s = Session::default();
+    let a = add_video(&mut s, 6.0);
+    let frames = |s: &Session, clip: &str| match &s.project().clip(clip).unwrap().1.content {
+        ClipContent::Media { frames, .. } => *frames,
+        _ => unreachable!(),
+    };
+    assert_eq!(frames(&s, &a), reelforge_model::Inbetween::Repeat);
+    // with the speed, or alone: the length stays as the speed left it
+    let r = s.execute("clip.setSpeed", &json!({"clip": a, "speed": 0.5, "frames": "flow"})).unwrap();
+    assert_eq!((r["frames"].as_str(), r["duration"].clone()), (Some("flow"), json!(Tick::SECOND * 12)));
+    assert_eq!(frames(&s, &a), reelforge_model::Inbetween::Flow);
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert_eq!(spec["layers"][0]["content"]["between"], "flow");
+    assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("frames.flow/1")));
+    s.execute("clip.setSpeed", &json!({"clip": a, "frames": "blend"})).unwrap();
+    assert_eq!(s.project().clip(&a).unwrap().1.duration, Tick::SECOND * 12);
+    // a speed set later leaves it; so does another file in the clip's place
+    s.execute("clip.setSpeed", &json!({"clip": a, "speed": 1})).unwrap();
+    let other = import(&mut s, "other.mp4", "video", Some(20.0));
+    s.execute("clip.replace", &json!({"clip": a, "media": other})).unwrap();
+    assert_eq!(frames(&s, &a), reelforge_model::Inbetween::Blend);
+    // it is saved with the clip, and left out of the file while frames show as they are
+    let saved = serde_json::to_string(&*s.project()).unwrap();
+    assert!(saved.contains(r#""frames":"blend""#), "{saved}");
+    s.execute("clip.setSpeed", &json!({"clip": a, "frames": "repeat"})).unwrap();
+    assert!(!serde_json::to_string(&*s.project()).unwrap().contains("frames"));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(frames(&s, &a), reelforge_model::Inbetween::Blend);
+    // only a way there is, and only a video: a picture and a sound have no frames to be between
+    assert!(s.execute("clip.setSpeed", &json!({"clip": a, "frames": "smooth"})).is_err());
+    assert!(s.execute("clip.setSpeed", &json!({"clip": a})).is_err());
+    let still = import(&mut s, "p.png", "image", None);
+    let v = video_track(&s);
+    let pic = s.execute("clip.add", &json!({"track": v, "media": still, "start": {"seconds": 20}})).unwrap();
+    let e = s.execute("clip.setSpeed", &json!({"clip": pic["clip"], "frames": "flow"})).unwrap_err().to_string();
+    assert!(e.contains("only a video"), "{e}");
+}

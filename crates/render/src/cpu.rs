@@ -67,7 +67,7 @@ pub(crate) fn resolve(
     };
     Ok(match &layer.source {
         PlannedSource::Solid(color) => Resolved::Flat(*color, None),
-        PlannedSource::Media { asset, at } => {
+        PlannedSource::Media { asset, at, between } => {
             let Some(def) = spec.assets.get(asset) else {
                 return Err(RenderError::Media(format!("unknown asset {asset:?}")));
             };
@@ -81,6 +81,7 @@ pub(crate) fn resolve(
             }
             if takes.yuv
                 && fit == 1
+                && between.is_nearest()
                 && blur_radius(layer).is_none()
                 && let Some(y) = media.yuv(asset, def, *at).map_err(RenderError::Media)?
                 && y.is_whole()
@@ -88,8 +89,13 @@ pub(crate) fn resolve(
                 return Ok(Resolved::Yuv(y));
             }
             let shrink = if quality == Quality::Draft { draft_shrink(def, plan, layer).max(fit) } else { fit };
-            let pic =
-                if shrink > 1 { media.picture_shrunk(asset, def, *at, shrink) } else { media.picture(asset, def, *at) };
+            let pic = if !between.is_nearest() {
+                media.picture_between(asset, def, *at, *between, shrink)
+            } else if shrink > 1 {
+                media.picture_shrunk(asset, def, *at, shrink)
+            } else {
+                media.picture(asset, def, *at)
+            };
             match pic.map_err(RenderError::Media)? {
                 Some(pic) => match blur_radius(layer) {
                     Some(r) => Resolved::Picture(std::sync::Arc::new(crate::image::blurred(&pic, r))),

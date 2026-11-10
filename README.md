@@ -55,6 +55,14 @@ everything set on it; a picture of another shape is scaled to cover the frame, a
 to fill), and `clip.replace` swaps the file of any one clip. In the editor they are on the drafts page and
 in the Templates tab on the left: pick one, then drop your files in. Any timeline becomes a template by
 marking its picture clips as slots (`template.mark`, or a clip's menu).
+A shaky shot is held steady (防抖): `clip.stabilize` watches the frames a video clip shows, follows how the
+camera moved from each to the next, and keeps that path with the clip; the picture is then moved and
+turned against the shake and drawn just large enough that its edges stay out of sight. How much goes
+(`clip.setStabilize`, or the Stabilize box by a clip's speed) is changed without watching again: a little
+takes the tremble out and leaves a pan a pan, all of it holds the picture nearly still.
+A slowed clip has instants to show that its file has no frame for (补帧): `"frames"` on `clip.setSpeed`
+(Smoothing, by the clip's speed) holds the frame before (`repeat`), mixes the two around it (`blend`, 帧融合),
+or makes a frame in between by following what moved from the one to the other (`flow`, 光流).
 See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Video and audio codecs and containers are FilmCraft's clean-room, pure-Rust crates

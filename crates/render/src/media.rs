@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use reelforge_renderspec::{Asset, AssetKind};
+use reelforge_renderspec::{Asset, AssetKind, Between};
 use reelforge_time::Tick;
 
 use crate::lut::Lut;
@@ -29,6 +29,22 @@ pub trait MediaSource {
     ) -> Result<Option<Arc<Image>>, String> {
         let _ = shrink;
         self.picture(asset_id, asset, at)
+    }
+
+    /// The picture of a video `asset` at source time `at`, made from the two frames `at` lies
+    /// between as `how` says (features `frames.blend/1`, `frames.flow/1`); `shrink` is as for
+    /// [`picture_shrunk`](Self::picture_shrunk), 1 for full size. The default shows the frame of
+    /// that instant: what a source that cannot make pictures in between answers.
+    fn picture_between(
+        &self,
+        asset_id: &str,
+        asset: &Asset,
+        at: Tick,
+        how: Between,
+        shrink: u32,
+    ) -> Result<Option<Arc<Image>>, String> {
+        let _ = how;
+        if shrink > 1 { self.picture_shrunk(asset_id, asset, at, shrink) } else { self.picture(asset_id, asset, at) }
     }
 
     /// The picture of a video `asset` at source time `at` as the decoder made it, for a compositor
