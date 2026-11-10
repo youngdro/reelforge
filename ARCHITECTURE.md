@@ -112,7 +112,7 @@ In rough priority order for short videos:
    own samples so slices still match the whole; a clip's `voice` in the model is lowered to these). Tools that listen before they
    edit (`reelforge_engine::listen`, over `reelforge_media::analysis`: BS.1770 loudness, beats, where a voice is heard, a noise
    floor) read a project and its media and answer with ordinary commands to run as one `edit.batch`; the server exposes them as
-   the operations `audio.normalize`, `audio.beats`, `audio.duck` and `audio.denoise`, and the editor calls them with the media it
+   the operations `audio.normalize`, `audio.beats`, `audio.duck`, `audio.denoise` and `audio.cutPauses` (the pauses in someone speaking, heard as levels a fiftieth of a second at a time and cut with `timeline.cut`, which takes stretches of time out of every track at once; `captions.fillers` finds the captions that are only a filler word, which are such stretches too), and the editor calls them with the media it
    holds. One looks instead of listening: `clip.pickChromaKey` reads the frame a clip shows (`reelforge_media::picture`) and keys
    out the colour most of its border has. A composition's own mix is made the same way and added under the gain of the clip
    that plays it. The export's mix (`reelforge_media::export::mix`) plays in the

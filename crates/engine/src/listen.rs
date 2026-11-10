@@ -1,6 +1,6 @@
 //! Tools that listen or look before they edit: level a clip's loudness, mark a song's beats,
-//! lower music while a voice speaks, measure a clip's background noise, find the colour of a
-//! green screen.
+//! lower music while a voice speaks, measure a clip's background noise, take the pauses out of
+//! someone speaking, find the colour of a green screen.
 //!
 //! A session has no sound to listen to and no picture to look at, only a project; whoever holds
 //! the media does ([`plan`] takes it). Each tool reads the project, listens to the clips it is
@@ -12,7 +12,7 @@ use reelforge_compile::{CompileOptions, compile};
 use reelforge_media::Footage;
 use reelforge_media::analysis::{self, RATE};
 use reelforge_media::export::mix;
-use reelforge_model::{Clip, Denoise, Project, Prop};
+use reelforge_model::{Clip, Denoise, Project, Prop, TrackKind};
 use reelforge_renderspec::Animated;
 use reelforge_time::{TICKS_PER_SECOND, Tick};
 use serde_json::{Value, json};
@@ -30,7 +30,7 @@ pub struct Tool {
 }
 
 /// Every listening tool.
-pub const TOOLS: [Tool; 5] = [
+pub const TOOLS: [Tool; 6] = [
     Tool {
         name: "audio.normalize",
         title: "Level Loudness",
@@ -50,6 +50,11 @@ pub const TOOLS: [Tool; 5] = [
         name: "audio.denoise",
         title: "Reduce Noise",
         doc: "Measures a clip's steady background noise (hiss, hum, a fan) from its quietest moments and takes out `amount` of it, 0.7 by default (clip.setDenoise holds the result; amount 0 turns it off).",
+    },
+    Tool {
+        name: "audio.cutPauses",
+        title: "Cut Pauses",
+        doc: "Listens to the clips someone speaks in (`clips`; by default the sounding clips on video tracks, or every sounding clip when there are none) and takes the pauses out of the timeline: every stretch of at least `minPause` seconds (0.5 by default) in which nothing is heard, less `keep` seconds (0.1 by default) left beside the words so none is clipped. They are cut from every track that is not locked, except audio tracks none of those clips is on, so music plays on unbroken (`tracks` names the tracks instead; see timeline.cut). With `apply` false the pauses are only listed.",
     },
     Tool {
         name: "clip.pickChromaKey",
@@ -99,6 +104,16 @@ pub fn tool_schema(name: &str) -> Option<Value> {
                 "amount": input_schema("clip.setDenoise")?["properties"]["amount"].clone()
             }),
             &["clip"],
+        ),
+        "audio.cutPauses" => object(
+            json!({
+                "clips": clips("The clips someone speaks in; by default the sounding clips on video tracks, or every sounding clip when there are none."),
+                "minPause": {"type": "number", "minimum": 0.2, "maximum": 10, "description": "The shortest silence that counts as a pause, in seconds; 0.5 by default."},
+                "keep": {"type": "number", "minimum": 0, "maximum": 1, "description": "How much of each pause stays beside the words, in seconds; 0.1 by default."},
+                "tracks": input_schema("timeline.cut")?["properties"]["tracks"].clone(),
+                "apply": {"type": "boolean", "description": "False only lists the pauses and cuts nothing; true by default."}
+            }),
+            &[],
         ),
         "clip.pickChromaKey" => {
             let mut at = input_schema("clip.split")?["properties"]["at"].clone();
@@ -211,6 +226,7 @@ pub fn plan(name: &str, project: &Project, media: &Footage, params: &Value) -> R
         "audio.beats" => beats(project, media, params),
         "audio.duck" => duck(project, media, params),
         "audio.denoise" => denoise(project, media, params),
+        "audio.cutPauses" => cut_pauses(project, media, params),
         "clip.pickChromaKey" => pick_chroma_key(project, media, params),
         other => Err(format!("unknown tool {other:?}")),
     }
@@ -261,6 +277,107 @@ fn normalize(project: &Project, media: &Footage, params: &Value) -> Result<Plan,
         return Err("no clip has sound".into());
     }
     Ok(Plan { label: "Level Loudness", steps, found: json!({ "target": target, "clips": found }) })
+}
+
+fn cut_pauses(project: &Project, media: &Footage, params: &Value) -> Result<Plan, String> {
+    let least = number(params, "minPause", 0.5, (0.2, 10.0))?;
+    // to the millisecond: 0.1 as a float is a hair more than a tenth
+    let keep =
+        Tick((f64::from(number(params, "keep", 0.1, (0.0, 1.0))?) * 1000.0).round() as i64 * (TICKS_PER_SECOND / 1000));
+    let apply = params.get("apply").and_then(Value::as_bool).unwrap_or(true);
+    let sounding: Vec<String> = compile(project, &CompileOptions { encode: false })
+        .map_err(|e| e.to_string())?
+        .audio
+        .into_iter()
+        .map(|a| a.id)
+        .collect();
+    let ids = match ids_param(params, "clips")? {
+        Some(ids) => {
+            for id in &ids {
+                clip_of(project, id)?;
+            }
+            ids
+        }
+        None => {
+            let on_video =
+                |id: &&String| project.clip(id).is_some_and(|(ti, _)| project.tracks[ti].kind == TrackKind::Video);
+            let spoken: Vec<String> = sounding.iter().filter(on_video).cloned().collect();
+            if spoken.is_empty() { sounding.clone() } else { spoken }
+        }
+    };
+    // where they play, as stretches of the timeline
+    let mut regions: Vec<(Tick, Tick)> = Vec::new();
+    let mut ranges: Vec<(Tick, Tick)> = ids
+        .iter()
+        .filter(|id| sounding.contains(id))
+        .filter_map(|id| project.clip(id).map(|(_, c)| (c.start, c.end())))
+        .collect();
+    ranges.sort();
+    for (a, b) in ranges {
+        match regions.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => regions.push((a, b)),
+        }
+    }
+    let (Some(first), Some(last)) = (regions.first(), regions.last()) else {
+        return Err(if ids.is_empty() { "no clip has sound".into() } else { "none of these clips has sound".into() });
+    };
+    let (from, to) = (first.0, last.1);
+    // how loud they are, heard a few minutes at a time
+    let mut db = Vec::new();
+    let mut at = from;
+    while at < to {
+        let len = (to - at).min(LIMIT);
+        let sound = sound_of(project, media, &ids, true, at, len)?;
+        db.extend(analysis::levels(&analysis::mono(&sound), RATE));
+        at += len;
+    }
+    let per = TICKS_PER_SECOND / i64::from(analysis::LEVELS_PER_SECOND);
+    let quiet = analysis::quiet_spans(&db, (least * analysis::LEVELS_PER_SECOND as f32).round() as usize)
+        .ok_or("nothing is heard in these clips")?;
+    let fps = project.canvas.fps;
+    let shortest = Tick((f64::from(least) * 1000.0).round() as i64 * (TICKS_PER_SECOND / 1000));
+    let mut pauses: Vec<(Tick, Tick)> = Vec::new();
+    for (qa, qb) in quiet {
+        let (qa, qb) = (from + Tick(qa as i64 * per), (from + Tick(qb as i64 * per)).min(to));
+        for &(ra, rb) in &regions {
+            let (a, b) = (qa.max(ra), qb.min(rb));
+            if b - a < shortest {
+                continue;
+            }
+            // quiet that runs to where the clips start or stop goes whole; beside words, some stays
+            let a = if qa <= ra { a } else { a + keep };
+            let b = if qb >= rb { b } else { b - keep };
+            let (a, b) = (fps.snap(a), fps.snap(b));
+            if b - a >= fps.frame_duration() {
+                pauses.push((a, b));
+            }
+        }
+    }
+    // music on a track of its own plays on unbroken
+    let tracks = match ids_param(params, "tracks")? {
+        Some(tracks) => Some(tracks),
+        None => {
+            let cut = |t: &&reelforge_model::Track| {
+                !t.locked && (t.kind != TrackKind::Audio || t.clips.iter().any(|c| ids.contains(&c.id)))
+            };
+            let cut: Vec<String> = project.tracks.iter().filter(cut).map(|t| t.id.clone()).collect();
+            let all = project.tracks.iter().filter(|t| !t.locked).count();
+            (cut.len() < all).then_some(cut)
+        }
+    };
+    let time = pauses.iter().fold(Tick::ZERO, |sum, (a, b)| sum + (*b - *a));
+    let listed: Vec<Value> = pauses.iter().map(|(a, b)| json!({ "from": a.0, "to": b.0 })).collect();
+    let mut steps = Vec::new();
+    if apply && !pauses.is_empty() {
+        let mut cut = json!({ "ranges": listed });
+        if let Some(tracks) = &tracks {
+            cut["tracks"] = json!(tracks);
+        }
+        steps.push(step("timeline.cut", cut));
+    }
+    let found = json!({ "clips": ids, "pauses": listed, "time": time.0, "seconds": tenth(time.seconds() as f32), "tracks": tracks });
+    Ok(Plan { label: "Cut Pauses", steps, found })
 }
 
 fn beats(project: &Project, media: &Footage, params: &Value) -> Result<Plan, String> {

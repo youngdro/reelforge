@@ -51,6 +51,10 @@ pub(crate) struct TimelineView {
     menu_at: Tick,
     /// How tall a track's row is, in points.
     pub(crate) row: f32,
+    /// Stretches about to be cut out of the timeline, shown across the lanes of the tracks they
+    /// are cut from: every track that is not locked, or the ones named.
+    pub(crate) cuts: Vec<(Tick, Tick)>,
+    pub(crate) cut_tracks: Option<Vec<String>>,
 }
 
 /// The heights a row cycles through.
@@ -136,6 +140,8 @@ impl Default for TimelineView {
             menu_marker: None,
             menu_at: Tick::ZERO,
             row: ROW,
+            cuts: Vec::new(),
+            cut_tracks: None,
         }
     }
 }
@@ -695,6 +701,25 @@ impl TimelineView {
                 [egui::pos2(x, ruler.bottom()), egui::pos2(x, rect.bottom())],
                 Stroke::new(1.0, color::ACCENT),
             );
+        }
+
+        // What is about to be cut out.
+        let on_lanes = painter.with_clip_rect(lanes);
+        for (a, b) in &self.cuts {
+            let (left, right) = (x_of(*a), x_of(*b).max(x_of(*a) + 1.0));
+            let mark = Rect::from_min_max(egui::pos2(left, ruler.bottom() - 3.0), egui::pos2(right, ruler.bottom()));
+            on_lanes.rect_filled(mark, 0.0, color::PLAYHEAD);
+            for (row, track) in order.iter().map(|&i| &p.tracks[i]).enumerate() {
+                let cut = match &self.cut_tracks {
+                    Some(ids) => ids.contains(&track.id),
+                    None => !track.locked,
+                };
+                if cut {
+                    let top = rect.top() + RULER + row as f32 * row_h;
+                    let band = Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, top + row_h));
+                    on_lanes.rect_filled(band, 0.0, color::PLAYHEAD.gamma_multiply(0.3));
+                }
+            }
         }
 
         // Playhead.

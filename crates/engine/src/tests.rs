@@ -1691,3 +1691,94 @@ fn clips_are_grouped_and_joined_into_a_compound_clip() {
     s.execute("clip.uncompound", &json!({"clip": placed["clip"]})).unwrap();
     assert!(s.project().tracks_of(&outro).is_some());
 }
+
+#[test]
+fn time_is_cut_out_of_every_track_and_filler_captions_go_with_theirs() {
+    let mut s = Session::default();
+    let v = video_track(&s);
+    let track = |s: &Session, kind: TrackKind| s.project().tracks.iter().find(|t| t.kind == kind).unwrap().id.clone();
+    let (text, sound) = (track(&s, TrackKind::Text), track(&s, TrackKind::Audio));
+    let id = |v: &serde_json::Value, key: &str| v[key].as_str().unwrap().to_string();
+    let secs = |x: f64| json!({ "seconds": x });
+    let t = |x: f64| Tick::from_seconds(x);
+    let import = |s: &mut Session, name: &str, kind: &str, sha: &str| {
+        let m =
+            json!({"path": format!("/nowhere/{name}"), "kind": kind, "duration": secs(10.0), "sha256": sha.repeat(32)});
+        id(&s.execute("media.import", &m).unwrap()["media"], "id")
+    };
+    // ten seconds of someone talking over music, with what is said as captions
+    let (talk, song) = (import(&mut s, "talk.mp4", "video", "ab"), import(&mut s, "song.wav", "audio", "cd"));
+    s.execute("clip.add", &json!({"track": v, "media": talk, "start": 0})).unwrap();
+    s.execute("clip.add", &json!({"track": sound, "media": song, "start": 0})).unwrap();
+    for (words, from, to) in [
+        ("大家好", 0.0, 2.0),
+        ("嗯，那个……", 2.0, 3.0),
+        ("今天讲三件事", 3.0, 6.0),
+        ("Um, you know", 6.0, 7.0),
+        ("就是这样", 7.0, 9.0),
+    ] {
+        let cue = json!({"track": text, "text": words, "start": secs(from), "duration": secs(to - from)});
+        s.execute("clip.add", &cue).unwrap();
+    }
+    s.execute("marker.add", &json!({"at": secs(2.5)})).unwrap();
+    s.execute("marker.add", &json!({"at": secs(8.0)})).unwrap();
+    // what each track holds: (start, end, where it starts in its source)
+    let on = |s: &Session, track: &str| -> Vec<(Tick, Tick, Tick)> {
+        let p = s.project();
+        let clips = p.track(track).unwrap().clips.iter();
+        clips.map(|c| (c.start, c.end(), c.timing().map_or(Tick::ZERO, |m| m.source_in))).collect()
+    };
+    let said = |s: &Session| -> Vec<String> {
+        let p = s.project();
+        let clips = p.track(&text).unwrap().clips.iter();
+        clips.filter_map(|c| serde_json::to_value(&c.content).unwrap()["text"].as_str().map(str::to_string)).collect()
+    };
+    let marks = |s: &Session| s.project().markers.iter().map(|m| m.at).collect::<Vec<_>>();
+
+    // the captions that say nothing
+    let found = s.execute("captions.fillers", &json!({})).unwrap();
+    let texts: Vec<String> = found["fillers"].as_array().unwrap().iter().map(|f| id(f, "text")).collect();
+    assert_eq!(texts, ["嗯，那个……", "Um, you know"]);
+    assert_eq!(found["time"], json!(t(2.0)));
+    assert_eq!(
+        s.execute("captions.fillers", &json!({"words": ["就是这样"]})).unwrap()["fillers"].as_array().unwrap().len(),
+        3
+    );
+
+    // cut from the picture and the captions, and the music plays on
+    let out = s.execute("captions.cutFillers", &json!({"tracks": [v, text]})).unwrap();
+    assert_eq!((&out["removed"], &out["duration"]), (&json!(t(2.0)), &json!(t(10.0))));
+    assert_eq!(on(&s, &v), [(t(0.0), t(2.0), t(0.0)), (t(2.0), t(5.0), t(3.0)), (t(5.0), t(8.0), t(7.0))]);
+    assert_eq!(said(&s), ["大家好", "今天讲三件事", "就是这样"]);
+    assert_eq!(
+        on(&s, &text).iter().map(|c| (c.0, c.1)).collect::<Vec<_>>(),
+        [(t(0.0), t(2.0)), (t(2.0), t(5.0)), (t(5.0), t(7.0))]
+    );
+    assert_eq!(on(&s, &sound), [(t(0.0), t(10.0), t(0.0))]);
+    assert_eq!(marks(&s), [t(2.5), t(8.0)], "markers stay with the music");
+    assert!(s.execute("captions.cutFillers", &json!({})).is_err(), "none is left");
+    // one step back
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(on(&s, &v), [(t(0.0), t(10.0), t(0.0))]);
+
+    // ranges that overlap are one; every track is cut, a clip through a range is cut in two, and
+    // markers move
+    let ranges = json!([{"from": secs(1.0), "to": secs(2.0)}, {"from": secs(1.5), "to": secs(3.0)}]);
+    let out = s.execute("timeline.cut", &json!({"ranges": ranges})).unwrap();
+    assert_eq!(out["ranges"], json!([{"from": t(1.0), "to": t(3.0)}]));
+    assert_eq!((&out["removed"], &out["duration"]), (&json!(t(2.0)), &json!(t(8.0))));
+    assert_eq!(on(&s, &v), [(t(0.0), t(1.0), t(0.0)), (t(1.0), t(8.0), t(3.0))]);
+    assert_eq!(on(&s, &sound), [(t(0.0), t(1.0), t(0.0)), (t(1.0), t(8.0), t(3.0))]);
+    assert_eq!(said(&s), ["大家好", "今天讲三件事", "Um, you know", "就是这样"]);
+    assert_eq!(on(&s, &text)[..2].iter().map(|c| (c.0, c.1)).collect::<Vec<_>>(), [(t(0.0), t(1.0)), (t(1.0), t(4.0))]);
+    assert_eq!(marks(&s), [t(6.0)]);
+    // a locked track is left as it is
+    s.execute("track.set", &json!({"track": sound, "locked": true})).unwrap();
+    s.execute("timeline.cut", &json!({"ranges": [{"from": 0, "to": secs(1.0)}]})).unwrap();
+    assert_eq!(on(&s, &v), [(t(0.0), t(7.0), t(3.0))]);
+    assert_eq!(on(&s, &sound).len(), 2);
+    // and a range is a stretch of time
+    assert!(s.execute("timeline.cut", &json!({"ranges": []})).is_err());
+    assert!(s.execute("timeline.cut", &json!({"ranges": [{"from": secs(2.0), "to": secs(2.0)}]})).is_err());
+    assert!(s.execute("timeline.cut", &json!({"ranges": [{"from": 0, "to": 5}], "tracks": ["t99"]})).is_err());
+}

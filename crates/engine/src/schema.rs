@@ -152,6 +152,20 @@ fn fx(doc: &str) -> Value {
     })
 }
 
+fn track_ids() -> Value {
+    json!({
+        "type": "array", "items": {"type": "string"},
+        "description": "The tracks to cut; every track that is not locked by default. Leave a music track out and it plays on unbroken."
+    })
+}
+
+fn filler_words() -> Value {
+    json!({
+        "type": "array", "items": {"type": "string"},
+        "description": "More words to count as fillers, besides the built-in ones."
+    })
+}
+
 fn object(props: Vec<(&'static str, Value)>, required: &[&str]) -> Value {
     let mut p = serde_json::Map::new();
     for (k, v) in props {
@@ -272,6 +286,36 @@ pub fn input_schema(id: &str) -> Option<Value> {
         ),
         "media.remove" => object(vec![("media", ident("Media id, such as m1."))], &["media"]),
         "timeline.remove" => object(vec![("timeline", ident("Timeline id; the current one by default."))], &[]),
+        "timeline.cut" => object(
+            vec![
+                (
+                    "ranges",
+                    json!({
+                        "type": "array", "minItems": 1,
+                        "description": "The stretches of timeline time to take out; ones that overlap are joined.",
+                        "items": {
+                            "type": "object",
+                            "properties": {"from": time("Where the stretch starts."), "to": time("Where it ends.")},
+                            "required": ["from", "to"], "additionalProperties": false
+                        }
+                    }),
+                ),
+                ("tracks", track_ids()),
+            ],
+            &["ranges"],
+        ),
+        "captions.fillers" => object(
+            vec![("track", ident("A text track; the Captions track by default.")), ("words", filler_words())],
+            &[],
+        ),
+        "captions.cutFillers" => object(
+            vec![
+                ("track", ident("A text track; the Captions track by default.")),
+                ("words", filler_words()),
+                ("tracks", track_ids()),
+            ],
+            &[],
+        ),
         "track.add" => object(
             vec![
                 ("kind", json!({"enum": ["video", "text", "audio"], "description": "What the track holds."})),

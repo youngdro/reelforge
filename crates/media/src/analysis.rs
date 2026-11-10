@@ -189,46 +189,90 @@ pub fn beats(sound: &[f32], rate: u32) -> Option<Beats> {
     Some(Beats { bpm: 6000.0 / period, at })
 }
 
-/// Where something is heard in `sound` (one channel at `rate`): spans of samples louder than
-/// 30 dB under its loudest fifth of a second (and than -50 dBFS, and than a line drawn above its
-/// background noise when it has one), short gaps closed, short blips dropped, each span opened a
-/// little early and held a little late.
-pub fn heard_spans(sound: &[f32], rate: u32) -> Vec<(i64, i64)> {
-    let frame = (rate / 50).max(1) as usize;
-    let db: Vec<f32> = sound
+/// How many levels [`levels`] gives for a second of sound.
+pub const LEVELS_PER_SECOND: u32 = 50;
+
+/// How loud `sound` (one channel at `rate`) is, in dBFS, a fiftieth of a second at a time.
+pub fn levels(sound: &[f32], rate: u32) -> Vec<f32> {
+    let frame = (rate / LEVELS_PER_SECOND).max(1) as usize;
+    sound
         .chunks(frame)
         .map(|c| 10.0 * (c.iter().map(|s| s * s).sum::<f32>() / c.len() as f32 + 1e-12).log10())
-        .collect();
-    if db.is_empty() {
-        return vec![];
-    }
+        .collect()
+}
+
+/// The level above which something is heard among `db` (see [`levels`]): 30 dB under its loudest
+/// fifth of a second, and no lower than -50 dBFS, nor than a line drawn above its background
+/// noise when it has one.
+fn gate(db: &[f32]) -> f32 {
     // the loudest stretch, over ten frames
     let top = db.windows(10.min(db.len())).map(|w| w.iter().sum::<f32>() / w.len() as f32).fold(f32::MIN, f32::max);
     // and the quiet it comes out of: the level a tenth of the frames stay under
-    let mut sorted = db.clone();
+    let mut sorted = db.to_vec();
     sorted.sort_by(f32::total_cmp);
     let floor = sorted[sorted.len() / 10];
     // over a noisy background the line is drawn part of the way up from the noise; a sound with
     // no quiet in it is heard throughout
     let above_noise = if top - floor >= 10.0 { floor + 0.4 * (top - floor) } else { f32::MIN };
-    let gate = (top - 30.0).max(-50.0).max(above_noise);
+    (top - 30.0).max(-50.0).max(above_noise)
+}
+
+/// The stretches of `db` over `gate`, as `(first, one past the last)`: ones no more than `close`
+/// levels apart are one, and ones shorter than `least` are dropped.
+fn over(db: &[f32], gate: f32, close: usize, least: usize) -> Vec<(usize, usize)> {
     let mut spans: Vec<(usize, usize)> = Vec::new();
     for (i, v) in db.iter().enumerate() {
         if *v <= gate {
             continue;
         }
         match spans.last_mut() {
-            // a gap under 0.4 s is a breath, not a pause
-            Some(last) if i - last.1 <= 20 => last.1 = i + 1,
+            Some(last) if i - last.1 <= close => last.1 = i + 1,
             _ => spans.push((i, i + 1)),
         }
     }
-    let lead = 5;
+    spans.retain(|(a, b)| b - a >= least);
     spans
+}
+
+/// Where something is heard in `sound` (one channel at `rate`): spans of samples louder than
+/// 30 dB under its loudest fifth of a second (and than -50 dBFS, and than a line drawn above its
+/// background noise when it has one), short gaps closed, short blips dropped, each span opened a
+/// little early and held a little late.
+pub fn heard_spans(sound: &[f32], rate: u32) -> Vec<(i64, i64)> {
+    let frame = (rate / LEVELS_PER_SECOND).max(1) as usize;
+    let db = levels(sound, rate);
+    if db.is_empty() {
+        return vec![];
+    }
+    let lead = 5;
+    // a gap under 0.4 s is a breath, not a pause
+    over(&db, gate(&db), 20, 8)
         .into_iter()
-        .filter(|(a, b)| b - a >= 8)
         .map(|(a, b)| ((a.saturating_sub(lead) * frame) as i64, (((b + lead) * frame).min(sound.len())) as i64))
         .collect()
+}
+
+/// Where nothing is heard among `db` (see [`levels`]) for at least `least` levels: the pauses in
+/// speech, with the quiet before the first sound and after the last. A click or a breath shorter
+/// than 0.08 s does not end a pause, and a gap under 0.1 s inside a word does not start one.
+/// `None` when nothing is heard at all.
+pub fn quiet_spans(db: &[f32], least: usize) -> Option<Vec<(usize, usize)>> {
+    if db.is_empty() {
+        return None;
+    }
+    let heard = over(db, gate(db), 5, 4);
+    if heard.is_empty() {
+        return None;
+    }
+    let mut quiet = Vec::new();
+    let mut from = 0;
+    for (a, b) in heard.into_iter().chain([(db.len(), db.len())]) {
+        if a - from >= least.max(1) {
+            quiet.push((from, a));
+        }
+        from = b;
+    }
+    Some(quiet)
 }
 
 /// The length of the frames noise is measured and removed in.

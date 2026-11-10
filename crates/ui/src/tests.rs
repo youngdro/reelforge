@@ -568,3 +568,85 @@ fn a_group_is_chosen_as_one_and_a_compound_clip_is_opened_and_left() {
     assert_eq!(app.selection().len(), 2);
     assert!(app.project().timeline_list().iter().all(|t| !t.compound));
 }
+
+#[test]
+fn trimming_speech_lists_pauses_and_fillers_and_cuts_the_ticked_ones() {
+    use crate::timeline::Select;
+    use reelforge_model::TrackKind;
+    // someone speaks from 0.5 s to 1.5 s and from 3 s to 4 s; music plays under all five seconds
+    let spoken = |seconds: f32| {
+        let mut wav = tone_wav(48_000, seconds);
+        for (i, frame) in wav[44..].chunks_mut(4).enumerate() {
+            let t = i as f32 / 48_000.0;
+            if !((0.5..1.5).contains(&t) || (3.0..4.0).contains(&t)) {
+                frame.fill(0);
+            }
+        }
+        wav
+    };
+    let dir = std::env::temp_dir();
+    let (voice, bed) = (
+        dir.join(format!("reelforge-ui-spoken-{}.wav", std::process::id())),
+        dir.join(format!("reelforge-ui-bed-{}.wav", std::process::id())),
+    );
+    std::fs::write(&voice, spoken(5.0)).unwrap();
+    std::fs::write(&bed, tone_wav(44_100, 5.0)).unwrap();
+    let mut app = EditorApp::new(Session::default());
+    app.lang = crate::i18n::Lang::Zh;
+    let id = |v: Value, key: &str| v[key].as_str().unwrap().to_string();
+    let import = |app: &mut EditorApp, path: &std::path::Path| {
+        id(app.execute("media.import", json!({"path": path})).unwrap()["media"].clone(), "id")
+    };
+    let (voice, bed) = (import(&mut app, &voice), import(&mut app, &bed));
+    let a1 = first_track(&app, TrackKind::Audio);
+    let a2 = id(app.execute("track.add", json!({"kind": "audio"})).unwrap(), "track");
+    let voice = id(app.execute("clip.add", json!({"track": a1, "media": voice, "start": 0})).unwrap(), "clip");
+    app.execute("clip.add", json!({"track": a2, "media": bed, "start": 0})).unwrap();
+    let text = first_track(&app, TrackKind::Text);
+    for (words, from, len) in [("你好", 0.5, 1.0), ("嗯……", 3.0, 0.4)] {
+        let cue = json!({"track": text, "text": words, "start": {"seconds": from}, "duration": {"seconds": len}});
+        app.execute("clip.add", cue).unwrap();
+    }
+    let secs = |t: Tick| (t.seconds() * 100.0).round() / 100.0;
+    let on = |app: &EditorApp, track: &str| {
+        let p = app.project();
+        p.track(track).unwrap().clips.iter().map(|c| (secs(c.start), secs(c.end()))).collect::<Vec<_>>()
+    };
+
+    // the selected clip is listened to: three pauses, and the caption that says nothing
+    app.select(Select::Only(voice.clone()));
+    app.spoken_find();
+    let found: Vec<_> = app.spoken.found.iter().map(|f| (f.kind, secs(f.from), secs(f.to), f.on)).collect();
+    use crate::spoken::Kind::{Filler, Pause};
+    assert_eq!(
+        found,
+        [(Pause, 0.0, 0.4, true), (Pause, 1.6, 2.9, true), (Filler, 3.0, 3.4, true), (Pause, 4.1, 5.0, true)]
+    );
+    assert!(!app.spoken.unheard);
+    // the last pause stays; the rest goes from the voice and the captions, not from the music
+    app.spoken.found[3].on = false;
+    // (the tenth of a second kept between a pause and the filler after it goes with them)
+    app.spoken.found[3].on = false;
+    assert_eq!(app.spoken.total(), (3, Tick::from_seconds(2.2)));
+    app.playhead = Tick::from_seconds(3.2);
+    app.spoken_cut();
+    assert_eq!(on(&app, &a1), [(0.0, 1.2), (1.2, 2.8)]);
+    assert_eq!(on(&app, &text), [(0.1, 1.1)]);
+    assert_eq!(on(&app, &a2), [(0.0, 5.0)]);
+    assert_eq!(app.status, "已删除 3 处，缩短 2.2 秒");
+    assert_eq!(secs(app.playhead), 1.2, "the playhead is on what it showed");
+    assert!(app.spoken.found.is_empty());
+    // one step back; and a list found before another edit is not offered after it
+    app.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(on(&app, &a1), [(0.0, 5.0)]);
+    app.spoken_find();
+    assert_eq!(app.spoken.found.len(), 4);
+    app.execute("clip.set", json!({"clip": voice, "volumeDb": -3})).unwrap();
+    app.spoken_window(&egui::Context::default());
+    assert!(app.spoken.found.is_empty());
+    // with nothing selected the music is heard too, and only the caption is found
+    app.select(Select::Set(Vec::new()));
+    app.spoken_find();
+    let kinds: Vec<_> = app.spoken.found.iter().map(|f| f.kind).collect();
+    assert_eq!(kinds, [Filler]);
+}

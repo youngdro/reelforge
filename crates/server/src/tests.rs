@@ -527,3 +527,87 @@ fn a_green_screen_is_found_and_keyed_out() {
     }
     assert!(hub.session().project().clip(&other).unwrap().1.look.chroma.is_none());
 }
+
+#[test]
+fn pauses_are_heard_and_cut_with_what_goes_with_the_voice() {
+    let tone = |hz: f32, i: usize| (std::f32::consts::TAU * hz * i as f32 / 48_000.0).sin();
+    // someone speaks from 1 s to 2 s and from 4 s to 5 s, over hiss; music plays under all of it
+    let voice = temp("spoken.wav");
+    std::fs::write(
+        &voice,
+        wav(6.0, |i| {
+            let t = i as f32 / 48_000.0;
+            let speaking = (1.0..2.0).contains(&t) || (4.0..5.0).contains(&t);
+            0.01 * hiss(i) + if speaking { 0.1 * tone(220.0, i) } else { 0.0 }
+        }),
+    )
+    .unwrap();
+    let bed = temp("bed.wav");
+    std::fs::write(&bed, wav(8.0, |i| 0.2 * tone(110.0, i))).unwrap();
+
+    let hub = Hub::new(Session::default());
+    let json = |out: Result<Output, CallError>| match out.expect("ok") {
+        Output::Json(v) => v,
+        Output::Png { .. } => panic!("json"),
+    };
+    let import = |path: &std::path::Path| {
+        json(hub.call("media.import", &json!({"path": path})))["media"]["id"].as_str().unwrap().to_string()
+    };
+    let (voice_media, bed_media) = (import(&voice), import(&bed));
+    let a1 = track(&hub, "audio");
+    let a2 = json(hub.call("track.add", &json!({"kind": "audio"})))["track"].as_str().unwrap().to_string();
+    let add = |params: Value| json(hub.call("clip.add", &params))["clip"].as_str().unwrap().to_string();
+    let voice_clip = add(json!({"track": a1, "media": voice_media, "start": 0}));
+    let bed_clip = add(json!({"track": a2, "media": bed_media, "start": 0}));
+    let said = add(
+        json!({"track": track(&hub, "text"), "text": "第二句", "start": {"seconds": 4}, "duration": {"seconds": 1}}),
+    );
+    let secs = |t: reelforge_time::Tick| (t.seconds() * 1000.0).round() / 1000.0;
+    let on = |id: &str| {
+        let p = hub.session().project();
+        let clips = p.track(id).unwrap().clips.iter();
+        clips
+            .map(|c| (secs(c.start), secs(c.end()), secs(c.timing().map_or(c.start, |m| m.source_in))))
+            .collect::<Vec<_>>()
+    };
+    let op = crate::find_op("audio.cutPauses").expect("an operation");
+    assert!(!op.read_only && op.schema["properties"].get("minPause").is_some());
+
+    // only listed: the quiet before, between and after, less a tenth of a second beside the words
+    let found = json(hub.call("audio.cutPauses", &json!({"clips": [voice_clip], "apply": false})));
+    let pauses: Vec<(f64, f64)> = found["pauses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            let at = |k: &str| secs(reelforge_time::Tick(p[k].as_i64().unwrap()));
+            (at("from"), at("to"))
+        })
+        .collect();
+    assert_eq!(pauses, [(0.0, 0.9), (2.1, 3.9), (5.1, 6.0)], "{found}");
+    assert_eq!(found["seconds"], json!(3.6));
+    assert_eq!(on(&a1), [(0.0, 6.0, 0.0)], "nothing was cut");
+    // with the music heard too there is no pause, and a longer one is asked for than there is
+    let with_bed = json(hub.call("audio.cutPauses", &json!({"apply": false})));
+    assert_eq!(with_bed["pauses"], json!([]), "{with_bed}");
+    let long = json(hub.call("audio.cutPauses", &json!({"clips": [voice_clip], "minPause": 2.5, "apply": false})));
+    assert_eq!(long["pauses"], json!([]));
+
+    // cut: the voice and its caption close up, the music on its own track plays on
+    let cut = json(hub.call("audio.cutPauses", &json!({"clips": [voice_clip]})));
+    assert!(!cut["tracks"].as_array().unwrap().contains(&json!(a2)), "{cut}");
+    assert_eq!(on(&a1), [(0.0, 1.2, 0.9), (1.2, 2.4, 3.9)]);
+    let p = hub.session().project();
+    let (_, caption) = p.clip(&said).unwrap();
+    assert_eq!((secs(caption.start), secs(caption.end())), (1.3, 2.3));
+    assert_eq!(on(&a2), [(0.0, 8.0, 0.0)]);
+    assert!(p.clip(&bed_clip).is_some());
+    // one step
+    hub.call("edit.undo", &json!({})).unwrap();
+    assert_eq!(on(&a1), [(0.0, 6.0, 0.0)]);
+    // silence has no pauses in it: there is nothing to keep
+    let quiet = temp("quiet.wav");
+    std::fs::write(&quiet, wav(2.0, |_| 0.0)).unwrap();
+    let nothing = add(json!({"track": a1, "media": import(&quiet), "start": {"seconds": 10}}));
+    assert!(matches!(hub.call("audio.cutPauses", &json!({"clips": [nothing]})), Err(CallError::Failed(_))));
+}
