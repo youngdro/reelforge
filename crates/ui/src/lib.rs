@@ -44,6 +44,7 @@ mod strips;
 mod theme;
 mod timeline;
 mod transcribe_job;
+mod voice_job;
 #[cfg(target_arch = "wasm32")]
 mod webcodecs;
 
@@ -120,6 +121,11 @@ pub struct EditorApp {
     /// The local speech model, loaded on first use.
     #[cfg(not(target_arch = "wasm32"))]
     speech: Option<Arc<reelforge_speech::Recogniser>>,
+    /// A voice-over in progress.
+    voice_job: Option<voice_job::VoiceJob>,
+    /// The local voice model, loaded on first use.
+    #[cfg(not(target_arch = "wasm32"))]
+    voice: Arc<Mutex<Option<reelforge_voice::Kokoro>>>,
     /// The export settings are showing.
     export_open: bool,
     /// The panel on the left: media, sounds, titles.
@@ -272,8 +278,10 @@ struct Inspector {
     scale: f32,
     rotation: f32,
     opacity: f32,
-    /// Colour and title clips.
+    /// Colour and title clips, and shapes filled with one colour.
     color: Option<[f32; 4]>,
+    /// Shapes: width, height, corner radius and outline width, in canvas pixels.
+    shape: Option<[f32; 4]>,
     /// Clips with sound, in dB.
     volume: Option<f32>,
     title: Option<Title>,
@@ -409,6 +417,9 @@ impl EditorApp {
             transcribe: None,
             #[cfg(not(target_arch = "wasm32"))]
             speech: None,
+            voice_job: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            voice: Arc::default(),
             export_open: false,
             assets: assets::AssetPanel::default(),
             second_captions: false,
@@ -1367,6 +1378,18 @@ impl EditorApp {
                 self.put_from(TrackKind::Video, track, true, move |t| {
                     json!({"track": t, "sticker": id, "name": name, "start": at, "duration": assets::OVERLAY_LENGTH})
                 });
+            }
+            assets::Item::Shape(kind) => {
+                let kind = kind.name();
+                self.put_from(TrackKind::Video, track, true, move |t| {
+                    json!({"track": t, "shape": {"kind": kind}, "start": at, "duration": assets::OVERLAY_LENGTH})
+                });
+            }
+            assets::Item::Promo(kind) => {
+                // a piece brings its own tracks
+                if let Ok(v) = self.execute("promo.add", json!({"kind": kind, "start": at})) {
+                    self.selected = v["clips"][0]["clip"].as_str().map(str::to_string);
+                }
             }
             assets::Item::Effect(kind) => {
                 let fx: Vec<&str> = kind.iter().map(|k| k.name()).collect();
@@ -2665,6 +2688,7 @@ impl EditorApp {
             }
             self.record_button(ui);
             self.transcribe_controls(ui);
+            self.voice_controls(ui);
             if theme::tool(ui, icon::SPARKLE, s.spoken, s.spoken_tip, true).clicked() {
                 self.spoken.open = !self.spoken.open;
             }
@@ -2930,7 +2954,19 @@ impl EditorApp {
             opacity: clip.value_at(Prop::Opacity, local),
             color: match &clip.content {
                 ClipContent::Text { color, .. } | ClipContent::Solid { color } => Some(*color),
+                // a shape's first colour: its fill's, or its outline's
+                ClipContent::Shape { shape } => match &shape.fill {
+                    Some(reelforge_model::Fill::Solid { color }) => Some(*color),
+                    Some(reelforge_model::Fill::Linear { .. } | reelforge_model::Fill::Radial { .. }) => None,
+                    None => None,
+                },
                 ClipContent::Media { .. } | ClipContent::Adjustment | ClipContent::Compound { .. } => None,
+            },
+            shape: match &clip.content {
+                ClipContent::Shape { shape } => {
+                    Some([shape.size[0], shape.size[1], shape.radius, shape.stroke.as_ref().map_or(0.0, |s| s.width)])
+                }
+                _ => None,
             },
             volume: has_sound.then(|| clip.value_at(Prop::VolumeDb, local)),
             fades: has_sound.then(|| [clip.fade.fade_in.seconds() as f32, clip.fade.fade_out.seconds() as f32]),
@@ -3035,6 +3071,7 @@ impl EditorApp {
             },
             ClipContent::Text { .. } => (icon::TEXT, s.kind_title),
             ClipContent::Solid { .. } => (icon::COLOUR, s.kind_colour),
+            ClipContent::Shape { .. } => (icon::STICKER, s.kind_shape),
             ClipContent::Adjustment => (icon::SLIDERS, s.kind_adjustment),
             ClipContent::Compound { .. } => (icon::FILM, s.kind_compound),
         };
@@ -3075,6 +3112,7 @@ impl EditorApp {
         let chosen = Some(self.selection()).filter(|all| all.contains(&id)).unwrap_or_else(|| vec![id.clone()]);
         let edit = self.inspector.as_mut().expect("set above");
         let mut commit = false;
+        let mut reshape = false;
         // commands the panel asks for beyond the values above
         let mut actions: Vec<(&'static str, Value)> = vec![];
         // the keyframes panel moves the playhead or shapes a curve
@@ -3212,6 +3250,28 @@ impl EditorApp {
                     if r.changed() {
                         *c = rgba.to_rgba_unmultiplied();
                     }
+                });
+                ui.add_space(6.0);
+            }
+            if let Some(v) = &mut edit.shape {
+                theme::section(ui, s.sec_shapes, |ui| {
+                    egui::Grid::new("shape").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                        let rows = [
+                            (s.shape_width, 0.0..=8192.0),
+                            (s.shape_height, 0.0..=8192.0),
+                            (s.shape_radius, 0.0..=4096.0),
+                            (s.shape_stroke, 0.0..=512.0),
+                        ];
+                        for ((name, range), v) in rows.into_iter().zip(v.iter_mut()) {
+                            ui.label(egui::RichText::new(name).color(theme::color::WEAK));
+                            let r = ui.add_sized(
+                                [ui.available_width(), 24.0],
+                                egui::DragValue::new(v).speed(1.0).range(range).suffix(" px"),
+                            );
+                            reshape |= r.drag_stopped() || (r.changed() && !r.dragged());
+                            ui.end_row();
+                        }
+                    });
                 });
                 ui.add_space(6.0);
             }
@@ -3778,6 +3838,7 @@ impl EditorApp {
                 });
             }
             let titled = edit.title.is_some();
+            let shaped = edit.shape.is_some();
             let looped = &mut edit.looped;
             if let Some(slots) = &mut edit.anim {
                 ui.add_space(6.0);
@@ -3799,7 +3860,7 @@ impl EditorApp {
                                 |ui| {
                                     ui.selectable_value(&mut picked, None, s.anim_none);
                                     for (k, name) in AnimKind::ALL.into_iter().zip(names.iter()) {
-                                        if !k.titles_only() || titled {
+                                        if (!k.titles_only() || titled) && (!k.shapes_only() || shaped) {
                                             ui.selectable_value(&mut picked, Some(k), *name);
                                         }
                                     }
@@ -3931,6 +3992,25 @@ impl EditorApp {
                 });
             }
         });
+        // a shape's own values go by their own command
+        if reshape
+            && let Some([w, h, radius, stroke]) = self.inspector.as_ref().and_then(|e| e.shape)
+            && let Some(was) = current.shape
+            && was != [w, h, radius, stroke]
+        {
+            let mut params = json!({"clip": id, "size": [w, h], "radius": radius});
+            if stroke != was[3] {
+                // an outline takes the colour it had, or white
+                let color = match &clip.content {
+                    ClipContent::Shape { shape } => shape.stroke.as_ref().map_or([1.0; 4], |s| s.color),
+                    _ => [1.0; 4],
+                };
+                params["stroke"] = if stroke > 0.0 { json!({"color": color, "width": stroke}) } else { Value::Null };
+            }
+            if self.execute("clip.setShape", params).is_err() {
+                self.inspector = Some(current.clone());
+            }
+        }
         // a colour is committed once the pointer lets go of the picker
         let picked = self.inspector.as_ref().is_some_and(|e| e.color != current.color);
         commit |= picked && !ui.ctx().egui_is_using_pointer();
@@ -4648,8 +4728,12 @@ impl eframe::App for EditorApp {
                 |ui| self.sheet_tabs(ui),
             );
         }
-        let timeline = egui::Panel::bottom("timeline").resizable(true).show_separator_line(false).default_size(290.0);
-        let timeline = if narrow { timeline.size_range(140.0..=tallest) } else { timeline };
+        // the timeline leaves the preview some of the window too: its rows scroll when there are many
+        let timeline = egui::Panel::bottom("timeline")
+            .resizable(true)
+            .show_separator_line(false)
+            .default_size(290.0)
+            .size_range(140.0..=tallest);
         let out = timeline
             .frame(theme::island(0).outer_margin(egui::Margin { left: gap, right: gap, top: gap / 2, bottom: 0 }))
             .show_collapsible(ui, &mut timeline_on.clone(), |ui| {

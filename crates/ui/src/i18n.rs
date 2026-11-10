@@ -76,6 +76,12 @@ impl Lang {
         if name == "Look" {
             return self.strings().track_look.into();
         }
+        // Voice-over, Voice-over 2, …
+        if let Some(rest) = name.strip_prefix(reelforge_engine::VOICEOVER_TRACK)
+            && (rest.is_empty() || rest.strip_prefix(' ').is_some_and(|n| n.chars().all(|c| c.is_ascii_digit())))
+        {
+            return format!("{}{rest}", self.strings().voiceover);
+        }
         let Some((word, n)) = name.split_once(' ') else { return name.to_string() };
         if !n.chars().all(|c| c.is_ascii_digit()) {
             return name.to_string();
@@ -212,6 +218,15 @@ pub(crate) struct Strings {
     pub(crate) transcribe_stopped: &'static str,
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub(crate) transcribe_needs_server: &'static str,
+    pub(crate) voiceover: &'static str,
+    pub(crate) voiceover_tip: &'static str,
+    pub(crate) voiceover_picked_tip: &'static str,
+    pub(crate) speaking: &'static str,
+    pub(crate) speaking_remote: &'static str,
+    pub(crate) voiced: &'static str,
+    pub(crate) voice_failed: &'static str,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) voice_needs_server: &'static str,
     pub(crate) sec_colour: &'static str,
     pub(crate) sec_transform: &'static str,
     pub(crate) sec_sound: &'static str,
@@ -221,9 +236,9 @@ pub(crate) struct Strings {
     pub(crate) anim_none: &'static str,
     pub(crate) anim_length: &'static str,
     /// In [`reelforge_model::AnimKind::ALL`] order.
-    pub(crate) anim_kinds: [&'static str; 14],
+    pub(crate) anim_kinds: [&'static str; 15],
     /// The same presets as they leave.
-    pub(crate) anim_out_kinds: [&'static str; 14],
+    pub(crate) anim_out_kinds: [&'static str; 15],
     pub(crate) anim_loop: &'static str,
     /// Tooltip of a loop's length: one round.
     pub(crate) anim_round: &'static str,
@@ -317,6 +332,19 @@ pub(crate) struct Strings {
     /// `{}`: its number, for a compound clip nobody named.
     pub(crate) compound_n: &'static str,
     pub(crate) kind_compound: &'static str,
+    pub(crate) kind_shape: &'static str,
+    /// Heading over the ready-made promotional pieces.
+    pub(crate) sec_promo: &'static str,
+    /// In `reelforge_engine::PROMOS` order.
+    pub(crate) promo_names: [&'static str; 7],
+    /// Heading over the shapes, and over a shape's own values.
+    pub(crate) sec_shapes: &'static str,
+    /// In [`reelforge_model::ShapeKind::ALL`] order.
+    pub(crate) shape_names: [&'static str; 7],
+    pub(crate) shape_width: &'static str,
+    pub(crate) shape_height: &'static str,
+    pub(crate) shape_radius: &'static str,
+    pub(crate) shape_stroke: &'static str,
     /// `{}`: the timeline that plays the compound clip being edited.
     pub(crate) compound_back: &'static str,
     pub(crate) compound_back_tip: &'static str,
@@ -685,6 +713,8 @@ static EN: Strings = Strings {
         ("captions.export", "Export captions"),
         ("captions.add", "Add captions"),
         ("captions.transcribe", "Auto captions"),
+        ("voiceover.add", "Add voice-over"),
+        ("voice.speak", "Voice-over"),
         ("captions.list", "List captions"),
         ("captions.split", "Split caption"),
         ("captions.merge", "Merge captions"),
@@ -830,6 +860,14 @@ static EN: Strings = Strings {
     transcribe_failed: "Auto captions failed: {}",
     transcribe_stopped: "Auto captions stopped",
     transcribe_needs_server: "Auto captions run on a server: open this editor from `reelforge serve`",
+    voiceover: "Voice-over",
+    voiceover_tip: "Read the captions aloud onto a Voice-over track (a local Kokoro model; nothing leaves this machine)",
+    voiceover_picked_tip: "Read the selected titles aloud onto a Voice-over track (a local Kokoro model; nothing leaves this machine)",
+    speaking: "Reading {} of {}",
+    speaking_remote: "The server is reading…",
+    voiced: "Read {} lines aloud",
+    voice_failed: "Voice-over failed: {}",
+    voice_needs_server: "Voice-over runs on a server: open this editor from `reelforge serve`",
     sec_colour: "COLOUR",
     sec_transform: "TRANSFORM",
     sec_sound: "SOUND",
@@ -853,6 +891,7 @@ static EN: Strings = Strings {
         "Letters rise",
         "Letters drop",
         "Letters pop",
+        "Draw on",
     ],
     anim_out_kinds: [
         "Fade out",
@@ -869,6 +908,7 @@ static EN: Strings = Strings {
         "Letters sink",
         "Letters lift",
         "Letters pop out",
+        "Wipe away",
     ],
     anim_loop: "Loop",
     anim_round: "One round",
@@ -989,6 +1029,23 @@ static EN: Strings = Strings {
     compound_open: "Open compound clip",
     compound_n: "Compound {}",
     kind_compound: "Compound clip",
+    kind_shape: "Shape",
+    sec_promo: "Promo pieces",
+    promo_names: [
+        "Price tag",
+        "Discount badge",
+        "Sale banner",
+        "Countdown",
+        "Sales counter",
+        "Struck-out price",
+        "New stamp",
+    ],
+    sec_shapes: "Shapes",
+    shape_names: ["Rectangle", "Ellipse", "Line", "Polygon", "Star", "Tag", "Arrow"],
+    shape_width: "Width",
+    shape_height: "Height",
+    shape_radius: "Corners",
+    shape_stroke: "Outline",
     compound_back: "Back to {}",
     compound_back_tip: "Leave this compound clip and return to the timeline that plays it",
     compound_inside: "Inside {}: what you change here shows wherever this compound clip is used",
@@ -1392,6 +1449,8 @@ static ZH: Strings = Strings {
         ("captions.export", "导出字幕"),
         ("captions.add", "添加字幕"),
         ("captions.transcribe", "自动字幕"),
+        ("voiceover.add", "添加配音"),
+        ("voice.speak", "配音"),
         ("captions.list", "字幕列表"),
         ("captions.split", "拆分字幕"),
         ("captions.merge", "合并字幕"),
@@ -1537,6 +1596,14 @@ static ZH: Strings = Strings {
     transcribe_failed: "自动字幕失败：{}",
     transcribe_stopped: "已停止自动字幕",
     transcribe_needs_server: "自动字幕需要在服务端运行：请通过 `reelforge serve` 打开编辑器",
+    voiceover: "配音",
+    voiceover_tip: "把字幕读出来，放到配音轨（本地 Kokoro 模型，数据不出本机）",
+    voiceover_picked_tip: "把选中的文字读出来，放到配音轨（本地 Kokoro 模型，数据不出本机）",
+    speaking: "配音中 {}/{}",
+    speaking_remote: "服务端配音中…",
+    voiced: "已配音 {} 句",
+    voice_failed: "配音失败：{}",
+    voice_needs_server: "配音需要在服务端运行：请通过 `reelforge serve` 打开编辑器",
     sec_colour: "颜色",
     sec_transform: "变换",
     sec_sound: "声音",
@@ -1560,6 +1627,7 @@ static ZH: Strings = Strings {
         "逐字上浮",
         "逐字下落",
         "逐字弹出",
+        "描边绘制",
     ],
     anim_out_kinds: [
         "渐隐",
@@ -1576,6 +1644,7 @@ static ZH: Strings = Strings {
         "逐字下沉",
         "逐字上飘",
         "逐字缩回",
+        "描边擦除",
     ],
     anim_loop: "循环",
     anim_round: "一轮的时长",
@@ -1675,6 +1744,15 @@ static ZH: Strings = Strings {
     compound_open: "进入复合片段",
     compound_n: "复合片段 {}",
     kind_compound: "复合片段",
+    kind_shape: "形状",
+    sec_promo: "营销组件",
+    promo_names: ["价格标签", "折扣角标", "促销横幅", "倒计时", "销量滚动", "划线原价", "新品印章"],
+    sec_shapes: "形状",
+    shape_names: ["矩形", "椭圆", "线条", "多边形", "星形", "价签", "箭头"],
+    shape_width: "宽度",
+    shape_height: "高度",
+    shape_radius: "圆角",
+    shape_stroke: "描边",
     compound_back: "返回{}",
     compound_back_tip: "离开这个复合片段，回到使用它的时间线",
     compound_inside: "正在编辑{}里面的内容，改动会体现在所有用到它的地方",
@@ -2014,6 +2092,8 @@ mod tests {
         assert_eq!(Lang::Zh.command("nope"), "");
         assert_eq!(Lang::Ja.track_name("Video 3"), "動画 3");
         assert_eq!(Lang::Ja.track_name("Captions"), "字幕");
+        assert_eq!(Lang::Zh.track_name("Voice-over 2"), "配音 2");
+        assert_eq!(Lang::Zh.track_name("Voice-overs"), "Voice-overs");
         assert_eq!(Lang::Zh.track_name("Stickers"), "贴纸");
         assert_eq!(Lang::Zh.track_name("Look"), "滤镜");
     }

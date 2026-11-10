@@ -164,6 +164,57 @@ fn fx(doc: &str) -> Value {
     })
 }
 
+/// A shape's parameters, as `clip.add`'s `shape` (an object) or `clip.setShape` (the clip's own).
+fn shape_props() -> Vec<(&'static str, Value)> {
+    let colour = || json!({"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1}, "minItems": 3, "maxItems": 4});
+    vec![
+        (
+            "kind",
+            json!({"enum": reelforge_model::ShapeKind::ALL.map(reelforge_model::ShapeKind::name), "description": "A box (corners rounded by radius), an ellipse, a line across the box, a regular polygon, a star (a burst badge with many points), a price tag pointed at its left end, an arrow pointing right."}),
+        ),
+        (
+            "size",
+            json!({"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 2, "maxItems": 2, "description": "Width and height in canvas pixels, before the clip's scale."}),
+        ),
+        ("radius", num("Corner radius in canvas pixels (rectangle, tag, arrow).")),
+        (
+            "points",
+            json!({"type": "integer", "minimum": 3, "maximum": 64, "description": "Sides of a polygon, points of a star."}),
+        ),
+        (
+            "inner",
+            json!({"type": "number", "minimum": 0.05, "maximum": 1, "description": "How far out a star's inner corners are."}),
+        ),
+        (
+            "fill",
+            json!({"description": "A colour, a gradient, or null for none.", "oneOf": [
+                colour(),
+                {"type": "object", "properties": {"type": {"const": "linear"}, "from": colour(), "to": colour(), "angle": {"type": "number", "description": "Degrees clockwise from left-to-right; 90 is top to bottom."}}, "required": ["type", "from", "to"], "additionalProperties": false},
+                {"type": "object", "properties": {"type": {"const": "radial"}, "from": colour(), "to": colour()}, "required": ["type", "from", "to"], "additionalProperties": false},
+                {"type": "null"}
+            ]}),
+        ),
+        (
+            "stroke",
+            json!({"description": "The outline, centred on the edge; null for none.", "oneOf": [{"type": "object", "properties": {"color": colour(), "width": {"type": "number", "minimum": 0, "description": "Canvas pixels."}}, "required": ["color", "width"], "additionalProperties": false}, {"type": "null"}]}),
+        ),
+        (
+            "shadow",
+            json!({"description": "A soft shadow beneath it; null for none.", "oneOf": [{"type": "object", "properties": {"color": colour(), "offset": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "[right, down] in canvas pixels."}, "blur": {"type": "number", "minimum": 0}}, "required": ["color", "offset"], "additionalProperties": false}, {"type": "null"}]}),
+        ),
+        (
+            "trim",
+            json!({"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1}, "minItems": 2, "maxItems": 2, "description": "The part of the outline drawn, [start, end] as fractions of the way round from the top-left."}),
+        ),
+    ]
+}
+
+fn shape_schema(doc: &str, _: bool) -> Value {
+    let mut v = object(shape_props(), &[]);
+    v["description"] = json!(doc);
+    v
+}
+
 fn track_ids() -> Value {
     json!({
         "type": "array", "items": {"type": "string"},
@@ -223,7 +274,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
     Some(match id {
         "commands.list" | "project.inspect" | "project.outline" | "project.new" | "edit.undo" | "edit.redo"
         | "title.templates" | "sound.library" | "timeline.list" | "fx.list" | "sticker.library" | "voice.list"
-        | "template.list" | "template.slots" => object(vec![], &[]),
+        | "template.list" | "template.slots" | "promo.list" => object(vec![], &[]),
         "sound.add" => object(
             vec![
                 (
@@ -448,6 +499,13 @@ pub fn input_schema(id: &str) -> Option<Value> {
                     json!({"type": "number", "minimum": 0, "maximum": 1, "description": "Opacity; 1 by default."}),
                 ),
                 ("volumeDb", num("Gain in dB; 0 is unchanged.")),
+                (
+                    "shape",
+                    shape_schema(
+                        "A drawn shape on a video track (see clip.setShape): a 400 × 400 white box unless it says otherwise.",
+                        false,
+                    ),
+                ),
             ];
             props.extend(title_props());
             object(props, &["track"])
@@ -589,6 +647,32 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ),
             ],
             &["cues"],
+        ),
+        "voiceover.add" => object(
+            vec![
+                (
+                    "lines",
+                    json!({
+                        "type": "array",
+                        "minItems": 1,
+                        "description": "The spoken lines, each a sound file and where it starts.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string", "description": "The sound file, as for media.import."},
+                                "start": time("Where on the timeline it starts."),
+                                "name": {"type": "string", "description": "Display name in the media list; the file name by default."},
+                                "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Content hash, when the file cannot be read here."},
+                                "duration": time("Length, when the file cannot be measured here.")
+                            },
+                            "required": ["path", "start"],
+                            "additionalProperties": false
+                        }
+                    }),
+                ),
+                ("track", ident("An audio track to put them all on; Voice-over tracks by default.")),
+            ],
+            &["lines"],
         ),
         "captions.export" => object(vec![("track", ident("A text track; the Captions track by default."))], &[]),
         "clip.split" => object(vec![clip(), ("at", time("Timeline time inside the clip."))], &["clip", "at"]),
@@ -775,6 +859,51 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["clip"],
         ),
+        "clip.setShape" => {
+            let mut props = vec![clip()];
+            props.extend(shape_props());
+            object(props, &["clip"])
+        }
+        "clip.setCounter" => object(
+            vec![
+                clip(),
+                (
+                    "counter",
+                    json!({"description": "The number the title shows, written where its words say {n} (or as all of them); null removes it.", "oneOf": [{"type": "null"}, {
+                        "type": "object",
+                        "properties": {
+                            "from": {"type": "number", "description": "The value at the clip's start (0 by default)."},
+                            "to": {"type": "number", "description": "The value it arrives at (100 by default)."},
+                            "over": {"description": "How long it takes; the whole clip by default.", "oneOf": [time("A length."), {"type": "null"}]},
+                            "ease": ease_schema().1,
+                            "decimals": {"type": "integer", "minimum": 0, "maximum": 4},
+                            "group": {"type": "boolean", "description": "Commas between thousands."},
+                            "clock": {"type": "boolean", "description": "Whole seconds written as a clock, 01:30."}
+                        },
+                        "additionalProperties": false
+                    }]}),
+                ),
+            ],
+            &["clip", "counter"],
+        ),
+        "promo.add" => object(
+            vec![
+                (
+                    "kind",
+                    json!({"enum": crate::promo::PROMOS.iter().map(|p| p.id).collect::<Vec<_>>(), "description": "Which piece (promo.list): a price tag whose price counts up, a discount badge, a sale banner, a countdown clock, a sales counter, a struck-out original price, a new-arrival stamp."}),
+                ),
+                ("start", time("Where it starts; 0 by default.")),
+                ("duration", time("How long it shows; 3 s by default.")),
+                ("text", json!({"type": "string", "description": "Its words; {n} is where its number goes."})),
+                ("value", num("The number it counts to (a price, a count); a countdown's seconds to count down from.")),
+                ("from", num("Where counting starts; 0 by default.")),
+                ("color", color("Its main colour; red by default.")),
+                ("x", num("Horizontal offset of its centre from the frame's, as a fraction of the width.")),
+                ("y", num("Vertical offset, as a fraction of the height.")),
+                ("scale", num("Its size; 1 is as designed for a 1080-wide frame, in proportion for others.")),
+            ],
+            &["kind"],
+        ),
         "clip.setAnimation" => object(
             vec![
                 clip(),
@@ -784,7 +913,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ),
                 (
                     "kind",
-                    json!({"description": "Preset; null removes the animation. In and out: fade to spin, and for titles only typewriter (types the words in, or erases them) and charFade, charRise, charDrop, charPop (the characters one after another). Loop: breathe, heartbeat, swing, float, bounce, shake, spin, blink, and for titles only wave and jump (the characters one after another).", "oneOf": [{"enum": ["fade", "slideUp", "slideDown", "slideLeft", "slideRight", "zoomIn", "zoomOut", "pop", "spin", "typewriter", "charFade", "charRise", "charDrop", "charPop", "breathe", "heartbeat", "swing", "float", "bounce", "shake", "blink", "wave", "jump"]}, {"type": "null"}]}),
+                    json!({"description": "Preset; null removes the animation. In and out: fade to spin, and for titles only typewriter (types the words in, or erases them) and charFade, charRise, charDrop, charPop (the characters one after another), and for shapes only draw (the outline draws itself on, then the fill comes in). Loop: breathe, heartbeat, swing, float, bounce, shake, spin, blink, and for titles only wave and jump (the characters one after another).", "oneOf": [{"enum": ["fade", "slideUp", "slideDown", "slideLeft", "slideRight", "zoomIn", "zoomOut", "pop", "spin", "typewriter", "charFade", "charRise", "charDrop", "charPop", "draw", "breathe", "heartbeat", "swing", "float", "bounce", "shake", "blink", "wave", "jump"]}, {"type": "null"}]}),
                 ),
                 (
                     "duration",

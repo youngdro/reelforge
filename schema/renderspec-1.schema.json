@@ -1015,6 +1015,17 @@
               "format": "float",
               "type": "number"
             },
+            "number": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NumberText"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `text/6`: a number that changes over time (a price, a count, a clock), written into\n`text` where it says `{n}`, or as the whole text when it does not."
+            },
             "outer": {
               "anyOf": [
                 {
@@ -1108,6 +1119,109 @@
         },
         {
           "additionalProperties": false,
+          "description": "A drawn shape (feature `shape/1`): a box, ellipse, line, polygon, star, price tag or\narrow, filled and outlined, its outline drawn on over time. Its centre is placed by the\nlayer's transform; its size is in output pixels, before the layer's scale.",
+          "properties": {
+            "fill": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Paint"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What fills it; none leaves only the outline."
+            },
+            "fill_opacity": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Animated"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How much of the fill shows, 0 to 1 (1 when absent)."
+            },
+            "inner": {
+              "default": 0.5,
+              "description": "How far in a star's inner corners are, 0.05 to 1 of the way to its points.",
+              "format": "float",
+              "type": "number"
+            },
+            "kind": {
+              "$ref": "#/$defs/ShapeKind",
+              "description": "Which shape."
+            },
+            "points": {
+              "default": 5,
+              "description": "Sides of a polygon, points of a star: 3 to 64.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "radius": {
+              "description": "Corner radius of a rectangle or a tag.",
+              "format": "float",
+              "type": "number"
+            },
+            "shadow": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ShapeShadow"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A soft shadow of the fill and outline, beneath them."
+            },
+            "size": {
+              "description": "Width and height of its box.",
+              "items": {
+                "format": "float",
+                "type": "number"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "stroke": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ShapeStroke"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The outline, centred on the shape's edge (a line's only ink)."
+            },
+            "trim": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Trim"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The part of the outline drawn, as fractions of its length from its start: an outline that\ndraws itself on (its end rising from 0 to 1) or a stroke that runs round it."
+            },
+            "type": {
+              "const": "shape",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "kind",
+            "size"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "The picture of a composition (feature `comp/1`): drawn first, on a see-through frame the\nsize of the output, then placed, cropped, masked and given this layer's effects as one\npicture.",
           "properties": {
             "comp": {
@@ -1156,6 +1270,36 @@
           "type": "string"
         }
       ]
+    },
+    "NumberText": {
+      "additionalProperties": false,
+      "description": "A number shown by a text (`text/6`).",
+      "properties": {
+        "clock": {
+          "description": "Written as a clock of whole seconds: `m:ss`, or `h:mm:ss` from an hour.",
+          "type": "boolean"
+        },
+        "decimals": {
+          "default": 0,
+          "description": "Digits after the decimal point, 0 to 4.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "group": {
+          "description": "Thousands separated by commas.",
+          "type": "boolean"
+        },
+        "value": {
+          "$ref": "#/$defs/Animated",
+          "description": "The value over the layer's time."
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "type": "object"
     },
     "Output": {
       "additionalProperties": false,
@@ -1251,6 +1395,84 @@
         }
       ]
     },
+    "Paint": {
+      "description": "How a shape is filled.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "One colour.",
+          "properties": {
+            "color": {
+              "$ref": "#/$defs/Color",
+              "description": "The colour."
+            },
+            "type": {
+              "const": "solid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "color"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "From one colour to another along a line across the box.",
+          "properties": {
+            "angle": {
+              "default": 0.0,
+              "description": "Which way the line runs, degrees clockwise from left-to-right (90: top to bottom).",
+              "format": "float",
+              "type": "number"
+            },
+            "from": {
+              "$ref": "#/$defs/Color",
+              "description": "The colour where the line starts."
+            },
+            "to": {
+              "$ref": "#/$defs/Color",
+              "description": "The colour where it ends."
+            },
+            "type": {
+              "const": "linear",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "from",
+            "to"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "From one colour at the box's centre to another at its edge.",
+          "properties": {
+            "from": {
+              "$ref": "#/$defs/Color",
+              "description": "The colour at the centre."
+            },
+            "to": {
+              "$ref": "#/$defs/Color",
+              "description": "The colour at the edge (and beyond, in the corners)."
+            },
+            "type": {
+              "const": "radial",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "from",
+            "to"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "Probe": {
       "additionalProperties": false,
       "description": "Measured properties of an asset.",
@@ -1286,6 +1508,46 @@
         }
       },
       "type": "object"
+    },
+    "ShapeKind": {
+      "description": "Shapes.",
+      "oneOf": [
+        {
+          "const": "rectangle",
+          "description": "A box, its corners rounded by `radius`.",
+          "type": "string"
+        },
+        {
+          "const": "ellipse",
+          "description": "An ellipse filling the box.",
+          "type": "string"
+        },
+        {
+          "const": "line",
+          "description": "A line across the middle of the box, left to right; it shows by its stroke.",
+          "type": "string"
+        },
+        {
+          "const": "polygon",
+          "description": "A regular polygon of `points` sides, a corner at the top, stretched to the box.",
+          "type": "string"
+        },
+        {
+          "const": "star",
+          "description": "A star of `points` points, stretched to the box: a burst badge with many.",
+          "type": "string"
+        },
+        {
+          "const": "tag",
+          "description": "A price tag: a box pointed at its left end, with a hole near the point.",
+          "type": "string"
+        },
+        {
+          "const": "arrow",
+          "description": "An arrow pointing right.",
+          "type": "string"
+        }
+      ]
     },
     "ShapeMask": {
       "additionalProperties": false,
@@ -1371,6 +1633,57 @@
         "size",
         "rotation",
         "feather"
+      ],
+      "type": "object"
+    },
+    "ShapeShadow": {
+      "additionalProperties": false,
+      "description": "A shape's shadow.",
+      "properties": {
+        "blur": {
+          "default": 0.0,
+          "description": "Softness: the blur's standard deviation.",
+          "format": "float",
+          "type": "number"
+        },
+        "color": {
+          "$ref": "#/$defs/Color",
+          "description": "Colour."
+        },
+        "offset": {
+          "description": "Offset `[right, down]`, on the frame (it does not turn with the shape).",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "color",
+        "offset"
+      ],
+      "type": "object"
+    },
+    "ShapeStroke": {
+      "additionalProperties": false,
+      "description": "A shape's outline.",
+      "properties": {
+        "color": {
+          "$ref": "#/$defs/Color",
+          "description": "Colour."
+        },
+        "width": {
+          "description": "Width, centred on the edge.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "color",
+        "width"
       ],
       "type": "object"
     },
@@ -1545,6 +1858,23 @@
           "$ref": "#/$defs/Animated",
           "default": 1.0,
           "description": "Uniform scale; 1 is the fitted size."
+        }
+      },
+      "type": "object"
+    },
+    "Trim": {
+      "additionalProperties": false,
+      "description": "The part of an outline that is drawn.",
+      "properties": {
+        "end": {
+          "$ref": "#/$defs/Animated",
+          "default": 1.0,
+          "description": "Where it ends, 0 to 1; nothing is drawn where it is not past `start`."
+        },
+        "start": {
+          "$ref": "#/$defs/Animated",
+          "default": 0.0,
+          "description": "Where the drawn part starts, 0 to 1."
         }
       },
       "type": "object"

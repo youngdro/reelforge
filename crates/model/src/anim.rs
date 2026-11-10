@@ -67,6 +67,12 @@ pub enum Prop {
     Fade,
     /// See [`crate::Adjust`].
     Vignette,
+    /// Where a shape's outline starts being drawn, 0 to 1 of the way round.
+    DrawStart,
+    /// Where it stops: rising from 0 to 1, the outline draws itself on.
+    DrawEnd,
+    /// The number a title with a counter shows.
+    Count,
 }
 
 impl Prop {
@@ -89,8 +95,10 @@ impl Prop {
         Prop::Fade,
         Prop::Vignette,
     ];
+    /// A shape's outline: where it starts and stops being drawn.
+    pub const DRAW: [Prop; 2] = [Prop::DrawStart, Prop::DrawEnd];
     /// Every property.
-    pub const ALL: [Prop; 25] = [
+    pub const ALL: [Prop; 28] = [
         Prop::X,
         Prop::Y,
         Prop::Scale,
@@ -116,6 +124,9 @@ impl Prop {
         Prop::Shadows,
         Prop::Fade,
         Prop::Vignette,
+        Prop::DrawStart,
+        Prop::DrawEnd,
+        Prop::Count,
     ];
 
     /// The name commands use (`x`, `volumeDb`, `cropLeft`, `maskX`, `exposure`…).
@@ -146,6 +157,9 @@ impl Prop {
             Prop::Shadows => "shadows",
             Prop::Fade => "fade",
             Prop::Vignette => "vignette",
+            Prop::DrawStart => "drawStart",
+            Prop::DrawEnd => "drawEnd",
+            Prop::Count => "count",
         }
     }
 
@@ -161,7 +175,7 @@ impl Prop {
             return Some((lo, hi));
         }
         match self {
-            Prop::Opacity => Some((0.0, 1.0)),
+            Prop::Opacity | Prop::DrawStart | Prop::DrawEnd => Some((0.0, 1.0)),
             p if Prop::CROP.contains(&p) => Some((0.0, 0.98)),
             Prop::MaskWidth | Prop::MaskHeight | Prop::MaskFeather => Some((0.0, f32::MAX)),
             _ => None,
@@ -360,11 +374,14 @@ pub enum AnimKind {
     CharDrop,
     /// A title's characters pop up one after another, each overshooting a little; titles only.
     CharPop,
+    /// A shape's outline draws itself on and its fill comes in after (or the outline is wiped
+    /// away and the fill goes first, as it leaves); shapes only.
+    Draw,
 }
 
 impl AnimKind {
     /// Every preset, in menu order.
-    pub const ALL: [AnimKind; 14] = [
+    pub const ALL: [AnimKind; 15] = [
         AnimKind::Fade,
         AnimKind::SlideUp,
         AnimKind::SlideDown,
@@ -379,6 +396,7 @@ impl AnimKind {
         AnimKind::CharRise,
         AnimKind::CharDrop,
         AnimKind::CharPop,
+        AnimKind::Draw,
     ];
 
     /// The name commands use.
@@ -398,12 +416,18 @@ impl AnimKind {
             AnimKind::CharRise => "charRise",
             AnimKind::CharDrop => "charDrop",
             AnimKind::CharPop => "charPop",
+            AnimKind::Draw => "draw",
         }
     }
 
     /// Whether only titles take it.
     pub fn titles_only(self) -> bool {
         self == AnimKind::Typewriter || self.by_character()
+    }
+
+    /// Whether only shapes take it.
+    pub fn shapes_only(self) -> bool {
+        self == AnimKind::Draw
     }
 
     /// Whether it moves a title's characters one after another instead of the title as a whole.
@@ -446,9 +470,12 @@ impl AnimKind {
                 o.scale = 0.5 + 0.5 * e;
             }
             // the text itself changes (`reveal`, or its characters move), not its placement
-            AnimKind::Typewriter | AnimKind::CharFade | AnimKind::CharRise | AnimKind::CharDrop | AnimKind::CharPop => {
-                o = Offset::REST
-            }
+            AnimKind::Typewriter
+            | AnimKind::CharFade
+            | AnimKind::CharRise
+            | AnimKind::CharDrop
+            | AnimKind::CharPop
+            | AnimKind::Draw => o = Offset::REST,
         }
         o
     }
@@ -707,6 +734,14 @@ impl Clip {
             Prop::MaskHeight => self.look.mask.map_or(0.5, |m| m.size[1]),
             Prop::MaskRotation => self.look.mask.map_or(0.0, |m| m.rotation),
             Prop::MaskFeather => self.look.mask.map_or(0.0, |m| m.feather),
+            Prop::DrawStart | Prop::DrawEnd => match &self.content {
+                crate::ClipContent::Shape { shape } => shape.trim[(p == Prop::DrawEnd) as usize],
+                _ => (p == Prop::DrawEnd) as u8 as f32,
+            },
+            Prop::Count => match &self.content {
+                crate::ClipContent::Text { style, .. } => style.counter.map_or(0.0, |c| c.to),
+                _ => 0.0,
+            },
             p => {
                 let i = Prop::ADJUST.iter().position(|a| *a == p).expect("every other property is an adjustment");
                 self.color.adjust.values()[i]
@@ -738,6 +773,18 @@ impl Clip {
                         Prop::MaskRotation => m.rotation = v,
                         _ => m.feather = v,
                     }
+                }
+            }
+            Prop::DrawStart | Prop::DrawEnd => {
+                if let crate::ClipContent::Shape { shape } = &mut self.content {
+                    shape.trim[(p == Prop::DrawEnd) as usize] = v;
+                }
+            }
+            Prop::Count => {
+                if let crate::ClipContent::Text { style, .. } = &mut self.content
+                    && let Some(c) = &mut style.counter
+                {
+                    c.to = v;
                 }
             }
             p => {

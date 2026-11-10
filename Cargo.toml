@@ -19,6 +19,7 @@ reelforge-matte = { path = "crates/matte" }
 reelforge-render = { path = "crates/render" }
 reelforge-media = { path = "crates/media" }
 reelforge-hwenc = { path = "crates/hwenc" }
+reelforge-voice = { path = "crates/voice" }
 reelforge-engine = { path = "crates/engine" }
 reelforge-ui = { path = "crates/ui" }
 reelforge-server = { path = "crates/server" }

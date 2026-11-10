@@ -62,6 +62,10 @@ fn clip(project: &Project, c: &Clip) -> Value {
         ClipContent::Solid { color } => {
             o.insert("color".into(), json!(color.map(num)));
         }
+        ClipContent::Shape { shape } => {
+            let v = serde_json::to_value(shape).unwrap_or_default();
+            o.insert("shape".into(), v.get("kind").cloned().unwrap_or(json!(true)));
+        }
         ClipContent::Adjustment => {
             o.insert("adjustment".into(), json!(true));
         }
