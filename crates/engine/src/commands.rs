@@ -338,8 +338,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.add",
         label: "Add Clip",
-        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "name"?: string, "adjustment"?: bool, "timeline"?: id, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "template"?: id}"#,
-        doc: "Places media, a library sticker, text, a colour or an adjustment clip on a track; starts at the track's end unless `start` is given. Titles default to bold white with a black outline, wrapping at 90 % of the canvas. A sticker (sticker.library) is an image a third of the frame wide; `name` is what the project's media calls it (its English name by default). An adjustment clip shows nothing: its effects (`fx`) and colour work on the tracks below it while it lasts. `timeline` places another timeline of the project as a compound clip on a video track, from `sourceIn`.",
+        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "name"?: string, "adjustment"?: bool, "timeline"?: id, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "shape"?: {"kind"?, "size"?: [w, h], "radius"?, "points"?, "inner"?, "fill"?, "stroke"?, "shadow"?, "trim"?}, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "template"?: id}"#,
+        doc: "Places media, a library sticker, text, a drawn shape (`shape`, on a video track: see clip.setShape), a colour or an adjustment clip on a track; starts at the track's end unless `start` is given. Titles default to bold white with a black outline, wrapping at 90 % of the canvas. A sticker (sticker.library) is an image a third of the frame wide; `name` is what the project's media calls it (its English name by default). An adjustment clip shows nothing: its effects (`fx`) and colour work on the tracks below it while it lasts. `timeline` places another timeline of the project as a compound clip on a video track, from `sourceIn`.",
         edits: true,
         enabled: always,
         run: clip_add,
@@ -748,6 +748,42 @@ static REGISTRY: &[CommandSpec] = &[
         edits: true,
         enabled: always,
         run: clip_set_animation,
+    },
+    CommandSpec {
+        id: "clip.setShape",
+        label: "Shape",
+        params: r#"{"clip": id, "kind"?: "rectangle"|"ellipse"|"line"|"polygon"|"star"|"tag"|"arrow", "size"?: [w, h] px, "radius"?: px, "points"?: 3-64, "inner"?: 0.05-1, "fill"?: [r,g,b,a] | {"type": "linear", "from", "to", "angle"?} | {"type": "radial", "from", "to"} | null, "stroke"?: {"color", "width": px} | null, "shadow"?: {"color", "offset": [x, y] px, "blur"?: px} | null, "trim"?: [start, end]}"#,
+        doc: "Changes a shape clip: its kind, size in canvas pixels (before the clip's scale), corner radius, points, fill (a colour or a gradient), outline, shadow, and the part of its outline drawn (`trim`, also keyable as drawStart and drawEnd; the `draw` animation draws it on).",
+        edits: true,
+        enabled: always,
+        run: crate::promo::clip_set_shape,
+    },
+    CommandSpec {
+        id: "clip.setCounter",
+        label: "Counter",
+        params: r#"{"clip": id, "counter": {"from"?: number, "to"?: number, "over"?: time | null, "ease"?: name | [x1,y1,x2,y2], "decimals"?: 0-4, "group"?: bool, "clock"?: bool} | null}"#,
+        doc: "Makes a title show a number that runs from `from` to `to` over `over` (the whole clip by default; slowing into place unless `ease` says otherwise): written where its words say {n}, or as all of them. `group` puts commas between thousands; `clock` writes whole seconds as 01:30, so from 90 to 0 is a countdown. Keys on the property `count` say the value instead. null removes it.",
+        edits: true,
+        enabled: always,
+        run: crate::promo::clip_set_counter,
+    },
+    CommandSpec {
+        id: "promo.list",
+        label: "Promo Pieces",
+        params: "{}",
+        doc: "The ready-made promotional pieces promo.add makes: their ids, names, default words and numbers.",
+        edits: false,
+        enabled: always,
+        run: crate::promo::promo_list,
+    },
+    CommandSpec {
+        id: "promo.add",
+        label: "Add Promo Piece",
+        params: r#"{"kind": "priceTag"|"discountBadge"|"banner"|"countdown"|"salesCounter"|"strikePrice"|"newArrival", "start"?: time, "duration"?: time, "text"?: string, "value"?: number, "from"?: number, "color"?: [r,g,b,a], "x"?, "y"?, "scale"?}"#,
+        doc: "Adds a ready-made promotional piece (a price tag, a discount badge, a sale banner, a countdown, a sales counter, a struck-out price, a \"new\" stamp) as grouped shape and title clips on free tracks above the others, animated in. `text` replaces its words ({n} is its number), `value` the number it counts to (a countdown counts down from it, a second a second), `from` where counting starts, `color` its main colour; `x`, `y` and `scale` place it. 3 s long from 0 unless `start` and `duration` say otherwise.",
+        edits: true,
+        enabled: always,
+        run: crate::promo::promo_add,
     },
     CommandSpec {
         id: "clip.setTransition",
@@ -1525,6 +1561,7 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
     let fx = fx_param(&p)?.unwrap_or_default();
     let adjustment = p.opt_bool("adjustment")?.unwrap_or(false);
     let timeline = p.opt_str("timeline")?.map(str::to_string);
+    let shape = p.opt("shape").map(crate::promo::shape_param).transpose()?;
     let sticker = match p.opt_str("sticker")? {
         None => None,
         Some(id) => {
@@ -1548,13 +1585,15 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
             Some((uri, p.opt_str("name")?.unwrap_or(st.en).to_string(), sha))
         }
     };
-    if [media.is_some(), text.is_some(), sticker.is_some(), adjustment, timeline.is_some()]
+    if [media.is_some(), text.is_some(), sticker.is_some(), adjustment, timeline.is_some(), shape.is_some()]
         .iter()
         .filter(|x| **x)
         .count()
         > 1
     {
-        return Err(EngineError::Params("give one of `media`, `sticker`, `text`, `adjustment` or `timeline`".into()));
+        return Err(EngineError::Params(
+            "give one of `media`, `sticker`, `text`, `shape`, `adjustment` or `timeline`".into(),
+        ));
     }
     s.edit("Add Clip", |proj| {
         let track = proj.track(&track_id).ok_or_else(|| not_found("track", &track_id))?;
@@ -1583,6 +1622,7 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
         };
         let (content, natural) = match (&media, &text) {
             _ if adjustment => (ClipContent::Adjustment, None),
+            _ if shape.is_some() => (ClipContent::Shape { shape: shape.clone().expect("checked") }, None),
             _ if timeline.is_some() => {
                 let id = timeline.clone().expect("checked");
                 let inner = proj.tracks_of(&id).filter(|_| !id.is_empty()).ok_or_else(|| not_found("timeline", &id))?;
@@ -2357,12 +2397,26 @@ fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
                     *sc = v;
                 }
             }
-            ClipContent::Media { .. } | ClipContent::Adjustment | ClipContent::Compound { .. }
+            // a shape's colour is its fill, made one colour
+            ClipContent::Shape { shape } if text.is_none() && size.is_none() => {
+                if let Some(v) = color {
+                    shape.fill = Some(reelforge_model::Fill::Solid { color: v });
+                }
+            }
+            ClipContent::Media { .. }
+            | ClipContent::Adjustment
+            | ClipContent::Compound { .. }
+            | ClipContent::Shape { .. }
                 if text.is_some() || size.is_some() || color.is_some() =>
             {
-                return Err(EngineError::Params("`text`, `size` and `color` apply to text and colour clips".into()));
+                return Err(EngineError::Params(
+                    "`text`, `size` and `color` apply to text and colour clips; `color` to shapes".into(),
+                ));
             }
-            ClipContent::Media { .. } | ClipContent::Adjustment | ClipContent::Compound { .. } => {}
+            ClipContent::Media { .. }
+            | ClipContent::Adjustment
+            | ClipContent::Compound { .. }
+            | ClipContent::Shape { .. } => {}
         }
         Ok(json!({ "clip": serde_json::to_value(&*clip).expect("serialises") }))
     })
@@ -2702,6 +2756,10 @@ fn clip_set_key(s: &mut Session, v: &Value) -> CmdResult {
                 clip.look.mask.is_some()
             } else if Prop::CROP.contains(&prop) {
                 media && proj.tracks[ti].kind != TrackKind::Audio
+            } else if Prop::DRAW.contains(&prop) {
+                matches!(&clip.content, ClipContent::Shape { shape } if shape.stroke.is_some())
+            } else if prop == Prop::Count {
+                matches!(&clip.content, ClipContent::Text { style, .. } if style.counter.is_some())
             } else {
                 proj.tracks[ti].kind != TrackKind::Audio
             };
@@ -2813,6 +2871,11 @@ fn clip_set_animation(s: &mut Session, v: &Value) -> CmdResult {
             && !matches!(proj.clip(&id).map(|(_, c)| &c.content), Some(ClipContent::Text { .. }))
         {
             return Err(EngineError::Params(format!("{} applies to titles", name.unwrap_or_default())));
+        }
+        if kind.is_some_and(AnimKind::shapes_only)
+            && !matches!(proj.clip(&id).map(|(_, c)| &c.content), Some(ClipContent::Shape { .. }))
+        {
+            return Err(EngineError::Params(format!("{} applies to shapes", name.unwrap_or_default())));
         }
         let clip = proj.clip_mut(&id).expect("found above");
         if slot == "loop" {

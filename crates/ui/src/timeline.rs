@@ -1171,6 +1171,10 @@ fn paint_clip(
                 None => (icon::COLOUR, words.kind_colour.to_string(), swatch.lerp_to_gamma(color::VIDEO, 0.35)),
             }
         }
+        ClipContent::Shape { shape } => {
+            let i = reelforge_model::ShapeKind::ALL.iter().position(|k| *k == shape.kind).unwrap_or(0);
+            (icon::STICKER, words.shape_names[i].to_string(), color::TEXT_CLIP.lerp_to_gamma(color::VIDEO, 0.5))
+        }
         ClipContent::Compound { timeline, .. } => {
             // called what its timeline is called
             let name = p.timelines.iter().find(|t| t.id == *timeline).map_or("", |t| t.name.as_str());

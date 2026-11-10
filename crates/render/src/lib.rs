@@ -29,6 +29,7 @@ pub mod image;
 pub mod lut;
 pub mod media;
 pub mod plan;
+pub mod shape;
 pub mod text;
 pub mod yuv;
 
@@ -74,11 +75,13 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "key.person@1",
     "mask.shape/1",
     "mask.shape/2",
+    "shape/1",
     "text/1",
     "text/2",
     "text/3",
     "text/4",
     "text/5",
+    "text/6",
     "time.hold/1",
     "time.ramp/1",
     "time.reverse/1",
@@ -180,6 +183,15 @@ pub fn layer_outlines(spec: &RenderSpec, t: Tick, media: &dyn MediaSource) -> Ve
                 // a composition's picture is a frame
                 let (w, h) = layer.visible(target[0], target[1]);
                 corners(layer.matrix(w, h, target), w, h)
+            }
+            PlannedSource::Shape(sh) => {
+                // its box, scaled and turned about the layer's centre
+                let k = plan.width as f32 / spec.output.width as f32 * layer.scale;
+                let (hw, hh) = (sh.size[0] * k / 2.0, sh.size[1] * k / 2.0);
+                let (sin, cos) = layer.rotation.sin_cos();
+                let [cx, cy] = layer.center;
+                [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]]
+                    .map(|[x, y]| [cx + x * cos - y * sin, cy + x * sin + y * cos])
             }
             PlannedSource::Text(_) => {
                 // measured upright, then turned about the layer's centre

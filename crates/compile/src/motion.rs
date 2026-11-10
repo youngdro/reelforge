@@ -27,7 +27,7 @@ use reelforge_time::Tick;
 fn moves(kind: reelforge_model::AnimKind, p: Prop) -> bool {
     use reelforge_model::AnimKind::*;
     match p {
-        Prop::Opacity => !kind.titles_only(),
+        Prop::Opacity => !kind.titles_only() && !kind.shapes_only(),
         Prop::X => matches!(kind, SlideLeft | SlideRight),
         Prop::Y => matches!(kind, SlideUp | SlideDown),
         Prop::Scale => matches!(kind, ZoomIn | ZoomOut | Pop | Spin),
@@ -612,6 +612,80 @@ pub fn lower_pair(clip: &Clip, props: [Prop; 2], shape: &Shape, step: Tick) -> A
     let keys = plan(&curves, step, shape.len);
     let [x, y] = &curves;
     Animated::Keys(keys.into_iter().map(|(t, e)| Key { t, v: [x.value(t), y.value(t)], ease: e }).collect())
+}
+
+/// `f` at every frame of a layer `len` long from its start up to `until`, and held from there to
+/// its end; `step` is a frame.
+fn framed_keys(len: Tick, step: Tick, until: Tick, f: impl Fn(Tick) -> f32) -> Animated<f32> {
+    let until = until.clamp(Tick::ZERO, len);
+    let mut keys = vec![];
+    let mut t = Tick::ZERO;
+    while t < until {
+        keys.push(Key { t, v: f(t), ease: Ease::Linear });
+        t = Tick((t.0 / step.0 + 1) * step.0);
+    }
+    keys.push(Key { t: until, v: f(until), ease: Ease::Linear });
+    if until < len {
+        keys.push(Key { t: len, v: f(len), ease: Ease::Linear });
+    }
+    keys.dedup_by_key(|k| k.t);
+    Animated::Keys(keys)
+}
+
+/// How a shape's outline is drawn over its layer (its trim, start and end) and how much of its
+/// fill shows: its `drawStart` and `drawEnd` and its `draw` animations. `None` for each where
+/// nothing changes it.
+pub fn draw(
+    clip: &Clip,
+    shape: &Shape,
+    step: Tick,
+    stroked: bool,
+) -> (Option<[Animated<f32>; 2]>, Option<Animated<f32>>) {
+    use reelforge_model::AnimKind::Draw;
+    let len = shape.len;
+    let (a, b) = clip.anim.spans(len);
+    let enter = clip.anim.enter.filter(|x| x.kind == Draw && a > Tick::ZERO).map(|_| a);
+    let exit = clip.anim.exit.filter(|x| x.kind == Draw && b > Tick::ZERO).map(|_| b);
+    let keyed = Prop::DRAW.iter().any(|p| clip.keyed(*p));
+    let base = Prop::DRAW.map(|p| clip.base(p));
+    // how far in (1 at rest) the clip is at `t`, coming in and going out
+    let into = |t: Tick| enter.map_or(1.0, |a| (t.0 as f64 / a.0 as f64).clamp(0.0, 1.0) as f32);
+    let away = |t: Tick| exit.map_or(1.0, |b| ((len - t).0 as f64 / b.0 as f64).clamp(0.0, 1.0) as f32);
+    let ease = |u: f32| 1.0 - (1.0 - u.clamp(0.0, 1.0)).powi(3);
+    let trim = (stroked && (keyed || base != [0.0, 1.0] || enter.is_some() || exit.is_some())).then(|| {
+        let start = |t: Tick| {
+            let s = clip.value_at(Prop::DrawStart, t - shape.lead);
+            let e = clip.value_at(Prop::DrawEnd, t - shape.lead);
+            // going out, the outline is wiped from its start
+            s + (e - s).max(0.0) * (1.0 - ease(away(t) / 0.7))
+        };
+        let end = |t: Tick| clip.value_at(Prop::DrawEnd, t - shape.lead) * ease(into(t) / 0.7);
+        if !keyed && enter.is_none() && exit.is_none() {
+            return [Animated::Constant(base[0]), Animated::Constant(base[1])];
+        }
+        [framed_keys(len, step, len, start), framed_keys(len, step, len, end)]
+    });
+    let fill = (enter.is_some() || exit.is_some()).then(|| {
+        // with an outline the fill follows it in and leaves before it; without, it fades
+        let k = |u: f32| match stroked {
+            _ if u >= 1.0 => 1.0,
+            true => ((u - 0.6) / 0.4).clamp(0.0, 1.0),
+            false => u,
+        };
+        framed_keys(len, step, len, |t| k(into(t)) * k(away(t)))
+    });
+    (trim, fill)
+}
+
+/// The number a title's counter shows over its layer, or `None` when it has none.
+pub fn count(clip: &Clip, shape: &Shape, step: Tick) -> Option<Animated<f32>> {
+    let reelforge_model::ClipContent::Text { style, .. } = &clip.content else { return None };
+    let c = style.counter?;
+    if clip.keyed(Prop::Count) {
+        return Some(framed_keys(shape.len, step, shape.len, |t| clip.value_at(Prop::Count, t - shape.lead)));
+    }
+    let until = shape.lead + c.over.unwrap_or(clip.duration);
+    Some(framed_keys(shape.len, step, until, |t| c.at((t - shape.lead).max(Tick::ZERO), clip.duration)))
 }
 
 #[cfg(test)]

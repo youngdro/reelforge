@@ -191,7 +191,14 @@ fn layers_ok(spec: &RenderSpec, at: &str, layers: &[crate::Layer]) -> Result<(),
                 if let Some(font) = &text.font {
                     asset_of_kind(spec, &format!("{path}.content.font"), font, &[AssetKind::Font])?;
                 }
+                if let Some(n) = &text.number {
+                    keys_ok(&format!("{path}.content.number.value"), &n.value, layer.dur)?;
+                    if n.decimals > 4 {
+                        return Err(bad(format!("{path}.content.number.decimals"), "must be 0 to 4"));
+                    }
+                }
             }
+            LayerContent::Shape(sh) => shape_ok(&format!("{path}.content"), sh, layer.dur)?,
         }
         let pictured = matches!(layer.content, LayerContent::Media { .. } | LayerContent::Comp { .. });
         if let Some(c) = &layer.crop {
@@ -288,6 +295,55 @@ fn layers_ok(spec: &RenderSpec, at: &str, layers: &[crate::Layer]) -> Result<(),
                 return Err(bad(format!("{path}.fx"), "one of each distortion per layer"));
             }
         }
+    }
+    Ok(())
+}
+
+/// Checks a shape layer's content.
+fn shape_ok(path: &str, sh: &crate::ShapeContent, dur: Tick) -> Result<(), ValidationError> {
+    let fine = |v: f32| v.is_finite() && (0.0..=16384.0).contains(&v);
+    if !(sh.size.iter().all(|v| fine(*v)) && fine(sh.radius)) {
+        return Err(bad(format!("{path}.size"), "size and radius must be 0 to 16384 pixels"));
+    }
+    if !(3..=64).contains(&sh.points) {
+        return Err(bad(format!("{path}.points"), "must be 3 to 64"));
+    }
+    if !(sh.inner.is_finite() && (0.05..=1.0).contains(&sh.inner)) {
+        return Err(bad(format!("{path}.inner"), "must be 0.05 to 1"));
+    }
+    match &sh.fill {
+        Some(crate::Paint::Solid { color }) => color_ok(&format!("{path}.fill.color"), color.0)?,
+        Some(crate::Paint::Linear { from, to, angle }) => {
+            color_ok(&format!("{path}.fill.from"), from.0)?;
+            color_ok(&format!("{path}.fill.to"), to.0)?;
+            if !angle.is_finite() {
+                return Err(bad(format!("{path}.fill.angle"), "must be a number"));
+            }
+        }
+        Some(crate::Paint::Radial { from, to }) => {
+            color_ok(&format!("{path}.fill.from"), from.0)?;
+            color_ok(&format!("{path}.fill.to"), to.0)?;
+        }
+        None => {}
+    }
+    if let Some(st) = &sh.stroke {
+        color_ok(&format!("{path}.stroke.color"), st.color.0)?;
+        if !(st.width.is_finite() && (0.0..=2048.0).contains(&st.width)) {
+            return Err(bad(format!("{path}.stroke.width"), "must be 0 to 2048 pixels"));
+        }
+    }
+    if let Some(sh) = &sh.shadow {
+        color_ok(&format!("{path}.shadow.color"), sh.color.0)?;
+        if !(sh.offset.iter().all(|o| o.is_finite() && o.abs() <= 4096.0) && fine(sh.blur)) {
+            return Err(bad(format!("{path}.shadow"), "offset and blur must be finite and within reach"));
+        }
+    }
+    if let Some(t) = &sh.trim {
+        keys_ok(&format!("{path}.trim.start"), &t.start, dur)?;
+        keys_ok(&format!("{path}.trim.end"), &t.end, dur)?;
+    }
+    if let Some(o) = &sh.fill_opacity {
+        keys_ok(&format!("{path}.fill_opacity"), o, dur)?;
     }
     Ok(())
 }

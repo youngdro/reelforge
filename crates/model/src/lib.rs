@@ -22,6 +22,7 @@ pub mod color;
 pub mod export;
 pub mod fx;
 pub mod look;
+pub mod shape;
 pub mod steady;
 pub mod timeline;
 pub mod timing;
@@ -33,6 +34,7 @@ pub use color::{Adjust, ColorGrade, Filter, FilterKind, LutUse};
 pub use export::{Codec, ExportSettings, Quality, Resolution};
 pub use fx::{Fx, FxChannel, FxGroup, FxKind, FxSample};
 pub use look::{BlendMode, ChromaKey, Crop, Look, Mask, MaskKind};
+pub use shape::{Counter, Fill, Shape, ShapeKind, ShapeShadow, Stroke};
 pub use steady::{Steadied, Steady};
 pub use timeline::{Timeline, TimelineInfo};
 pub use timing::{CurvePoint, CurvePreset, Inbetween, Timing};
@@ -410,6 +412,11 @@ pub enum ClipContent {
         #[serde(default)]
         style: TitleStyle,
     },
+    /// A drawn shape: a box, ellipse, line, polygon, star, price tag or arrow (picture tracks).
+    Shape {
+        /// What it draws.
+        shape: Shape,
+    },
     /// An adjustment layer: it shows nothing itself; its effects ([`Clip::fx`]) and its colour
     /// (filter and adjustments) apply to the clips on the tracks below it while it lasts.
     Adjustment,
@@ -471,6 +478,10 @@ pub struct TitleStyle {
     /// Underlined.
     #[serde(default, skip_serializing_if = "is_no")]
     pub underline: bool,
+    /// A number it shows, running from one value to another: where its words say `{n}`, or as
+    /// all of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counter: Option<Counter>,
 }
 
 fn is_zero(v: &f32) -> bool {
@@ -516,6 +527,7 @@ impl Default for TitleStyle {
             leading: 0.0,
             italic: false,
             underline: false,
+            counter: None,
         }
     }
 }
@@ -535,6 +547,7 @@ impl TitleStyle {
             leading: self.leading,
             italic: self.italic,
             underline: self.underline,
+            counter: self.counter,
             ..look.clone()
         }
     }
@@ -855,6 +868,12 @@ impl Project {
                         }
                     }
                     ClipContent::Solid { .. } => track.kind == TrackKind::Video,
+                    ClipContent::Shape { shape } => {
+                        if let Some(why) = shape.problem() {
+                            return motion(why);
+                        }
+                        track.kind == TrackKind::Video
+                    }
                     ClipContent::Compound { timeline, source_in } => {
                         if !self.timelines.iter().any(|t| t.id == *timeline) {
                             return Err(ModelError::BadTimeline("a compound clip plays a timeline that is not there"));
@@ -887,6 +906,9 @@ impl Project {
                         let (lo, hi) = TitleStyle::SPACING;
                         if ![style.tracking, style.leading].iter().all(|v| v.is_finite() && (lo..=hi).contains(v)) {
                             return bad("letter and line spacing must be -0.5 to 4 em");
+                        }
+                        if let Some(why) = style.counter.as_ref().and_then(Counter::problem) {
+                            return bad(why);
                         }
                         if let Some(font) = &style.font
                             && self.media.get(font).is_none_or(|m| m.kind != MediaKind::Font)
