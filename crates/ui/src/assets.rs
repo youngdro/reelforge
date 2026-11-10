@@ -230,6 +230,11 @@ pub(crate) fn offline(m: &Media, missing: &HashSet<String>) -> bool {
 }
 
 impl AssetPanel {
+    /// Whether some file of `p` is known not to be readable.
+    pub(crate) fn any_offline(&self, p: &Project) -> bool {
+        p.media.values().any(|m| offline(m, &self.missing))
+    }
+
     /// Draws the panel. `looks` are the pictures of the title templates (made by the caller when
     /// the text tab shows; see [`AssetPanel::wants_looks`]).
     #[allow(clippy::too_many_arguments)]

@@ -41,6 +41,10 @@ selected, moved, scaled and turned by dragging it. The timeline shows pictures
 along video clips and the waveform of sound. The editor speaks English, Simplified
 Chinese and Japanese: it follows the system (or browser) language, and
 the pick in the top bar is remembered. A language is one `Strings` table in `crates/ui/src/lang/`.
+Opened without a project file (and in the browser without a server), the editor keeps what you make
+as drafts on the device: the drafts page lists them with a picture of each, to open another, start a
+new one, or rename, copy or delete one. A narrow window (a phone held upright) shows the preview
+above and the timeline, the media or the inspector under it, one at a time.
 See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Video and audio codecs and containers are FilmCraft's clean-room, pure-Rust crates
@@ -57,7 +61,7 @@ Rust 1.95 or newer. On Linux the editor plays sound through ALSA: install `libas
 Ubuntu) or `alsa-lib-devel` (Fedora) to build it.
 
 ```sh
-cargo run -p reelforge                      # the editor (opens a demo project)
+cargo run -p reelforge                      # the editor (the draft edited last; a demo the first time)
 cargo run -p reelforge-cli -- --help        # commands, scripts, compile, validate, frame, export, serve, call
 cargo xtask ci                              # fmt, clippy, tests, layer rules, wasm build
 ```

@@ -18,12 +18,17 @@
 //!
 //! [`EditorApp::join`] edits a session a server holds instead, with agents and other editors: see
 //! [`remote`].
+//!
+//! An editor with neither a file nor a server keeps its project itself, as one of its drafts
+//! ([`EditorApp::with_recovery`], `drafts`). A narrow window (a phone held upright) shows one panel
+//! at a time under the preview.
 
 mod ahead;
 mod assets;
 mod audio;
 mod captions;
 mod curve;
+mod drafts;
 mod export_job;
 pub mod i18n;
 mod looks;
@@ -183,6 +188,17 @@ pub struct EditorApp {
     recovery: bool,
     /// The revision last kept there, and when (in the window's seconds) the next keep is due.
     kept: (u64, Option<f64>),
+    /// The drafts of such an editor (the project is the one being edited), and the page that
+    /// lists them.
+    drafts: Option<drafts::Drafts>,
+    /// What was asked of the drafts; done at the start of the next frame, where storage is at hand.
+    draft_ask: Option<drafts::Ask>,
+    /// Stands in for eframe's storage when it has none: drafts then last as long as the window.
+    spare: std::collections::HashMap<String, String>,
+    /// The window is too narrow for the panels to stand side by side ([`NARROW_BELOW`]); then one
+    /// of them shows under the preview.
+    narrow: bool,
+    sheet: Sheet,
     /// The window, once it is known, for a remote's answers to wake it.
     window: Arc<std::sync::OnceLock<egui::Context>>,
 }
@@ -401,6 +417,11 @@ impl EditorApp {
             lang_unsaved: false,
             recovery: false,
             kept: (0, None),
+            drafts: None,
+            draft_ask: None,
+            spare: Default::default(),
+            narrow: false,
+            sheet: Sheet::default(),
             window: Arc::default(),
         }
     }
@@ -489,13 +510,27 @@ impl EditorApp {
     /// there last, if any: an editor whose project has no file and no server loses nothing to a
     /// crash, a closed window or a reload. Media the browser handed over is not kept; dropping the
     /// same files in again brings it back. Call after [`EditorApp::with_gpu`].
+    ///
+    /// What is kept is a draft, one of as many as the person starts: the drafts page (the button
+    /// beside the name in the top bar) lists them, to open another or start a new one. The editor
+    /// starts on the draft edited last.
     pub fn with_recovery(self, cc: &eframe::CreationContext<'_>) -> EditorApp {
-        self.recover(cc.storage.and_then(|s| s.get_string(RECOVERY_KEY)))
+        self.with_drafts(&|key| cc.storage.and_then(|s| s.get_string(key)))
     }
 
-    /// [`EditorApp::with_recovery`] with what storage held.
+    /// [`EditorApp::with_recovery`] with what reads storage.
+    fn with_drafts(mut self, get: &dyn Fn(&str) -> Option<String>) -> EditorApp {
+        let drafts = drafts::Drafts::load(get(drafts::INDEX_KEY));
+        // the draft being edited; from before there were drafts, the one project kept
+        let kept = drafts.current().and_then(|d| get(&drafts::project_key(&d.id))).or_else(|| get(RECOVERY_KEY));
+        self.drafts = Some(drafts);
+        self.recover(kept)
+    }
+
+    /// [`EditorApp::with_recovery`] with the project storage held.
     fn recover(mut self, kept: Option<String>) -> EditorApp {
         self.recovery = true;
+        self.drafts.get_or_insert_with(Default::default);
         if let Some(project) = kept.and_then(|text| serde_json::from_str::<reelforge_model::Project>(&text).ok())
             && project.check().is_ok()
         {
@@ -680,6 +715,166 @@ impl EditorApp {
         }
         if let Some((_, spec)) = &self.sound_spec {
             self.sound.fill(spec, &self.media);
+        }
+    }
+
+    /// Keeps the project in `store` as the draft being edited; the first time, that starts the
+    /// draft.
+    fn keep_draft(&mut self, store: &mut dyn drafts::Store) {
+        let (project, s) = (self.project(), self.s());
+        let Some(drafts) = &mut self.drafts else { return };
+        if drafts.current().is_none() {
+            let name = drafts.free_name(s.draft_name);
+            drafts.start(name, drafts::now());
+        }
+        drafts.keep(store, &project, drafts::now());
+        // what an editor from before there were drafts kept is this draft now
+        if store.get(RECOVERY_KEY).is_some() {
+            store.remove(RECOVERY_KEY);
+        }
+        self.kept = (self.session.revision(), None);
+    }
+
+    /// A small picture of the project for its draft's card: the cover's frame, or the first one.
+    fn draft_cover(&self) -> Option<Vec<u8>> {
+        let p = self.project();
+        if p.duration() <= Tick::ZERO {
+            return None;
+        }
+        let spec = compile(&p, &CompileOptions { encode: false }).ok()?;
+        let side = p.canvas.width.max(p.canvas.height).max(1);
+        let scale = (drafts::COVER_SIDE as f32 / side as f32).min(1.0);
+        let picture = reelforge_media::still(&spec, &self.media, p.cover.unwrap_or(Tick::ZERO), scale).ok()?;
+        reelforge_media::encode_still(&picture, reelforge_media::StillFormat::Jpeg).ok()
+    }
+
+    /// Puts the editor on `project`, a draft just opened or started: at its beginning, with nothing
+    /// selected and no history.
+    fn edit_draft(&mut self, project: reelforge_model::Project) {
+        self.set_playing(false);
+        self.session.adopt(project, "project.open", "editor");
+        self.seen = self.session.revision();
+        self.kept = (self.seen, None);
+        self.selected = None;
+        self.also.clear();
+        self.inspector = None;
+        self.editing = None;
+        self.cropping = None;
+        self.gesture = None;
+        (self.range_in, self.range_out) = (None, None);
+        self.playhead = Tick::ZERO;
+    }
+
+    /// Does what was asked of the drafts, which are kept in `store`.
+    fn drafts_do(&mut self, ask: drafts::Ask, store: &mut dyn drafts::Store) {
+        use drafts::Ask;
+        if self.drafts.is_none() {
+            return;
+        }
+        let s = self.s();
+        let now = drafts::now();
+        // a draft just started, to edit
+        let start = |app: &mut EditorApp, store: &mut dyn drafts::Store| {
+            let drafts = app.drafts.as_mut().expect("checked");
+            let name = drafts.free_name(s.draft_name);
+            drafts.start(name.clone(), now);
+            app.edit_draft((*Session::default().project()).clone());
+            app.keep_draft(store);
+            name
+        };
+        match ask {
+            Ask::Home => {
+                self.set_playing(false);
+                self.keep_draft(store);
+                // the card's picture is of the draft as it is left; one made while files are
+                // missing does not replace a whole one
+                let cover = self.draft_cover();
+                let partial = self.assets.any_offline(&self.project());
+                let drafts = self.drafts.as_mut().expect("checked");
+                if !(partial && drafts.has_cover(store)) {
+                    drafts.keep_cover(store, cover.as_deref());
+                }
+                drafts.home = true;
+            }
+            Ask::Back => self.drafts.as_mut().expect("checked").home = false,
+            Ask::Open(id) => {
+                self.keep_draft(store);
+                let drafts = self.drafts.as_mut().expect("checked");
+                let name = drafts.name_of(&id);
+                match drafts.open(store, &id) {
+                    Some(project) => {
+                        drafts.home = false;
+                        self.edit_draft(project);
+                        self.status = fill(s.draft_opened, &[&name]);
+                    }
+                    None => self.status = fill(s.draft_unreadable, &[&name]),
+                }
+            }
+            Ask::New => {
+                self.keep_draft(store);
+                let name = start(self, store);
+                self.drafts.as_mut().expect("checked").home = false;
+                self.status = fill(s.draft_started, &[&name]);
+            }
+            Ask::Rename(id, name) => self.drafts.as_mut().expect("checked").rename(store, &id, &name),
+            Ask::Duplicate(id) => {
+                let drafts = self.drafts.as_mut().expect("checked");
+                let name = fill(s.draft_copy_name, &[&drafts.name_of(&id)]);
+                drafts.duplicate(store, &id, name, now);
+            }
+            Ask::Delete(id) => {
+                let drafts = self.drafts.as_mut().expect("checked");
+                let name = drafts.name_of(&id);
+                let edited = drafts.current().is_some_and(|d| d.id == id);
+                drafts.delete(store, &id);
+                if edited {
+                    // the editor is always on some draft: the one changed last, or a new one
+                    let next = drafts.list().first().map(|d| d.id.clone());
+                    match next.and_then(|id| drafts.open(store, &id)) {
+                        Some(project) => self.edit_draft(project),
+                        None => {
+                            start(self, store);
+                        }
+                    }
+                }
+                self.status = fill(s.draft_deleted, &[&name]);
+            }
+        }
+    }
+
+    /// Runs `f` with where drafts are kept: eframe's storage, written out afterwards, or, when it
+    /// has none, a map that lasts as long as the window.
+    fn with_store(&mut self, frame: &mut eframe::Frame, f: impl FnOnce(&mut EditorApp, &mut dyn drafts::Store)) {
+        match frame.storage_mut() {
+            Some(storage) => {
+                f(self, &mut drafts::Kept(storage));
+                storage.flush();
+            }
+            None => {
+                let mut spare = std::mem::take(&mut self.spare);
+                f(self, &mut spare);
+                self.spare = spare;
+            }
+        }
+    }
+
+    /// The drafts page, in place of the editor.
+    fn drafts_page(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let s = self.s();
+        let Some(mut drafts) = self.drafts.take() else { return };
+        let now = drafts::now();
+        let margin = if self.narrow { 14 } else { 28 };
+        let ask = egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(theme::color::STAGE).inner_margin(egui::Margin::same(margin)))
+            .show(ui, |ui| match frame.storage_mut() {
+                Some(storage) => drafts.show(ui, s, &drafts::Kept(storage), now),
+                None => drafts.show(ui, s, &self.spare, now),
+            })
+            .inner;
+        self.drafts = Some(drafts);
+        if ask.is_some() {
+            self.draft_ask = ask;
+            ui.ctx().request_repaint();
         }
     }
 
@@ -1623,26 +1818,42 @@ impl EditorApp {
         let p = self.project();
         let s = self.s();
         ui.horizontal_centered(|ui| {
+            let narrow = self.narrow;
             ui.label(egui::RichText::new("reelforge").strong().size(15.0).color(theme::color::ACCENT));
             ui.add_space(6.0);
-            let c = &p.canvas;
-            ui.label(
-                egui::RichText::new(format!(
-                    "{}×{} · {} fps · {}",
-                    c.width,
-                    c.height,
-                    (c.fps.fps() * 100.0).round() / 100.0,
-                    theme::timecode(p.duration().seconds())
-                ))
-                .color(theme::color::WEAK),
-            );
+            if let Some(drafts) = &self.drafts {
+                // to the drafts page, and which draft this is
+                let name = drafts.current().map(|d| d.name.clone());
+                if theme::tool(ui, icon::FRAME_BACK, s.drafts, s.drafts_tip, true).clicked() {
+                    self.draft_ask = Some(drafts::Ask::Home);
+                    ui.ctx().request_repaint();
+                }
+                if let Some(name) = name.filter(|_| !narrow) {
+                    ui.label(egui::RichText::new(name).color(theme::color::TEXT));
+                }
+            }
+            if !narrow {
+                let c = &p.canvas;
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{}×{} · {} fps · {}",
+                        c.width,
+                        c.height,
+                        (c.fps.fps() * 100.0).round() / 100.0,
+                        theme::timecode(p.duration().seconds())
+                    ))
+                    .color(theme::color::WEAK),
+                );
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 self.export_controls(ui, &p);
                 ui.add_space(4.0);
                 let mut lang = self.lang;
+                // a narrow bar has room for the language's code only
+                let (shown, width) = if narrow { (self.lang.code(), 40.0) } else { (s.lang_name, 96.0) };
                 egui::ComboBox::from_id_salt("lang")
-                    .selected_text(egui::RichText::new(s.lang_name).color(theme::color::WEAK))
-                    .width(96.0)
+                    .selected_text(egui::RichText::new(shown).color(theme::color::WEAK))
+                    .width(width)
                     .show_ui(ui, |ui| {
                         for l in Lang::ALL {
                             ui.selectable_value(&mut lang, l, l.strings().lang_name);
@@ -1661,7 +1872,11 @@ impl EditorApp {
                     self.lang_chosen = true;
                     self.lang_unsaved = true;
                 }
-                if theme::tool(ui, icon::ADD, s.new_project, s.new_project_tip, true).clicked() {
+                // an editor with drafts starts anew on the drafts page, which loses nothing
+                if self.drafts.is_none()
+                    && theme::tool(ui, icon::ADD, if narrow { "" } else { s.new_project }, s.new_project_tip, true)
+                        .clicked()
+                {
                     self.new_project();
                 }
                 if theme::tool(ui, icon::REDO, "", s.redo_tip, true).clicked() {
@@ -1696,17 +1911,22 @@ impl EditorApp {
             ui.label(
                 egui::RichText::new(theme::timecode(self.playhead.seconds())).monospace().color(theme::color::TEXT),
             );
-            ui.label(
-                egui::RichText::new(format!("/ {}", theme::timecode(p.duration().seconds())))
-                    .monospace()
-                    .color(theme::color::WEAK),
-            );
+            // a narrow bar keeps the playhead's time, the steps by a frame, play, loop and the
+            // preview alone
+            let narrow = self.narrow;
+            if !narrow {
+                ui.label(
+                    egui::RichText::new(format!("/ {}", theme::timecode(p.duration().seconds())))
+                        .monospace()
+                        .color(theme::color::WEAK),
+                );
+            }
             // the play controls, centred on the panel
             let w = 4.0 * 34.0 + 3.0 * 6.0 + 12.0;
             let room = ui.available_width();
-            ui.add_space(((room - w) / 2.0 - 120.0).max(8.0));
+            ui.add_space(if narrow { 8.0 } else { ((room - w) / 2.0 - 120.0).max(8.0) });
             let frame = fps.frame_at(self.playhead);
-            if theme::tool(ui, icon::TO_START, "", s.to_start, true).clicked() {
+            if !narrow && theme::tool(ui, icon::TO_START, "", s.to_start, true).clicked() {
                 self.seek(Tick::ZERO);
             }
             if theme::tool(ui, icon::FRAME_BACK, "", s.prev_frame, true).clicked() {
@@ -1726,12 +1946,14 @@ impl EditorApp {
             if theme::tool(ui, icon::FRAME_ON, "", s.next_frame, true).clicked() {
                 self.seek(fps.tick_of(frame + 1));
             }
-            if theme::tool(ui, icon::TO_END, "", s.to_end, true).clicked() {
+            if !narrow && theme::tool(ui, icon::TO_END, "", s.to_end, true).clicked() {
                 self.seek(p.duration());
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(egui::RichText::new(fill(s.frame, &[&frame])).monospace().color(theme::color::WEAK));
-                ui.add_space(8.0);
+                if !narrow {
+                    ui.label(egui::RichText::new(fill(s.frame, &[&frame])).monospace().color(theme::color::WEAK));
+                    ui.add_space(8.0);
+                }
                 let looping = egui::Button::new(egui::RichText::new(icon::LOOP).size(14.0).color(if self.looping {
                     theme::color::ACCENT
                 } else {
@@ -1745,7 +1967,11 @@ impl EditorApp {
                     self.preview_only = !self.preview_only;
                 }
                 let label = if self.full_quality { s.quality_full } else { s.quality_smooth };
-                if ui.add(egui::Button::new(egui::RichText::new(label).small())).on_hover_text(s.quality_tip).clicked()
+                if !narrow
+                    && ui
+                        .add(egui::Button::new(egui::RichText::new(label).small()))
+                        .on_hover_text(s.quality_tip)
+                        .clicked()
                 {
                     self.full_quality = !self.full_quality;
                     self.quality_unsaved = true;
@@ -2101,7 +2327,8 @@ impl EditorApp {
             let outer = outer.or_else(|| list.iter().position(|t| !t.compound)).unwrap_or(0);
             fill(s.compound_back, &[&self.timeline_label(&list[outer].name, outer)])
         });
-        ui.horizontal(|ui| {
+        let narrow = self.narrow;
+        let tools = |ui: &mut egui::Ui| {
             if let Some(back) = &back
                 && theme::tool(ui, icon::FRAME_BACK, back, s.compound_back_tip, true).clicked()
             {
@@ -2133,43 +2360,84 @@ impl EditorApp {
             if theme::tool(ui, icon::SPARKLE, s.spoken, s.spoken_tip, true).clicked() {
                 self.spoken.open = !self.spoken.open;
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if theme::tool(ui, icon::ROW_HEIGHT, "", s.row_height_tip, true).clicked() {
-                    let sizes = timeline::ROW_HEIGHTS;
-                    let at = sizes.iter().position(|h| *h == self.timeline.row).unwrap_or(1);
-                    self.timeline.row = sizes[(at + 1) % sizes.len()];
+            if narrow {
+                ui.separator();
+                self.timeline_view_tools(ui);
+            } else {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| self.timeline_view_tools(ui));
+            }
+        };
+        if narrow {
+            // more tools than fit: the row scrolls sideways
+            egui::ScrollArea::horizontal()
+                .id_salt("timeline tools")
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(ui, |ui| ui.horizontal(tools));
+        } else {
+            ui.horizontal(tools);
+        }
+    }
+
+    /// The tools of the timeline's view: snapping, the sound of scrubbing, zoom, row height.
+    fn timeline_view_tools(&mut self, ui: &mut egui::Ui) {
+        let s = self.s();
+        if theme::tool(ui, icon::ROW_HEIGHT, "", s.row_height_tip, true).clicked() {
+            let sizes = timeline::ROW_HEIGHTS;
+            let at = sizes.iter().position(|h| *h == self.timeline.row).unwrap_or(1);
+            self.timeline.row = sizes[(at + 1) % sizes.len()];
+        }
+        if theme::tool(ui, icon::FIT, "", s.fit_tip, true).clicked() {
+            let width = ui.ctx().content_rect().width();
+            self.timeline.fit(self.project().duration().seconds(), width);
+        }
+        if theme::tool(ui, icon::ZOOM_IN, "", s.zoom_in_tip, true).clicked() {
+            self.timeline.zoom(1.5);
+        }
+        if theme::tool(ui, icon::ZOOM_OUT, "", s.zoom_out_tip, true).clicked() {
+            self.timeline.zoom(1.0 / 1.5);
+        }
+        let scrub = self.scrub_sound;
+        let ear = egui::Button::new(egui::RichText::new(icon::WAVEFORM).size(14.0).color(if scrub {
+            theme::color::ACCENT
+        } else {
+            theme::color::WEAK
+        }))
+        .selected(scrub);
+        if ui.add(ear).on_hover_text(if scrub { s.scrub_on } else { s.scrub_off }).clicked() {
+            self.scrub_sound = !scrub;
+        }
+        let snap = self.timeline.snap;
+        let magnet = egui::Button::new(egui::RichText::new(icon::SNAP).size(14.0).color(if snap {
+            theme::color::ACCENT
+        } else {
+            theme::color::WEAK
+        }))
+        .selected(snap);
+        if ui.add(magnet).on_hover_text(if snap { s.snap_on } else { s.snap_off }).clicked() {
+            self.timeline.snap = !snap;
+        }
+    }
+
+    /// The tabs of a narrow window: what shows under the preview.
+    fn sheet_tabs(&mut self, ui: &mut egui::Ui) {
+        let s = self.s();
+        let tabs = [
+            (Sheet::Timeline, icon::FILM, s.sheet_timeline),
+            (Sheet::Media, icon::IMAGE, s.tab_media),
+            (Sheet::Adjust, icon::SLIDERS, s.sheet_adjust),
+        ];
+        ui.horizontal_centered(|ui| {
+            let gap = 6.0;
+            ui.spacing_mut().item_spacing.x = gap;
+            let w = ((ui.available_width() - gap * 2.0) / 3.0).floor();
+            for (sheet, glyph, word) in tabs {
+                let on = self.sheet == sheet;
+                let tint = if on { theme::color::ACCENT } else { theme::color::TEXT };
+                let text = egui::RichText::new(format!("{glyph}  {word}")).size(14.0).color(tint);
+                if ui.add_sized([w, 28.0], egui::Button::new(text).selected(on)).clicked() {
+                    self.sheet = sheet;
                 }
-                if theme::tool(ui, icon::FIT, "", s.fit_tip, true).clicked() {
-                    let width = ui.ctx().content_rect().width();
-                    self.timeline.fit(self.project().duration().seconds(), width);
-                }
-                if theme::tool(ui, icon::ZOOM_IN, "", s.zoom_in_tip, true).clicked() {
-                    self.timeline.zoom(1.5);
-                }
-                if theme::tool(ui, icon::ZOOM_OUT, "", s.zoom_out_tip, true).clicked() {
-                    self.timeline.zoom(1.0 / 1.5);
-                }
-                let scrub = self.scrub_sound;
-                let ear = egui::Button::new(egui::RichText::new(icon::WAVEFORM).size(14.0).color(if scrub {
-                    theme::color::ACCENT
-                } else {
-                    theme::color::WEAK
-                }))
-                .selected(scrub);
-                if ui.add(ear).on_hover_text(if scrub { s.scrub_on } else { s.scrub_off }).clicked() {
-                    self.scrub_sound = !scrub;
-                }
-                let snap = self.timeline.snap;
-                let magnet = egui::Button::new(egui::RichText::new(icon::SNAP).size(14.0).color(if snap {
-                    theme::color::ACCENT
-                } else {
-                    theme::color::WEAK
-                }))
-                .selected(snap);
-                if ui.add(magnet).on_hover_text(if snap { s.snap_on } else { s.snap_off }).clicked() {
-                    self.timeline.snap = !snap;
-                }
-            });
+            }
         });
     }
 
@@ -2185,6 +2453,9 @@ impl EditorApp {
             let (glyph, tint) =
                 if warn { (icon::WARNING, theme::color::WARN) } else { (icon::DONE, theme::color::WEAK) };
             ui.label(egui::RichText::new(format!("{glyph}  {}", self.status)).small().color(tint));
+            if self.narrow {
+                return;
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let shown = match &self.gpu {
                     Some(g) => format!("{}  {}", icon::SCREEN, fill(s.gpu_preview, &[&g.compositor.adapter()])),
@@ -3723,6 +3994,20 @@ const QUALITY_KEY: &str = "reelforge.preview";
 const RECOVERY_KEY: &str = "reelforge.project";
 /// How long after a change the project is kept, in seconds.
 const RECOVERY_DELAY: f64 = 1.0;
+/// A window narrower than this many points shows one panel at a time under the preview (a phone
+/// held upright, a narrow browser window).
+const NARROW_BELOW: f32 = 860.0;
+
+/// What shows under the preview of a narrow window.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+enum Sheet {
+    #[default]
+    Timeline,
+    /// The panel of media, sounds, titles, stickers and effects.
+    Media,
+    /// The inspector.
+    Adjust,
+}
 
 /// How many files of a project taken back from storage must be handed over again: in the browser,
 /// every imported one (the page kept only the project); on the desktop, none (they are read from
@@ -3742,8 +4027,7 @@ impl eframe::App for EditorApp {
         }
         storage.set_string(QUALITY_KEY, if self.full_quality { "full" } else { "smooth" }.to_string());
         if self.recovery {
-            storage.set_string(RECOVERY_KEY, serde_json::to_string(&*self.project()).expect("serialises"));
-            self.kept = (self.session.revision(), None);
+            self.keep_draft(&mut drafts::Kept(storage));
         }
     }
 
@@ -3760,10 +4044,7 @@ impl eframe::App for EditorApp {
             let now = ctx.input(|i| i.time);
             let due = *self.kept.1.get_or_insert(now + RECOVERY_DELAY);
             if now >= due {
-                if let Some(storage) = frame.storage_mut() {
-                    self.save(storage);
-                    storage.flush();
-                }
+                self.with_store(frame, |app, store| app.keep_draft(store));
             } else {
                 ctx.request_repaint_after(std::time::Duration::from_secs_f64(due - now));
             }
@@ -3820,6 +4101,14 @@ impl eframe::App for EditorApp {
                 self.status = note.text(self.lang);
             }
         }
+        self.narrow = ctx.content_rect().width() < NARROW_BELOW;
+        if let Some(ask) = self.draft_ask.take() {
+            self.with_store(frame, |app, store| app.drafts_do(ask, store));
+        }
+        if self.drafts.as_ref().is_some_and(|d| d.home) {
+            self.drafts_page(ui, frame);
+            return;
+        }
         self.take_dropped_files(&ctx);
         self.export_window(&ctx);
         self.timelines_window(&ctx);
@@ -3853,11 +4142,35 @@ impl eframe::App for EditorApp {
         let (playing, lang, media) = (self.playing, self.lang, self.media.clone());
         let (selection, can_paste, range) = (self.selection(), self.clipboard.is_some(), self.range());
         let shown = !self.preview_only;
-        let out = egui::Panel::bottom("timeline")
+        // a narrow window has the preview above and one of the timeline, the media and the
+        // inspector under it, picked by the tabs at the bottom
+        let narrow = self.narrow;
+        let on = |sheet: Sheet| shown && (!narrow || self.sheet == sheet);
+        let (timeline_on, media_on, adjust_on) = (on(Sheet::Timeline), on(Sheet::Media), on(Sheet::Adjust));
+        // a sheet leaves the preview some of the window
+        let tallest = (ctx.content_rect().height() * 0.6).max(200.0);
+        let side = |id: &str, left: bool, width: f32| {
+            if narrow {
+                egui::Panel::bottom(format!("{id} sheet")).default_size(300.0).size_range(140.0..=tallest)
+            } else if left {
+                egui::Panel::left(id.to_string()).default_size(width).size_range(220.0..=520.0)
+            } else {
+                egui::Panel::right(id.to_string()).default_size(width)
+            }
             .resizable(true)
-            .default_size(280.0)
+        };
+        if narrow {
+            egui::Panel::bottom("sheets").exact_size(40.0).frame(bar(theme::color::PANEL)).show_collapsible(
+                ui,
+                &mut shown.clone(),
+                |ui| self.sheet_tabs(ui),
+            );
+        }
+        let timeline = egui::Panel::bottom("timeline").resizable(true).default_size(280.0);
+        let timeline = if narrow { timeline.size_range(140.0..=tallest) } else { timeline };
+        let out = timeline
             .frame(egui::Frame::new().fill(theme::color::PANEL))
-            .show_collapsible(ui, &mut shown.clone(), |ui| {
+            .show_collapsible(ui, &mut timeline_on.clone(), |ui| {
                 egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| self.timeline_bar(ui));
                 self.timeline.show(ui, &p, self.playhead, &selection, playing, can_paste, range, lang, &media)
             })
@@ -3867,26 +4180,22 @@ impl eframe::App for EditorApp {
             self.looks = Some(looks::previews(&ctx));
         }
         let looks = self.looks.clone().unwrap_or_default();
-        let asked = egui::Panel::left("assets")
-            .resizable(true)
-            .default_size(300.0)
-            .size_range(220.0..=520.0)
+        let asked = side("assets", true, 300.0)
             .frame(egui::Frame::new().fill(theme::color::PANEL).inner_margin(egui::Margin::same(10)))
-            .show_collapsible(ui, &mut shown.clone(), |ui| {
+            .show_collapsible(ui, &mut media_on.clone(), |ui| {
                 self.assets.show(ui, &p, &media, lang, &looks, playing, self.playhead, &selection)
             })
             .and_then(|r| r.inner);
-        egui::Panel::right("inspector")
-            .resizable(true)
-            .default_size(290.0)
+        side("inspector", false, 290.0)
             .frame(egui::Frame::new().fill(theme::color::PANEL).inner_margin(egui::Margin::same(12)))
-            .show_collapsible(ui, &mut shown.clone(), |ui| self.inspector(ui));
+            .show_collapsible(ui, &mut adjust_on.clone(), |ui| self.inspector(ui));
+        let edge = if narrow { 8 } else { 16 };
         egui::Panel::bottom("transport")
             .exact_size(46.0)
-            .frame(bar(theme::color::STAGE).inner_margin(egui::Margin::symmetric(16, 6)))
+            .frame(bar(theme::color::STAGE).inner_margin(egui::Margin::symmetric(edge, 6)))
             .show(ui, |ui| self.transport(ui));
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(theme::color::STAGE).inner_margin(egui::Margin::same(16)))
+            .frame(egui::Frame::new().fill(theme::color::STAGE).inner_margin(egui::Margin::same(edge)))
             .show(ui, |ui| self.preview(ui));
 
         if let Some(t) = out.seek {

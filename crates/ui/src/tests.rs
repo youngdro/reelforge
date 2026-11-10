@@ -281,6 +281,90 @@ fn an_unsaved_project_comes_back_and_files_dropped_again_relink() {
 }
 
 #[test]
+fn an_unsaved_editor_keeps_drafts_to_open_start_copy_and_delete() {
+    use crate::drafts::Ask;
+    use crate::i18n::Lang;
+    type Kept = std::collections::HashMap<String, String>;
+    let mut store = Kept::new();
+    let start = |store: &Kept| {
+        let held = store.clone();
+        EditorApp::demo().with_lang(Lang::En).with_drafts(&move |key| held.get(key).cloned())
+    };
+    let clips = |app: &EditorApp| app.project().tracks.iter().map(|t| t.clips.len()).sum::<usize>();
+    let listed = |app: &EditorApp| -> Vec<(String, usize)> {
+        app.drafts.as_ref().unwrap().list().iter().map(|d| (d.name.clone(), d.clips)).collect()
+    };
+    let current = |app: &EditorApp| app.drafts.as_ref().unwrap().current().unwrap().clone();
+    let title = |app: &mut EditorApp| {
+        let track = first_track(app, reelforge_model::TrackKind::Text);
+        app.execute("clip.add", json!({"track": track, "text": "hi", "start": {"seconds": 20}})).unwrap();
+    };
+
+    // the one project an editor from before there were drafts kept is the first draft
+    let mut old = EditorApp::demo();
+    title(&mut old);
+    store.insert(super::RECOVERY_KEY.to_string(), serde_json::to_string(&*old.project()).unwrap());
+    let mut app = start(&store);
+    assert_eq!(clips(&app), 5);
+    app.keep_draft(&mut store);
+    assert!(!store.contains_key(super::RECOVERY_KEY));
+    assert_eq!(listed(&app), [("Draft 1".to_string(), 5)]);
+    let first = current(&app).id;
+
+    // going to the drafts page keeps the draft, with a picture of it
+    app.drafts_do(Ask::Home, &mut store);
+    assert!(app.drafts.as_ref().unwrap().home);
+    assert!(app.drafts.as_ref().unwrap().has_cover(&store));
+
+    // a new draft is empty, and the one being edited; nothing of the first is in its history
+    app.drafts_do(Ask::New, &mut store);
+    assert!(!app.drafts.as_ref().unwrap().home);
+    assert_eq!((clips(&app), current(&app).name.as_str()), (0, "Draft 2"));
+    assert!(app.execute("edit.undo", json!({})).is_err());
+    title(&mut app);
+    app.selected = app.project().tracks.iter().flat_map(|t| &t.clips).next().map(|c| c.id.clone());
+    app.playhead = Tick::from_seconds(20.5);
+
+    // opening the first keeps the second as it is, and starts at the first's beginning
+    app.drafts_do(Ask::Open(first.clone()), &mut store);
+    assert_eq!((clips(&app), current(&app).id), (5, first.clone()));
+    assert_eq!((app.playhead, app.selected.clone()), (Tick::ZERO, None));
+    assert!(app.status.contains("Draft 1"), "{}", app.status);
+    let mut all = listed(&app);
+    all.sort();
+    assert_eq!(all, [("Draft 1".to_string(), 5), ("Draft 2".to_string(), 1)]);
+    // a draft that is not there changes nothing
+    app.drafts_do(Ask::Open("d99".into()), &mut store);
+    assert_eq!((clips(&app), current(&app).id), (5, first.clone()));
+
+    // the next run starts on the draft edited last
+    let again = start(&store);
+    assert_eq!((clips(&again), current(&again).id), (5, first.clone()));
+    assert!(again.status.contains("last project"), "{}", again.status);
+
+    // a copy and a name
+    app.drafts_do(Ask::Duplicate(first.clone()), &mut store);
+    app.drafts_do(Ask::Rename(first.clone(), "Beach".into()), &mut store);
+    let mut all = listed(&app);
+    all.sort();
+    assert_eq!(all, [("Beach".to_string(), 5), ("Draft 1 copy".to_string(), 5), ("Draft 2".to_string(), 1)]);
+
+    // deleting the draft being edited puts the editor on another; deleting the last starts a new one
+    app.drafts_do(Ask::Delete(first.clone()), &mut store);
+    assert_eq!(listed(&app).len(), 2);
+    assert_ne!(current(&app).id, first);
+    assert_eq!(clips(&app), current(&app).clips);
+    for _ in 0..2 {
+        let id = current(&app).id;
+        app.drafts_do(Ask::Delete(id), &mut store);
+    }
+    assert_eq!(listed(&app), [("Draft 1".to_string(), 0)]);
+    assert_eq!(clips(&app), 0);
+    // nothing of the deleted drafts is left in storage: the index, and the one draft
+    assert_eq!(store.len(), 2, "{:?}", store.keys().collect::<Vec<_>>());
+}
+
+#[test]
 fn new_empties_the_project_and_undo_brings_it_back() {
     let mut app = EditorApp::demo();
     let before = app.project();
