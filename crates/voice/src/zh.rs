@@ -193,7 +193,7 @@ pub fn phonemes(text: &str) -> String {
     let text = read_numbers(text);
     let starts: std::collections::HashSet<usize> = JIEBA.cut(&text, true).iter().map(|t| t.byte_start).collect();
     let mut out = String::new();
-    let mut add = |out: &mut String, at: usize, reading: &str| {
+    let add = |out: &mut String, at: usize, reading: &str| {
         // a new word is set apart; a syllable inside one follows on
         if starts.contains(&at) && !out.is_empty() && !out.ends_with(' ') {
             out.push(' ');
