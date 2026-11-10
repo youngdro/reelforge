@@ -59,6 +59,13 @@ pub struct Options {
     pub prompt: Option<String>,
 }
 
+/// Whether `text` could be spoken in `length`: at least 30 ms a letter. The model sometimes
+/// stamps a sentence of its own (often its prompt) into a sliver at the end of the sound.
+fn could_be_said(text: &str, length: Tick) -> bool {
+    let letters = text.chars().filter(|c| c.is_alphanumeric()).count() as i64;
+    length.0 >= letters * TICKS_PER_SECOND * 3 / 100
+}
+
 /// The prompt used when none is given: for Chinese, a sentence in simplified characters with
 /// full-width punctuation, which keeps Whisper from answering in traditional ones.
 pub fn default_prompt(language: &str) -> Option<&'static str> {
@@ -146,7 +153,7 @@ impl Whisper {
                     let text = self.vocab.text(&p.tokens).trim().to_string();
                     // the model may stamp past the end of the sound; those pieces are dropped
                     let (start, end) = (at(p.start), at(p.end));
-                    if !text.is_empty() && end > start {
+                    if !text.is_empty() && end > start && could_be_said(&text, end - start) {
                         segments.push(Segment { start, end, text });
                     }
                 }
