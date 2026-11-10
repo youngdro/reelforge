@@ -18,6 +18,7 @@ pub mod library;
 pub mod picture;
 mod shrunk;
 pub mod sound;
+pub mod steady;
 pub mod stickers;
 pub mod stretch;
 pub mod webcodecs;
@@ -535,6 +536,32 @@ fn as_yuv(frame: &filmcraft_frame::VideoFrame) -> Option<Yuv> {
 }
 
 impl Footage {
+    /// How long one frame of `asset` (a video) lasts, when the file says.
+    pub fn frame_length(&self, asset: &Asset) -> Option<Tick> {
+        let src = self.source(asset)?;
+        let rate = src.info().video.as_ref()?.frame_rate;
+        let rate = FrameRate { num: rate.num as u32, den: rate.den as u32 };
+        rate.is_valid().then(|| rate.frame_duration())
+    }
+
+    /// The frame of `asset` (a video) at source instant `at`, small and grey, its longer side
+    /// about [`steady::SIDE`]: what the camera's movement is measured on. `Ok(None)` when the file
+    /// is offline.
+    pub fn gray(&self, asset: &Asset, at: Tick) -> Result<Option<steady::Gray>, String> {
+        let Some(frame) = self.frame(asset, at)? else { return Ok(None) };
+        let longer = frame.width.max(frame.height);
+        // the decoder's own planes shrunk first, where that is enough
+        let shrink = [8u32, 4, 2].into_iter().find(|s| longer / s >= steady::SIDE).unwrap_or(1);
+        let (w, h, bytes) = if shrink > 1 {
+            shrunk::srgba8(&frame, shrink as usize)
+        } else {
+            (frame.width, frame.height, frame.to_rgba8())
+        };
+        let to_height = (u64::from(h) * u64::from(steady::SIDE) / u64::from(w.max(h).max(1))).max(1) as u32;
+        let small = Thumbnail::shrink(w, h, &bytes, to_height);
+        Ok(Some(steady::Gray::from_rgba(small.width as usize, small.height as usize, &small.rgba)))
+    }
+
     /// The decoded frame of `asset` (a video) at `at`; past the end the last frame holds.
     fn frame(&self, asset: &Asset, at: Tick) -> Result<Option<Arc<filmcraft_frame::VideoFrame>>, String> {
         let Some(src) = self.source(asset) else { return Ok(None) };

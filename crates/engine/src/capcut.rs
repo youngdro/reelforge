@@ -142,6 +142,7 @@ fn blank_clip(id: String, start: Tick, duration: Tick, content: ClipContent) -> 
         voice: Default::default(),
         group: None,
         slot: None,
+        steady: None,
     }
 }
 

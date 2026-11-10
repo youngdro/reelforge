@@ -225,6 +225,11 @@ fn lower_tracks(
             if picture {
                 let mut shape = shape(clip, cuts[i], cuts.get(i + 1).copied().flatten());
                 shape.canvas = [c.width as f32, c.height as f32];
+                if let ClipContent::Media { media, .. } = &clip.content {
+                    // a file whose size is not known is taken to fill the canvas
+                    let size = project.media.get(media).and_then(|m| m.size).unwrap_or([c.width, c.height]);
+                    shape.steady = motion::Fix::of(clip, size, shape.canvas);
+                }
                 let at = clip.start - shape.lead;
                 // where each adjustment clip above covers this layer, in the layer's time
                 let covers: Vec<(Tick, Tick, &Clip)> = above
@@ -647,7 +652,7 @@ fn shape(clip: &Clip, into: Option<(TransitionKind, Tick)>, out: Option<(Transit
         let cut = lead + clip.duration;
         overlays.push(Overlay { from: cut - h, to: cut + h, kind, incoming: false });
     }
-    Shape { lead, len: lead + clip.duration + tail, overlays, frames: vec![], canvas: [1.0, 1.0] }
+    Shape { lead, len: lead + clip.duration + tail, overlays, frames: vec![], canvas: [1.0, 1.0], steady: None }
 }
 
 /// What a clip's changed voice does to its sound, in the order it is done: noise out first, then
@@ -695,6 +700,7 @@ mod tests {
             voice: Default::default(),
             group: None,
             slot: None,
+            steady: None,
         }
     }
 
@@ -831,6 +837,68 @@ mod tests {
         p.tracks[0].clips = vec![a];
         let spec = compile(&p, &CompileOptions::default()).unwrap();
         assert!(spec.layers[0].fx.is_empty());
+    }
+
+    #[test]
+    fn a_steadied_clip_is_moved_against_its_shake_frame_by_frame() {
+        use reelforge_model::Steady;
+        let mut p = Project::default();
+        p.media.insert(
+            "m9".into(),
+            Media {
+                id: "m9".into(),
+                name: "a.mp4".into(),
+                uri: "file:///a.mp4".into(),
+                sha256: Some("ab".repeat(32)),
+                kind: MediaKind::Video,
+                duration: Some(Tick::SECOND * 10),
+                size: Some([1920, 1080]),
+                folder: None,
+            },
+        );
+        // a tremble across and a wobble, watched from one second into the file
+        let step = Tick(Tick::SECOND.0 / 30);
+        let path: Vec<[f32; 3]> =
+            (0..90).map(|i| [0.01 * (i as f32 * 1.9).sin(), 0.0, 0.3 * (i as f32 * 1.3).sin()]).collect();
+        let steady = Steady { amount: 0.5, from: Tick::SECOND, step, path };
+        let mut c = clip("c20", Tick::ZERO, Tick::SECOND * 2, ClipContent::media("m9", Tick::SECOND));
+        c.steady = Some(steady.clone());
+        p.tracks[0].clips.push(c);
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        let l = &spec.layers[0];
+        let fixed = steady.steadied(16.0 / 9.0);
+        assert!(fixed.zoom > 1.0);
+        // drawn larger by as much all the way, and a key a frame for where it is and how it is turned
+        assert!([0, 20, 59].iter().all(|&i| l.transform.scale.sample(step * i) == fixed.zoom));
+        let Animated::Keys(k) = &l.transform.position else { panic!("it is moved") };
+        assert_eq!(k.len(), 61);
+        // the wide picture fits the tall canvas across, so a move of a hundredth of the picture is
+        // a hundredth of the canvas, as large as the picture is drawn and the way it is turned
+        for i in [0usize, 7, 30, 59] {
+            let [x, _, turn] = fixed.moves[i];
+            let at = step * i as i64;
+            assert!((l.transform.rotation.sample(at) - turn).abs() < 1e-5, "{i}");
+            let [dx, dy] = l.transform.position.sample(at);
+            let (sin, cos) = turn.to_radians().sin_cos();
+            assert!((dx - cos * x * fixed.zoom).abs() < 1e-5, "{i}: {dx}");
+            assert!((dy - sin * x * fixed.zoom * 1080.0 / 1920.0).abs() < 1e-5, "{i}: {dy}");
+        }
+        assert!(k.iter().any(|k| k.v[0].abs() > 0.004));
+        // mirrored, the picture shook the other way; at half speed each frame of the file lasts two
+        let c = &mut p.tracks[0].clips[0];
+        c.look.flip_x = true;
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        let m = &spec.layers[0];
+        let [x, _, turn] = fixed.moves[7];
+        assert!((m.transform.rotation.sample(step * 7) + turn).abs() < 1e-5);
+        let (sin, cos) = (-turn).to_radians().sin_cos();
+        let [dx, dy] = m.transform.position.sample(step * 7);
+        assert!((dx + cos * x * fixed.zoom).abs() < 1e-5 && (dy + sin * x * fixed.zoom * 0.5625).abs() < 1e-5);
+        // without it nothing is keyed
+        p.tracks[0].clips[0].steady = None;
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        assert_eq!(spec.layers[0].transform.position, Animated::Constant([0.0, 0.0]));
+        assert_eq!(spec.layers[0].transform.scale, Animated::Constant(1.0));
     }
 
     #[test]

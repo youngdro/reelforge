@@ -444,6 +444,26 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["clip", "amount"],
         ),
+        "clip.setStabilize" => object(
+            vec![
+                clip(),
+                (
+                    "amount",
+                    json!({"type": "number", "minimum": 0, "maximum": 1, "description": "How much of the shake goes; 0 turns it off."}),
+                ),
+                (
+                    "path",
+                    json!({
+                        "type": "array",
+                        "items": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+                        "description": "The camera's path as measured: where the picture is at each sample against the first, as [across, down, turn] in fractions of its width and height and in degrees. clip.stabilize measures it; without it the clip's own is kept.",
+                    }),
+                ),
+                ("from", time("The source instant of the path's first sample; the file's start by default.")),
+                ("step", time("The source time from one sample to the next; required with `path`.")),
+            ],
+            &["clip", "amount"],
+        ),
         "captions.import" => object(
             vec![
                 (
