@@ -25,7 +25,8 @@ Noto Sans SC subset covering GB 2312), and ten title templates (花字) apply a 
 (`title.templates`, `"template"` on `clip.add` / `clip.set`). A green (or any one-colour) screen is keyed out with `clip.setChromaKey`, and
 `clip.pickChromaKey` finds the backdrop's colour in the frame by itself; picture effects (`fx.list`) include
 glitch, colour split, mosaic and wave next to the shakes, zooms and blurs. SubRip captions come in by dropping a
-`.srt` on the editor or `captions.import`, and go out with `captions.export`. Frames are composited on the GPU (wgpu) in the editor's preview and in exports,
+`.srt` on the editor or `captions.import`, and go out with `captions.export`. Someone speaking is tightened up in one step (剪口播): `audio.cutPauses` hears the pauses,
+`captions.fillers` finds the captions that are only a filler word (嗯, 那个, um, …), and `timeline.cut` takes those stretches out of picture, sound and captions together, leaving the music as it is. Frames are composited on the GPU (wgpu) in the editor's preview and in exports,
 with the CPU compositor as the reference and the fallback. Agents edit through an MCP server (stdio
 or HTTP), and the same operations are an HTTP API and `reelforge-cli call`. People in a browser or on
 another machine join a server's session and edit live alongside agents. The preview plays sound,

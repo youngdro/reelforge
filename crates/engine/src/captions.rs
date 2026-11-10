@@ -244,7 +244,7 @@ pub(crate) fn captions_export(s: &mut Session, v: &Value) -> CmdResult {
 
 /// The track a captions command works on: the one named, which must hold titles, else the
 /// captions track.
-fn target(proj: &Project, track: Option<&str>) -> Result<String, EngineError> {
+pub(crate) fn target(proj: &Project, track: Option<&str>) -> Result<String, EngineError> {
     match track {
         Some(t) => {
             let tr = proj.track(t).ok_or_else(|| crate::commands::not_found("track", t))?;

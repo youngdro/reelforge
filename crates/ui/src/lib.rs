@@ -30,6 +30,7 @@ mod looks;
 mod picker;
 mod record;
 pub mod remote;
+mod spoken;
 mod stage;
 mod strips;
 mod theme;
@@ -107,6 +108,8 @@ pub struct EditorApp {
     second_captions: bool,
     /// The timelines window is showing, and the name being typed for the current timeline.
     timelines_open: bool,
+    /// The window that trims speech.
+    spoken: spoken::Spoken,
     timeline_name: String,
     /// A voice-over being recorded, and how many were.
     recorder: Option<record::Recorder>,
@@ -352,6 +355,7 @@ impl EditorApp {
             assets: assets::AssetPanel::default(),
             second_captions: false,
             timelines_open: false,
+            spoken: spoken::Spoken::default(),
             timeline_name: String::new(),
             recorder: None,
             takes: 0,
@@ -1900,6 +1904,186 @@ impl EditorApp {
         }
     }
 
+    /// Looks for what could go from someone speaking: the pauses heard in the selected clips (or
+    /// in the ones the tool takes by itself), and the captions that are only filler words.
+    fn spoken_find(&mut self) {
+        use spoken::{Found, Kind};
+        let p = self.project();
+        let sounds = |id: &String| {
+            p.clip(id).is_some_and(|(_, c)| match &c.content {
+                ClipContent::Media { media, silent, .. } => {
+                    !silent && p.media.get(media).is_some_and(|m| m.kind != MediaKind::Image)
+                }
+                ClipContent::Compound { timeline, .. } => p.timeline_sounds(timeline),
+                _ => false,
+            })
+        };
+        let chosen: Vec<String> = self.selection().into_iter().filter(sounds).collect();
+        let mut params = json!({"minPause": self.spoken.min_pause, "keep": self.spoken.keep, "apply": false});
+        if !chosen.is_empty() {
+            params["clips"] = json!(chosen);
+        }
+        let tick = |v: &Value| Tick(v.as_i64().unwrap_or(0));
+        self.spoken.clear();
+        match reelforge_engine::listen::plan("audio.cutPauses", &p, &self.media, &params) {
+            Ok(plan) => {
+                let ids = plan.found["clips"].as_array().into_iter().flatten();
+                self.spoken.clips = ids.filter_map(|c| c.as_str().map(str::to_string)).collect();
+                for r in plan.found["pauses"].as_array().into_iter().flatten() {
+                    let (from, to) = (tick(&r["from"]), tick(&r["to"]));
+                    self.spoken.found.push(Found { kind: Kind::Pause, from, to, text: String::new(), on: true });
+                }
+            }
+            Err(_) => self.spoken.unheard = true,
+        }
+        if let Ok(v) = self.session.execute("captions.fillers", &json!({}), "editor") {
+            for f in v["fillers"].as_array().into_iter().flatten() {
+                let text = f["text"].as_str().unwrap_or_default().replace('\n', " ");
+                let (from, to) = (tick(&f["from"]), tick(&f["to"]));
+                self.spoken.found.push(Found { kind: Kind::Filler, from, to, text, on: true });
+            }
+        }
+        self.spoken.found.sort_by_key(|f| (f.from, f.to));
+        self.spoken.revision = Some(self.session.revision());
+    }
+
+    /// The tracks speech is cut from when not every unlocked one is: music on an audio track of
+    /// its own plays on unbroken.
+    fn spoken_tracks(&self, p: &Project) -> Option<Vec<String>> {
+        if !self.spoken.leave_music {
+            return None;
+        }
+        let spoken = &self.spoken.clips;
+        let with_voice = |t: &&reelforge_model::Track| {
+            !t.locked && (t.kind != TrackKind::Audio || t.clips.iter().any(|c| spoken.contains(&c.id)))
+        };
+        let cut: Vec<String> = p.tracks.iter().filter(with_voice).map(|t| t.id.clone()).collect();
+        (cut.len() < p.tracks.iter().filter(|t| !t.locked).count()).then_some(cut)
+    }
+
+    /// Cuts the ticked stretches out of the timeline in one step.
+    fn spoken_cut(&mut self) {
+        let ranges = self.spoken.chosen();
+        let (n, time) = self.spoken.total();
+        if ranges.is_empty() {
+            return;
+        }
+        let p = self.project();
+        let listed: Vec<Value> = ranges.iter().map(|(a, b)| json!({"from": a.0, "to": b.0})).collect();
+        let mut params = json!({ "ranges": listed });
+        if let Some(tracks) = self.spoken_tracks(&p) {
+            params["tracks"] = json!(tracks);
+        }
+        if self.execute("timeline.cut", params).is_ok() {
+            // the playhead stays on what it showed
+            let before = |(a, b): &(Tick, Tick)| (self.playhead.min(*b) - *a).max(Tick::ZERO);
+            let gone = ranges.iter().map(before).fold(Tick::ZERO, |sum, t| sum + t);
+            self.playhead = (self.playhead - gone).max(Tick::ZERO).min(self.project().duration());
+            self.spoken.clear();
+            self.status = fill(self.s().spoken_done, &[&n, &format!("{:.1}", time.seconds())]);
+        }
+    }
+
+    /// The window that trims speech, while open: what to look for, what was found, and the cut.
+    fn spoken_window(&mut self, ctx: &egui::Context) {
+        // what was found is good for the project it was found in
+        if self.spoken.revision.is_some_and(|r| r != self.session.revision()) {
+            self.spoken.clear();
+        }
+        self.timeline.cuts = if self.spoken.open { self.spoken.chosen() } else { Vec::new() };
+        self.timeline.cut_tracks = self.spoken_tracks(&self.project());
+        if !self.spoken.open {
+            return;
+        }
+        let s = self.s();
+        let (count, time) = self.spoken.total();
+        let sp = &mut self.spoken;
+        let mut open = true;
+        let (mut find, mut cut, mut seek) = (false, false, None);
+        egui::Window::new(s.spoken)
+            .open(&mut open)
+            .default_pos([340.0, 96.0])
+            .collapsible(false)
+            .resizable(false)
+            .default_width(340.0)
+            .show(ctx, |ui| {
+                egui::Grid::new("spoken options").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                    ui.label(s.spoken_min_pause);
+                    let longer = egui::DragValue::new(&mut sp.min_pause).range(0.2..=5.0).speed(0.02);
+                    ui.add(longer.fixed_decimals(1).suffix(" s"));
+                    ui.end_row();
+                    ui.label(s.spoken_keep);
+                    let keep = egui::DragValue::new(&mut sp.keep).range(0.0..=0.5).speed(0.005);
+                    ui.add(keep.fixed_decimals(2).suffix(" s"));
+                    ui.end_row();
+                });
+                ui.checkbox(&mut sp.leave_music, s.spoken_leave_music);
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new(s.spoken_hint).small().color(theme::color::WEAK));
+                ui.add_space(4.0);
+                if theme::tool(ui, icon::SEARCH, s.spoken_find, s.spoken_tip, true).clicked() {
+                    find = true;
+                }
+                if sp.revision.is_none() {
+                    return;
+                }
+                ui.separator();
+                if sp.unheard {
+                    ui.label(egui::RichText::new(s.spoken_unheard).small().color(theme::color::WARN));
+                }
+                if sp.found.is_empty() {
+                    ui.label(egui::RichText::new(s.spoken_none).color(theme::color::WEAK));
+                    return;
+                }
+                egui::ScrollArea::vertical().max_height(240.0).auto_shrink([false, true]).show(ui, |ui| {
+                    for f in &mut sp.found {
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut f.on, "");
+                            let at = egui::RichText::new(theme::timecode(f.from.seconds())).monospace();
+                            if ui.link(at).clicked() {
+                                seek = Some(f.from);
+                            }
+                            let (word, colour) = match f.kind {
+                                spoken::Kind::Pause => (s.spoken_pause, theme::color::WEAK),
+                                spoken::Kind::Filler => (s.spoken_filler, theme::color::WARN),
+                            };
+                            ui.label(egui::RichText::new(word).small().color(colour));
+                            let length = format!("{:.1} s", (f.to - f.from).seconds());
+                            ui.label(egui::RichText::new(length).small().color(theme::color::WEAK));
+                            if !f.text.is_empty() {
+                                ui.add(egui::Label::new(&f.text).truncate());
+                            }
+                        });
+                    }
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let label = fill(s.spoken_cut, &[&count, &format!("{:.1}", time.seconds())]);
+                    if theme::primary(ui, icon::SPLIT, &label, count > 0).clicked() {
+                        cut = true;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button(s.spoken_untick).clicked() {
+                            sp.found.iter_mut().for_each(|f| f.on = false);
+                        }
+                        if ui.small_button(s.spoken_tick).clicked() {
+                            sp.found.iter_mut().for_each(|f| f.on = true);
+                        }
+                    });
+                });
+            });
+        self.spoken.open = open;
+        if let Some(t) = seek {
+            self.seek(t);
+        }
+        if find {
+            self.spoken_find();
+        }
+        if cut {
+            self.spoken_cut();
+        }
+    }
+
     fn timeline_bar(&mut self, ui: &mut egui::Ui) {
         let sel = self.selected.is_some();
         let s = self.s();
@@ -1943,6 +2127,9 @@ impl EditorApp {
                 self.add_colour();
             }
             self.record_button(ui);
+            if theme::tool(ui, icon::SPARKLE, s.spoken, s.spoken_tip, true).clicked() {
+                self.spoken.open = !self.spoken.open;
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if theme::tool(ui, icon::ROW_HEIGHT, "", s.row_height_tip, true).clicked() {
                     let sizes = timeline::ROW_HEIGHTS;
@@ -3569,6 +3756,7 @@ impl eframe::App for EditorApp {
         self.take_dropped_files(&ctx);
         self.export_window(&ctx);
         self.timelines_window(&ctx);
+        self.spoken_window(&ctx);
         if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
             let screen = ctx.content_rect();
             let painter = ctx
