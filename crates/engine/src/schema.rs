@@ -782,6 +782,13 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["clip", "blur"],
         ),
+        "clip.setPersonKey" => object(
+            vec![
+                clip(),
+                ("on", json!({"type": "boolean", "description": "false removes the cut-out; true when left out."})),
+            ],
+            &["clip"],
+        ),
         "clip.setChromaKey" => {
             let unit = |doc: &str| json!({"type": "number", "minimum": 0, "maximum": 1, "description": doc});
             object(

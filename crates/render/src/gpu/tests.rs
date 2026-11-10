@@ -519,6 +519,28 @@ fn a_keyed_colour_goes_the_same_way_on_both() {
 }
 
 #[test]
+fn people_are_cut_out_the_same_way_on_both() {
+    // a picture, with an effect after: both are handed the cut-out
+    let portrait = crate::tests::portrait();
+    let mut s = base(64, 48);
+    let i = with_picture(&mut s, Fit::Contain);
+    let key = fx_of(effects::PERSON_KEY, &[]);
+    s.layers[i].fx = vec![key.clone(), fx_of(effects::GRADE, &[("exposure", 0.3)])];
+    same(&s, Tick::ZERO, 1.0, &Pictures(portrait), Quality::Final);
+    // a video the GPU would convert itself: here it is converted before, to be looked at whole
+    let video = Video(yuv(64, 48, (1, 1), false));
+    s.layers[i].fx = vec![key.clone()];
+    same(&s, Tick::ZERO, 1.0, &video, Quality::Final);
+    // a composition: drawn on the CPU for both, as a blurred one is
+    let mut inner = Comp::default();
+    inner.layers.push(layer("in", LayerContent::Solid { color: Color([0.9, 0.5, 0.3, 1.0]) }));
+    s.comps.insert("k".into(), inner);
+    s.layers.push(layer("c", LayerContent::Comp { comp: "k".into(), from: Tick::ZERO }));
+    s.layers[i + 1].fx = vec![key];
+    same(&s, Tick::ZERO, 1.0, &video, Quality::Final);
+}
+
+#[test]
 fn distortions_read_the_same_places_on_both() {
     let pic = picture(60, 44);
     let cases: Vec<Vec<Effect>> = vec![

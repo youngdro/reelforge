@@ -15,6 +15,7 @@ reelforge-time = { path = "crates/time" }
 reelforge-renderspec = { path = "crates/renderspec" }
 reelforge-model = { path = "crates/model" }
 reelforge-compile = { path = "crates/compile" }
+reelforge-matte = { path = "crates/matte" }
 reelforge-render = { path = "crates/render" }
 reelforge-media = { path = "crates/media" }
 reelforge-hwenc = { path = "crates/hwenc" }
@@ -77,6 +78,11 @@ todo = "warn"
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# The segmentation model is a few hundred million multiplications a picture: without this a debug
+# build takes seconds over each cut-out frame.
+[profile.dev.package.reelforge-matte]
+opt-level = 3
 
 [profile.release]
 opt-level = 3

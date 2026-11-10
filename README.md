@@ -60,11 +60,16 @@ takes the tremble out and leaves a pan a pan, all of it holds the picture nearly
 A slowed clip has instants to show that its file has no frame for (补帧): `"frames"` on `clip.setSpeed`
 (Smoothing, by the clip's speed) holds the frame before (`repeat`), mixes the two around it (`blend`, 帧融合),
 or makes a frame in between by following what moved from the one to the other (`flow`, 光流).
+The people in a video or picture are cut out without a green screen (智能抠像): `clip.setPersonKey`, or the Cut out
+people box in a clip's look, keeps them and makes the rest see-through, so the tracks below show around them. A small
+segmentation model bundled with the editor (`reelforge-matte`) looks at each picture as it is drawn, in pure Rust on
+the machine or in the browser; it is made for a person facing the camera, and its outlines are soft.
 See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Video and audio codecs and containers are FilmCraft's clean-room, pure-Rust crates
 (`filmcraft-codecs`, `filmcraft-h264enc`, `filmcraft-aac`, `filmcraft-isobmff`; MIT OR Apache-2.0):
-no FFmpeg and no C libraries.
+no FFmpeg and no C libraries. The model that cuts people out is MediaPipe's selfie segmentation (Apache-2.0),
+bundled as published; see [crates/matte/models](crates/matte/models/README.md).
 
 ## License
 

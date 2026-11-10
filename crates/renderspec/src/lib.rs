@@ -1108,6 +1108,9 @@ pub struct Effect {
 ///   up to `tolerance` (0 to 1, default 0.3) it is gone, from there over `softness` (0 to 1,
 ///   default 0.1) it comes back, and `spill` (0 to 1, default 0.5) takes the key's tint off what
 ///   stays near it: that much of its chroma towards the key, its lightness kept.
+/// - `key.person@1`: keeps the people in a media or composition layer's picture and makes the
+///   rest see-through, as found by a segmentation model looking at the picture (it has no
+///   parameters). It is done to the picture before it is placed and before any other effect.
 /// - The `distort.*` effects change where a layer's picture is read, in this order whatever
 ///   their order in the list, each once per layer. Positions are fractions of the layer's visible
 ///   picture and are held at its edges.
@@ -1120,6 +1123,8 @@ pub struct Effect {
 pub mod effects {
     /// A colour made see-through.
     pub const CHROMA_KEY: &str = "key.chroma@1";
+    /// Everything but the people made see-through.
+    pub const PERSON_KEY: &str = "key.person@1";
     /// Rows sliding along a sine.
     pub const WAVE: &str = "distort.wave@1";
     /// Bands sliding sideways.

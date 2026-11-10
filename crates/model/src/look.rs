@@ -29,6 +29,10 @@ pub struct Look {
     /// A colour made see-through, as for a green screen (media clips).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chroma: Option<ChromaKey>,
+    /// Only the people in it kept, the rest see-through, as a model finds them in each picture
+    /// (剪映's 智能抠像; media clips).
+    #[serde(skip_serializing_if = "is_false")]
+    pub person: bool,
 }
 
 /// A colour of a picture made see-through (剪映's 色度抠图).
