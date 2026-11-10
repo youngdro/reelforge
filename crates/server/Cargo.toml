@@ -17,6 +17,7 @@ reelforge-compile = { workspace = true }
 reelforge-render = { workspace = true }
 reelforge-media = { workspace = true }
 reelforge-engine = { workspace = true }
+reelforge-speech = { workspace = true }
 serde_json = { workspace = true }
 image = { workspace = true }
 base64 = { workspace = true }

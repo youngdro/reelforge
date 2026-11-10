@@ -135,6 +135,20 @@ enum Cmd {
         /// server's address in a browser edits this project.
         #[arg(long, env = "REELFORGE_WEB")]
         web: Option<PathBuf>,
+        /// The Whisper model folder for automatic captions (captions.transcribe); by default
+        /// `.reelforge/models/whisper` in the home folder.
+        #[arg(long, env = "REELFORGE_WHISPER")]
+        whisper: Option<PathBuf>,
+    },
+    /// Download a Whisper model for automatic captions from Hugging Face (openai/whisper-SIZE):
+    /// config.json, model.safetensors and tokenizer.json.
+    FetchModel {
+        /// tiny, base, small, medium, large-v3 or large-v3-turbo. small is a good start for Chinese.
+        #[arg(long, default_value = "small")]
+        size: String,
+        /// Where to put it; the folder automatic captions look in by default.
+        #[arg(long)]
+        to: Option<PathBuf>,
     },
     /// List the operations `call`, MCP agents and the HTTP API share, with their parameters.
     Ops {
@@ -359,11 +373,15 @@ fn run(cmd: Cmd) -> Result<(), String> {
             print(&reelforge_renderspec::json_schema());
             Ok(())
         }
-        Cmd::Serve { project, stdio, listen, token, web } => {
-            let hub = match &project {
+        Cmd::FetchModel { size, to } => fetch_model(&size, &to.unwrap_or_else(reelforge_speech::default_model_dir)),
+        Cmd::Serve { project, stdio, listen, token, web, whisper } => {
+            let mut hub = match &project {
                 Some(path) => Hub::open(path)?,
                 None => Hub::new(Session::default()),
             };
+            if let Some(dir) = whisper {
+                hub = hub.with_speech_model(dir);
+            }
             if stdio {
                 return reelforge_server::mcp::serve_stdio(&hub).map_err(|e| e.to_string());
             }
@@ -465,6 +483,29 @@ fn param_value(v: &str) -> Value {
         return json!({"frame": n});
     }
     serde_json::from_str(v).unwrap_or_else(|_| json!(v))
+}
+
+/// Downloads `openai/whisper-{size}` into `dir`, each file through a `.part` so a broken download
+/// never looks complete.
+fn fetch_model(size: &str, dir: &std::path::Path) -> Result<(), String> {
+    if !size.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.') {
+        return Err(format!("not a model size: {size:?}"));
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
+    let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(true).build().into();
+    for file in ["config.json", "tokenizer.json", "model.safetensors"] {
+        let url = format!("https://huggingface.co/openai/whisper-{size}/resolve/main/{file}");
+        eprintln!("fetching {url}");
+        let resp = agent.get(&url).call().map_err(|e| format!("{url}: {e}"))?;
+        let out = dir.join(file);
+        let part = out.with_extension("part");
+        let mut f = std::fs::File::create(&part).map_err(|e| format!("cannot write {}: {e}", part.display()))?;
+        let n = std::io::copy(&mut resp.into_body().into_reader(), &mut f).map_err(|e| format!("{url}: {e}"))?;
+        std::fs::rename(&part, &out).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
+        eprintln!("  {} MB", n / 1_000_000);
+    }
+    eprintln!("Whisper {size} is in {}", dir.display());
+    Ok(())
 }
 
 /// A request to a running server: the body, and for pictures their `X-Reelforge-Info`.
