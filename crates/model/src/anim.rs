@@ -73,11 +73,34 @@ pub enum Prop {
     DrawEnd,
     /// The number a title with a counter shows.
     Count,
+    /// The width alone, on top of the scale: 1 as it is, negative mirrored.
+    ScaleX,
+    /// The height alone, on top of the scale.
+    ScaleY,
+    /// Degrees about the horizontal axis: positive tips the top edge away.
+    RotationX,
+    /// Degrees about the vertical axis: positive swings the right edge away.
+    RotationY,
 }
 
 impl Prop {
-    /// Where and how loud: what `clip.set` sets, in inspector order.
-    pub const MOTION: [Prop; 6] = [Prop::X, Prop::Y, Prop::Scale, Prop::Rotation, Prop::Opacity, Prop::VolumeDb];
+    /// Where, how and how loud: what `clip.set` sets, and what animations, transitions and
+    /// effects may move.
+    pub const MOTION: [Prop; 10] = [
+        Prop::X,
+        Prop::Y,
+        Prop::Scale,
+        Prop::Rotation,
+        Prop::Opacity,
+        Prop::VolumeDb,
+        Prop::ScaleX,
+        Prop::ScaleY,
+        Prop::RotationX,
+        Prop::RotationY,
+    ];
+    /// Stretched and turned in space: width and height apart, about the horizontal and the
+    /// vertical axis.
+    pub const SPACE: [Prop; 4] = [Prop::ScaleX, Prop::ScaleY, Prop::RotationX, Prop::RotationY];
     /// The crop's edges: left, top, right, bottom.
     pub const CROP: [Prop; 4] = [Prop::CropLeft, Prop::CropTop, Prop::CropRight, Prop::CropBottom];
     /// The mask: centre, size, turn, soft edge.
@@ -98,7 +121,7 @@ impl Prop {
     /// A shape's outline: where it starts and stops being drawn.
     pub const DRAW: [Prop; 2] = [Prop::DrawStart, Prop::DrawEnd];
     /// Every property.
-    pub const ALL: [Prop; 28] = [
+    pub const ALL: [Prop; 32] = [
         Prop::X,
         Prop::Y,
         Prop::Scale,
@@ -127,6 +150,10 @@ impl Prop {
         Prop::DrawStart,
         Prop::DrawEnd,
         Prop::Count,
+        Prop::ScaleX,
+        Prop::ScaleY,
+        Prop::RotationX,
+        Prop::RotationY,
     ];
 
     /// The name commands use (`x`, `volumeDb`, `cropLeft`, `maskX`, `exposure`…).
@@ -160,6 +187,10 @@ impl Prop {
             Prop::DrawStart => "drawStart",
             Prop::DrawEnd => "drawEnd",
             Prop::Count => "count",
+            Prop::ScaleX => "scaleX",
+            Prop::ScaleY => "scaleY",
+            Prop::RotationX => "rotationX",
+            Prop::RotationY => "rotationY",
         }
     }
 
@@ -377,11 +408,33 @@ pub enum AnimKind {
     /// A shape's outline draws itself on and its fill comes in after (or the outline is wiped
     /// away and the fill goes first, as it leaves); shapes only.
     Draw,
+    /// Swings into place in space about its vertical axis, like a door, from edge on.
+    FlipY,
+    /// Tips up into place in space about its horizontal axis, like a lid, from edge on.
+    FlipX,
+    /// Grows from nothing and swings past its size and back several times, like something on a
+    /// spring.
+    Elastic,
+    /// Falls into place from above and bounces three times, like a dropped ball.
+    Drop,
+    /// A title's words fade in one after another; titles only.
+    WordFade,
+    /// A title's words rise into place one after another; titles only.
+    WordRise,
+    /// A title's words pop up one after another, each overshooting a little; titles only.
+    WordPop,
+    /// A title's lines rise into place one after another; titles only.
+    LineRise,
+    /// A title's characters spring up one after another, each swinging past its size and back;
+    /// titles only.
+    CharElastic,
+    /// A title's characters fall into place one after another, each bouncing; titles only.
+    CharBounce,
 }
 
 impl AnimKind {
     /// Every preset, in menu order.
-    pub const ALL: [AnimKind; 15] = [
+    pub const ALL: [AnimKind; 25] = [
         AnimKind::Fade,
         AnimKind::SlideUp,
         AnimKind::SlideDown,
@@ -397,6 +450,16 @@ impl AnimKind {
         AnimKind::CharDrop,
         AnimKind::CharPop,
         AnimKind::Draw,
+        AnimKind::FlipY,
+        AnimKind::FlipX,
+        AnimKind::Elastic,
+        AnimKind::Drop,
+        AnimKind::WordFade,
+        AnimKind::WordRise,
+        AnimKind::WordPop,
+        AnimKind::LineRise,
+        AnimKind::CharElastic,
+        AnimKind::CharBounce,
     ];
 
     /// The name commands use.
@@ -417,6 +480,16 @@ impl AnimKind {
             AnimKind::CharDrop => "charDrop",
             AnimKind::CharPop => "charPop",
             AnimKind::Draw => "draw",
+            AnimKind::FlipY => "flipY",
+            AnimKind::FlipX => "flipX",
+            AnimKind::Elastic => "elastic",
+            AnimKind::Drop => "drop",
+            AnimKind::WordFade => "wordFade",
+            AnimKind::WordRise => "wordRise",
+            AnimKind::WordPop => "wordPop",
+            AnimKind::LineRise => "lineRise",
+            AnimKind::CharElastic => "charElastic",
+            AnimKind::CharBounce => "charBounce",
         }
     }
 
@@ -425,14 +498,27 @@ impl AnimKind {
         self == AnimKind::Typewriter || self.by_character()
     }
 
-    /// Whether only shapes take it.
-    pub fn shapes_only(self) -> bool {
+    /// Whether only shapes and titles take it: what has an outline a pen can follow.
+    pub fn drawn_only(self) -> bool {
         self == AnimKind::Draw
     }
 
-    /// Whether it moves a title's characters one after another instead of the title as a whole.
+    /// Whether it moves a title's characters, words or lines one after another instead of the
+    /// title as a whole.
     pub fn by_character(self) -> bool {
-        matches!(self, AnimKind::CharFade | AnimKind::CharRise | AnimKind::CharDrop | AnimKind::CharPop)
+        matches!(
+            self,
+            AnimKind::CharFade
+                | AnimKind::CharRise
+                | AnimKind::CharDrop
+                | AnimKind::CharPop
+                | AnimKind::WordFade
+                | AnimKind::WordRise
+                | AnimKind::WordPop
+                | AnimKind::LineRise
+                | AnimKind::CharElastic
+                | AnimKind::CharBounce
+        )
     }
 
     /// The preset a command names.
@@ -469,13 +555,44 @@ impl AnimKind {
                 o.rotation = -90.0 * away;
                 o.scale = 0.5 + 0.5 * e;
             }
+            // from edge on, a little past flat and back; seen as soon as it is no longer edge on
+            AnimKind::FlipY | AnimKind::FlipX => {
+                let c = 1.70158f32;
+                let v = u - 1.0;
+                let turn = -90.0 * (1.0 - (1.0 + (c + 1.0) * v * v * v + c * v * v));
+                if self == AnimKind::FlipY {
+                    o.turn_y = turn;
+                } else {
+                    o.turn_x = turn;
+                }
+                o.opacity = (u * 4.0).min(1.0);
+            }
+            AnimKind::Elastic => {
+                o.scale = if u >= 1.0 {
+                    1.0
+                } else {
+                    1.0 + 2.0f32.powf(-10.0 * u) * ((u * 10.0 - 0.75) * std::f32::consts::TAU / 3.0).sin()
+                };
+                o.opacity = (u * 4.0).min(1.0);
+            }
+            AnimKind::Drop => {
+                // four falls, each a parabola, the first from above
+                let (k, d) = (7.5625f32, 2.75f32);
+                let down = if u < 1.0 / d {
+                    k * u * u
+                } else if u < 2.0 / d {
+                    k * (u - 1.5 / d).powi(2) + 0.75
+                } else if u < 2.5 / d {
+                    k * (u - 2.25 / d).powi(2) + 0.9375
+                } else {
+                    k * (u - 2.625 / d).powi(2) + 0.984375
+                };
+                o.dy = -0.35 * (1.0 - down.min(1.0));
+                o.opacity = (u * 6.0).min(1.0);
+            }
             // the text itself changes (`reveal`, or its characters move), not its placement
-            AnimKind::Typewriter
-            | AnimKind::CharFade
-            | AnimKind::CharRise
-            | AnimKind::CharDrop
-            | AnimKind::CharPop
-            | AnimKind::Draw => o = Offset::REST,
+            _ if self.titles_only() || self.drawn_only() => o = Offset::REST,
+            _ => unreachable!("every other animation moves the clip as a whole"),
         }
         o
     }
@@ -494,11 +611,16 @@ pub struct Offset {
     pub rotation: f32,
     /// Multiplies the opacity.
     pub opacity: f32,
+    /// Added to the turn about the horizontal axis, degrees.
+    pub turn_x: f32,
+    /// Added to the turn about the vertical axis, degrees.
+    pub turn_y: f32,
 }
 
 impl Offset {
     /// No change.
-    pub const REST: Offset = Offset { dx: 0.0, dy: 0.0, scale: 1.0, rotation: 0.0, opacity: 1.0 };
+    pub const REST: Offset =
+        Offset { dx: 0.0, dy: 0.0, scale: 1.0, rotation: 0.0, opacity: 1.0, turn_x: 0.0, turn_y: 0.0 };
 
     /// Both offsets at once.
     pub fn and(self, o: Offset) -> Offset {
@@ -508,6 +630,8 @@ impl Offset {
             scale: self.scale * o.scale,
             rotation: self.rotation + o.rotation,
             opacity: self.opacity * o.opacity,
+            turn_x: self.turn_x + o.turn_x,
+            turn_y: self.turn_y + o.turn_y,
         }
     }
 
@@ -519,6 +643,8 @@ impl Offset {
             Prop::Scale => base * self.scale,
             Prop::Rotation => base + self.rotation,
             Prop::Opacity => base * self.opacity,
+            Prop::RotationX => base + self.turn_x,
+            Prop::RotationY => base + self.turn_y,
             _ => base,
         }
     }
@@ -548,11 +674,15 @@ pub enum LoopKind {
     Wave,
     /// A title's characters hop one after another; titles only.
     Jump,
+    /// Turns round and round in space about its vertical axis, showing its back.
+    Flip,
+    /// Rocks from side to side in space, like a card held up and shown round.
+    Tilt,
 }
 
 impl LoopKind {
     /// Every one, in menu order.
-    pub const ALL: [LoopKind; 10] = [
+    pub const ALL: [LoopKind; 12] = [
         LoopKind::Breathe,
         LoopKind::Heartbeat,
         LoopKind::Swing,
@@ -563,6 +693,8 @@ impl LoopKind {
         LoopKind::Blink,
         LoopKind::Wave,
         LoopKind::Jump,
+        LoopKind::Flip,
+        LoopKind::Tilt,
     ];
 
     /// The name commands use.
@@ -578,6 +710,8 @@ impl LoopKind {
             LoopKind::Blink => "blink",
             LoopKind::Wave => "wave",
             LoopKind::Jump => "jump",
+            LoopKind::Flip => "flip",
+            LoopKind::Tilt => "tilt",
         }
     }
 
@@ -594,7 +728,8 @@ impl LoopKind {
     /// How long one round takes when none is asked for.
     pub fn period(self) -> Tick {
         let ms = match self {
-            LoopKind::Breathe | LoopKind::Float | LoopKind::Spin => 2000,
+            LoopKind::Breathe | LoopKind::Float | LoopKind::Spin | LoopKind::Flip => 2000,
+            LoopKind::Tilt => 3000,
             LoopKind::Shake => 200,
             LoopKind::Bounce => 800,
             _ => 1000,
@@ -630,6 +765,11 @@ impl LoopKind {
             }
             LoopKind::Spin => o.rotation = 360.0 * u,
             LoopKind::Blink => o.opacity = 0.575 + 0.425 * turn.cos(),
+            LoopKind::Flip => o.turn_y = 360.0 * u,
+            LoopKind::Tilt => {
+                o.turn_y = 22.0 * turn.sin();
+                o.turn_x = 8.0 * turn.cos();
+            }
             // the characters move, not the title
             LoopKind::Wave | LoopKind::Jump => {}
         }
@@ -722,6 +862,10 @@ impl Clip {
             Prop::Y => self.transform.y,
             Prop::Scale => self.transform.scale,
             Prop::Rotation => self.transform.rotation,
+            Prop::ScaleX => self.transform.scale_x,
+            Prop::ScaleY => self.transform.scale_y,
+            Prop::RotationX => self.transform.rotation_x,
+            Prop::RotationY => self.transform.rotation_y,
             Prop::Opacity => self.opacity,
             Prop::VolumeDb => self.volume_db,
             Prop::CropLeft => self.look.crop.left,
@@ -756,6 +900,10 @@ impl Clip {
             Prop::Y => self.transform.y = v,
             Prop::Scale => self.transform.scale = v,
             Prop::Rotation => self.transform.rotation = v,
+            Prop::ScaleX => self.transform.scale_x = v,
+            Prop::ScaleY => self.transform.scale_y = v,
+            Prop::RotationX => self.transform.rotation_x = v,
+            Prop::RotationY => self.transform.rotation_y = v,
             Prop::Opacity => self.opacity = v,
             Prop::VolumeDb => self.volume_db = v,
             Prop::CropLeft => self.look.crop.left = v,
@@ -841,6 +989,9 @@ impl Clip {
                 k.t += by;
             }
         }
+        if let Some(path) = &mut self.path {
+            path.shift(by);
+        }
     }
 
     /// Stretches every key time by `f`, as when the clip plays at another speed.
@@ -850,6 +1001,9 @@ impl Clip {
                 k.t = k.t.scale(f);
             }
             list.dedup_by_key(|k| k.t);
+        }
+        if let Some(path) = &mut self.path {
+            path.stretch(f);
         }
     }
 }

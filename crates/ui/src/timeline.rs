@@ -149,6 +149,8 @@ pub(crate) enum Action {
     /// Make the selected picture clips slots of a template, or no longer slots.
     Slot,
     Unslot,
+    /// Make the selected picture clips share the frame, by a layout's id (`layout.apply`).
+    Layout(&'static str),
 }
 
 impl Default for TimelineView {
@@ -1114,6 +1116,7 @@ impl TimelineView {
                 }
                 return;
             }
+            let mut laid = None;
             let mut item = |ui: &mut egui::Ui, label: &str, keys: &str, action: Action, enabled: bool| {
                 let button = egui::Button::new(label).shortcut_text(crate::i18n::keys(ui.ctx(), keys));
                 if ui.add_enabled(enabled, button).clicked() {
@@ -1147,6 +1150,20 @@ impl TimelineView {
                     item(ui, words.uncompound, "Alt+Shift+G", Action::Uncompound, true);
                 }
                 item(ui, words.compound, "Alt+G", Action::Compound, true);
+                if on_picture && several {
+                    // the ways the selected pictures can share the frame
+                    let mut picked = None;
+                    ui.menu_button(words.layout, |ui| {
+                        for (layout, name) in reelforge_engine::LAYOUTS.iter().zip(words.layout_names) {
+                            let fits = (layout.clips.0..=layout.clips.1).contains(&selected.len());
+                            if ui.add_enabled(fits, egui::Button::new(name)).clicked() {
+                                picked = Some(Action::Layout(layout.id));
+                                ui.close();
+                            }
+                        }
+                    });
+                    laid = picked;
+                }
                 if on_picture {
                     ui.separator();
                     item(ui, words.replace_media, "", Action::Replace, !several);
@@ -1161,6 +1178,9 @@ impl TimelineView {
                 item(ui, words.ripple_delete, "Shift+Delete", Action::RippleDelete, true);
             } else {
                 item(ui, words.select_all, "Ctrl+A", Action::SelectAll, true);
+            }
+            if laid.is_some() {
+                out.action = laid;
             }
         });
         if self.strips.work(ui.ctx(), media, playing) {
@@ -1200,6 +1220,7 @@ fn paint_clip(
             let glyph = match m.map(|m| m.kind) {
                 Some(MediaKind::Image) => icon::IMAGE,
                 Some(MediaKind::Audio) => icon::MUSIC,
+                Some(MediaKind::Lottie) => icon::SPARKLE,
                 _ => icon::VIDEO,
             };
             let fill = if kind == TrackKind::Audio { color::AUDIO } else { color::VIDEO };
@@ -1490,7 +1511,8 @@ pub(crate) fn slip_range(p: &Project, c: &reelforge_model::Clip) -> Option<(Tick
     if *speed <= 0.0 {
         return None;
     }
-    let length = p.media.get(media)?.duration?;
+    // what goes round again has no end to keep within
+    let length = p.media.get(media).filter(|m| !m.kind.loops())?.duration?;
     let span = c.timing().map(|t| Tick(t.travel(c.duration).0.abs()))?;
     let lo = Tick(-source_in.0).scale(1.0 / speed);
     let hi = (length - span - *source_in).scale(1.0 / speed);

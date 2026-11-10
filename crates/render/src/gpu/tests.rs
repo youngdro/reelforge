@@ -108,6 +108,8 @@ fn layer(id: &str, content: LayerContent) -> Layer {
         shape_mask: None,
         crop_keys: None,
         shape_mask_keys: None,
+        parent: None,
+        motion_blur: None,
     }
 }
 
@@ -541,6 +543,54 @@ fn people_are_cut_out_the_same_way_on_both() {
 }
 
 #[test]
+fn backdrops_are_cut_and_shadows_cast_the_same_way_on_both() {
+    let thing = crate::tests::boxed_on_a_sweep(96, 64);
+    let mut s = base(64, 48);
+    let i = with_picture(&mut s, Fit::Contain);
+    s.layers[i].transform.scale = Animated::Constant(0.8);
+    // cut out, with a soft shadow beside it and an effect after
+    let key = fx_of(effects::BACKDROP_KEY, &[("tolerance", 0.5), ("holes", 0.5)]);
+    let soft = fx_of(effects::SHADOW, &[("x", 0.06), ("y", 0.08), ("blur", 0.04), ("opacity", 0.7)]);
+    s.layers[i].fx = vec![key.clone(), fx_of(effects::GRADE, &[("exposure", 0.3)]), soft.clone()];
+    same(&s, Tick::ZERO, 1.0, &Pictures(thing.clone()), Quality::Final);
+    // lying on the ground and coloured, under a layer that is turned, cropped and half there
+    let lying = fx_of(
+        effects::SHADOW,
+        &[("x", 0.0), ("y", 0.02), ("blur", 0.02), ("flat", 0.7), ("lean", 0.4), ("r", 0.3), ("b", 0.5)],
+    );
+    s.layers[i].fx = vec![key.clone(), lying];
+    s.layers[i].transform.rotation = Animated::Constant(20.0);
+    s.layers[i].crop = Some(Crop { left: 0.1, top: 0.0, right: 0.0, bottom: 0.05 });
+    s.layers[i].opacity = Animated::Constant(0.5);
+    same(&s, Tick::ZERO, 1.0, &Pictures(thing.clone()), Quality::Final);
+    // of a picture that is not cut out, behind a round mask: the mask's outline
+    s.layers[i].fx = vec![soft.clone()];
+    s.layers[i].crop = None;
+    s.layers[i].shape_mask = Some(ShapeMask {
+        shape: MaskShape::Circle,
+        center: [0.5, 0.5],
+        size: [0.7, 0.7],
+        rotation: 0.0,
+        feather: 0.0,
+        invert: false,
+    });
+    same(&s, Tick::ZERO, 1.0, &Pictures(picture(96, 64)), Quality::Final);
+    // a video the GPU would convert itself, and a composition: each casts its own
+    s.layers[i].shape_mask = None;
+    let video = Video(yuv(64, 48, (1, 1), false));
+    same(&s, Tick::ZERO, 1.0, &video, Quality::Final);
+    let mut inner = Comp::default();
+    let mut small = layer("in", LayerContent::Solid { color: Color([0.9, 0.5, 0.3, 1.0]) });
+    small.transform.scale = Animated::Constant(0.5);
+    inner.layers.push(small);
+    s.comps.insert("k".into(), inner);
+    s.layers.push(layer("c", LayerContent::Comp { comp: "k".into(), from: Tick::ZERO }));
+    s.layers[i + 1].fx = vec![soft];
+    s.layers[i + 1].transform.position = Animated::Constant([0.1, -0.1]);
+    same(&s, Tick::ZERO, 1.0, &video, Quality::Final);
+}
+
+#[test]
 fn distortions_read_the_same_places_on_both() {
     let pic = picture(60, 44);
     let cases: Vec<Vec<Effect>> = vec![
@@ -579,6 +629,65 @@ fn distortions_read_the_same_places_on_both() {
 }
 
 #[test]
+fn layers_smeared_along_their_way_match() {
+    let frame = FrameRate::FPS_30.frame_duration();
+    let moving = |from: [f32; 2], to: [f32; 2]| {
+        Animated::Keys(vec![
+            Key { t: Tick::ZERO, v: from, ease: Ease::Linear },
+            Key { t: frame * 3, v: to, ease: Ease::Linear },
+        ])
+    };
+    let pic = picture(50, 30);
+    let mut s = base(96, 72);
+    // a picture going across while it turns and grows, masked and graded
+    let i = with_picture(&mut s, Fit::Contain);
+    s.layers[i].transform.position = moving([-0.3, -0.1], [0.3, 0.1]);
+    s.layers[i].transform.rotation = Animated::Keys(vec![
+        Key { t: Tick::ZERO, v: -20.0, ease: Ease::Linear },
+        Key { t: frame * 3, v: 25.0, ease: Ease::Linear },
+    ]);
+    s.layers[i].transform.scale = Animated::Keys(vec![
+        Key { t: Tick::ZERO, v: 0.4, ease: Ease::Linear },
+        Key { t: frame * 3, v: 0.9, ease: Ease::Linear },
+    ]);
+    s.layers[i].fx = vec![fx_of(effects::GRADE, &[("exposure", 0.4), ("saturation", 0.3)])];
+    s.layers[i].motion_blur = Some(MotionBlur { shutter: 1.0 });
+    // a see-through colour falling, multiplied over it
+    let mut square = layer("sq", LayerContent::Solid { color: Color([0.9, 0.5, 0.2, 0.8]) });
+    square.blend = Blend::Multiply;
+    square.transform.scale = Animated::Constant(0.4);
+    square.transform.position = moving([0.1, -0.4], [0.1, 0.4]);
+    square.motion_blur = Some(MotionBlur { shutter: 0.5 });
+    s.layers.push(square);
+    // a title flying in, and a shape swung in space about its edge
+    let mut title = layer("t", LayerContent::Text(Box::new(TextContent::new("Go".to_string(), 30.0, Color([1.0; 4])))));
+    title.transform.position = moving([-0.6, 0.3], [0.2, 0.3]);
+    title.motion_blur = Some(MotionBlur { shutter: 1.0 });
+    s.layers.push(title);
+    let mut door = layer("door", LayerContent::Solid { color: Color([0.2, 0.8, 0.4, 1.0]) });
+    door.transform.scale = Animated::Constant(0.3);
+    door.transform.position = Animated::Constant([-0.25, -0.25]);
+    door.transform.anchor = Some([0.0, 0.5]);
+    door.transform.turn = Some(Turn {
+        y: Animated::Keys(vec![
+            Key { t: Tick::ZERO, v: -80.0, ease: Ease::Linear },
+            Key { t: frame * 3, v: 40.0, ease: Ease::Linear },
+        ]),
+        ..Turn::held(0.0, 0.0)
+    });
+    door.motion_blur = Some(MotionBlur { shutter: 1.0 });
+    s.layers.push(door);
+    reelforge_renderspec::validate(&s).expect("valid");
+    let media = Pictures(pic);
+    for f in [1, 2] {
+        same(&s, frame * f, 1.0, &media, Quality::Final);
+    }
+    same(&s, frame, 0.5, &media, Quality::Final);
+    // and at rest
+    same(&s, frame * 6, 1.0, &media, Quality::Final);
+}
+
+#[test]
 fn compositions_match_however_they_are_placed() {
     let pic = picture(50, 30);
     let mut s = base(96, 72);
@@ -609,6 +718,7 @@ fn compositions_match_however_they_are_placed() {
         position: Animated::Constant([0.1, 0.05]),
         scale: Animated::Constant(0.8),
         rotation: Animated::Constant(-15.0),
+        ..Transform::default()
     };
     c.crop = Some(Crop { left: 0.1, top: 0.0, right: 0.05, bottom: 0.2 });
     c.flip_x = true;
@@ -661,4 +771,72 @@ fn the_glow_is_the_frame_far_out_of_focus() {
     assert!(red(3) > red(12) + 10, "{row:?}");
     assert!((0..w as usize).all(|x| red(x) < 200 && row[x * 4 + 3] == 255), "{row:?}");
     assert!((1..w as usize).all(|x| red(x).abs_diff(red(x - 1)) < 60), "{row:?}");
+}
+
+#[test]
+fn layers_stretched_anchored_turned_in_space_and_carried_match_the_cpu() {
+    let mut s = base(96, 64);
+    let pic = picture(60, 40);
+    // a picture swung like a door about its left edge, squeezed, cropped and masked
+    let i = with_picture(&mut s, Fit::Contain);
+    let p = &mut s.layers[i];
+    p.transform = Transform {
+        position: Animated::Constant([-0.2, 0.05]),
+        scale: Animated::Constant(0.7),
+        rotation: Animated::Constant(12.0),
+        stretch: Some(Animated::Constant([1.0, 0.8])),
+        anchor: Some([0.0, 0.5]),
+        turn: Some(Turn::held(20.0, 48.0)),
+    };
+    p.crop = Some(Crop { left: 0.1, top: 0.0, right: 0.0, bottom: 0.1 });
+    p.flip_x = true;
+    p.fx = vec![fx_of(effects::GRADE, &[("contrast", 0.2)])];
+    // a title carried by it, tipped back on its own
+    let mut title = layer("t", LayerContent::Text(Box::new(TextContent::new("Ab".to_string(), 26.0, Color([1.0; 4])))));
+    title.parent = Some("pic".into());
+    title.transform.position = Animated::Constant([0.3, -0.2]);
+    title.transform.turn = Some(Turn { distance: 1.2, ..Turn::held(-35.0, 0.0) });
+    s.layers.push(title);
+    // a square carried by the title, stretched, blended by the shader
+    let mut square = layer("sq", LayerContent::Solid { color: Color([0.9, 0.5, 0.2, 0.8]) });
+    square.parent = Some("t".into());
+    square.blend = Blend::Multiply;
+    square.transform.scale = Animated::Constant(0.3);
+    square.transform.stretch = Some(Animated::Constant([1.6, 0.7]));
+    square.transform.position = Animated::Constant([0.1, 0.25]);
+    s.layers.push(square);
+    reelforge_renderspec::validate(&s).expect("valid");
+    let media = Pictures(pic);
+    same(&s, Tick::ZERO, 1.0, &media, Quality::Final);
+    same(&s, Tick::ZERO, 0.5, &media, Quality::Final);
+    // turned past edge on: its back, mirrored
+    s.layers[i].transform.turn = Some(Turn::held(0.0, 140.0));
+    same(&s, Tick::ZERO, 1.0, &media, Quality::Final);
+}
+
+#[test]
+fn the_frost_is_the_frame_blurred_with_room_around_it() {
+    let Some(mut g) = gpu() else { return };
+    // one colour all over: the frost is that colour where the picture is, and fades out around it
+    let mut s = base(64, 36);
+    s.layers.push(layer("all", LayerContent::Solid { color: Color([0.5, 0.25, 0.0, 1.0]) }));
+    g.render(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Final).expect("renders");
+    let (_, _, frame) = g.read_srgba8().expect("reads back");
+    let (w, h, frost) = g.read_rgba8(g.frost().expect("a frame was drawn")).expect("reads back");
+    assert_eq!((w, h), (super::FROST, super::FROST));
+    let at = |x: u32, y: u32| &frost[((y * w + x) * 4) as usize..][..4];
+    let middle = at(w / 2, h / 2);
+    assert!(middle.iter().zip(&frame[..4]).all(|(a, b)| a.abs_diff(*b) <= 1), "{middle:?} of {:?}", &frame[..4]);
+    // the picture's left edge is `FROST_ROOM` of its width in: half of the light there
+    let edge = (super::FROST_ROOM / (1.0 + 2.0 * super::FROST_ROOM) * w as f32) as u32;
+    let alpha = |x: u32| at(x, h / 2)[3];
+    assert!((90..=165).contains(&alpha(edge)), "{}", alpha(edge));
+    assert!((0..w / 2).all(|x| alpha(x) <= alpha(x + 1)), "{:?}", (0..w).map(alpha).collect::<Vec<_>>());
+    // premultiplied, and nothing at the very edge
+    assert!(at(edge, h / 2)[0] < middle[0]);
+    for i in 0..w {
+        for px in [at(i, 0), at(i, h - 1), at(0, i), at(w - 1, i)] {
+            assert_eq!(px, [0; 4]);
+        }
+    }
 }

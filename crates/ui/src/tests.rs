@@ -464,6 +464,58 @@ fn a_template_starts_a_draft_whose_slots_take_the_pictures_added() {
 }
 
 #[test]
+fn a_storyboard_is_used_in_the_interface_s_language_and_its_copy_typed_over() {
+    use crate::i18n::Lang;
+    use reelforge_engine::{made_of, slot_states};
+    let mut app = EditorApp::new(Session::default()).with_lang(Lang::Zh);
+    app.use_storyboard("launch");
+    let p = app.project();
+    // its slots wait for pictures, its copy is the storyboard's in Chinese, and the status says what next
+    assert_eq!(slot_states(&p).len(), 4);
+    assert_eq!(p.copy.iter().find(|f| f.name == "cta").unwrap().value, "立即抢购");
+    assert_eq!(app.status, "新品首发：添加 4 段图片或视频，再改文案");
+    assert_eq!(p.markers.len(), 5);
+    // folded pieces are not counted among the timelines to switch between
+    let pieces = p.timelines.iter().filter(|t| t.made.is_some()).count();
+    assert!(pieces >= 10 && p.timeline_list().len() > pieces);
+    // a field typed over: the piece written from it is made again, in one step
+    let button = {
+        let clips = p.tracks.iter().flat_map(|t| &t.clips);
+        clips.filter(|c| made_of(&p, &c.id).is_some_and(|(_, m)| m.kind == "buyButton")).map(|c| c.id.clone()).next()
+    };
+    let button = button.expect("a button");
+    app.fill_copy("cta", "马上带一个回家");
+    assert_eq!(made_of(&app.project(), &button).unwrap().1.text, "马上带一个回家");
+    assert_eq!(app.status, "文案已更新，1 个组件已重排");
+    // a price that is no number is refused, and says why
+    let before = app.project();
+    app.fill_copy("price", "面议");
+    assert_eq!(app.project(), before);
+    assert!(app.status.contains("price"), "{}", app.status);
+    // the templates tab draws the storyboards and the copy form without going wrong, in every language
+    for lang in Lang::ALL {
+        app.lang = lang;
+        app.assets.show_storyboards();
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, lang == Lang::Ja);
+        for _ in 0..2 {
+            ctx.run_ui(Default::default(), |ui| {
+                let (p, media) = (app.project(), app.media.clone());
+                let _ = app.assets.show(ui, &p, &media, lang, &[], false, Tick::ZERO, &[]);
+            })
+            .textures_delta
+            .clear();
+        }
+    }
+    // on a project with something on it, a storyboard gets a timeline of its own, undone in one step
+    let mut app = EditorApp::demo().with_lang(Lang::En);
+    app.use_storyboard("flashSale");
+    assert_eq!(app.project().timeline_list().iter().find(|t| t.current).unwrap().name, "Flash sale");
+    app.execute("edit.undo", json!({})).unwrap();
+    assert!(app.project().copy.is_empty());
+}
+
+#[test]
 fn new_empties_the_project_and_undo_brings_it_back() {
     let mut app = EditorApp::demo();
     let before = app.project();
@@ -561,6 +613,60 @@ fn stickers_and_effects_land_over_the_picture() {
     // dropped on a track with room, it stays there
     app.add_item(&assets::Item::Sticker("heart"), Tick::from_seconds(3.5), Some(videos_track(&app, 1)));
     assert_eq!(videos(&app)[1].len(), 2);
+    // an animated decoration goes over whatever shows there: a Lottie clip, as long as it says
+    app.add_item(&assets::Item::Decor("tapRing"), Tick::ZERO, None);
+    let ring = app.selected.clone().unwrap();
+    assert_eq!(videos(&app).len(), 4);
+    assert_eq!(videos(&app)[3], std::slice::from_ref(&ring));
+    let p = app.project();
+    let m = p.media.values().find(|m| m.kind == reelforge_model::MediaKind::Lottie).unwrap();
+    assert_eq!((m.name.as_str(), m.uri.as_str()), ("点击提示", "library:decor/tapRing"));
+    assert_eq!(p.clip(&ring).unwrap().1.duration, Tick::SECOND * 4);
+    // dropped on a track with room it stays there; with none, it goes above as before
+    app.add_item(&assets::Item::Decor("tapRing"), Tick::from_seconds(8.0), Some(videos_track(&app, 1)));
+    assert_eq!(videos(&app)[1].len(), 3);
+    app.add_item(&assets::Item::Decor("tapRing"), Tick::from_seconds(8.0), Some(videos_track(&app, 1)));
+    assert_eq!((videos(&app)[1].len(), videos(&app).len()), (3, 4));
+    assert_eq!(app.project().media.values().filter(|m| m.kind == reelforge_model::MediaKind::Lottie).count(), 1);
+}
+
+#[test]
+fn a_ready_made_piece_of_many_parts_lands_as_one_clip_and_every_piece_has_a_name() {
+    use crate::{assets, i18n};
+    let mut app = EditorApp::new(Session::default());
+    let clips = |app: &EditorApp| app.project().tracks.iter().map(|t| t.clips.len()).sum::<usize>();
+    // a small piece is its two clips, grouped, the first of them selected
+    app.add_item(&assets::Item::Promo("priceTag"), Tick::ZERO, None);
+    assert_eq!(clips(&app), 2);
+    let p = app.project();
+    assert!(p.clip(app.selected.as_deref().unwrap()).unwrap().1.group.is_some());
+    // a list would be a track a row: it comes folded into one compound clip, which is selected
+    app.add_item(&assets::Item::Promo("checklist"), Tick::from_seconds(4.0), None);
+    assert_eq!(clips(&app), 3);
+    let p = app.project();
+    let (_, folded) = p.clip(app.selected.as_deref().unwrap()).unwrap();
+    assert_eq!(folded.start, Tick::from_seconds(4.0));
+    assert_eq!(p.tracks_of(folded.compound().unwrap().0).unwrap().iter().map(|t| t.clips.len()).sum::<usize>(), 4);
+    // the inspector shows the piece's lines, to be given others without going inside it
+    let ctx = egui::Context::default();
+    ctx.run_ui(Default::default(), |ui| app.inspector(ui)).textures_delta.clear();
+    let piece = app.inspector.as_ref().unwrap().piece.clone().expect("a piece");
+    assert_eq!((piece.name, piece.text, piece.value), ("Feature checklist", None, None));
+    assert_eq!(piece.lines.as_deref(), Some("持久保湿 12 小时\n温和不含香精\n敏感肌适用"));
+    // the small piece's clips are ordinary clips: nothing of the kind is shown for them
+    app.selected = p.tracks.iter().flat_map(|t| &t.clips).find(|c| c.group.is_some()).map(|c| c.id.clone());
+    ctx.run_ui(Default::default(), |ui| app.inspector(ui)).textures_delta.clear();
+    assert!(app.inspector.as_ref().unwrap().piece.is_none());
+    // every piece and every list of them is named in every language
+    for lang in i18n::Lang::ALL {
+        let s = lang.strings();
+        assert_eq!(s.promo_names.len(), reelforge_engine::PROMOS.len());
+        assert_eq!(s.promo_categories.len(), reelforge_engine::Category::ALL.len());
+        assert!(s.promo_names.iter().chain(&s.promo_categories).all(|n| !n.is_empty()));
+        for piece in reelforge_engine::PROMOS {
+            assert!(!assets::Item::Promo(piece.id).label(&app.project(), s).is_empty(), "{}", piece.id);
+        }
+    }
 }
 
 /// The id of the `n`th video track from the bottom.
@@ -680,6 +786,60 @@ fn a_person_is_cut_out_of_a_picture_and_the_frame_shows_around_them() {
 }
 
 #[test]
+fn a_product_is_lifted_off_its_backdrop_and_stands_on_its_shadow() {
+    use reelforge_model::{MediaKind, TrackKind};
+    let mut app = EditorApp::new(Session::default());
+    // a red box photographed on a pale sweep, filling a green frame
+    app.execute("project.setCanvas", json!({"width": 160, "height": 120, "background": [0, 1, 0, 1]})).unwrap();
+    let mut png = Vec::new();
+    let photo = image::RgbaImage::from_fn(160, 120, |x, y| {
+        let pale = (236 - 30 * y / 120) as u8;
+        if (60..100).contains(&x) && (30..90).contains(&y) {
+            image::Rgba([200, 40, 30, 255])
+        } else {
+            image::Rgba([pale, pale, pale - 4, 255])
+        }
+    });
+    photo.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    app.import_bytes("box.png", png, false);
+    let media = app.project().media.values().find(|m| m.kind == MediaKind::Image).expect("imported").id.clone();
+    let track = first_track(&app, TrackKind::Video);
+    let clip =
+        app.execute("clip.add", json!({"track": track, "media": media})).unwrap()["clip"].as_str().unwrap().to_string();
+    let frame = |app: &EditorApp| {
+        let spec = reelforge_compile::compile(&app.project(), &Default::default()).unwrap();
+        reelforge_media::still(&spec, &app.media, Tick::ZERO, 1.0).unwrap()
+    };
+    let green = |p: [f32; 4]| p[1] > 0.98 && p[0] < 0.02 && p[2] < 0.02;
+    let whole = frame(&app);
+    assert!(!green(whole.get(20, 20)));
+
+    app.execute("clip.setCutout", json!({"clip": clip})).unwrap();
+    let cut = frame(&app);
+    // the box is as it was; all round it the frame's own green shows
+    assert_eq!(cut.get(80, 60), whole.get(80, 60));
+    for at in [(20, 20), (140, 100), (80, 10), (80, 110), (50, 60)] {
+        assert!(green(cut.get(at.0, at.1)), "{at:?} {:?}", cut.get(at.0, at.1));
+    }
+    // standing on the ground: a dark pool at its foot, none of it at its head
+    app.execute("clip.setShadow", json!({"clip": clip, "kind": "ground", "blur": 0.01, "opacity": 0.8})).unwrap();
+    let lit = frame(&app);
+    assert_eq!(lit.get(80, 60), whole.get(80, 60));
+    let foot = lit.get(80, 91);
+    assert!(foot[1] < 0.8 && foot[0] < 0.02, "{foot:?}");
+    assert!(green(lit.get(80, 25)) && green(lit.get(80, 100)), "{:?}", lit.get(80, 100));
+    // the inspector reads both back
+    app.selected = Some(clip.clone());
+    let p = app.project();
+    let look = p.clip(&clip).unwrap().1.look.clone();
+    assert!(look.cutout.is_some() && look.shadow.is_some_and(|s| s.flat > 0.8));
+    // and back
+    app.execute("edit.undo", json!({})).unwrap();
+    app.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(frame(&app).pixels, whole.pixels);
+}
+
+#[test]
 fn keying_finds_the_backdrop_or_says_it_guessed() {
     use reelforge_model::{ChromaKey, MediaKind, TrackKind};
     let mut app = EditorApp::new(Session::default());
@@ -728,6 +888,50 @@ fn keying_finds_the_backdrop_or_says_it_guessed() {
     let kept = key(&app, &other).unwrap();
     assert_eq!((kept.color, kept.tolerance), ([1.0, 0.0, 1.0], 0.3));
     assert!(app.status.starts_with("这一帧四周没有单一的背景色"), "{}", app.status);
+}
+
+#[test]
+fn selected_pictures_are_laid_out_from_the_lowest_track_up() {
+    use crate::timeline::{Action, Select};
+    use reelforge_model::TrackKind;
+    let mut app = EditorApp::new(Session::default());
+    app.lang = crate::i18n::Lang::Zh;
+    let mut clips = vec![];
+    for i in 0..2 {
+        let file = json!({
+            "path": format!("/nowhere/{i}.mp4"), "duration": {"seconds": 10}, "size": [1920, 1080],
+            "sha256": format!("{i:02x}").repeat(32),
+        });
+        let media = app.execute("media.import", file).unwrap()["media"]["id"].as_str().unwrap().to_string();
+        let track = match i {
+            0 => first_track(&app, TrackKind::Video),
+            _ => app.execute("track.add", json!({"kind": "video"})).unwrap()["track"].as_str().unwrap().to_string(),
+        };
+        let at = json!({"track": track, "media": media, "duration": {"seconds": 4}});
+        clips.push(app.execute("clip.add", at).unwrap()["clip"].as_str().unwrap().to_string());
+    }
+    // chosen from the top down, laid out from the bottom up: the lower clip is the large one
+    app.select(Select::Set(vec![clips[1].clone(), clips[0].clone()]));
+    app.act(Action::Layout("pip"));
+    let p = app.project();
+    assert_eq!(p.clip(&clips[0]).unwrap().1.transform.scale, 1.0);
+    assert!(p.clip(&clips[1]).unwrap().1.transform.scale < 0.5);
+    assert!(app.status.contains("画中画"), "{}", app.status);
+    app.act(Action::Layout("rows"));
+    let p = app.project();
+    assert!(p.clip(&clips[0]).unwrap().1.transform.y < 0.0 && p.clip(&clips[1]).unwrap().1.transform.y > 0.0);
+    // one clip alone is left as it is
+    app.select(Select::Only(clips[0].clone()));
+    let before = app.project().clip(&clips[0]).unwrap().1.clone();
+    app.act(Action::Layout("columns"));
+    assert_eq!(*app.project().clip(&clips[0]).unwrap().1, before);
+    // every layout is named in every language, and found in the palette
+    for lang in crate::i18n::Lang::ALL {
+        let s = lang.strings();
+        assert_eq!(s.layout_names.len(), reelforge_engine::LAYOUTS.len());
+        assert!(s.layout_names.iter().all(|n| !n.is_empty()) && s.layout_done.contains("{}"));
+    }
+    assert!(app.palette_entries().len() > reelforge_engine::LAYOUTS.len());
 }
 
 #[test]
@@ -1011,4 +1215,137 @@ fn clips_another_client_changed_are_lit_with_its_name_and_the_news_is_on_a_toast
     app.toast = None;
     ctx.run_ui(Default::default(), |ui| app.toasts(ui.ctx())).textures_delta.clear();
     assert!(app.toast.is_none(), "the same news is not shown twice");
+}
+
+#[test]
+fn a_lottie_animation_dropped_on_the_editor_is_placed_and_says_what_it_cannot_draw() {
+    use crate::i18n::Lang;
+    use reelforge_model::{ClipContent, MediaKind, TrackKind};
+    // a dot, two seconds long; the second one is moved by an expression, which is not run
+    let dot = |extra: &str| {
+        format!(
+            r#"{{"v":"5.7.0","fr":25,"ip":0,"op":50,"w":200,"h":100,"layers":[
+          {{"ty":4,"ind":1,"ip":0,"op":50,"st":0,"ks":{{"p":{{"a":0,"k":[100,50]{extra}}}}},
+           "shapes":[{{"ty":"el","p":{{"a":0,"k":[0,0]}},"s":{{"a":0,"k":[40,40]}}}},
+                     {{"ty":"fl","c":{{"a":0,"k":[0,0,1,1]}},"o":{{"a":0,"k":100}}}}]}}]}}"#
+        )
+        .into_bytes()
+    };
+    let mut app = EditorApp::demo().with_lang(Lang::Zh);
+    let clips = |app: &EditorApp| app.project().tracks.iter().map(|t| t.clips.len()).sum::<usize>();
+    let before = clips(&app);
+
+    app.import_bytes("dot.json", dot(""), true);
+    let p = app.project();
+    let m = p.media.values().find(|m| m.name == "dot.json").expect("imported");
+    assert_eq!((m.kind, m.size, m.duration), (MediaKind::Lottie, Some([800, 400]), Some(Tick::SECOND * 2)));
+    // placed on a video track at the playhead, selected, as long as it is
+    let (t, c) = p.clip(app.selected.as_ref().expect("selected")).unwrap();
+    assert_eq!(p.tracks[t].kind, TrackKind::Video);
+    assert!(matches!(&c.content, ClipContent::Media { media, .. } if *media == m.id));
+    assert_eq!((clips(&app), c.duration), (before + 1, Tick::SECOND * 2));
+    assert_eq!(app.status, "已导入 dot.json");
+
+    app.import_bytes("moved.json", dot(r#","x":"var $bm_rt = time;""#), false);
+    assert_eq!(app.status, "已添加 moved.json。其中这些内容不会绘制：表达式");
+    // what is not an animation is not added
+    let media = app.project().media.len();
+    app.import_bytes("package.json", br#"{"name": "x"}"#.to_vec(), true);
+    assert_eq!(app.project().media.len(), media);
+}
+
+#[test]
+fn the_inspector_keeps_its_width_whatever_is_selected() {
+    use eframe::egui;
+    for lang in crate::i18n::Lang::ALL {
+        let mut app = EditorApp::new(Session::default()).with_lang(lang);
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, lang == crate::i18n::Lang::Ja);
+        let text = first_track(&app, reelforge_model::TrackKind::Text);
+        let video = first_track(&app, reelforge_model::TrackKind::Video);
+        let title = app.execute("clip.add", json!({"track": text, "text": "Hello", "start": 0})).unwrap();
+        let solid = app.execute("clip.add", json!({"track": video, "color": [1, 0, 0], "start": 0})).unwrap();
+        for clip in [title, solid] {
+            app.selected = clip["clip"].as_str().map(str::to_string);
+            let mut widths = Vec::new();
+            for _ in 0..12 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                    ..Default::default()
+                };
+                let mut width = 0.0;
+                ctx.run_ui(input, |ui| {
+                    let shown = egui::Panel::right("inspector")
+                        .default_size(290.0)
+                        .resizable(true)
+                        .frame(crate::theme::island(12))
+                        .show(ui, |ui| app.inspector(ui));
+                    width = shown.response.rect.width();
+                })
+                .textures_delta
+                .clear();
+                widths.push(width);
+            }
+            // as wide as it was made, frame after frame: a row that asks for more than there is
+            // widens the panel by that much every frame
+            assert!(widths.iter().all(|w| (w - widths[0]).abs() < 0.5 && *w < 300.0), "{lang:?} {clip}: {widths:?}");
+        }
+    }
+}
+
+#[test]
+fn scrolling_over_the_picture_moves_it_and_keeps_some_of_it_in_sight() {
+    use eframe::egui;
+    let mut app = EditorApp::new(Session::default());
+    let ctx = egui::Context::default();
+    crate::theme::install(&ctx, false);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0));
+    let frame = |app: &mut EditorApp, events: Vec<egui::Event>| {
+        let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+        ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| app.preview(ui, 16.0));
+        })
+        .textures_delta
+        .clear();
+    };
+    let wheel = |delta: egui::Vec2, modifiers: egui::Modifiers| egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta,
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Unknown,
+        modifiers,
+    };
+    frame(&mut app, vec![egui::Event::PointerMoved(egui::pos2(450.0, 300.0))]);
+    frame(&mut app, vec![]);
+    assert_eq!((app.pan, app.zoom), (egui::Vec2::ZERO, 1.0));
+    // the picture goes the way the content is scrolled
+    frame(&mut app, vec![wheel(egui::vec2(30.0, -60.0), egui::Modifiers::NONE)]);
+    for _ in 0..30 {
+        frame(&mut app, vec![]);
+    }
+    assert!((app.pan - egui::vec2(30.0, -60.0)).length() < 2.0 && app.zoom == 1.0, "{:?} {}", app.pan, app.zoom);
+    // with the zoom modifier the wheel enlarges it, and does not move it by the scroll
+    let before = app.pan;
+    frame(&mut app, vec![wheel(egui::vec2(0.0, 40.0), egui::Modifiers::COMMAND)]);
+    for _ in 0..30 {
+        frame(&mut app, vec![]);
+    }
+    assert!(app.zoom > 1.0 && (app.pan.y - before.y).abs() < 40.0, "{:?} {}", app.pan, app.zoom);
+    // however far it is scrolled, some of the picture stays on the stage
+    for _ in 0..40 {
+        frame(&mut app, vec![wheel(egui::vec2(0.0, -500.0), egui::Modifiers::NONE)]);
+    }
+    for _ in 0..30 {
+        frame(&mut app, vec![]);
+    }
+    let lit = app.lit.expect("a picture was drawn");
+    assert!(lit.frame.bottom() >= 16.0 + 60.0 && lit.frame.bottom() < 200.0, "{:?}", lit.frame);
+    // and away from the picture the wheel is not its business
+    let before = app.pan;
+    frame(&mut app, vec![egui::Event::PointerGone]);
+    frame(&mut app, vec![wheel(egui::vec2(0.0, 50.0), egui::Modifiers::NONE)]);
+    for _ in 0..10 {
+        frame(&mut app, vec![]);
+    }
+    assert_eq!(app.pan, before);
 }

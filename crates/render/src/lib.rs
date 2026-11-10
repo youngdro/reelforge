@@ -29,6 +29,7 @@ pub mod image;
 pub mod lut;
 pub mod media;
 pub mod plan;
+mod shadow;
 pub mod shape;
 pub mod text;
 pub mod yuv;
@@ -71,10 +72,15 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "flip/1",
     "frames.blend/1",
     "frames.flow/1",
+    "key.backdrop@1",
     "key.chroma@1",
     "key.person@1",
+    "layer.parent/1",
+    "lottie/1",
     "mask.shape/1",
     "mask.shape/2",
+    "motion.blur/1",
+    "shadow.drop@1",
     "shape/1",
     "text/1",
     "text/2",
@@ -82,9 +88,13 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "text/4",
     "text/5",
     "text/6",
+    "text/7",
     "time.hold/1",
     "time.ramp/1",
     "time.reverse/1",
+    "transform.3d/1",
+    "transform.anchor/1",
+    "transform.stretch/1",
 ];
 
 /// Why a frame could not be rendered.
@@ -145,6 +155,13 @@ pub fn render_frame(
     cpu::composite(spec, &plan, media, quality)
 }
 
+/// The size, in output pixels, of the box a title's anchor is a point of, in the default face: as
+/// tall as its lines together and as wide as its longest line reaches to either side of the
+/// middle of its block, which is what the layer places.
+pub fn text_block(text: &reelforge_renderspec::TextContent) -> [f32; 2] {
+    text::block(text, text::DEFAULT_FAMILY)
+}
+
 /// Where a visible layer lands: its box's corners in output pixels (`[x, y]`, clockwise from the
 /// content's top-left), turned with the layer.
 pub type Outline = [[f32; 2]; 4];
@@ -155,12 +172,17 @@ pub type Outline = [[f32; 2]; 4];
 pub fn layer_outlines(spec: &RenderSpec, t: Tick, media: &dyn MediaSource) -> Vec<(String, Outline)> {
     let plan = plan_frame(spec, t, 1.0);
     let target = [plan.width as f32, plan.height as f32];
-    let corners = |m: plan::Affine, w: f32, h: f32| -> Outline {
-        [[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]].map(|[x, y]| [m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5]])
+    // a corner past the eye has no place on the frame: it is put where it would be seen flat
+    let at = |m: &plan::Map, [x, y]: [f32; 2]| {
+        plan::apply(m, x, y).unwrap_or([m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5]])
     };
+    let corners =
+        |m: plan::Map, w: f32, h: f32| -> Outline { [[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]].map(|p| at(&m, p)) };
     let mut out = Vec::new();
     for layer in &plan.layers {
         let outline = match &layer.source {
+            // a shadow is its layer's, not a thing to pick up
+            PlannedSource::Shadow(_) => continue,
             PlannedSource::Solid(_) => {
                 let mut l = layer.clone();
                 l.fit = reelforge_renderspec::Fit::Stretch;
@@ -183,6 +205,13 @@ pub fn layer_outlines(spec: &RenderSpec, t: Tick, media: &dyn MediaSource) -> Ve
                 // a composition's picture is a frame
                 let (w, h) = layer.visible(target[0], target[1]);
                 corners(layer.matrix(w, h, target), w, h)
+            }
+            PlannedSource::Shape(sh) if !layer.plain() => {
+                // its box, counted from the anchor, then placed
+                let k = plan.width as f32 / spec.output.width as f32 * layer.scale;
+                let (w, h) = (sh.size[0] * k, sh.size[1] * k);
+                let from = [1.0, 0.0, -layer.anchor[0] * w, 0.0, 1.0, -layer.anchor[1] * h, 0.0, 0.0, 1.0];
+                corners(plan::then(&layer.place(), &from), w, h)
             }
             PlannedSource::Shape(sh) => {
                 // its box, scaled and turned about the layer's centre
@@ -214,6 +243,15 @@ pub fn layer_outlines(spec: &RenderSpec, t: Tick, media: &dyn MediaSource) -> Ve
                     }
                 }
                 if lo[0] == usize::MAX {
+                    continue;
+                }
+                if let Some(m) = &sp.map {
+                    // drawn flat: the ink's box in the sprite, placed with it
+                    let (lo, hi) = (lo.map(|v| v as f32), hi.map(|v| v as f32));
+                    out.push((
+                        layer.id.clone(),
+                        [[lo[0], lo[1]], [hi[0], lo[1]], [hi[0], hi[1]], [lo[0], hi[1]]].map(|p| at(m, p)),
+                    ));
                     continue;
                 }
                 let (x0, y0) = (sp.x as f32 + lo[0] as f32, sp.y as f32 + lo[1] as f32);
@@ -256,6 +294,7 @@ mod tests {
                 position: Animated::Constant([0.25, 0.0]),
                 scale: Animated::Constant(0.5),
                 rotation: Animated::Constant(0.0),
+                ..Transform::default()
             },
             opacity: Animated::Constant(1.0),
             blend: Blend::Normal,
@@ -267,6 +306,8 @@ mod tests {
             shape_mask: None,
             crop_keys: None,
             shape_mask_keys: None,
+            parent: None,
+            motion_blur: None,
         });
         s
     }
@@ -381,6 +422,89 @@ mod tests {
         assert_ne!(px(&soft, face.0, face.1), px(&whole, face.0, face.1));
     }
 
+    /// A thing on a studio sweep: a red box on a pale backdrop that is lighter at the top.
+    pub(crate) fn boxed_on_a_sweep(w: u32, h: u32) -> Arc<Image> {
+        let mut bytes = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                let thing = (w * 3 / 8..w * 5 / 8).contains(&x) && (h / 4..h * 3 / 4).contains(&y);
+                let pale = (236 - 30 * y / h) as u8;
+                bytes.extend(if thing { [200, 40, 30, 255] } else { [pale, pale, pale - 4, 255] });
+            }
+        }
+        Arc::new(Image::from_srgba8(w, h, &bytes))
+    }
+
+    #[test]
+    fn a_thing_is_lifted_off_its_backdrop_and_its_shadow_falls_on_what_is_behind() {
+        struct Still(Arc<Image>);
+        impl MediaSource for Still {
+            fn picture(&self, _: &str, _: &Asset, _: Tick) -> Result<Option<Arc<Image>>, String> {
+                Ok(Some(self.0.clone()))
+            }
+        }
+        let mut s = spec();
+        s.assets.insert(
+            "p".into(),
+            Asset {
+                kind: AssetKind::Image,
+                sha256: "5".repeat(64),
+                uri: "file:///p.png".into(),
+                of: None,
+                probe: None,
+            },
+        );
+        s.layers[0].content = LayerContent::Media {
+            asset: "p".into(),
+            time: TimeMap::default(),
+            fit: Fit::Stretch,
+            between: Default::default(),
+        };
+        s.layers[0].transform = Transform::default();
+        let media = Still(boxed_on_a_sweep(160, 80));
+        // as it is: the sweep covers the frame's blue. The box is at 60..100 × 20..60
+        let (whole, _) = render_frame(&s, Tick::ZERO, 4.0, &media, Quality::Final).unwrap();
+        let (thing, beside, under) = ((80, 40), (20, 10), (104, 64));
+        assert_ne!(px(&whole, beside.0, beside.1), [0, 0, 255, 255]);
+        // cut out: the box is as it was, and around it the frame's own blue shows
+        let fx = |id: &str, pairs: &[(&str, f32)]| Effect {
+            id: id.into(),
+            params: pairs.iter().map(|(k, v)| (k.to_string(), Animated::Constant(*v))).collect(),
+            asset: None,
+        };
+        s.layers[0].fx = vec![fx(effects::BACKDROP_KEY, &[])];
+        assert!(unsupported_features(&s).is_empty() && s.required_features().contains("key.backdrop@1"));
+        let (cut, _) = render_frame(&s, Tick::ZERO, 4.0, &media, Quality::Final).unwrap();
+        assert_eq!(px(&cut, thing.0, thing.1), px(&whole, thing.0, thing.1));
+        for at in [beside, under, (150, 70), (80, 10)] {
+            assert_eq!(px(&cut, at.0, at.1), [0, 0, 255, 255], "{at:?}");
+        }
+        // its shadow: the box's outline 8 right and 8 down (a tenth of the picture's shorter
+        // side), half dark, under the box and over the frame
+        s.layers[0].fx.push(fx(effects::SHADOW, &[("x", 0.1), ("y", 0.1), ("blur", 0.0), ("opacity", 0.5)]));
+        assert!(unsupported_features(&s).is_empty() && s.required_features().contains("shadow.drop@1"));
+        let (lit, _) = render_frame(&s, Tick::ZERO, 4.0, &media, Quality::Final).unwrap();
+        assert_eq!(px(&lit, thing.0, thing.1), px(&whole, thing.0, thing.1));
+        assert_eq!(px(&lit, beside.0, beside.1), [0, 0, 255, 255]);
+        let shade = px(&lit, under.0, under.1);
+        assert!(shade[0] == 0 && shade[1] == 0 && (180..192).contains(&shade[2]), "{shade:?}");
+        assert_eq!(px(&lit, 112, 72), [0, 0, 255, 255]);
+        // it fades with the layer
+        s.layers[0].opacity = Animated::Constant(0.5);
+        let (faint, _) = render_frame(&s, Tick::ZERO, 4.0, &media, Quality::Final).unwrap();
+        let shade = px(&faint, under.0, under.1);
+        assert!((220..230).contains(&shade[2]), "{shade:?}");
+        // the plan lists it under its layer; it is not a picture to fetch or a thing to pick up
+        let plan = plan_frame(&s, Tick::ZERO, 4.0);
+        let ids: Vec<&str> = plan.layers.iter().map(|l| l.id.as_str()).collect();
+        assert_eq!(ids, ["half~shadow", "half"]);
+        assert_eq!(plan.media_layers().len(), 1);
+        assert_eq!(layer_outlines(&s, Tick::ZERO, &media).len(), 1);
+        // a colour casts none
+        s.layers[0].content = LayerContent::Solid { color: Color([1.0, 0.0, 0.0, 1.0]) };
+        assert_eq!(plan_frame(&s, Tick::ZERO, 4.0).layers.len(), 1);
+    }
+
     #[test]
     fn a_layer_that_wants_pictures_between_frames_asks_for_them_at_its_instant() {
         use reelforge_renderspec::Between;
@@ -450,6 +574,172 @@ mod tests {
         assert!(near(o[0], [35.0, 0.0]) && near(o[2], [25.0, 20.0]), "{o:?}");
         // past its end nothing is there
         assert!(layer_outlines(&s, Tick::SECOND, &NoMedia).is_empty());
+    }
+
+    const RED: [u8; 4] = [255, 0, 0, 255];
+    const BLUE: [u8; 4] = [0, 0, 255, 255];
+
+    fn drawn(s: &RenderSpec) -> Image {
+        render_frame(s, Tick::ZERO, 1.0, &NoMedia, Quality::Final).unwrap().0
+    }
+
+    #[test]
+    fn a_layer_is_stretched_one_way_and_placed_by_its_anchor() {
+        // the box is 20 by 10 in the middle of the frame: columns 10 to 30, rows 5 to 15
+        let mut s = spec();
+        s.layers[0].transform.position = Animated::Constant([0.0, 0.0]);
+        // half as wide, as tall as it was
+        s.layers[0].transform.stretch = Some(Animated::Constant([0.5, 1.0]));
+        let img = drawn(&s);
+        assert_eq!([px(&img, 13, 10), px(&img, 16, 10), px(&img, 24, 10), px(&img, 26, 10)], [BLUE, RED, RED, BLUE]);
+        assert_eq!([px(&img, 20, 4), px(&img, 20, 6), px(&img, 20, 14)], [BLUE, RED, RED]);
+        assert_eq!(
+            layer_outlines(&s, Tick::ZERO, &NoMedia)[0].1,
+            [[15.0, 5.0], [25.0, 5.0], [25.0, 15.0], [15.0, 15.0]]
+        );
+        // its top left corner where its middle was: it reaches right and down from there
+        s.layers[0].transform.stretch = None;
+        s.layers[0].transform.anchor = Some([0.0, 0.0]);
+        let img = drawn(&s);
+        assert_eq!([px(&img, 18, 12), px(&img, 21, 12), px(&img, 38, 18), px(&img, 21, 8)], [BLUE, RED, RED, BLUE]);
+        // and it turns about that corner: a quarter turn swings it down and to the left
+        s.layers[0].transform.rotation = Animated::Constant(90.0);
+        let img = drawn(&s);
+        assert_eq!([px(&img, 12, 12), px(&img, 18, 18), px(&img, 21, 12), px(&img, 8, 12)], [RED, RED, BLUE, BLUE]);
+        // a spec that asks for these says so
+        let needs = s.required_features();
+        assert!(needs.contains("transform.anchor/1") && !needs.contains("transform.stretch/1"));
+        assert!(unsupported_features(&s).is_empty());
+    }
+
+    #[test]
+    fn a_layer_turned_in_space_is_seen_in_perspective() {
+        // 20 by 10 in the middle of the frame, the eye two frame heights (40 pixels) away
+        let mut s = spec();
+        s.layers[0].transform.position = Animated::Constant([0.0, 0.0]);
+        // swung 60 degrees about the vertical: its right edge goes away and is smaller, its left
+        // comes nearer and is larger; its middle stays where it was
+        s.layers[0].transform.turn = Some(Turn::held(0.0, 60.0));
+        let img = drawn(&s);
+        assert_eq!([px(&img, 12, 10), px(&img, 14, 10), px(&img, 23, 10), px(&img, 25, 10)], [BLUE, RED, RED, BLUE]);
+        // the near edge is taller than the box was, the far edge shorter
+        assert_eq!([px(&img, 14, 4), px(&img, 14, 15), px(&img, 23, 5), px(&img, 23, 7)], [RED, RED, BLUE, RED]);
+        let o = layer_outlines(&s, Tick::ZERO, &NoMedia)[0].1;
+        assert!(o[3][1] - o[0][1] > 12.0 && o[2][1] - o[1][1] < 9.0, "{o:?}");
+        // the other way round
+        s.layers[0].transform.turn = Some(Turn::held(0.0, -60.0));
+        let img = drawn(&s);
+        assert_eq!([px(&img, 25, 4), px(&img, 16, 5), px(&img, 16, 7)], [RED, BLUE, RED]);
+        // tipped about the horizontal: the top edge goes away
+        s.layers[0].transform.turn = Some(Turn::held(60.0, 0.0));
+        let img = drawn(&s);
+        assert_eq!([px(&img, 10, 8), px(&img, 12, 8), px(&img, 9, 12), px(&img, 20, 6)], [BLUE, RED, RED, BLUE]);
+        // edge on, nothing of it is seen
+        s.layers[0].transform.turn = Some(Turn::held(0.0, 90.0));
+        assert!(drawn(&s).to_srgba8().as_chunks::<4>().0.iter().all(|p| *p == BLUE));
+        // from farther away the perspective is weaker: nearly a flat squeeze to half the width
+        s.layers[0].transform.turn = Some(Turn { distance: 50.0, ..Turn::held(0.0, 60.0) });
+        let img = drawn(&s);
+        assert_eq!([px(&img, 14, 10), px(&img, 15, 6), px(&img, 24, 6), px(&img, 25, 10)], [BLUE, RED, RED, BLUE]);
+        assert!(s.required_features().contains("transform.3d/1") && unsupported_features(&s).is_empty());
+    }
+
+    #[test]
+    fn a_layer_on_the_move_is_smeared_along_its_way_and_sharp_at_rest() {
+        // 20 by 10, going 20 pixels to the right over two frames and then standing still
+        let mut s = spec();
+        let frame = FrameRate::FPS_30.frame_duration();
+        s.layers[0].transform.position = Animated::Keys(vec![
+            Key { t: Tick::ZERO, v: [-0.25, 0.0], ease: Ease::Linear },
+            Key { t: frame * 2, v: [0.25, 0.0], ease: Ease::Linear },
+        ]);
+        let at = |s: &RenderSpec, f: i64| render_frame(s, frame * f, 1.0, &NoMedia, Quality::Final).unwrap().0;
+        // how red each column of the middle row is, in linear light
+        let row = |img: &Image| -> Vec<f32> { (0..40).map(|x| img.pixels[(10 * 40 + x) as usize][0]).collect() };
+        // without a shutter it is sharp half way: columns 10 to 30
+        let sharp = row(&at(&s, 1));
+        assert_eq!([sharp[9], sharp[10], sharp[29], sharp[30]], [0.0, 1.0, 1.0, 0.0]);
+        // the shutter open the whole frame: it goes 10 pixels meanwhile, so its edges are ramps
+        // 10 wide about where they were, and no more light comes from it than it gives
+        s.layers[0].motion_blur = Some(MotionBlur { shutter: 1.0 });
+        reelforge_renderspec::validate(&s).expect("valid");
+        assert!(s.required_features().contains("motion.blur/1") && unsupported_features(&s).is_empty());
+        let img = at(&s, 1);
+        let soft = row(&img);
+        assert!(soft[3] == 0.0 && soft[36] == 0.0 && soft[16] == 1.0 && soft[23] == 1.0, "{soft:?}");
+        assert!(soft[6] > 0.0 && soft[6] < soft[10] && soft[10] < soft[13] && soft[13] <= 1.0, "{soft:?}");
+        assert!((soft[10] - 0.5).abs() < 0.15 && (soft[29] - 0.5).abs() < 0.15, "{soft:?}");
+        assert!((soft.iter().sum::<f32>() - 20.0).abs() < 0.5, "{}", soft.iter().sum::<f32>());
+        // the frame under it shows through where it is thin
+        assert!(img.pixels[10 * 40 + 6][2] > 0.5 && img.pixels[10 * 40 + 6][3] == 1.0);
+        // up and down it does not move: its top and bottom edges are as sharp as ever
+        assert_eq!([px(&img, 20, 4), px(&img, 20, 5), px(&img, 20, 14), px(&img, 20, 15)], [BLUE, RED, RED, BLUE]);
+        // half the shutter, half the smear
+        s.layers[0].motion_blur = Some(MotionBlur { shutter: 0.5 });
+        let half = row(&at(&s, 1));
+        assert!(half[6] == 0.0 && half[8] > 0.0 && half[13] == 1.0, "{half:?}");
+        // at rest it is drawn once, as sharp as without: the plan has no other instant for it
+        assert_eq!(
+            row(&at(&s, 5)),
+            row(&at(&RenderSpec { layers: vec![Layer { motion_blur: None, ..s.layers[0].clone() }], ..s.clone() }, 5))
+        );
+        assert!(plan::plan_frame(&s, frame * 5, 1.0).layers[0].smear.is_empty());
+        assert!(plan::plan_frame(&s, frame, 1.0).layers[0].smear.len() >= 2);
+        // growing smears too: it is larger at the end of the shutter's time than at its start
+        s.layers[0].transform.position = Animated::Constant([0.0, 0.0]);
+        s.layers[0].transform.scale = Animated::Keys(vec![
+            Key { t: Tick::ZERO, v: 0.2, ease: Ease::Linear },
+            Key { t: frame * 2, v: 1.0, ease: Ease::Linear },
+        ]);
+        s.layers[0].motion_blur = Some(MotionBlur { shutter: 1.0 });
+        let grown = row(&at(&s, 1));
+        assert!(
+            grown[20] == 1.0 && grown[4] == 0.0 && grown[5] > 0.0 && grown[5] < grown[9] && grown[9] < grown[12],
+            "{grown:?}"
+        );
+    }
+
+    #[test]
+    fn a_layer_is_carried_by_its_parent() {
+        let mut s = spec();
+        // what carries: unseen, as large as the frame, its middle a quarter to the right (30, 10)
+        s.layers[0].opacity = Animated::Constant(0.0);
+        s.layers[0].transform.scale = Animated::Constant(1.0);
+        // what is carried: 8 by 4, placed in the frame's middle, which is the carrier's anchor
+        let mut small = s.layers[0].clone();
+        small.id = "small".into();
+        small.opacity = Animated::Constant(1.0);
+        small.transform = Transform { scale: Animated::Constant(0.2), ..Transform::default() };
+        small.parent = Some("half".into());
+        s.layers.push(small);
+        reelforge_renderspec::validate(&s).expect("valid");
+        let img = drawn(&s);
+        assert_eq!([px(&img, 25, 10), px(&img, 27, 9), px(&img, 33, 11), px(&img, 34, 10)], [BLUE, RED, RED, BLUE]);
+        assert_eq!(px(&img, 20, 10), BLUE);
+        // moved 10 to its right, the carrier turned a quarter: it is 10 below, turned with it
+        s.layers[1].transform.position = Animated::Constant([0.25, 0.0]);
+        s.layers[0].transform.rotation = Animated::Constant(90.0);
+        let img = drawn(&s);
+        assert_eq!([px(&img, 27, 18), px(&img, 28, 17), px(&img, 31, 19), px(&img, 32, 18)], [BLUE, RED, RED, BLUE]);
+        assert_eq!(px(&img, 30, 15), BLUE);
+        // the carrier half the size: half as far from it, half as large
+        s.layers[0].transform.scale = Animated::Constant(0.5);
+        let img = drawn(&s);
+        assert_eq!([px(&img, 29, 14), px(&img, 30, 12), px(&img, 30, 13), px(&img, 30, 16)], [RED, BLUE, RED, RED]);
+        assert_eq!(px(&img, 31, 14), BLUE);
+        // the carrier on the move carries it, on the carrier's own clock even before it starts
+        s.layers[0].transform.rotation = Animated::Constant(0.0);
+        s.layers[0].transform.scale = Animated::Constant(1.0);
+        s.layers[1].transform.position = Animated::Constant([0.0, 0.0]);
+        s.layers[0].at = Tick::from_seconds(0.5);
+        s.layers[0].dur = Tick::from_seconds(0.5);
+        s.layers[0].transform.position = Animated::Keys(vec![
+            Key { t: Tick::ZERO, v: [-0.25, 0.0], ease: Ease::Linear },
+            Key { t: Tick::from_seconds(0.5), v: [0.25, 0.0], ease: Ease::Linear },
+        ]);
+        let at = |t: f64| render_frame(&s, Tick::from_seconds(t), 1.0, &NoMedia, Quality::Final).unwrap().0;
+        assert_eq!([px(&at(0.0), 10, 10), px(&at(0.75), 20, 10), px(&at(0.75), 10, 10)], [RED, RED, BLUE]);
+        assert!(s.required_features().contains("layer.parent/1") && unsupported_features(&s).is_empty());
     }
 
     #[test]

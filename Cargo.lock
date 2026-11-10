@@ -4208,6 +4208,7 @@ dependencies = [
  "reelforge-compile",
  "reelforge-media",
  "reelforge-model",
+ "reelforge-render",
  "reelforge-renderspec",
  "reelforge-script",
  "reelforge-time",
@@ -4234,6 +4235,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "reelforge-lottie"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "miniz_oxide 0.8.9",
+ "serde_json",
+]
+
+[[package]]
 name = "reelforge-matte"
 version = "0.1.0"
 dependencies = [
@@ -4256,6 +4266,7 @@ dependencies = [
  "gif",
  "image",
  "rayon",
+ "reelforge-lottie",
  "reelforge-render",
  "reelforge-renderspec",
  "reelforge-time",

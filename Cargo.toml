@@ -17,6 +17,7 @@ reelforge-renderspec = { path = "crates/renderspec" }
 reelforge-model = { path = "crates/model" }
 reelforge-compile = { path = "crates/compile" }
 reelforge-matte = { path = "crates/matte" }
+reelforge-lottie = { path = "crates/lottie" }
 reelforge-render = { path = "crates/render" }
 reelforge-media = { path = "crates/media" }
 reelforge-hwenc = { path = "crates/hwenc" }

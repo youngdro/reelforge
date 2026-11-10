@@ -3,10 +3,11 @@
 use reelforge_compile::{CompileOptions, compile};
 use reelforge_model::timeline as model_timeline;
 use reelforge_model::{
-    Adjust, AnimKind, Animation, BlendMode, ChromaKey, Clip, ClipContent, ClipEffect, ClipTransform, Codec, CurvePoint,
-    CurvePreset, Denoise, Ease, ExportSettings, Filter, FilterKind, Fx, FxGroup, FxKind, Inbetween, Key, Loop,
-    LoopKind, LutUse, Mask, MaskKind, Media, MediaKind, Outline, Project, Prop, Quality, Resolution, Shadow, Steady,
-    Timeline, TitleStyle, Track, TrackKind, Transition, TransitionKind, Voice, VoiceKind, anim, export, timing,
+    Adjust, AnimKind, Animation, BlendMode, CastShadow, ChromaKey, Clip, ClipContent, ClipEffect, ClipTransform, Codec,
+    CurvePoint, CurvePreset, Cutout, Denoise, Ease, ExportSettings, Filter, FilterKind, Fx, FxGroup, FxKind, Inbetween,
+    Karaoke, KaraokeMode, Key, Loop, LoopKind, LutUse, Mask, MaskKind, Media, MediaKind, Outline, Project, Prop,
+    Quality, Resolution, Shadow, Steady, Timeline, TitleStyle, Track, TrackKind, Transition, TransitionKind, Voice,
+    VoiceKind, anim, export, timing,
 };
 use reelforge_renderspec::AssetKind;
 use reelforge_time::{FrameRate, Tick};
@@ -257,8 +258,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "media.import",
         label: "Import Media",
-        params: r#"{"path": string, "kind"?: "video"|"image"|"audio"|"lut"|"font", "name"?: string, "duration"?: time, "size"?: [w, h], "sha256"?: hex}"#,
-        doc: "Adds a file to the project's media. When the file is reachable, hashes it and measures its kind, picture size and length (any value passed wins). A font (.ttf, .otf, .ttc) is named after its family and style, and is set on titles with clip.set `font`.",
+        params: r#"{"path": string, "kind"?: "video"|"image"|"audio"|"lut"|"font"|"lottie", "name"?: string, "duration"?: time, "size"?: [w, h], "sha256"?: hex}"#,
+        doc: "Adds a file to the project's media. When the file is reachable, hashes it and measures its kind, picture size and length (any value passed wins). A font (.ttf, .otf, .ttc) is named after its family and style, and is set on titles with clip.set `font`. A Lottie animation (Bodymovin .json, or a dotLottie .lottie archive) is placed with clip.add like a video: it is see-through where it draws nothing, goes round again when its clip is longer than it is, and is drawn as sharp as its `size` (its own, or larger so that its longer side is 1080); `unsupported` in the answer lists what the file uses that is not drawn (expressions, effects…).",
         edits: true,
         enabled: always,
         run: media_import,
@@ -356,7 +357,7 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.add",
         label: "Add Clip",
-        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "name"?: string, "adjustment"?: bool, "timeline"?: id, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "shape"?: {"kind"?, "size"?: [w, h], "radius"?, "points"?, "inner"?, "fill"?, "stroke"?, "shadow"?, "trim"?}, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "template"?: id}"#,
+        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "name"?: string, "adjustment"?: bool, "timeline"?: id, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "shape"?: {"kind"?, "size"?: [w, h], "radius"?, "points"?, "inner"?, "fill"?, "stroke"?, "shadow"?, "trim"?}, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "karaoke"?: {"color"?: [r,g,b,a], "mode"?: "sweep"|"word"|"line", "start"?: time, "duration"?: time | null} | null, "template"?: id}"#,
         doc: "Places media, a library sticker, text, a drawn shape (`shape`, on a video track: see clip.setShape), a colour or an adjustment clip on a track; starts at the track's end unless `start` is given. Titles default to bold white with a black outline, wrapping at 90 % of the canvas. A sticker (sticker.library) is an image a third of the frame wide; `name` is what the project's media calls it (its English name by default). An adjustment clip shows nothing: its effects (`fx`) and colour work on the tracks below it while it lasts. `timeline` places another timeline of the project as a compound clip on a video track, from `sourceIn`.",
         edits: true,
         enabled: always,
@@ -581,8 +582,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.set",
         label: "Clip Properties",
-        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "at"?: time, "fadeIn"?: time, "fadeOut"?: time, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "template"?: id}"#,
-        doc: "Sets a clip's placement, opacity, volume, sound fades or title. A property with keyframes is set at `at` (a timeline time), adding or changing the keyframe there.",
+        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "scaleX"?, "scaleY"?, "rotationX"?, "rotationY"?, "perspective"?, "anchorX"?, "anchorY"?, "keep"?: bool, "motionBlur"?: bool | number, "at"?: time, "fadeIn"?: time, "fadeOut"?: time, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "karaoke"?: {"color"?: [r,g,b,a], "mode"?: "sweep"|"word"|"line", "start"?: time, "duration"?: time | null} | null, "template"?: id}"#,
+        doc: "Sets a clip's placement, opacity, volume, sound fades or title. A property with keyframes is set at `at` (a timeline time), adding or changing the keyframe there. Beyond moving, scaling and turning it in the plane, a clip can be stretched (`scaleX`, `scaleY`: width and height apart, on top of `scale`; negative mirrors) and turned in space (`rotationX` tips its top edge away, `rotationY` swings its right edge away, in degrees; past 90 it shows its back), seen in perspective from `perspective` canvas heights away (2 unless told; nearer is stronger). It is placed, scaled and turned about its anchor: `anchorX` and `anchorY` are shares of its picture from the top left (0.5, 0.5 is its middle; 0, 0.5 the middle of its left edge, to swing it like a door; 0.5, 1 the middle of its bottom edge, to grow it from its base). Giving it another anchor leaves the picture where it lies and changes `x` and `y` to match, unless `keep` is false. `motionBlur` smears the clip along its own movement, as a camera's open shutter does: true turns it on (the shutter open for half of each frame's time, a film camera's), a number says for how much of it (0.5 by default, up to 2; more is a longer smear), false or 0 turns it off. It blurs only while the clip moves, grows or turns (its keyframes, animations, transitions, path, and whatever carries it), and leaves it sharp at rest.",
         edits: true,
         enabled: always,
         run: clip_set,
@@ -631,6 +632,24 @@ static REGISTRY: &[CommandSpec] = &[
         edits: true,
         enabled: always,
         run: clip_set_person_key,
+    },
+    CommandSpec {
+        id: "clip.setCutout",
+        label: "Cut Out From Backdrop",
+        params: r#"{"clip": id, "on"?: bool, "tolerance"?: 0-1, "holes"?: 0-1}"#,
+        doc: "Makes the plain backdrop of a video, picture or compound clip see-through and keeps what stands before it: a product photographed on a white table or a studio sweep is lifted off it, so the tracks below show around it. The backdrop is whatever colour the picture's edges show, white and grey included, and may be lit unevenly (lighter at the top, darker in the corners); what is that colour and reached from the edges goes, so a white label on the product stays. Along the outline the backdrop's share is taken out of the colours, so no pale rim is left. `tolerance` (0.5 at first) is how far from the backdrop's colour still goes: raise it when the backdrop's own shadows or creases stay, lower it when pale parts of the product go. `holes` (0.5 at first) is how readily backdrop-coloured places the edges do not reach go as well, such as the inside of a handle: 0 keeps them all. It is worked out from each picture as it is drawn; nothing is uploaded. It needs a backdrop of one colour all round the subject: a room, a street or a patterned cloth is not one (use clip.setPersonKey for a person, clip.setChromaKey for a green screen), and a product the colour of its backdrop cannot be told from it. `on` false (true when left out) removes it. Look at the result with render.frame; clip.setShadow puts a shadow under what is left.",
+        edits: true,
+        enabled: always,
+        run: clip_set_cutout,
+    },
+    CommandSpec {
+        id: "clip.setShadow",
+        label: "Shadow",
+        params: r#"{"clip": id, "on"?: bool, "kind"?: "drop"|"ground"|"long"|"glow", "color"?: [r, g, b], "opacity"?: 0-1, "x"?: -1..1, "y"?: -1..1, "blur"?: 0-0.5, "flat"?: 0-1, "lean"?: -1..1}"#,
+        doc: "Puts a shadow under a video, picture or compound clip: of its outline as it shows, so of a cut-out product (clip.setCutout), a person (clip.setPersonKey), a keyed green screen, a picture with see-through parts, or of the frame of a masked or plain picture. It moves, turns and fades with the clip. `kind` picks a ready-made one: `drop` (when nothing is said) floats the thing before what is behind it, `ground` stands it on a floor with a low soft pool under its foot, `long` is the shadow of a low sun falling to the right, `glow` a white light all round it. The rest change one thing each: `color` as on screen, `opacity` how dark, `x` and `y` how far right and below the picture it lies and `blur` how soft it is (shares of the picture's shorter side), `flat` how much of its height is pressed away towards the outline's lowest line (0 a shadow on a wall behind, towards 1 one lying on the ground), `lean` how far its top is pushed sideways (shares of the outline's height; negative to the left). Values given without `kind` change the shadow the clip has. `on` false removes it.",
+        edits: true,
+        enabled: always,
+        run: clip_set_shadow,
     },
     CommandSpec {
         id: "clip.setBlend",
@@ -687,6 +706,42 @@ static REGISTRY: &[CommandSpec] = &[
         run: sticker_library,
     },
     CommandSpec {
+        id: "decor.list",
+        label: "Decoration Library",
+        params: "{}",
+        doc: "The built-in decorations: small animations drawn for this library, free to use (confetti, fireworks, sparkles, a tap ring, a bouncing arrow, a drawn underline, falling coins and more). For each: how long a clip of it is unless told (`seconds`), whether it `plays` \"once\" and then stays or is gone, or goes \"round\"; how large it starts (`scale`, 1 fitting the canvas, null covering it); and which `colours` it takes (`color`, `color2`). Add one with decor.add.",
+        edits: false,
+        enabled: always,
+        run: crate::decor::decor_list,
+    },
+    CommandSpec {
+        id: "decor.add",
+        label: "Add Decoration",
+        params: r#"{"decor": id, "start"?: time, "duration"?: time, "track"?: id, "color"?: [r,g,b,a], "color2"?: [r,g,b,a], "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "name"?: string}"#,
+        doc: "Puts a library decoration (decor.list) over the picture: a Lottie animation among the project's media and a clip of it on `track`, or on a free video track above whatever shows then (a new one if need be). It is drawn in `color` and `color2` where it has them: the ones given, else the brand's (brand.set), else its own red and yellow; the same decoration in other colours is another media item. It starts at 0 unless `start` says and lasts as decor.list says unless `duration` does; one that goes round does so for as long as the clip is, one that plays once does so again every ten seconds. `x`, `y`, `scale` and `rotation` place it as clip.set does. The clip is like any other afterwards: move it, key it, give it an entrance.",
+        edits: true,
+        enabled: always,
+        run: crate::decor::decor_add,
+    },
+    CommandSpec {
+        id: "layout.list",
+        label: "Layouts",
+        params: "{}",
+        doc: "The ways layout.apply has for picture clips to share the frame: side by side, stacked, a grid, one large with the rest beside it, picture in picture, and a compare slider. For each its id, name, how many `clips` it takes (fewest, most) and `about`, what it does with them and which parameters it reads.",
+        edits: false,
+        enabled: always,
+        run: crate::layout::layout_list,
+    },
+    CommandSpec {
+        id: "layout.apply",
+        label: "Lay Out Clips",
+        params: r#"{"layout": "columns"|"rows"|"grid"|"focus"|"pip"|"compare", "clips": [id], "gap"?: 0-0.2, "margin"?: 0-0.3, "corner"?: "topLeft"|"topRight"|"bottomLeft"|"bottomRight", "size"?: 0.1-0.6, "round"?: bool, "border"?: {"color"?: [r,g,b,a], "width"?: px} | null, "from"?: 0-1, "to"?: 0-1, "axis"?: "x"|"y", "divider"?: bool}"#,
+        doc: "Makes video, picture or compound clips that show at the same time (on tracks one above another) share the frame, in the order given: each is cropped about its middle to the shape of its cell, scaled to fill it and put there, so nothing is squashed. `columns` and `rows` are equal strips, `grid` is two to a line, `focus` gives the first clip two thirds of the frame; `gap` is the space between cells and `margin` the space round them, as shares of the frame's shorter side (0.012 and 0 unless told). `pip` leaves the first clip filling the frame and makes the others small pictures in a `corner` (topRight unless told), each `size` of the frame's width (0.32; several are made smaller to fit one above another), circles `size` of its shorter side across with `round: true`, outlined in white unless `border` is null. `compare` puts the second clip over the first and shows it only past a divider that travels `from` one place `to` another across the frame (0.85 to 0.15: the first picture gives way to the second) over the middle of the clip, down the frame with `axis: \"y\"`, with a line and a knob drawn on it unless `divider: false`. `border` outlines the cells of any layout. The clips keep their timing, effects and entrances; their place, scale, turn, crop, mask, path and carrier become the layout's, and keys of those go. Outlines and the divider are shape clips carried by the clip they belong to, on tracks above it; applying a layout again replaces them. Reframe a picture inside its cell with clip.setCrop, taking from one edge what is given to the other. One undo step.",
+        edits: true,
+        enabled: always,
+        run: crate::layout::layout_apply,
+    },
+    CommandSpec {
         id: "clip.setVoice",
         label: "Voice",
         params: r#"{"clip": id, "voice"?: "high"|"low"|"chipmunk"|"monster"|"robot"|"phone"|"megaphone"|"echo" | null, "pitch"?: semitones}"#,
@@ -725,8 +780,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.setKey",
         label: "Add Keyframe",
-        params: r#"{"clip": id, "prop": "x"|"y"|"scale"|"rotation"|"opacity"|"volumeDb"|"cropLeft"|"cropTop"|"cropRight"|"cropBottom"|"maskX"|"maskY"|"maskWidth"|"maskHeight"|"maskRotation"|"maskFeather"|"exposure"|"contrast"|"saturation"|"temperature"|"tint"|"highlights"|"shadows"|"fade"|"vignette", "at": time, "value"?: number, "ease"?: "linear"|"hold"|"inOut"|"in"|"out"|"overshoot"|"anticipate" | [x1, y1, x2, y2]}"#,
-        doc: "Sets a keyframe at a timeline time; without `value`, keeps the value the property has there. Once a property has keyframes, its value follows them: placement, opacity and volume, the crop's edges, the mask's centre, size, turn and soft edge, and the colour adjustments can all move. `ease` is how the value travels on to the next keyframe: a named curve, or one drawn by hand (see clip.setEase).",
+        params: r#"{"clip": id, "prop": "x"|"y"|"scale"|"rotation"|"opacity"|"volumeDb"|"cropLeft"|"cropTop"|"cropRight"|"cropBottom"|"maskX"|"maskY"|"maskWidth"|"maskHeight"|"maskRotation"|"maskFeather"|"exposure"|"contrast"|"saturation"|"temperature"|"tint"|"highlights"|"shadows"|"fade"|"vignette"|"drawStart"|"drawEnd"|"count"|"scaleX"|"scaleY"|"rotationX"|"rotationY", "at": time, "value"?: number, "ease"?: "linear"|"hold"|"inOut"|"in"|"out"|"overshoot"|"anticipate" | [x1, y1, x2, y2]}"#,
+        doc: "Sets a keyframe at a timeline time; without `value`, keeps the value the property has there. Once a property has keyframes, its value follows them: placement (stretch and turns in space too), opacity and volume, the crop's edges, the mask's centre, size, turn and soft edge, and the colour adjustments can all move. `ease` is how the value travels on to the next keyframe: a named curve, or one drawn by hand (see clip.setEase).",
         edits: true,
         enabled: always,
         run: clip_set_key,
@@ -739,6 +794,24 @@ static REGISTRY: &[CommandSpec] = &[
         edits: true,
         enabled: always,
         run: clip_set_ease,
+    },
+    CommandSpec {
+        id: "clip.setParent",
+        label: "Parent",
+        params: r#"{"clip": id, "parent": id | null, "keep"?: bool, "at"?: time}"#,
+        doc: "Has one clip carry another: the clip's `x` and `y` are then counted from its parent's anchor along the parent's axes, so moving, scaling, stretching or turning the parent (in the plane or in space, keyframed or animated) takes the clip along, as one object; nothing else is passed on (not opacity, not effects, not when it shows). A parent can be any picture, title or shape clip of the same timeline, on any track, up to 8 deep; null sets the clip free. The clip stays where it shows at `at` (its start by default): its `x`, `y`, `scale` and `rotation` are rewritten for its new parent, unless `keep` is false. To move several things as one without showing a parent, carry them by a shape clip with opacity 0.",
+        edits: true,
+        enabled: always,
+        run: crate::space::clip_set_parent,
+    },
+    CommandSpec {
+        id: "clip.setPath",
+        label: "Motion Path",
+        params: r#"{"clip": id, "points": [[x, y], ...] | null, "closed"?: bool, "orient"?: bool, "start"?: time, "duration"?: time, "ease"?: name | [x1, y1, x2, y2]}"#,
+        doc: "Sends a clip along a path: a smooth curve through `points` (2 to 64, each counted as `x` and `y` are), travelled at an even speed that `ease` shapes (inOut by default). While it has a path the clip's own `x` and `y` are not used. The journey sets off `start` after the clip's start (0 by default) and takes `duration` (the rest of the clip by default); before it the clip waits at the first point, after it it stays at the last. `closed` goes on round to the first point again; `orient` turns the clip to face the way it goes (added to its rotation; 0 is facing right). Leaving `points` out changes the other settings of the path it has; null removes the path.",
+        edits: true,
+        enabled: always,
+        run: crate::space::clip_set_path,
     },
     CommandSpec {
         id: "clip.removeKey",
@@ -761,8 +834,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.setAnimation",
         label: "Animation",
-        params: r#"{"clip": id, "slot": "in"|"out"|"loop", "kind": "fade"|"slideUp"|"slideDown"|"slideLeft"|"slideRight"|"zoomIn"|"zoomOut"|"pop"|"spin"|"typewriter"|"charFade"|"charRise"|"charDrop"|"charPop" | "breathe"|"heartbeat"|"swing"|"float"|"bounce"|"shake"|"spin"|"blink"|"wave"|"jump" | null, "duration"?: time}"#,
-        doc: "Puts an in or out animation on a picture or title clip, or one that repeats for as long as it is on screen (slot `loop`, with the kinds from `breathe` on); null removes it. In and out take 0.5 s unless `duration` is given; for a loop `duration` is one round (1 s or so by default, by kind). For titles only: `typewriter` types the words in or erases them, `charFade`, `charRise`, `charDrop` and `charPop` bring the characters in (or take them out) one after another, and the loops `wave` and `jump` move them one after another.",
+        params: r#"{"clip": id, "slot": "in"|"out"|"loop", "kind": "fade"|"slideUp"|"slideDown"|"slideLeft"|"slideRight"|"zoomIn"|"zoomOut"|"pop"|"spin"|"typewriter"|"charFade"|"charRise"|"charDrop"|"charPop"|"draw"|"flipY"|"flipX"|"elastic"|"drop"|"wordFade"|"wordRise"|"wordPop"|"lineRise"|"charElastic"|"charBounce" | "breathe"|"heartbeat"|"swing"|"float"|"bounce"|"shake"|"spin"|"blink"|"wave"|"jump"|"flip"|"tilt" | null, "duration"?: time}"#,
+        doc: "Puts an in or out animation on a picture or title clip, or one that repeats for as long as it is on screen (slot `loop`, with the kinds from `breathe` on); null removes it. In and out take 0.5 s unless `duration` is given; for a loop `duration` is one round (1 s or so by default, by kind). For titles only: `typewriter` types the words in or erases them, `charFade`, `charRise`, `charDrop` and `charPop` bring the characters in (or take them out) one after another, and the loops `wave` and `jump` move them one after another; `wordFade`, `wordRise` and `wordPop` do it word by word (a Chinese character is a word of its own) and `lineRise` line by line; `charElastic` springs each character up past its size and back, `charBounce` drops each and lets it bounce; `draw` writes a title on, a pen following each character's outline before its ink comes in (shapes take `draw` too). For any clip: `elastic` grows it in on a spring and `drop` lets it fall in and bounce. In space: `flipY` swings a clip in like a door and `flipX` tips it up like a lid, from edge on (about its anchor: set `anchorX` 0 for a door hinged on its left edge); the loop `flip` turns it round and round showing its back, and `tilt` rocks it from side to side like a card being shown.",
         edits: true,
         enabled: always,
         run: clip_set_animation,
@@ -787,18 +860,18 @@ static REGISTRY: &[CommandSpec] = &[
     },
     CommandSpec {
         id: "promo.list",
-        label: "Promo Pieces",
+        label: "Ready-Made Pieces",
         params: "{}",
-        doc: "The ready-made promotional pieces promo.add makes: their ids, names, default words and numbers.",
+        doc: "The ready-made pieces promo.add makes, by `category` (price, product, titles, action, rhythm): their ids, names, the words, lines and numbers each comes with, where and for how long it shows unless told, how many clips it is made of, whether it shows a picture it is given (`media`), and `about`, what its parameters mean.",
         edits: false,
         enabled: always,
         run: crate::promo::promo_list,
     },
     CommandSpec {
         id: "promo.add",
-        label: "Add Promo Piece",
-        params: r#"{"kind": "priceTag"|"discountBadge"|"banner"|"countdown"|"salesCounter"|"strikePrice"|"newArrival", "start"?: time, "duration"?: time, "text"?: string, "value"?: number, "from"?: number, "color"?: [r,g,b,a], "x"?, "y"?, "scale"?}"#,
-        doc: "Adds a ready-made promotional piece (a price tag, a discount badge, a sale banner, a countdown, a sales counter, a struck-out price, a \"new\" stamp) as grouped shape and title clips on free tracks above the others, animated in. `text` replaces its words ({n} is its number), `value` the number it counts to (a countdown counts down from it, a second a second), `from` where counting starts, `color` its main colour; `x`, `y` and `scale` place it. 3 s long from 0 unless `start` and `duration` say otherwise.",
+        label: "Add Ready-Made Piece",
+        params: r#"{"kind": id, "start"?: time, "duration"?: time, "text"?: string, "lines"?: [string], "value"?: number, "values"?: [number], "from"?: number, "color"?: [r,g,b,a], "color2"?: [r,g,b,a], "side"?: "right"|"left"|"up"|"down", "media"?: id, "x"?, "y"?, "scale"?, "compound"?: bool}"#,
+        doc: "Adds a ready-made piece for a marketing video (promo.list has them all: price tags, coupons, spend-and-save tiers, flash-sale progress, feature callouts and checklists, spec tables, ratings, reviews, title bars, big numbers, buy buttons, store and end cards, a colour sweep, a product card that swings in, a product stage, a card that flips to its other side, titles that spring, pop word by word or write themselves, and more) as grouped shape and title clips on free tracks above the others, each animated in. `text` replaces its words ({n} is its number), `lines` its further lines (the rows of a list, or the small print), `value` the number it counts to (a countdown counts down from it, a second a second), `values` the numbers of a piece that compares, `from` where counting starts; `color` is its main colour and `color2` the one beside it (the brand's, see brand.set, or red and yellow); `side` is the way it leans or points; `media` is an image or video of the project a piece shows (the product on productCard; productStage lifts it off its plain backdrop and stands it in a pool of light); `x`, `y` and `scale` place it. Each piece has its own place and length (3 s for most) unless told; it starts at 0 unless `start` says. `compound: true` folds it into one compound clip (the result is that clip, its `parts` inside; clip.uncompound takes it apart).",
         edits: true,
         enabled: always,
         run: crate::promo::promo_add,
@@ -867,10 +940,46 @@ static REGISTRY: &[CommandSpec] = &[
         run: crate::script::script_detach,
     },
     CommandSpec {
+        id: "promo.get",
+        label: "Ready-Made Piece",
+        params: r#"{"clip": id}"#,
+        doc: "What a ready-made piece folded into one clip (promo.add with `compound: true`) was made as: its `piece` with its kind, words, lines, numbers, colours and place, or null for any other clip.",
+        edits: false,
+        enabled: always,
+        run: crate::promo::promo_get,
+    },
+    CommandSpec {
+        id: "promo.set",
+        label: "Rewrite Ready-Made Piece",
+        params: r#"{"clip": id, "text"?: string, "lines"?: [string], "value"?: number, "values"?: [number], "from"?: number, "color"?: [r,g,b,a], "color2"?: [r,g,b,a], "side"?: "right"|"left"|"up"|"down", "media"?: id|null, "x"?, "y"?, "scale"?}"#,
+        doc: "Gives a ready-made piece folded into one clip (promo.add with `compound: true`) other words, lines, numbers, colours, another picture (`media`; null takes it off) or another place: what is named changes, the rest stays as it was made, and the piece's inside is made again to fit (a button as wide as its new words, a bar as long as its new number). The clip itself keeps its place on the timeline, its length and everything set on it; changes made by hand inside the piece are lost. Every clip that plays the same piece changes with it.",
+        edits: true,
+        enabled: always,
+        run: crate::promo::promo_set,
+    },
+    CommandSpec {
+        id: "brand.get",
+        label: "Brand",
+        params: "{}",
+        doc: "The project's brand: its two colours, its font and its logo, those that are set.",
+        edits: false,
+        enabled: always,
+        run: crate::promo::brand_get,
+    },
+    CommandSpec {
+        id: "brand.set",
+        label: "Set Brand",
+        params: r#"{"primary"?: [r,g,b,a] | null, "secondary"?: [r,g,b,a] | null, "font"?: id | null, "logo"?: id | null}"#,
+        doc: "Sets the project's brand, which ready-made pieces (promo.add) made from then on take after: `primary` is their main colour and `secondary` the one beside it, `font` an imported font their words are set in, `logo` an imported picture an end card shows. null clears one; what is not named stays. Pieces already made keep their look.",
+        edits: true,
+        enabled: always,
+        run: crate::promo::brand_set,
+    },
+    CommandSpec {
         id: "clip.setTransition",
         label: "Transition",
-        params: r#"{"clip": id, "kind": "dissolve"|"fadeBlack"|"fadeWhite"|"pushLeft"|"pushRight"|"pushUp"|"pushDown"|"slideLeft"|"slideRight"|"slideUp"|"slideDown"|"zoom"|null, "duration"?: time}"#,
-        doc: "Puts a transition from the clip before on a video track into this one, centred on the cut (null removes it); 0.5 s unless `duration` is given. It plays while the two clips touch.",
+        params: r#"{"clip": id, "kind": "dissolve"|"fadeBlack"|"fadeWhite"|"pushLeft"|"pushRight"|"pushUp"|"pushDown"|"slideLeft"|"slideRight"|"slideUp"|"slideDown"|"zoom"|"wipeLeft"|"wipeRight"|"wipeUp"|"wipeDown"|"circle"|"box"|"diamond"|"flip"|"flipUp"|"pageTurn"|"lightLeak"|"glitch"|"zoomBlur"|null, "duration"?: time}"#,
+        doc: "Puts a transition from the clip before on a video track into this one, centred on the cut (null removes it); 0.5 s unless `duration` is given. It plays while the two clips touch. Besides the dissolve, dips, pushes, slides and zoom: `wipeLeft`/`wipeRight`/`wipeUp`/`wipeDown` uncover this clip behind a soft edge that travels that way; `circle`, `box` and `diamond` open it from the middle through that shape (a clip with a mask of its own dissolves instead); `flip` and `flipUp` turn the last clip away in space like a card with this one on its back; `pageTurn` turns this clip in from the frame's right edge like a page; `lightLeak` fades it in under warm light drifting across; `glitch` tears the picture into bands with its colours apart and cuts; `zoomBlur` zooms into the last clip out of focus and back out of this one.",
         edits: true,
         enabled: always,
         run: clip_set_transition,
@@ -928,6 +1037,42 @@ static REGISTRY: &[CommandSpec] = &[
         edits: true,
         enabled: always,
         run: crate::remix::template_mark,
+    },
+    CommandSpec {
+        id: "storyboard.list",
+        label: "Storyboards",
+        params: r#"{"lang"?: "en"|"zh"|"ja"}"#,
+        doc: "Lists the built-in storyboards: whole marketing videos planned ahead (a launch, a flash sale, buy one get one, before and after, a roundup, a shop to visit, a problem and its fix, an unboxing, buyers' reviews, a livestream teaser, a holiday sale, three steps). For each its id, name, what it is for, its length in seconds, how many pictures it takes (`slots`), its music, its `fields` (the words and numbers it is written from, each with a `name`, what it is called and the `value` it comes with) and its `scenes` (each with its name, length, `shot`: what to film for it, `voice`: the line to say with fields between braces, and the ready-made `pieces` over it). `lang` is the language of the names and the copy it comes with: zh by default.",
+        edits: false,
+        enabled: always,
+        run: crate::storyboard::storyboard_list,
+    },
+    CommandSpec {
+        id: "storyboard.apply",
+        label: "Use Storyboard",
+        params: r#"{"storyboard": id, "copy"?: {field: string | number}, "media"?: [id | null], "lang"?: "en"|"zh"|"ja", "seconds"?: number, "captions"?: bool, "name"?: string}"#,
+        doc: "Builds a built-in storyboard (storyboard.list): a template slot for each scene's picture (a colour until template.fill or `media` puts a file in it; a scene without a picture is a backdrop in the brand's colour), the scene's ready-made pieces written from the copy, each folded into one clip, transitions and colour sweeps between scenes, a marker at each scene saying what to film, and music from the library under it all. `copy` gives the fields their words and numbers by name; those not given keep what the storyboard comes with in `lang` (zh by default). `seconds` makes the whole longer or shorter (half to twice its own length); `captions: true` also writes each scene's line to say as captions. It is built on the timeline being edited when that is empty, else on a new timeline called `name`. One undo step. Returns the `slots` as template.slots does, the `scenes` as placed (with `shot` and `voice`), the `pieces` and the `copy`.",
+        edits: true,
+        enabled: always,
+        run: crate::storyboard::storyboard_apply,
+    },
+    CommandSpec {
+        id: "storyboard.fill",
+        label: "Fill Storyboard",
+        params: r#"{"copy": {field: string | number}, "lang"?: "en"|"zh"|"ja"}"#,
+        doc: "Gives fields of the project's copy other words or numbers, by name (storyboard.copy lists them), and makes every ready-made piece written from them again to fit, on every timeline: the price tag counts to the new price, the button is as wide as its new words. Captions the storyboard wrote (`captions: true`) are written again as well, but for those changed by hand since. A field a piece counts to must be a number. Pictures go in with template.fill. Returns the `copy` and how many `pieces` and `captions` were written again.",
+        edits: true,
+        enabled: always,
+        run: crate::storyboard::storyboard_fill,
+    },
+    CommandSpec {
+        id: "storyboard.copy",
+        label: "Storyboard Copy",
+        params: r#"{"lang"?: "en"|"zh"|"ja"}"#,
+        doc: "The project's copy: the fields its storyboards were written from, each with its `name`, what it is called (`label`, in `lang`), its `value` and how many `pieces` are written from it.",
+        edits: false,
+        enabled: always,
+        run: crate::storyboard::storyboard_copy,
     },
     CommandSpec {
         id: "edit.undo",
@@ -1118,6 +1263,8 @@ fn sound_add(s: &mut Session, v: &Value) -> CmdResult {
             group: None,
             slot: None,
             steady: None,
+            parent: None,
+            path: None,
         };
         proj.track_mut(&track).expect("found above").clips.push(c);
         Ok(json!({ "media": media, "track": track, "clip": clip, "start": start, "duration": duration }))
@@ -1256,6 +1403,7 @@ fn kind_from_path(path: &str) -> Option<MediaKind> {
         "mp3" | "wav" | "m4a" | "aac" | "flac" | "ogg" | "opus" => Some(MediaKind::Audio),
         "cube" => Some(MediaKind::Lut),
         "ttf" | "otf" | "ttc" => Some(MediaKind::Font),
+        "json" | "lottie" => Some(MediaKind::Lottie),
         _ => None,
     }
 }
@@ -1266,7 +1414,7 @@ fn media_import(s: &mut Session, v: &Value) -> CmdResult {
     let asked: Option<MediaKind> = match p.opt_str("kind")? {
         Some(k) => Some(
             serde_json::from_value(json!(k))
-                .map_err(|_| EngineError::Params("`kind` must be video, image, audio, lut or font".into()))?,
+                .map_err(|_| EngineError::Params("`kind` must be video, image, audio, lut, font or lottie".into()))?,
         ),
         None => None,
     };
@@ -1318,14 +1466,18 @@ fn media_import(s: &mut Session, v: &Value) -> CmdResult {
             AssetKind::Video => MediaKind::Video,
             AssetKind::Image => MediaKind::Image,
             AssetKind::Lut => MediaKind::Lut,
+            AssetKind::Lottie => MediaKind::Lottie,
             _ => MediaKind::Audio,
         },
         (None, None) => kind_from_path(&path)
             .ok_or_else(|| EngineError::Params("cannot tell the kind from the extension; pass `kind`".into()))?,
     };
+    // what the file uses that is not drawn (a Lottie animation's expressions, effects…)
+    let mut unsupported: Vec<String> = Vec::new();
     if let Some(pr) = probed {
         size = size.or(pr.size);
         duration = duration.or(pr.duration);
+        unsupported = pr.notes;
     }
     if let Some(h) = &sha256
         && (h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit()))
@@ -1363,7 +1515,10 @@ fn media_import(s: &mut Session, v: &Value) -> CmdResult {
         }
         let id = proj.mint("m");
         let m = Media { id: id.clone(), name, uri: path, sha256, kind, duration, size, folder: None };
-        let out = json!({ "media": serde_json::to_value(&m).expect("serialises") });
+        let mut out = json!({ "media": serde_json::to_value(&m).expect("serialises") });
+        if !unsupported.is_empty() {
+            out["unsupported"] = json!(unsupported);
+        }
         proj.media.insert(id, m);
         Ok(out)
     })
@@ -1450,6 +1605,12 @@ fn media_remove(s: &mut Session, v: &Value) -> CmdResult {
             n => return Err(EngineError::Refused(format!("{n} clip(s) use {id:?}; delete them first"))),
         }
         proj.media.remove(&id);
+        // the brand lets go of it too
+        for held in [&mut proj.brand.font, &mut proj.brand.logo] {
+            if held.as_deref() == Some(id.as_str()) {
+                *held = None;
+            }
+        }
         Ok(json!({ "media": id }))
     })
 }
@@ -1531,7 +1692,8 @@ fn timeline_add(s: &mut Session, v: &Value) -> CmdResult {
             vec![]
         };
         let cover = proj.cover.filter(|_| copy);
-        proj.timelines.insert(at, Timeline { id: id.clone(), name, tracks, markers, cover, compound: false });
+        proj.timelines
+            .insert(at, Timeline { id: id.clone(), name, tracks, markers, cover, compound: false, made: None });
         proj.switch_timeline(&id);
         Ok(json!({ "timeline": id }))
     })
@@ -1755,6 +1917,7 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
                 y: y.unwrap_or(0.0),
                 scale: scale.unwrap_or(if sticker.is_some() { 0.35 } else { 1.0 }),
                 rotation: rotation.unwrap_or(0.0),
+                ..ClipTransform::default()
             },
             opacity: opacity.unwrap_or(1.0),
             volume_db: volume_db.unwrap_or(0.0),
@@ -1771,6 +1934,8 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
             group: None,
             slot: None,
             steady: None,
+            parent: None,
+            path: None,
         };
         proj.track_mut(&track_id).expect("found above").clips.push(clip);
         Ok(json!({ "clip": id, "start": start, "duration": duration }))
@@ -1924,7 +2089,8 @@ fn clip_slip(s: &mut Session, v: &Value) -> CmdResult {
         let ClipContent::Media { media, .. } = &clip.content else {
             return Err(EngineError::Params("only video and sound clips slip".into()));
         };
-        let length = proj.media.get(media).and_then(|m| m.duration);
+        // what goes round again has no end to stop at
+        let length = proj.media.get(media).filter(|m| !m.kind.loops()).and_then(|m| m.duration);
         let span = clip.timing().map(|t| Tick(t.travel(clip.duration).0.abs())).unwrap_or(Tick::ZERO);
         let clip = proj.clip_mut(&id).expect("found");
         let ClipContent::Media { source_in, speed, .. } = &mut clip.content else { unreachable!() };
@@ -2295,7 +2461,8 @@ fn clip_set_speed(s: &mut Session, v: &Value) -> CmdResult {
     })
 }
 
-const STYLE_KEYS: [&str; 16] = [
+const STYLE_KEYS: [&str; 17] = [
+    "karaoke",
     "font",
     "tracking",
     "leading",
@@ -2416,6 +2583,38 @@ fn title_style(p: &P, base: TitleStyle) -> Result<TitleStyle, EngineError> {
     if let Some(b) = p.opt_bool("underline")? {
         st.underline = b;
     }
+    match p.v.get("karaoke") {
+        Some(Value::Null) => st.karaoke = None,
+        Some(v) if v.is_object() => {
+            let o = P::new(v, p.fps);
+            // what it had stays unless said again; yellow unless a colour is given
+            let current = st.karaoke.unwrap_or(Karaoke {
+                color: [1.0, 0.84, 0.1, 1.0],
+                mode: KaraokeMode::Sweep,
+                start: Tick::ZERO,
+                duration: None,
+            });
+            let mode = match o.opt_str("mode")? {
+                Some(m) => KaraokeMode::parse(m)
+                    .ok_or_else(|| EngineError::Params("`karaoke.mode` must be sweep, word or line".into()))?,
+                None => current.mode,
+            };
+            let duration = match v.get("duration") {
+                Some(Value::Null) => None,
+                Some(_) => o.opt_time("duration")?,
+                None => current.duration,
+            };
+            let start = o.opt_time("start")?.unwrap_or(current.start);
+            if start < Tick::ZERO || duration.is_some_and(|d| d <= Tick::ZERO) {
+                return Err(EngineError::Params(
+                    "`karaoke.start` must not be before the clip and `karaoke.duration` must be above nothing".into(),
+                ));
+            }
+            st.karaoke = Some(Karaoke { color: o.opt_color("color")?.unwrap_or(current.color), mode, start, duration });
+        }
+        Some(_) => return Err(EngineError::Params("`karaoke` must be an object or null".into())),
+        None => {}
+    }
     Ok(st)
 }
 
@@ -2458,8 +2657,49 @@ fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
     if values.iter().any(|&(p, v)| p == Prop::Opacity && !(0.0..=1.0).contains(&v)) {
         return Err(EngineError::Params("`opacity` must be between 0 and 1".into()));
     }
+    if values.iter().any(|&(p, v)| Prop::SPACE.contains(&p) && !(v.is_finite() && v.abs() <= 36000.0)) {
+        return Err(EngineError::Params("`scaleX`, `scaleY`, `rotationX` and `rotationY` must be numbers".into()));
+    }
+    let anchor = [f("anchorX")?, f("anchorY")?];
+    if anchor.iter().flatten().any(|a| !(-4.0..=5.0).contains(a)) {
+        return Err(EngineError::Params(
+            "`anchorX` and `anchorY` are shares of the picture: 0 to 1 within it, -4 to 5 at most".into(),
+        ));
+    }
+    let perspective = f("perspective")?;
+    let (near, far) = ClipTransform::DISTANCES;
+    if perspective.is_some_and(|d| !(near..=far).contains(&d)) {
+        return Err(EngineError::Params(format!("`perspective` is {near} to {far} canvas heights")));
+    }
+    let keep = p.opt_bool("keep")?.unwrap_or(true);
+    // true is the usual shutter, false none; a number is the shutter itself
+    let (usual, longest) = ClipTransform::SHUTTERS;
+    let motion_blur = match p.v.get("motionBlur") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(on)) => Some(if *on { usual } else { 0.0 }),
+        Some(v) => match v.as_f64().filter(|b| (0.0..=f64::from(longest)).contains(b)) {
+            Some(b) => Some(b as f32),
+            None => {
+                return Err(EngineError::Params(format!(
+                    "`motionBlur` is true, false or the share of a frame the shutter is open, 0 to {longest}"
+                )));
+            }
+        },
+    };
     s.edit("Clip Properties", |proj| {
-        let clip = proj.clip_mut(&id).ok_or_else(|| not_found("clip", &id))?;
+        let (_, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        if anchor != [None, None] {
+            // the picture stays where it lies unless told otherwise: `x` and `y` change with it
+            let [ax, ay] = clip.transform.anchor;
+            crate::space::set_anchor(proj, &id, [anchor[0].unwrap_or(ax), anchor[1].unwrap_or(ay)], keep, at);
+        }
+        let clip = proj.clip_mut(&id).expect("found above");
+        if let Some(d) = perspective {
+            clip.transform.distance = d;
+        }
+        if let Some(b) = motion_blur {
+            clip.transform.motion_blur = b;
+        }
         for (prop, v) in values {
             set_at(clip, prop, v, at)?;
         }
@@ -2637,7 +2877,7 @@ fn sticker_library(_: &mut Session, _: &Value) -> CmdResult {
 fn sounding<'a>(proj: &'a mut Project, id: &str) -> Result<&'a mut Clip, EngineError> {
     let (_, clip) = proj.clip(id).ok_or_else(|| not_found("clip", id))?;
     let sound = matches!(&clip.content, ClipContent::Media { media, silent: false, .. }
-        if proj.media.get(media).is_some_and(|m| m.kind != MediaKind::Image));
+        if proj.media.get(media).is_some_and(|m| m.kind.sounds()));
     if !sound {
         return Err(EngineError::Params("this clip has no sound".into()));
     }
@@ -2775,7 +3015,7 @@ fn prop(p: &P) -> Result<Prop, EngineError> {
 }
 
 /// The `ease` parameter: a curve by name, or drawn by hand as `[x1, y1, x2, y2]`.
-fn ease_of(p: &P) -> Result<Option<Ease>, EngineError> {
+pub(crate) fn ease_of(p: &P) -> Result<Option<Ease>, EngineError> {
     let Some(v) = p.opt("ease") else { return Ok(None) };
     let names = || Ease::NAMED.map(|(n, _)| n).join(", ");
     if let Some(name) = v.as_str() {
@@ -2965,10 +3205,13 @@ fn clip_set_animation(s: &mut Session, v: &Value) -> CmdResult {
         {
             return Err(EngineError::Params(format!("{} applies to titles", name.unwrap_or_default())));
         }
-        if kind.is_some_and(AnimKind::shapes_only)
-            && !matches!(proj.clip(&id).map(|(_, c)| &c.content), Some(ClipContent::Shape { .. }))
+        if kind.is_some_and(AnimKind::drawn_only)
+            && !matches!(
+                proj.clip(&id).map(|(_, c)| &c.content),
+                Some(ClipContent::Shape { .. } | ClipContent::Text { .. })
+            )
         {
-            return Err(EngineError::Params(format!("{} applies to shapes", name.unwrap_or_default())));
+            return Err(EngineError::Params(format!("{} applies to shapes and titles", name.unwrap_or_default())));
         }
         let clip = proj.clip_mut(&id).expect("found above");
         if slot == "loop" {
@@ -3173,6 +3416,75 @@ fn clip_set_person_key(s: &mut Session, v: &Value) -> CmdResult {
         }
         proj.clip_mut(&id).expect("found above").look.person = on;
         Ok(json!({ "clip": id, "person": on }))
+    })
+}
+
+/// A video, picture or compound clip on a video track, or why `id` is not one that can have
+/// `what` done to it.
+fn pictured(proj: &Project, id: &str, what: &str) -> Result<(), EngineError> {
+    let (ti, clip) = proj.clip(id).ok_or_else(|| not_found("clip", id))?;
+    if proj.tracks[ti].kind != TrackKind::Video || !clip.is_picture() {
+        return Err(EngineError::Params(format!("only video, picture and compound clips can {what}")));
+    }
+    Ok(())
+}
+
+fn clip_set_cutout(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let on = p.opt_bool("on")?.unwrap_or(true);
+    let share = |name: &str| match p.opt_f64(name)? {
+        Some(x) if (0.0..=1.0).contains(&x) => Ok(Some(x as f32)),
+        Some(_) => Err(EngineError::Params(format!("`{name}` must be from 0 to 1"))),
+        None => Ok(None),
+    };
+    let (tolerance, holes) = (share("tolerance")?, share("holes")?);
+    s.edit("Cut Out From Backdrop", |proj| {
+        pictured(proj, &id, "be cut out from their backdrop")?;
+        let clip = proj.clip_mut(&id).expect("found above");
+        clip.look.cutout = on.then(|| {
+            let was = clip.look.cutout.unwrap_or_default();
+            Cutout { tolerance: tolerance.unwrap_or(was.tolerance), holes: holes.unwrap_or(was.holes) }
+        });
+        Ok(json!({ "clip": id, "cutout": serde_json::to_value(clip.look.cutout).expect("serialises") }))
+    })
+}
+
+fn clip_set_shadow(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let on = p.opt_bool("on")?.unwrap_or(true);
+    let kind =
+        match p.opt_str("kind")? {
+            None => None,
+            Some(name) => Some(CastShadow::kind(name).ok_or_else(|| {
+                EngineError::Params(format!("`kind` must be one of {}", CastShadow::KINDS.join(", ")))
+            })?),
+        };
+    let color = p.opt_color("color")?.map(|c| [c[0], c[1], c[2]]);
+    let within = |name: &str, low: f64, high: f64| match p.opt_f64(name)? {
+        Some(x) if (low..=high).contains(&x) => Ok(Some(x as f32)),
+        Some(_) => Err(EngineError::Params(format!("`{name}` must be from {low} to {high}"))),
+        None => Ok(None),
+    };
+    let (opacity, blur, flat) = (within("opacity", 0.0, 1.0)?, within("blur", 0.0, 0.5)?, within("flat", 0.0, 1.0)?);
+    let (x, y, lean) = (within("x", -1.0, 1.0)?, within("y", -1.0, 1.0)?, within("lean", -1.0, 1.0)?);
+    s.edit("Shadow", |proj| {
+        pictured(proj, &id, "cast a shadow")?;
+        let clip = proj.clip_mut(&id).expect("found above");
+        clip.look.shadow = on.then(|| {
+            let was = kind.or(clip.look.shadow).unwrap_or_default();
+            CastShadow {
+                color: color.unwrap_or(was.color),
+                opacity: opacity.unwrap_or(was.opacity),
+                x: x.unwrap_or(was.x),
+                y: y.unwrap_or(was.y),
+                blur: blur.unwrap_or(was.blur),
+                flat: flat.unwrap_or(was.flat),
+                lean: lean.unwrap_or(was.lean),
+            }
+        });
+        Ok(json!({ "clip": id, "shadow": serde_json::to_value(clip.look.shadow).expect("serialises") }))
     })
 }
 
@@ -3421,7 +3733,7 @@ fn clip_freeze(s: &mut Session, v: &Value) -> CmdResult {
             return Err(EngineError::Params("freeze frames are made from clips on a video track".into()));
         }
         let is_video = matches!(&clip.content, ClipContent::Media { media, .. }
-            if proj.media.get(media).is_some_and(|m| m.kind == MediaKind::Video));
+            if proj.media.get(media).is_some_and(|m| m.kind.moves()));
         let Some(timing) = clip.timing().filter(|_| is_video) else {
             return Err(EngineError::Params("only video clips can freeze".into()));
         };

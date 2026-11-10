@@ -341,7 +341,7 @@ pub fn slot_states(proj: &Project) -> Vec<(u32, String, bool)> {
         .collect()
 }
 
-fn slots_json(proj: &Project) -> Value {
+pub(crate) fn slots_json(proj: &Project) -> Value {
     let slots = slots_of(proj);
     let texts: Vec<Value> = proj
         .tracks
@@ -391,8 +391,11 @@ pub(crate) fn replace(
     let (track, clip) = proj.clip(id).ok_or_else(|| not_found("clip", id))?;
     let fits = matches!(
         (&clip.content, proj.tracks[track].kind, item.kind),
-        (ClipContent::Media { .. } | ClipContent::Solid { .. }, TrackKind::Video, MediaKind::Video | MediaKind::Image)
-            | (ClipContent::Media { .. }, TrackKind::Audio, MediaKind::Audio | MediaKind::Video)
+        (
+            ClipContent::Media { .. } | ClipContent::Solid { .. },
+            TrackKind::Video,
+            MediaKind::Video | MediaKind::Image | MediaKind::Lottie
+        ) | (ClipContent::Media { .. }, TrackKind::Audio, MediaKind::Audio | MediaKind::Video)
     );
     if !fits {
         return Err(EngineError::Refused(

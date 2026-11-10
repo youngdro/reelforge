@@ -16,6 +16,7 @@ use std::collections::{HashMap, HashSet};
 
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use reelforge_media::Footage;
+use reelforge_media::decor::DECOR;
 use reelforge_media::library::{Category, SOUNDS};
 use reelforge_media::stickers::STICKERS;
 use reelforge_model::{FxGroup, FxKind, Media, MediaKind, Project, TrackKind};
@@ -70,6 +71,8 @@ pub(crate) enum Item {
     Shape(reelforge_model::ShapeKind),
     /// A ready-made promotional piece (`promo.add`), by id.
     Promo(&'static str),
+    /// An animated decoration of the built-in library (`decor.add`), by id.
+    Decor(&'static str),
 }
 
 /// A shape's shown name.
@@ -87,6 +90,11 @@ pub(crate) fn fx_name(kind: FxKind, s: &Strings) -> &'static str {
     s.fx_names[FxKind::ALL.iter().position(|k| *k == kind).unwrap_or(0)]
 }
 
+/// A decoration's shown name.
+fn decor_name(id: &str, s: &Strings) -> &'static str {
+    DECOR.iter().position(|d| d.id == id).map_or("", |i| s.decor_names[i])
+}
+
 /// A sticker's shown name.
 fn sticker_name(id: &str, s: &Strings) -> &'static str {
     STICKERS.iter().position(|st| st.id == id).map_or("", |i| s.sticker_names[i])
@@ -100,7 +108,7 @@ impl Item {
             Item::Media(_) => TrackKind::Video,
             Item::Sound { .. } => TrackKind::Audio,
             Item::Title(_) => TrackKind::Text,
-            Item::Sticker(_) | Item::Effect(_) | Item::Shape(_) | Item::Promo(_) => TrackKind::Video,
+            Item::Sticker(_) | Item::Effect(_) | Item::Shape(_) | Item::Promo(_) | Item::Decor(_) => TrackKind::Video,
         }
     }
 
@@ -111,6 +119,9 @@ impl Item {
             Item::Sound { length, .. } => *length,
             Item::Title(_) => TITLE_LENGTH,
             Item::Sticker(_) | Item::Effect(_) | Item::Shape(_) | Item::Promo(_) => OVERLAY_LENGTH,
+            Item::Decor(id) => {
+                Tick::from_seconds(f64::from(reelforge_media::decor::find(id).map_or(3.0, |d| d.seconds)))
+            }
         }
     }
 
@@ -126,6 +137,7 @@ impl Item {
             Item::Effect(Some(k)) => fx_name(*k, s).to_string(),
             Item::Shape(k) => shape_name(*k, s).to_string(),
             Item::Promo(id) => promo_name(id, s).to_string(),
+            Item::Decor(id) => decor_name(id, s).to_string(),
         }
     }
 }
@@ -149,6 +161,10 @@ pub(crate) enum Action {
     Template(&'static str),
     /// Pick files to put in the empty slots of the timeline's template.
     Fill,
+    /// Use this built-in storyboard.
+    Storyboard(&'static str),
+    /// Give a field of the project's copy these words.
+    Copy(String, String),
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -176,7 +192,7 @@ impl Filter {
     fn admits(self, kind: MediaKind) -> bool {
         match self {
             Filter::All => !matches!(kind, MediaKind::Lut | MediaKind::Font),
-            Filter::Video => kind == MediaKind::Video,
+            Filter::Video => kind.moves(),
             Filter::Image => kind == MediaKind::Image,
             Filter::Audio => kind == MediaKind::Audio,
         }
@@ -205,7 +221,19 @@ pub(crate) struct AssetPanel {
     sound_lengths: HashMap<&'static str, Tick>,
     /// The stickers' pictures, drawn the first time the stickers are shown.
     stickers: Vec<egui::TextureHandle>,
+    /// The decorations, read and drawn the first time the stickers are shown: each one's picture
+    /// and the animation it is of.
+    decor: Vec<(egui::TextureHandle, reelforge_media::decor::Preview)>,
+    /// The decoration playing under the pointer: which, and when (egui's time) it began.
+    decor_playing: Option<(usize, f64)>,
+    /// Which part of the stickers tab shows: the stickers and shapes, the animated decorations
+    /// or the ready-made pieces.
+    stuck: usize,
     captions: crate::captions::CaptionsTab,
+    /// Whether the templates tab shows the storyboards, not the timeline templates.
+    boards: bool,
+    /// The project's copy as it is typed over there.
+    copy: crate::storyboard::CopyForm,
 }
 
 /// A name being typed in the media tab.
@@ -300,7 +328,7 @@ impl AssetPanel {
             Tab::Text => text_tab(ui, s, looks, action),
             Tab::Stickers => panel.stickers_tab(ui, s, action),
             Tab::Effects => effects_tab(ui, &mut panel.query, s, action),
-            Tab::Templates => templates_tab(ui, p, s, action),
+            Tab::Templates => panel.templates_tab(ui, p, lang, action),
             Tab::Captions => {
                 if let Some(ask) = panel.captions.show(ui, p, lang, playhead, selected, playing) {
                     *action = Some(Action::Captions(ask));
@@ -330,6 +358,13 @@ impl AssetPanel {
     pub(crate) fn show_templates(&mut self) {
         self.tab = Tab::Templates;
         self.query.clear();
+    }
+
+    /// Shows the storyboards: one was just used, and its copy is to be typed over there.
+    pub(crate) fn show_storyboards(&mut self) {
+        self.show_templates();
+        self.boards = true;
+        self.copy.reset();
     }
 
     /// Whether the text tab is showing (and so needs the templates' pictures).
@@ -639,7 +674,11 @@ impl AssetPanel {
                 None if off => {}
                 None => {
                     wanted.push(m);
-                    let glyph = if m.kind == MediaKind::Video { icon::VIDEO } else { icon::IMAGE };
+                    let glyph = match m.kind {
+                        MediaKind::Video => icon::VIDEO,
+                        MediaKind::Lottie => icon::SPARKLE,
+                        _ => icon::IMAGE,
+                    };
                     painter.text(thumb.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(22.0), color::WEAK);
                 }
             },
@@ -648,6 +687,7 @@ impl AssetPanel {
         let glyph = match m.kind {
             MediaKind::Video => icon::VIDEO,
             MediaKind::Image => icon::IMAGE,
+            MediaKind::Lottie => icon::SPARKLE,
             _ => icon::MUSIC,
         };
         badge(&painter, thumb.left_top() + vec2(5.0, 5.0), Align2::LEFT_TOP, glyph, color::TEXT, None);
@@ -867,9 +907,28 @@ impl AssetPanel {
                     Some(ui.ctx().load_texture(format!("sticker-{}", st.id), image, egui::TextureOptions::LINEAR))
                 })
                 .collect();
+            self.decor = DECOR
+                .iter()
+                .filter_map(|d| {
+                    let preview = reelforge_media::decor::Preview::of(d)?;
+                    let still = decor_image(&preview, None);
+                    let name = format!("decor-{}", d.id);
+                    Some((ui.ctx().load_texture(name, still, egui::TextureOptions::LINEAR), preview))
+                })
+                .collect();
         }
         search_box(ui, &mut self.query, s);
         let query = self.query.clone();
+        // one part at a time, unless something is being looked for: then whatever matches
+        let part = query.trim().is_empty().then_some(self.stuck);
+        if part.is_some() {
+            ui.add_space(6.0);
+            if let Some(picked) = theme::segmented(ui, &s.sticker_parts, self.stuck) {
+                self.stuck = picked;
+            }
+            ui.add_space(8.0);
+        }
+        let shown = |which: usize| part.is_none_or(|p| p == which);
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             let gap = 8.0;
             let room = ui.available_width();
@@ -879,41 +938,90 @@ impl AssetPanel {
                 .iter()
                 .zip(&self.stickers)
                 .zip(s.sticker_names)
-                .filter(|(_, name)| finds(&query, name))
+                .filter(|(_, name)| shown(0) && finds(&query, name))
                 .collect();
-            // the promotional pieces and the shapes, as words to click or drag
-            let promos: Vec<(Item, &str)> = reelforge_engine::PROMOS
-                .iter()
-                .map(|p| (Item::Promo(p.id), promo_name(p.id, s)))
-                .filter(|(_, name)| finds(&query, name))
+            let mut lists: Vec<(String, Vec<(Item, &str)>)> = reelforge_engine::Category::ALL
+                .into_iter()
+                .zip(s.promo_categories)
+                .map(|(category, heading)| {
+                    let items = reelforge_engine::PROMOS
+                        .iter()
+                        .filter(|p| p.category == category)
+                        .map(|p| (Item::Promo(p.id), promo_name(p.id, s)))
+                        .filter(|(_, name)| shown(2) && (finds(&query, name) || finds(&query, heading)))
+                        .collect();
+                    (format!("{} · {heading}", s.sec_promo), items)
+                })
                 .collect();
             let shapes: Vec<(Item, &str)> = reelforge_model::ShapeKind::ALL
                 .into_iter()
                 .map(|k| (Item::Shape(k), shape_name(k, s)))
-                .filter(|(_, name)| finds(&query, name))
+                .filter(|(_, name)| shown(0) && finds(&query, name))
                 .collect();
-            if all.is_empty() && promos.is_empty() && shapes.is_empty() {
+            lists.insert(0, (s.sec_shapes.to_string(), shapes));
+            let decor: Vec<usize> = (0..self.decor.len())
+                .filter(|i| finds(&query, decor_name(self.decor[*i].1.decor().id, s)) || finds(&query, s.sec_decor))
+                .filter(|_| shown(1))
+                .collect();
+            if all.is_empty() && decor.is_empty() && lists.iter().all(|(_, items)| items.is_empty()) {
                 nothing_matches(ui, s);
                 return;
             }
-            for (heading, items) in [(s.sec_promo, promos), (s.sec_shapes, shapes)] {
-                if items.is_empty() {
-                    continue;
-                }
+            // the animated decorations: each plays while the pointer is over it
+            if !decor.is_empty() {
+                let heading = if part.is_some() { s.decor_tip } else { s.sec_decor };
                 ui.label(egui::RichText::new(heading).small().color(color::WEAK));
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                    for (item, name) in items {
-                        let r = ui.add(egui::Button::new(name).sense(Sense::click_and_drag()));
+                ui.add_space(4.0);
+            }
+            let now = ui.input(|i| i.time);
+            let mut playing = None;
+            for row in decor.chunks(columns) {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    for &i in row {
+                        let id = self.decor[i].1.decor().id;
+                        let (rect, r) = ui.allocate_exact_size(vec2(w, w), Sense::click_and_drag());
                         if r.drag_started() {
-                            egui::DragAndDrop::set_payload(ui.ctx(), item.clone());
+                            egui::DragAndDrop::set_payload(ui.ctx(), Item::Decor(id));
                         }
-                        if r.on_hover_text(s.item_tip).clicked() {
-                            *action = Some(Action::Add(item));
+                        if r.hovered() {
+                            let began = self.decor_playing.filter(|(was, _)| *was == i).map_or(now, |(_, began)| began);
+                            playing = Some((i, began));
+                            let (texture, preview) = &mut self.decor[i];
+                            texture.set(decor_image(preview, Some((now - began) as f32)), egui::TextureOptions::LINEAR);
+                            ui.ctx().request_repaint();
+                        }
+                        let texture = &self.decor[i].0;
+                        let painter = ui.painter();
+                        painter.rect_filled(rect, 6.0, if r.hovered() { color::HOVER } else { color::RAISED });
+                        let size = texture.size_vec2();
+                        painter.image(
+                            texture.id(),
+                            Rect::from_center_size(rect.center(), size * (w * 0.84 / size.max_elem())),
+                            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+                        if r.hovered() {
+                            painter.rect_stroke(rect, 6.0, Stroke::new(1.0, color::ACCENT), StrokeKind::Inside);
+                        }
+                        if r.on_hover_text(format!("{}\n{}", decor_name(id, s), s.item_tip)).clicked() {
+                            *action = Some(Action::Add(Item::Decor(id)));
                         }
                     }
                 });
+                ui.add_space(gap - ui.spacing().item_spacing.y);
+            }
+            // the one the pointer left is still again
+            if let Some((was, _)) = self.decor_playing.filter(|(was, _)| playing.is_none_or(|(i, _)| i != *was)) {
+                let (texture, preview) = &mut self.decor[was];
+                texture.set(decor_image(preview, None), egui::TextureOptions::LINEAR);
+            }
+            self.decor_playing = playing;
+            if !decor.is_empty() {
                 ui.add_space(8.0);
+            }
+            if !all.is_empty() && part.is_none() {
+                ui.label(egui::RichText::new(s.tab_stickers).small().color(color::WEAK));
             }
             for row in all.chunks(columns) {
                 ui.horizontal(|ui| {
@@ -941,10 +1049,39 @@ impl AssetPanel {
                 });
                 ui.add_space(gap - ui.spacing().item_spacing.y);
             }
+            if !all.is_empty() {
+                ui.add_space(8.0);
+            }
+            // the shapes and the ready-made pieces, list by list, as words to click or drag
+            for (heading, items) in lists {
+                if items.is_empty() {
+                    continue;
+                }
+                ui.label(egui::RichText::new(heading).small().color(color::WEAK));
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                    for (item, name) in items {
+                        let r = ui.add(egui::Button::new(name).sense(Sense::click_and_drag()));
+                        if r.drag_started() {
+                            egui::DragAndDrop::set_payload(ui.ctx(), item.clone());
+                        }
+                        if r.on_hover_text(s.item_tip).clicked() {
+                            *action = Some(Action::Add(item));
+                        }
+                    }
+                });
+                ui.add_space(8.0);
+            }
             ui.add_space(4.0);
             ui.label(egui::RichText::new(s.sound_free).small().color(color::WEAK));
         });
     }
+}
+
+/// A decoration's picture for the panel: `seconds` into playing it, or still.
+fn decor_image(preview: &reelforge_media::decor::Preview, seconds: Option<f32>) -> egui::ColorImage {
+    let p = preview.picture(seconds, 128);
+    egui::ColorImage::from_rgba_unmultiplied([p.width as usize, p.height as usize], &p.rgba)
 }
 
 /// Picture effects by what they do, and the empty adjustment layer.
@@ -983,51 +1120,80 @@ fn effects_tab(ui: &mut egui::Ui, query: &mut String, s: &Strings, action: &mut 
     });
 }
 
-/// Timeline templates (剪同款): how far the slots of the timeline being edited are filled, with a
-/// way to pick files for them, then the built-in templates to use.
-fn templates_tab(ui: &mut egui::Ui, p: &Project, s: &Strings, action: &mut Option<Action>) {
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        let slots = reelforge_engine::slot_states(p);
-        if !slots.is_empty() {
-            let filled = slots.iter().filter(|(_, _, filled)| *filled).count();
-            ui.label(
-                egui::RichText::new(fill(s.remix_progress, &[&filled.to_string(), &slots.len().to_string()])).strong(),
-            );
-            ui.add_space(2.0);
-            // one piece of the bar for each slot
-            let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
-            let gap = 2.0;
-            let w = (bar.width() - gap * (slots.len() - 1) as f32) / slots.len() as f32;
-            for (i, (_, _, filled)) in slots.iter().enumerate() {
-                let piece = Rect::from_min_size(
-                    bar.left_top() + vec2((w + gap) * i as f32, 0.0),
-                    vec2(w.max(1.0), bar.height()),
-                );
-                ui.painter().rect_filled(piece, 2.0, if *filled { color::ACCENT } else { color::RAISED });
-            }
-            ui.add_space(6.0);
-            if filled < slots.len() {
-                if theme::primary(ui, icon::IMPORT, s.remix_pick, true).on_hover_text(s.remix_pick_tip).clicked() {
-                    *action = Some(Action::Fill);
+impl AssetPanel {
+    /// Timeline templates (剪同款) or storyboards: how far the slots of the timeline being edited
+    /// are filled, with a way to pick files for them; the project's copy to type over, where a
+    /// storyboard wrote it; then the built-in ones to use.
+    fn templates_tab(&mut self, ui: &mut egui::Ui, p: &Project, lang: crate::i18n::Lang, action: &mut Option<Action>) {
+        let s = lang.strings();
+        if let Some(picked) = theme::segmented(ui, &[s.sec_remix, s.sec_boards], usize::from(self.boards)) {
+            self.boards = picked == 1;
+        }
+        ui.add_space(8.0);
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            slots_progress(ui, p, s, action);
+            if self.boards {
+                if !p.copy.is_empty() {
+                    if let Some((name, words)) = self.copy.show(ui, p, lang, s) {
+                        *action = Some(Action::Copy(name, words));
+                    }
+                    ui.add_space(10.0);
+                }
+                ui.label(egui::RichText::new(s.boards_tip).small().color(color::WEAK));
+                ui.add_space(8.0);
+                for board in reelforge_engine::storyboards() {
+                    let w = ui.available_width();
+                    if crate::storyboard::card(ui, board, lang, s, w).clicked() {
+                        *action = Some(Action::Storyboard(board.id.as_str()));
+                    }
+                    ui.add_space(8.0);
                 }
             } else {
-                ui.label(egui::RichText::new(format!("{}  {}", icon::DONE, s.remix_done)).small().color(color::WEAK));
+                ui.label(egui::RichText::new(s.remix_tip).small().color(color::WEAK));
+                ui.add_space(8.0);
+                for (i, t) in reelforge_engine::timeline_templates().iter().enumerate() {
+                    let w = ui.available_width();
+                    if crate::remix::card(ui, i, t, s, w).clicked() {
+                        *action = Some(Action::Template(t.id));
+                    }
+                    ui.add_space(8.0);
+                }
             }
-            ui.add_space(8.0);
-            let y = ui.cursor().top();
-            ui.painter().hline(ui.max_rect().x_range(), y, Stroke::new(1.0, color::LINE));
-            ui.add_space(8.0);
+        });
+    }
+}
+
+/// How far the slots of the timeline being edited are filled, with a way to pick files for them;
+/// nothing when it has none.
+fn slots_progress(ui: &mut egui::Ui, p: &Project, s: &Strings, action: &mut Option<Action>) {
+    let slots = reelforge_engine::slot_states(p);
+    if slots.is_empty() {
+        return;
+    }
+    let filled = slots.iter().filter(|(_, _, filled)| *filled).count();
+    ui.label(egui::RichText::new(fill(s.remix_progress, &[&filled.to_string(), &slots.len().to_string()])).strong());
+    ui.add_space(2.0);
+    // one piece of the bar for each slot
+    let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
+    let gap = 2.0;
+    let w = (bar.width() - gap * (slots.len() - 1) as f32) / slots.len() as f32;
+    for (i, (_, _, filled)) in slots.iter().enumerate() {
+        let piece =
+            Rect::from_min_size(bar.left_top() + vec2((w + gap) * i as f32, 0.0), vec2(w.max(1.0), bar.height()));
+        ui.painter().rect_filled(piece, 2.0, if *filled { color::ACCENT } else { color::RAISED });
+    }
+    ui.add_space(6.0);
+    if filled < slots.len() {
+        if theme::primary(ui, icon::IMPORT, s.remix_pick, true).on_hover_text(s.remix_pick_tip).clicked() {
+            *action = Some(Action::Fill);
         }
-        ui.label(egui::RichText::new(s.remix_tip).small().color(color::WEAK));
-        ui.add_space(8.0);
-        for (i, t) in reelforge_engine::timeline_templates().iter().enumerate() {
-            let w = ui.available_width();
-            if crate::remix::card(ui, i, t, s, w).clicked() {
-                *action = Some(Action::Template(t.id));
-            }
-            ui.add_space(8.0);
-        }
-    });
+    } else {
+        ui.label(egui::RichText::new(format!("{}  {}", icon::DONE, s.remix_done)).small().color(color::WEAK));
+    }
+    ui.add_space(8.0);
+    let y = ui.cursor().top();
+    ui.painter().hline(ui.max_rect().x_range(), y, Stroke::new(1.0, color::LINE));
+    ui.add_space(8.0);
 }
 
 /// A row of the effects list: click adds at the playhead, drag goes to the timeline.
@@ -1260,6 +1426,7 @@ fn drag_preview(ctx: &egui::Context, p: &Project, s: &Strings) {
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("asset drag")));
     let glyph = match (&*item, item.track_kind(p)) {
         (Item::Sticker(_) | Item::Shape(_) | Item::Promo(_), _) => icon::STICKER,
+        (Item::Decor(_), _) => icon::SPARKLE,
         (Item::Effect(_), _) => icon::SPARKLE,
         (_, TrackKind::Audio) => icon::MUSIC,
         (_, TrackKind::Text) => icon::TEXT,
@@ -1318,6 +1485,12 @@ mod tests {
         assert_eq!(Item::Sticker("heart").label(&p, zh), "爱心");
         assert_eq!(Item::Effect(Some(FxKind::Flash)).label(&p, zh), "闪白");
         assert_eq!(Item::Effect(None).label(&p, zh), "调节层");
+        // a decoration is as long as it says, and called in the interface's language
+        let rain = Item::Decor("confettiRain");
+        assert_eq!(
+            (rain.track_kind(&p), rain.length(&p), rain.label(&p, zh)),
+            (TrackKind::Video, Tick::SECOND * 3, "彩纸雨".into())
+        );
         // a file never found is offline
         assert!(offline(&p.media[&m], &HashSet::new()));
         let len = sound_length(SOUNDS[0].id);

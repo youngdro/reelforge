@@ -1,0 +1,239 @@
+{
+ "id": "painSolution",
+ "name": {
+  "en": "Problem and fix",
+  "zh": "痛点方案",
+  "ja": "悩み解決"
+ },
+ "about": {
+  "en": "Name the problem to camera, show it, then the product that fixes it and why",
+  "zh": "对着镜头说出痛点，演示出来，再亮出产品和三个理由，适合口播",
+  "ja": "悩みをカメラに語り、実際に見せて、解決する商品と理由を伝える"
+ },
+ "music": "lofi",
+ "fields": [
+  {
+   "id": "pain",
+   "text": {
+    "en": "Coffee cold by ten?",
+    "zh": "咖啡不到十点就凉了？",
+    "ja": "コーヒー、10 時にはもう冷たい？"
+   }
+  },
+  {
+   "id": "painNote",
+   "text": {
+    "en": "Every morning, the same lukewarm cup",
+    "zh": "每天早上都在喝温吞水",
+    "ja": "毎朝ぬるい一杯にがっかり"
+   }
+  },
+  {
+   "id": "product",
+   "text": {
+    "en": "Thermo Cup Pro",
+    "zh": "保温杯 Pro",
+    "ja": "サーモカップ Pro"
+   }
+  },
+  {
+   "id": "tagline",
+   "text": {
+    "en": "Hot for twelve hours",
+    "zh": "十二小时还烫嘴",
+    "ja": "12 時間あたたかい"
+   }
+  },
+  {
+   "id": "point1",
+   "text": {
+    "en": "Steel liner, safe to drink from",
+    "zh": "316 不锈钢，安心直饮",
+    "ja": "ステンレス内側で安心"
+   }
+  },
+  {
+   "id": "point2",
+   "text": {
+    "en": "Opens with one hand",
+    "zh": "单手开盖，不漏不洒",
+    "ja": "片手で開けられる"
+   }
+  },
+  {
+   "id": "point3",
+   "text": {
+    "en": "Light enough for any bag",
+    "zh": "仅重 210 克",
+    "ja": "わずか 210 グラム"
+   }
+  },
+  {
+   "id": "price",
+   "number": 129
+  },
+  {
+   "id": "closing",
+   "text": {
+    "en": "Stop drinking it cold",
+    "zh": "别再喝凉的了",
+    "ja": "もう冷めた一杯は終わり"
+   }
+  },
+  {
+   "id": "cta",
+   "text": {
+    "en": "Shop now",
+    "zh": "立即抢购",
+    "ja": "今すぐ購入"
+   }
+  },
+  {
+   "id": "hint",
+   "text": {
+    "en": "Tap the link below",
+    "zh": "点击下方小黄车",
+    "ja": "下のリンクをタップ"
+   }
+  }
+ ],
+ "scenes": [
+  {
+   "id": "hook",
+   "seconds": 3.0,
+   "shot": {
+    "en": "You to camera, asking the question",
+    "zh": "对着镜头说出痛点",
+    "ja": "カメラに向かって悩みを語る"
+   },
+   "fx": "zoomIn",
+   "voice": {
+    "en": "{pain}",
+    "zh": "{pain}",
+    "ja": "{pain}"
+   },
+   "pieces": [
+    {
+     "kind": "hookQuestion",
+     "at": 0.2,
+     "text": "{pain}",
+     "y": -0.05
+    }
+   ]
+  },
+  {
+   "id": "pain",
+   "seconds": 4.0,
+   "shot": {
+    "en": "The problem as it happens",
+    "zh": "痛点发生时的画面",
+    "ja": "悩みが起きている場面"
+   },
+   "cut": "glitch",
+   "voice": {
+    "en": "{painNote}.",
+    "zh": "{painNote}。",
+    "ja": "{painNote}。"
+   },
+   "pieces": [
+    {
+     "kind": "karaokeCaption",
+     "at": 0.2,
+     "text": "{painNote}",
+     "y": 0.15
+    }
+   ]
+  },
+  {
+   "id": "reveal",
+   "seconds": 4.0,
+   "shot": {
+    "en": "The product, held up",
+    "zh": "手持产品展示",
+    "ja": "商品を手に持って見せる"
+   },
+   "cut": "zoomBlur",
+   "voice": {
+    "en": "Meet {product}: {tagline}.",
+    "zh": "试试{product}，{tagline}。",
+    "ja": "{product}なら、{tagline}。"
+   },
+   "pieces": [
+    {
+     "kind": "elasticTitle",
+     "at": 0.2,
+     "text": "{product}",
+     "lines": [
+      "{tagline}"
+     ],
+     "y": -0.3
+    }
+   ]
+  },
+  {
+   "id": "points",
+   "seconds": 5.5,
+   "shot": {
+    "en": "The product fixing it",
+    "zh": "产品解决问题的画面",
+    "ja": "商品が悩みを解決する場面"
+   },
+   "cut": "dissolve",
+   "voice": {
+    "en": "{point1}. {point2}. {point3}.",
+    "zh": "{point1}，{point2}，{point3}。",
+    "ja": "{point1}。{point2}。{point3}。"
+   },
+   "pieces": [
+    {
+     "kind": "checklist",
+     "at": 0.3,
+     "lines": [
+      "{point1}",
+      "{point2}",
+      "{point3}"
+     ],
+     "y": 0.02
+    }
+   ]
+  },
+  {
+   "id": "cta",
+   "seconds": 3.5,
+   "backdrop": "brand",
+   "sweep": "up",
+   "voice": {
+    "en": "{closing}. {hint}.",
+    "zh": "{closing}，{hint}。",
+    "ja": "{closing}。{hint}。"
+   },
+   "pieces": [
+    {
+     "kind": "endCard",
+     "at": 0.1,
+     "text": "{closing}",
+     "lines": [
+      {
+       "en": "Now ${price}",
+       "zh": "到手价 ¥{price}",
+       "ja": "今なら ¥{price}"
+      }
+     ],
+     "y": -0.22
+    },
+    {
+     "kind": "buyButton",
+     "at": 0.7,
+     "text": "{cta}",
+     "y": -0.01
+    },
+    {
+     "kind": "arrowHint",
+     "at": 1.0,
+     "text": "{hint}",
+     "y": 0.14
+    }
+   ]
+  }
+ ]
+}

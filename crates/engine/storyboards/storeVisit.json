@@ -1,0 +1,258 @@
+{
+ "id": "storeVisit",
+ "name": {
+  "en": "Come to the shop",
+  "zh": "门店引流",
+  "ja": "来店をうながす"
+ },
+ "about": {
+  "en": "A hook, why the shop is worth the trip, what they get for coming, and how to find it",
+  "zh": "钩子开场，讲清楚这家店值得来的理由和到店福利，最后给出地址和营业时间",
+  "ja": "つかみ、お店に行きたくなる理由、来店特典、アクセス情報"
+ },
+ "music": "ambient",
+ "fields": [
+  {
+   "id": "hook",
+   "text": {
+    "en": "Free this weekend?",
+    "zh": "周末去哪儿？",
+    "ja": "今週末どこ行く？"
+   }
+  },
+  {
+   "id": "shop",
+   "text": {
+    "en": "Antler Lane Café",
+    "zh": "鹿角巷旗舰店",
+    "ja": "鹿角カフェ 本店"
+   }
+  },
+  {
+   "id": "tagline",
+   "text": {
+    "en": "Hand-made tea, fresh bakes",
+    "zh": "手作茶饮 · 现烤点心",
+    "ja": "手作りドリンクと焼きたてスイーツ"
+   }
+  },
+  {
+   "id": "point1",
+   "text": {
+    "en": "Brown sugar, cooked daily",
+    "zh": "每日现熬黑糖",
+    "ja": "黒糖は毎日手作り"
+   }
+  },
+  {
+   "id": "point2",
+   "text": {
+    "en": "Window seats over the river",
+    "zh": "靠窗位能看江景",
+    "ja": "窓際は川ビュー"
+   }
+  },
+  {
+   "id": "point3",
+   "text": {
+    "en": "Dogs welcome",
+    "zh": "宠物友好",
+    "ja": "ペット同伴 OK"
+   }
+  },
+  {
+   "id": "coupon",
+   "number": 15
+  },
+  {
+   "id": "couponRule",
+   "text": {
+    "en": "Show this video in store",
+    "zh": "到店出示本视频",
+    "ja": "この動画を見せるだけ"
+   }
+  },
+  {
+   "id": "deadline",
+   "text": {
+    "en": "This month only",
+    "zh": "本月有效",
+    "ja": "今月限り"
+   }
+  },
+  {
+   "id": "address",
+   "text": {
+    "en": "88 Renmin Road",
+    "zh": "人民路 88 号",
+    "ja": "人民路 88 号"
+   }
+  },
+  {
+   "id": "hours",
+   "text": {
+    "en": "10:00–22:00",
+    "zh": "10:00–22:00",
+    "ja": "10:00–22:00"
+   }
+  },
+  {
+   "id": "phone",
+   "text": {
+    "en": "400-000-0000",
+    "zh": "400-000-0000",
+    "ja": "400-000-0000"
+   }
+  },
+  {
+   "id": "cta",
+   "text": {
+    "en": "Get directions",
+    "zh": "导航到店",
+    "ja": "お店への行き方"
+   }
+  }
+ ],
+ "scenes": [
+  {
+   "id": "hook",
+   "seconds": 3.0,
+   "shot": {
+    "en": "The shopfront, or the room at its best",
+    "zh": "门头，或店内最好看的角度",
+    "ja": "お店の外観、またはいちばん映える店内"
+   },
+   "fx": "zoomIn",
+   "voice": {
+    "en": "{hook}",
+    "zh": "{hook}",
+    "ja": "{hook}"
+   },
+   "pieces": [
+    {
+     "kind": "hookQuestion",
+     "at": 0.2,
+     "text": "{hook}",
+     "y": -0.05
+    }
+   ]
+  },
+  {
+   "id": "inside",
+   "seconds": 5.0,
+   "shot": {
+    "en": "Inside: the room, or the thing people come for",
+    "zh": "店内环境，或招牌产品",
+    "ja": "店内の雰囲気、または看板メニュー"
+   },
+   "cut": "dissolve",
+   "voice": {
+    "en": "{shop}: {point1}, {point2}, {point3}.",
+    "zh": "{shop}，{point1}，{point2}，{point3}。",
+    "ja": "{shop}。{point1}、{point2}、{point3}。"
+   },
+   "pieces": [
+    {
+     "kind": "lowerThird",
+     "at": 0.3,
+     "text": "{shop}",
+     "lines": [
+      "{tagline}"
+     ],
+     "y": 0.2
+    },
+    {
+     "kind": "checklist",
+     "at": 0.8,
+     "lines": [
+      "{point1}",
+      "{point2}",
+      "{point3}"
+     ],
+     "y": -0.08
+    }
+   ]
+  },
+  {
+   "id": "offer",
+   "seconds": 5.0,
+   "shot": {
+    "en": "What they get for coming: the offer, or the best-seller",
+    "zh": "到店福利，或热卖产品",
+    "ja": "来店特典、または人気メニュー"
+   },
+   "sweep": "right",
+   "voice": {
+    "en": "{couponRule} for {coupon} off. {deadline}.",
+    "zh": "{couponRule}，立减 {coupon} 元，{deadline}。",
+    "ja": "{couponRule}で {coupon} 円引き。{deadline}。"
+   },
+   "pieces": [
+    {
+     "kind": "hotBurst",
+     "at": 0.2,
+     "text": {
+      "en": "HOT",
+      "zh": "热卖",
+      "ja": "人気"
+     },
+     "x": 0.3,
+     "y": -0.36,
+     "scale": 0.6
+    },
+    {
+     "kind": "coupon",
+     "at": 0.5,
+     "value": "{coupon}",
+     "text": "{couponRule}",
+     "lines": [
+      "{deadline}"
+     ],
+     "y": 0.1
+    }
+   ]
+  },
+  {
+   "id": "visit",
+   "seconds": 5.0,
+   "backdrop": "brand",
+   "sweep": "up",
+   "voice": {
+    "en": "Find us at {address}, {hours}.",
+    "zh": "地址在{address}，营业时间 {hours}。",
+    "ja": "場所は{address}、営業は {hours}。"
+   },
+   "pieces": [
+    {
+     "kind": "storeCard",
+     "at": 0.2,
+     "text": "{shop}",
+     "y": -0.08,
+     "lines": [
+      {
+       "en": "Address: {address}",
+       "zh": "地址：{address}",
+       "ja": "住所：{address}"
+      },
+      {
+       "en": "Open: {hours}",
+       "zh": "营业：{hours}",
+       "ja": "営業：{hours}"
+      },
+      {
+       "en": "Phone: {phone}",
+       "zh": "电话：{phone}",
+       "ja": "電話：{phone}"
+      }
+     ]
+    },
+    {
+     "kind": "buyButton",
+     "at": 0.9,
+     "text": "{cta}",
+     "y": 0.2
+    }
+   ]
+  }
+ ]
+}

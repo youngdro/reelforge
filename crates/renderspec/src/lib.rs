@@ -255,6 +255,10 @@ pub enum AssetKind {
     MaskSequence,
     /// A colour lookup table.
     Lut,
+    /// A Lottie animation (feature `lottie/1`): Bodymovin JSON or a dotLottie archive. It has
+    /// no frames of its own: any instant is drawn, at the size the asset's `probe` gives, and
+    /// past its length it goes round again. A media layer shows it as it shows a video.
+    Lottie,
 }
 
 /// Measured properties of an asset.
@@ -318,6 +322,37 @@ pub struct Layer {
     /// rotation and feather (feature `mask.shape/2`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape_mask_keys: Option<ShapeMaskKeys>,
+    /// The layer that carries this one, among the layers it is listed with (feature
+    /// `layer.parent/1`). This layer is placed as it would be alone, and then moved, scaled and
+    /// turned as the parent's transform moves the frame: its `position` is counted from the
+    /// parent's (a layer at the centre sits on the parent's anchor), along the parent's own
+    /// turned and scaled axes. A parent at the centre, at scale 1 and unturned changes nothing.
+    /// The parent's transform is taken at the same output instant on the parent's own clock,
+    /// held at its first value before the parent starts and at its last after it ends, so the
+    /// parent need not be on screen; nothing else of the parent (its opacity, crop, effects) is
+    /// passed on. A parent may have a parent, eight deep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// The layer smeared along its own movement, as a camera with its shutter open sees it
+    /// (feature `motion.blur/1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion_blur: Option<MotionBlur>,
+}
+
+/// A layer seen through a shutter that stays open for part of each frame: where the layer is
+/// placed is taken at several instants of that time and what it shows at each is averaged, so
+/// that it is smeared along the way it moves, grows or turns, and is as sharp as ever while it
+/// stands still. Only its placement is taken at those instants (its `transform`, and those of the
+/// layers that carry it): its picture, opacity, crop, mask and effects are the frame's own. The
+/// time the shutter is open is centred on the frame's instant. A renderer takes as many instants
+/// as it sees fit (at least two where the layer moves a pixel or more), and may take fewer for a
+/// draft.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MotionBlur {
+    /// How long the shutter is open, as a share of the time from one frame to the next: 0.5 is a
+    /// film camera's half turn (180°), 1 the whole time. Above 0, at most 2.
+    pub shutter: f32,
 }
 
 /// A crop that changes: each edge as in [`Crop`], keyed. A renderer keeps at least 1 % of the
@@ -732,6 +767,101 @@ pub struct TextContent {
     /// `text` where it says `{n}`, or as the whole text when it does not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub number: Option<NumberText>,
+    /// With `text/7`: part of the text takes another colour as it is said (karaoke).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<TextHighlight>,
+    /// With `text/7`: the text is written on, each character's outline drawn by a pen before its
+    /// fill comes in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draw: Option<TextDraw>,
+}
+
+/// What of a text moves as one, or is said as one (`text/7`).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum TextUnit {
+    /// Each character.
+    #[default]
+    Char,
+    /// Each word: characters with no white space between them. A Chinese character or a kana is
+    /// a word of its own, together with the punctuation that follows it.
+    Word,
+    /// Each line, as the text is laid out.
+    Line,
+}
+
+impl TextUnit {
+    fn is_char(&self) -> bool {
+        *self == TextUnit::Char
+    }
+
+    /// The name commands use.
+    pub fn name(self) -> &'static str {
+        match self {
+            TextUnit::Char => "char",
+            TextUnit::Word => "word",
+            TextUnit::Line => "line",
+        }
+    }
+}
+
+/// The word each character of `text` belongs to, white space left out, counted from 0: see
+/// [`TextUnit::Word`].
+pub fn words(text: &str) -> Vec<usize> {
+    // written without spaces between words
+    let wide = |c: char| matches!(c as u32, 0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x2FA1F);
+    let mut out = vec![];
+    let (mut word, mut before): (usize, Option<char>) = (0, None);
+    for c in text.chars() {
+        if c.is_whitespace() {
+            before = None;
+            continue;
+        }
+        let new = match before {
+            None => true,
+            Some(b) => wide(c) || (wide(b) && c.is_alphanumeric()),
+        };
+        if new && !out.is_empty() {
+            word += 1;
+        }
+        out.push(word);
+        // punctuation stays with what it follows
+        if before.is_none() || c.is_alphanumeric() {
+            before = Some(c);
+        }
+    }
+    out
+}
+
+/// Part of a text in another colour as it is said (`text/7`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TextHighlight {
+    /// How much of the text has been said: 0, none of it, to 1, all of it, counted in characters,
+    /// white space left out.
+    pub progress: Animated<f32>,
+    /// The fill of what is highlighted, in place of the text's own colour or gradient.
+    pub color: Color,
+    /// `char`: everything said so far, the edge passing smoothly through the character being
+    /// said. `word` and `line`: the word or line being said, alone; none before 0 or from 1 on.
+    #[serde(default, skip_serializing_if = "TextUnit::is_char")]
+    pub unit: TextUnit,
+}
+
+/// A text written on (`text/7`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TextDraw {
+    /// 0, nothing shows, to 1, the text as it is. In between the characters are written one
+    /// after another: a pen follows each one's outline, then its fill, outlines and shadow fade
+    /// in and the pen's line goes.
+    pub progress: Animated<f32>,
+    /// The pen's width in ems. It draws in the colour of the text's outline, or of its fill when
+    /// it has none.
+    pub width: f32,
+    /// How much later each character starts than the one before, in units of one character's
+    /// own time: 0 writes them all together, 1 starts each as the one before is done.
+    pub step: f32,
 }
 
 /// A number shown by a text (`text/6`).
@@ -806,6 +936,9 @@ pub struct CharMotion {
     /// Counted from the last character instead of the first.
     #[serde(default, skip_serializing_if = "is_false")]
     pub reverse: bool,
+    /// With `text/7`: what moves as one, about its own centre, where this says "character".
+    #[serde(default, skip_serializing_if = "TextUnit::is_char")]
+    pub unit: TextUnit,
 }
 
 /// How a character travels between `pose` and rest.
@@ -820,6 +953,12 @@ pub enum CharCurve {
     Wave,
     /// To `pose` and back in the first half of every round, at rest in the second.
     Hop,
+    /// With `text/7`: from `pose` to rest once, swinging past rest and back several times, less
+    /// each time, like something on a spring.
+    Elastic,
+    /// With `text/7`: from `pose` to rest once, falling faster and faster, then bouncing back
+    /// towards `pose` three times, less each time, like a dropped ball.
+    Bounce,
 }
 
 /// Where a character is, against where the layout puts it.
@@ -891,6 +1030,30 @@ impl CharMotion {
                 let shown = if self.curve == CharCurve::Settle { 1.0 - u } else { 1.0 - (u * 3.0).min(1.0) };
                 self.pose.weighed(away, shown)
             }
+            CharCurve::Elastic | CharCurve::Bounce => {
+                let own = 1.0 / (1.0 + step * n.saturating_sub(1) as f32);
+                let u = ((progress - i * step * own) / own).clamp(0.0, 1.0);
+                let away = if u >= 1.0 {
+                    0.0
+                } else if self.curve == CharCurve::Elastic {
+                    -(2.0f32.powf(-10.0 * u)) * ((u * 10.0 - 0.75) * std::f32::consts::TAU / 3.0).sin()
+                } else {
+                    // four falls, each a parabola, the first from `pose`
+                    let (k, d) = (7.5625f32, 2.75f32);
+                    let down = if u < 1.0 / d {
+                        k * u * u
+                    } else if u < 2.0 / d {
+                        k * (u - 1.5 / d).powi(2) + 0.75
+                    } else if u < 2.5 / d {
+                        k * (u - 2.25 / d).powi(2) + 0.9375
+                    } else {
+                        k * (u - 2.625 / d).powi(2) + 0.984375
+                    };
+                    1.0 - down
+                };
+                // all there early, so the swings and bounces show
+                self.pose.weighed(away, 1.0 - (u * 4.0).min(1.0))
+            }
             CharCurve::Wave | CharCurve::Hop => {
                 let w = (std::f32::consts::TAU * (progress - i * step)).sin();
                 let w = if self.curve == CharCurve::Hop { w.max(0.0) } else { w };
@@ -927,6 +1090,8 @@ impl TextContent {
             underline: false,
             chars: vec![],
             number: None,
+            highlight: None,
+            draw: None,
         }
     }
 }
@@ -1015,6 +1180,16 @@ impl TextContent {
     /// Whether it uses anything beyond `text/5`.
     pub fn needs_v6(&self) -> bool {
         self.number.is_some()
+    }
+
+    /// Whether it uses anything beyond `text/6`.
+    pub fn needs_v7(&self) -> bool {
+        self.highlight.is_some()
+            || self.draw.is_some()
+            || self
+                .chars
+                .iter()
+                .any(|m| m.unit != TextUnit::Char || matches!(m.curve, CharCurve::Elastic | CharCurve::Bounce))
     }
 }
 
@@ -1166,7 +1341,56 @@ pub struct Transform {
     /// Clockwise rotation in degrees.
     #[serde(default = "zero")]
     pub rotation: Animated<f32>,
+    /// Width and height scaled apart, `[across, down]`, on top of `scale` (feature
+    /// `transform.stretch/1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stretch: Option<Animated<[f32; 2]>>,
+    /// The point of the layer's picture that sits at `position`, and that the layer is scaled and
+    /// turned about: fractions of the picture as it shows (after any crop) from its top left.
+    /// Its centre, `[0.5, 0.5]`, when absent (feature `transform.anchor/1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<[f32; 2]>,
+    /// The layer turned in space, seen in perspective (feature `transform.3d/1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<Turn>,
 }
+
+/// A layer turned out of the frame's plane about its anchor, after its `rotation` in the plane
+/// is undone and before it is done again: first about the horizontal axis, then the vertical.
+/// It is seen from straight in front of where its anchor is, so a layer turned on its own closes
+/// like a door or a lid evenly, wherever in the frame it is. A layer carried by another
+/// ([`Layer::parent`]) that is turned is seen from where the outermost turned layer carrying it
+/// is, so the two stay one object. Past 90 degrees a layer shows its back, mirrored.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Turn {
+    /// Degrees about the horizontal axis: positive tips the top edge away.
+    #[serde(default = "zero")]
+    pub x: Animated<f32>,
+    /// Degrees about the vertical axis: positive swings the right edge away.
+    #[serde(default = "zero")]
+    pub y: Animated<f32>,
+    /// How far the eye is, in frame heights: nearer is a stronger perspective. Positive.
+    #[serde(default = "eye")]
+    pub distance: f32,
+}
+
+fn eye() -> f32 {
+    Turn::DISTANCE
+}
+
+impl Turn {
+    /// How far the eye is unless told: two frame heights.
+    pub const DISTANCE: f32 = 2.0;
+
+    /// Held at `x` and `y` degrees, seen from the usual distance.
+    pub fn held(x: f32, y: f32) -> Turn {
+        Turn { x: Animated::Constant(x), y: Animated::Constant(y), distance: Turn::DISTANCE }
+    }
+}
+
+/// How many layers deep one may carry another ([`Layer::parent`]).
+pub const PARENTS: usize = 8;
 
 fn zero() -> Animated<f32> {
     Animated::Constant(0.0)
@@ -1178,7 +1402,7 @@ fn zero2() -> Animated<[f32; 2]> {
 
 impl Default for Transform {
     fn default() -> Transform {
-        Transform { position: zero2(), scale: one(), rotation: zero() }
+        Transform { position: zero2(), scale: one(), rotation: zero(), stretch: None, anchor: None, turn: None }
     }
 }
 
@@ -1308,6 +1532,23 @@ pub struct Effect {
 /// - `key.person@1`: keeps the people in a media or composition layer's picture and makes the
 ///   rest see-through, as found by a segmentation model looking at the picture (it has no
 ///   parameters). It is done to the picture before it is placed and before any other effect.
+/// - `key.backdrop@1`: makes the plain backdrop of a media or composition layer's picture
+///   see-through and keeps what stands before it (a product on a studio sweep). The backdrop is
+///   the colour the picture's edges show, as a smooth surface fitted to them; what is that
+///   colour and reached from the edges goes. `tolerance` (0 to 1, default 0.5) is how far from
+///   the backdrop's colour still counts as backdrop, `holes` (0 to 1, default 0.5) how readily
+///   backdrop-coloured places the edges do not reach go as well (0: never). The backdrop's share
+///   is taken out of the colours along the outline. Like `key.person@1` it is done to the whole
+///   picture before it is placed, after that one and before any other effect.
+/// - `shadow.drop@1`: a shadow of a media or composition layer's picture as it shows (after its
+///   keys, crop and mask), drawn under the layer and moving with it. `r`, `g`, `b` are its
+///   colour, sRGB-encoded (default black), and `opacity` (0 to 1, default 0.5) how dark it is,
+///   times the layer's own. `x` and `y` (defaults 0.02 and 0.03) move it right and down the
+///   frame, and `blur` (default 0.03) is its softness as a standard deviation, all three in
+///   shares of the shorter side of the picture as it is placed. `flat` (0 to 1, default 0)
+///   lays it on the ground: the outline is pressed towards its lowest line until that much of
+///   its height is gone, and `lean` (-1 to 1, default 0) pushes its top sideways by that share
+///   of the outline's height.
 /// - The `distort.*` effects change where a layer's picture is read, in this order whatever
 ///   their order in the list, each once per layer. Positions are fractions of the layer's visible
 ///   picture and are held at its edges.
@@ -1322,6 +1563,10 @@ pub mod effects {
     pub const CHROMA_KEY: &str = "key.chroma@1";
     /// Everything but the people made see-through.
     pub const PERSON_KEY: &str = "key.person@1";
+    /// A plain backdrop made see-through.
+    pub const BACKDROP_KEY: &str = "key.backdrop@1";
+    /// A shadow under the layer.
+    pub const SHADOW: &str = "shadow.drop@1";
     /// Rows sliding along a sine.
     pub const WAVE: &str = "distort.wave@1";
     /// Bands sliding sideways.
@@ -1538,6 +1783,9 @@ impl RenderSpec {
         if !self.comps.is_empty() {
             out.insert("comp/1".to_string());
         }
+        if self.assets.values().any(|a| a.kind == AssetKind::Lottie) {
+            out.insert("lottie/1".to_string());
+        }
         for layer in self.layers.iter().chain(self.comps.values().flat_map(|c| &c.layers)) {
             if let LayerContent::Text(t) = &layer.content {
                 out.insert("text/1".to_string());
@@ -1556,6 +1804,9 @@ impl RenderSpec {
                 if t.needs_v6() {
                     out.insert("text/6".to_string());
                 }
+                if t.needs_v7() {
+                    out.insert("text/7".to_string());
+                }
             }
             if let LayerContent::Shape(_) = &layer.content {
                 out.insert("shape/1".to_string());
@@ -1566,6 +1817,21 @@ impl RenderSpec {
             }
             if layer.crop.is_some() {
                 out.insert("crop/1".to_string());
+            }
+            if layer.transform.stretch.is_some() {
+                out.insert("transform.stretch/1".to_string());
+            }
+            if layer.transform.anchor.is_some() {
+                out.insert("transform.anchor/1".to_string());
+            }
+            if layer.transform.turn.is_some() {
+                out.insert("transform.3d/1".to_string());
+            }
+            if layer.parent.is_some() {
+                out.insert("layer.parent/1".to_string());
+            }
+            if layer.motion_blur.is_some() {
+                out.insert("motion.blur/1".to_string());
             }
             if layer.flip_x || layer.flip_y {
                 out.insert("flip/1".to_string());
@@ -1696,6 +1962,50 @@ mod tests {
         );
         assert_eq!(n.fill("¥{n} 起", 59.0), "¥59 起");
         assert_eq!(n.fill("whatever", 59.0), "59");
+    }
+
+    #[test]
+    fn words_are_what_stands_between_spaces_and_each_chinese_character() {
+        assert_eq!(words("big sale  today"), [0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 2]);
+        // punctuation stays with the word before it; Latin after Chinese starts a word
+        assert_eq!(words("保温杯 Pro，限时！"), [0, 1, 2, 3, 3, 3, 3, 4, 5, 5]);
+        assert_eq!(words("新品A1 ひら"), [0, 1, 2, 2, 3, 4]);
+        assert_eq!(words("-50% off"), [0, 0, 0, 0, 1, 1, 1]);
+        assert!(words(" \n ").is_empty());
+    }
+
+    #[test]
+    fn springs_swing_past_rest_and_balls_bounce_short_of_it() {
+        let from = CharPose { offset: [0.0, -1.0], scale: 0.0, rotation: 0.0, opacity: 0.0 };
+        let m = |curve| CharMotion {
+            progress: Animated::Constant(0.0),
+            step: 0.0,
+            curve,
+            pose: from,
+            reverse: false,
+            unit: TextUnit::Char,
+        };
+        for curve in [CharCurve::Elastic, CharCurve::Bounce] {
+            let m = m(curve);
+            // from the pose to rest, all there a quarter of the way in
+            assert_eq!(m.at(0, 1, 0.0), from, "{curve:?}");
+            assert_eq!(m.at(0, 1, 1.0), CharPose::REST, "{curve:?}");
+            assert_eq!(m.at(0, 1, 0.25).opacity, 1.0);
+            // one after another
+            let later = CharMotion { step: 1.0, ..m };
+            assert_eq!((later.at(0, 2, 0.5), later.at(1, 2, 0.5)), (CharPose::REST, from));
+        }
+        let path = |curve| (1..100).map(move |i| m(curve).at(0, 1, i as f32 / 100.0)).collect::<Vec<_>>();
+        // a spring goes past rest (larger than life, below its place) and comes back more than once
+        let spring = path(CharCurve::Elastic);
+        let crossings = spring.windows(2).filter(|w| (w[0].scale > 1.0) != (w[1].scale > 1.0)).count();
+        assert!(spring.iter().any(|p| p.scale > 1.2 && p.offset[1] > 0.2) && crossings >= 3, "{crossings}");
+        // a ball never goes past the ground; it touches it and leaves it again three times
+        let ball = path(CharCurve::Bounce);
+        assert!(ball.iter().all(|p| p.offset[1] <= 1e-4 && p.scale <= 1.0 + 1e-4));
+        let hits =
+            ball.windows(3).filter(|w| w[1].offset[1] > w[0].offset[1] && w[1].offset[1] > w[2].offset[1]).count();
+        assert_eq!(hits, 3);
     }
 
     #[test]

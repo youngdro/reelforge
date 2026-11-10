@@ -33,6 +33,85 @@ pub struct Look {
     /// (剪映's 智能抠像; media clips).
     #[serde(skip_serializing_if = "is_false")]
     pub person: bool,
+    /// What stands before a plain backdrop kept and the backdrop made see-through (a product
+    /// photographed on a studio sweep; media and compound clips).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cutout: Option<Cutout>,
+    /// A shadow under the picture, of its outline as it shows (media and compound clips).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<CastShadow>,
+}
+
+/// How a plain backdrop is told from what stands before it.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct Cutout {
+    /// How far from the backdrop's colour still counts as backdrop, 0 to 1: more takes its
+    /// soft shadows and creases too, less keeps more of what is pale.
+    pub tolerance: f32,
+    /// How readily backdrop-coloured places that the picture's edges do not reach go (the
+    /// inside of a handle), 0 (never) to 1.
+    pub holes: f32,
+}
+
+impl Default for Cutout {
+    fn default() -> Self {
+        Cutout { tolerance: 0.5, holes: 0.5 }
+    }
+}
+
+/// A shadow under a picture.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct CastShadow {
+    /// Its colour: red, green and blue as on screen, 0 to 1.
+    pub color: [f32; 3],
+    /// How dark it is, 0 to 1.
+    pub opacity: f32,
+    /// How far right of the picture it lies, in shares of the picture's shorter side.
+    pub x: f32,
+    /// How far below.
+    pub y: f32,
+    /// How soft it is: the blur's deviation, in shares of the picture's shorter side.
+    pub blur: f32,
+    /// How much of its height is pressed away towards the outline's lowest line, 0 to 1: a
+    /// shadow lying on the ground the thing stands on.
+    pub flat: f32,
+    /// How far its top is pushed sideways, in shares of the outline's height, -1 to 1.
+    pub lean: f32,
+}
+
+impl Default for CastShadow {
+    /// A soft shadow a little below and to the right: the thing floats before what is behind.
+    fn default() -> Self {
+        CastShadow { color: [0.0; 3], opacity: 0.45, x: 0.015, y: 0.03, blur: 0.03, flat: 0.0, lean: 0.0 }
+    }
+}
+
+impl CastShadow {
+    /// The kinds a shadow comes ready-made in.
+    pub const KINDS: [&'static str; 4] = ["drop", "ground", "long", "glow"];
+
+    /// A ready-made shadow: `drop` floats the thing before what is behind, `ground` stands it
+    /// on a floor (a low, soft pool under its foot), `long` is the shadow of a low sun falling
+    /// to the right, `glow` is a light all round it.
+    pub fn kind(name: &str) -> Option<CastShadow> {
+        Some(match name {
+            "drop" => CastShadow::default(),
+            "ground" => CastShadow { opacity: 0.5, x: 0.0, y: 0.012, blur: 0.022, flat: 0.86, ..CastShadow::default() },
+            "long" => CastShadow {
+                opacity: 0.35,
+                x: 0.0,
+                y: 0.0,
+                blur: 0.012,
+                flat: 0.55,
+                lean: 0.45,
+                ..CastShadow::default()
+            },
+            "glow" => CastShadow { color: [1.0; 3], opacity: 0.8, x: 0.0, y: 0.0, blur: 0.04, ..CastShadow::default() },
+            _ => return None,
+        })
+    }
 }
 
 /// A colour of a picture made see-through (剪映's 色度抠图).
@@ -115,6 +194,20 @@ impl Look {
             let v = [k.color[0], k.color[1], k.color[2], k.tolerance, k.softness, k.spill];
             if v.iter().any(|x| !(0.0..=1.0).contains(x)) {
                 return Some("a chroma key's colour, tolerance, softness and spill are from 0 to 1");
+            }
+        }
+        if self.cutout.is_some_and(|c| !(0.0..=1.0).contains(&c.tolerance) || !(0.0..=1.0).contains(&c.holes)) {
+            return Some("a cut-out's tolerance and holes are from 0 to 1");
+        }
+        if let Some(s) = &self.shadow {
+            let shares = [s.color[0], s.color[1], s.color[2], s.opacity, s.flat];
+            if shares.iter().any(|x| !(0.0..=1.0).contains(x))
+                || [s.x, s.y, s.lean].iter().any(|x| !(-1.0..=1.0).contains(x))
+                || !(0.0..=0.5).contains(&s.blur)
+            {
+                return Some(
+                    "a shadow's colour, opacity and flat are from 0 to 1, its x, y and lean from -1 to 1 and its blur from 0 to 0.5",
+                );
             }
         }
         if let Some(m) = &self.mask {

@@ -40,6 +40,7 @@ mod remix;
 pub mod remote;
 mod spoken;
 mod stage;
+mod storyboard;
 mod strips;
 mod theme;
 mod timeline;
@@ -167,9 +168,11 @@ pub struct EditorApp {
     preview: Option<egui::TextureHandle>,
     /// The frame far out of focus, when it is drawn without the GPU compositor (which has its own).
     preview_glow: Option<egui::TextureHandle>,
+    /// The frame drawn without the GPU as frosted glass shows it ([`theme::frosted`]).
+    preview_frost: Option<egui::TextureHandle>,
     preview_key: Option<PreviewKey>,
     /// The picture far out of focus and where the picture was drawn last: what lights the stage.
-    lit: Option<(egui::TextureId, egui::Rect)>,
+    lit: Option<theme::Lit>,
     /// The RenderSpec the preview draws, and the revision and gesture it was compiled for: a
     /// playing preview compiles once, not every frame.
     preview_spec: Option<((u64, Moving), Option<Spec>)>,
@@ -248,6 +251,9 @@ struct GpuPreview {
     /// The compositor's glow (the frame far out of focus), registered once: it is one texture
     /// for every frame.
     glow: Option<egui::TextureId>,
+    /// The compositor's frost (the frame as frosted glass shows it), registered once like the
+    /// glow.
+    frost: Option<egui::TextureId>,
 }
 
 impl GpuPreview {
@@ -278,6 +284,13 @@ impl GpuPreview {
             let filter = eframe::wgpu::FilterMode::Linear;
             self.glow = Some(self.renderer.write().register_native_texture(&self.device, &view, filter));
         }
+        if let Some(frost) = self.compositor.frost()
+            && self.frost.is_none()
+        {
+            let view = frost.create_view(&Default::default());
+            let filter = eframe::wgpu::FilterMode::Linear;
+            self.frost = Some(self.renderer.write().register_native_texture(&self.device, &view, filter));
+        }
     }
 }
 
@@ -290,6 +303,13 @@ struct Inspector {
     scale: f32,
     rotation: f32,
     opacity: f32,
+    /// Its width and height apart, and its turn in space about the horizontal and the vertical
+    /// axis.
+    space: [f32; 4],
+    /// The point it is placed and turned about, as shares of its picture.
+    anchor: [f32; 2],
+    /// Motion blur: the share of a frame's time its shutter is open, 0 for none.
+    blur: f32,
     /// Colour and title clips, and shapes filled with one colour.
     color: Option<[f32; 4]>,
     /// Shapes: width, height, corner radius and outline width, in canvas pixels.
@@ -318,6 +338,23 @@ struct Inspector {
     adjustment: bool,
     /// Clips whose sound plays: a changed voice, a moved pitch, noise taken out.
     voice: Option<VoiceEdit>,
+    /// A ready-made piece folded into one clip: its words, its lines and its number.
+    piece: Option<PieceEdit>,
+}
+
+/// A ready-made piece's words and number, as the inspector edits them.
+#[derive(Clone, PartialEq)]
+struct PieceEdit {
+    /// The piece's shown name.
+    name: &'static str,
+    /// Its words, if it has any.
+    text: Option<String>,
+    /// Its lines, one to a row of the box, if it takes any.
+    lines: Option<String>,
+    /// Its number, if it counts.
+    value: Option<f32>,
+    /// The picture it shows, for a piece that shows one: a media id, or none.
+    picture: Option<Option<String>>,
 }
 
 /// A sounding clip's voice, as the inspector edits it.
@@ -346,6 +383,10 @@ struct LookEdit {
     chroma: Option<Option<reelforge_model::ChromaKey>>,
     /// Whether its people are cut out (the same clips again).
     person: bool,
+    /// How it is cut out from its plain backdrop, if it is (videos, pictures, compound clips).
+    cutout: Option<reelforge_model::Cutout>,
+    /// The shadow under it, if it has one (the same clips).
+    shadow: Option<reelforge_model::CastShadow>,
 }
 
 /// A picture clip's colour, as the inspector edits it.
@@ -404,6 +445,8 @@ struct Title {
     leading: f32,
     italic: bool,
     underline: bool,
+    /// What is being said takes another colour: what is lit, and the colour as on screen.
+    karaoke: Option<(reelforge_model::KaraokeMode, [u8; 3])>,
 }
 
 impl EditorApp {
@@ -459,6 +502,7 @@ impl EditorApp {
             status: String::new(),
             preview: None,
             preview_glow: None,
+            preview_frost: None,
             preview_key: None,
             lit: None,
             preview_spec: None,
@@ -568,6 +612,7 @@ impl EditorApp {
                     device: rs.device.clone(),
                     texture: None,
                     glow: None,
+                    frost: None,
                 });
             }
         }
@@ -1037,6 +1082,7 @@ impl EditorApp {
             reelforge_renderspec::AssetKind::Image => "image",
             reelforge_renderspec::AssetKind::Lut => "lut",
             reelforge_renderspec::AssetKind::Font => "font",
+            reelforge_renderspec::AssetKind::Lottie => "lottie",
             _ => "audio",
         };
         let mut params = json!({ "path": name, "kind": kind, "sha256": sha });
@@ -1049,7 +1095,11 @@ impl EditorApp {
         if let Some(d) = probe.duration {
             params["duration"] = json!(d);
         }
-        if let Ok(v) = self.execute("media.import", params) {
+        if let Ok(mut v) = self.execute("media.import", params) {
+            // the engine did not read the file here: what it uses that is not drawn was measured with it
+            if !probe.notes.is_empty() {
+                v["unsupported"] = json!(probe.notes);
+            }
             self.imported(&v, place);
         }
     }
@@ -1206,6 +1256,14 @@ impl EditorApp {
         } else {
             self.status = fill(self.s().added_to_media, &[&m.name]);
         }
+        // an animation that uses what is not drawn says so, rather than looking wrong in silence
+        let missing: Vec<&str> = imported["unsupported"]
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).map(|n| self.lang.lottie_note(n)).collect())
+            .unwrap_or_default();
+        if !missing.is_empty() {
+            self.status = fill(self.s().lottie_partial, &[&m.name, &missing.join(self.s().list_comma)]);
+        }
     }
 
     /// Puts media `m` at `at`: on `track` if it has room there, else on the lowest track of its
@@ -1286,6 +1344,36 @@ impl EditorApp {
             self.assets.show_templates();
             let slots = v["slots"].as_array().map_or(0, Vec::len);
             self.status = fill(s.remix_used, &[&name, &slots.to_string()]);
+        }
+    }
+
+    /// Builds built-in storyboard `id`, written in the interface's language: on this timeline
+    /// when nothing is on it yet, else on a new one. Its slots wait for pictures and videos and its
+    /// copy to be typed over, both in the templates tab.
+    fn use_storyboard(&mut self, id: &str) {
+        let s = self.s();
+        let lang = storyboard::lang(self.lang);
+        let Some(board) = reelforge_engine::storyboards().iter().find(|b| b.id == id) else { return };
+        let name = board.name.get(lang);
+        let params = json!({"storyboard": id, "lang": self.lang.code(), "name": name});
+        if let Ok(v) = self.execute("storyboard.apply", params) {
+            self.set_playing(false);
+            self.selected = None;
+            self.also.clear();
+            self.playhead = Tick::ZERO;
+            self.timeline_name.clear();
+            self.assets.show_storyboards();
+            let slots = v["slots"].as_array().map_or(0, Vec::len);
+            self.status = fill(s.board_used, &[&name, &slots.to_string()]);
+        }
+    }
+
+    /// Gives field `name` of the project's copy other words; the pieces written from it are made
+    /// again.
+    fn fill_copy(&mut self, name: &str, words: &str) {
+        let s = self.s();
+        if let Ok(v) = self.execute("storyboard.fill", json!({"copy": {name: words}, "lang": self.lang.code()})) {
+            self.status = fill(s.copy_filled, &[&v["pieces"].as_u64().unwrap_or(0).to_string()]);
         }
     }
 
@@ -1400,9 +1488,21 @@ impl EditorApp {
                 });
             }
             assets::Item::Promo(kind) => {
-                // a piece brings its own tracks
-                if let Ok(v) = self.execute("promo.add", json!({"kind": kind, "start": at})) {
-                    self.selected = v["clips"][0]["clip"].as_str().map(str::to_string);
+                // a piece brings its own tracks; one of many parts comes folded into one clip
+                let many = reelforge_engine::PROMOS.iter().any(|p| p.id == *kind && p.clips() > 3);
+                if let Ok(v) = self.execute("promo.add", json!({"kind": kind, "start": at, "compound": many})) {
+                    let clip = if many { &v["clip"] } else { &v["clips"][0]["clip"] };
+                    self.selected = clip.as_str().map(str::to_string);
+                }
+            }
+            assets::Item::Decor(id) => {
+                // over whatever shows there; on the track it was dropped on when that has room
+                let params = json!({"decor": id, "start": at, "name": item.label(&self.project(), s)});
+                let mut on_track = params.clone();
+                on_track["track"] = json!(track);
+                let dropped = track.and_then(|_| self.run("decor.add", &on_track).ok());
+                if let Some(v) = dropped.or_else(|| self.execute("decor.add", params).ok()) {
+                    self.selected = v["clip"].as_str().map(str::to_string);
                 }
             }
             assets::Item::Effect(kind) => {
@@ -1686,10 +1786,36 @@ impl EditorApp {
             Action::Compound => self.compound(),
             Action::Uncompound => self.uncompound(),
             Action::OpenCompound => self.open_compound(),
+            Action::Layout(id) => self.lay_out(id),
             Action::Slot => self.mark_slots(true),
             Action::Unslot => self.mark_slots(false),
             // needs the window to ask for a file: see `pick_replacement`
             Action::Replace => {}
+        }
+    }
+
+    /// Makes the selected picture clips share the frame as the layout `id` has it: the lowest
+    /// track's clip first, which is the large one of a picture in picture and the one underneath
+    /// in a comparison.
+    fn lay_out(&mut self, id: &'static str) {
+        let p = self.project();
+        let mut all: Vec<(usize, Tick, String)> = self
+            .selection()
+            .into_iter()
+            .filter_map(|c| p.clip(&c).map(|(ti, clip)| (ti, clip.start, c)))
+            .filter(|(ti, _, c)| {
+                p.tracks[*ti].kind == TrackKind::Video && p.clip(c).is_some_and(|(_, clip)| clip.is_picture())
+            })
+            .collect();
+        all.sort();
+        let clips: Vec<String> = all.into_iter().map(|(_, _, c)| c).collect();
+        if clips.len() < 2 {
+            return;
+        }
+        if self.execute("layout.apply", json!({"layout": id, "clips": clips})).is_ok() {
+            self.inspector = None;
+            let at = reelforge_engine::LAYOUTS.iter().position(|l| l.id == id).unwrap_or(0);
+            self.status = fill(self.s().layout_done, &[&self.s().layout_names[at]]);
         }
     }
 
@@ -2049,6 +2175,14 @@ impl EditorApp {
             act(icon::MERGE, s.group, "Ctrl+G", Action::Group, several),
             act(icon::MERGE, s.ungroup, "Ctrl+Shift+G", Action::Ungroup, any),
             act(icon::FILM, s.compound, "Alt+G", Action::Compound, any),
+        ];
+        // the layouts, for the pictures selected
+        for (layout, name) in reelforge_engine::LAYOUTS.iter().zip(s.layout_names) {
+            let fits = (layout.clips.0..=layout.clips.1).contains(&chosen.len());
+            let word = format!("{} · {}", s.layout, name);
+            all.push(Entry::new(icon::FILM, word, "", Run::Act(Action::Layout(layout.id))).enabled(fits));
+        }
+        all.extend([
             act(icon::FILM, s.uncompound, "Alt+Shift+G", Action::Uncompound, any),
             act(icon::DONE, s.select_all, "Ctrl+A", Action::SelectAll, true),
             Entry::new(icon::UNDO, plain(s.undo_tip), "Ctrl+Z", Run::Undo),
@@ -2062,7 +2196,7 @@ impl EditorApp {
             Entry::new(icon::ZOOM_OUT, plain(s.zoom_out_tip), "−", Run::ZoomOut),
             Entry::new(icon::SCREEN, plain(s.preview_only_tip), "F", Run::PreviewOnly),
             Entry::new(icon::SEARCH, s.hint_keys, "?", Run::Keys),
-        ];
+        ]);
         for m in &p.markers {
             let at = theme::timecode(m.at.seconds());
             let label = if m.note.is_empty() {
@@ -2077,8 +2211,9 @@ impl EditorApp {
                 MediaKind::Video => icon::VIDEO,
                 MediaKind::Image => icon::IMAGE,
                 MediaKind::Audio => icon::MUSIC,
+                MediaKind::Lottie => icon::SPARKLE,
                 // looks and fonts are not placed on a timeline
-                _ => continue,
+                MediaKind::Lut | MediaKind::Font => continue,
             };
             all.push(Entry::new(glyph, m.name.clone(), s.palette_place, Run::Media(id.clone())));
         }
@@ -2431,6 +2566,10 @@ impl EditorApp {
             .default_width(280.0)
             .show(ctx, |ui| {
                 for (i, t) in list.iter().enumerate() {
+                    // a ready-made piece's inside is gone into from its clip, not listed here
+                    if !t.current && p.timelines.iter().any(|x| x.id == t.id && x.made.is_some()) {
+                        continue;
+                    }
                     ui.horizontal(|ui| {
                         let name = self.timeline_label(&t.name, i);
                         let r = ui.selectable_label(t.current, format!("{}  {name}", icon::FILM));
@@ -2498,7 +2637,7 @@ impl EditorApp {
         let sounds = |id: &String| {
             p.clip(id).is_some_and(|(_, c)| match &c.content {
                 ClipContent::Media { media, silent, .. } => {
-                    !silent && p.media.get(media).is_some_and(|m| m.kind != MediaKind::Image)
+                    !silent && p.media.get(media).is_some_and(|m| m.kind.sounds())
                 }
                 ClipContent::Compound { timeline, .. } => p.timeline_sounds(timeline),
                 _ => false,
@@ -2691,7 +2830,13 @@ impl EditorApp {
             {
                 self.leave_compound();
             }
-            let label = if list.len() > 1 { format!("{shown}  ({}/{})", current + 1, list.len()) } else { shown };
+            // ready-made pieces folded into clips are timelines too, but not ones to count here
+            let piece = |id: &str| p.timelines.iter().any(|t| t.id == id && t.made.is_some());
+            let own: Vec<usize> = (0..list.len()).filter(|i| !piece(&list[*i].id)).collect();
+            let label = match own.iter().position(|i| *i == current) {
+                Some(at) if own.len() > 1 => format!("{shown}  ({}/{})", at + 1, own.len()),
+                _ => shown,
+            };
             if theme::tool(ui, icon::FILM, &label, s.timelines_tip, true).clicked() {
                 self.timelines_open = !self.timelines_open;
                 self.timeline_name.clear();
@@ -2862,7 +3007,7 @@ impl EditorApp {
         }
         // in quickly, out slowly
         let shown = ((age / 0.16).min(1.0) * ((STAYS - age) / 0.5).min(1.0)) as f32;
-        let middle = self.lit.map_or(ctx.content_rect().center().x, |(_, frame)| frame.center().x);
+        let middle = self.lit.map_or(ctx.content_rect().center().x, |lit| lit.frame.center().x);
         let (glyph, tint) =
             if *warn { (icon::WARNING, theme::color::WARN) } else { (icon::DONE, theme::color::ACCENT_2) };
         egui::Area::new(egui::Id::unique("toast"))
@@ -2948,7 +3093,7 @@ impl EditorApp {
             return;
         };
         let has_sound = match &clip.content {
-            ClipContent::Media { media, .. } => p.media.get(media).is_some_and(|m| m.kind != MediaKind::Image),
+            ClipContent::Media { media, .. } => p.media.get(media).is_some_and(|m| m.kind.sounds()),
             ClipContent::Compound { timeline, .. } => p.timeline_sounds(timeline),
             _ => false,
         };
@@ -2972,6 +3117,9 @@ impl EditorApp {
             scale: clip.value_at(Prop::Scale, local),
             rotation: clip.value_at(Prop::Rotation, local),
             opacity: clip.value_at(Prop::Opacity, local),
+            space: Prop::SPACE.map(|p| clip.value_at(p, local)),
+            anchor: clip.transform.anchor,
+            blur: clip.transform.motion_blur,
             color: match &clip.content {
                 ClipContent::Text { color, .. } | ClipContent::Solid { color } => Some(*color),
                 // a shape's first colour: its fill's, or its outline's
@@ -3049,6 +3197,18 @@ impl EditorApp {
                     && p.clip(&id).is_some_and(|(ti, _)| p.tracks[ti].kind == TrackKind::Video))
                 .then_some(clip.look.chroma),
                 person: clip.look.person,
+                cutout: clip.look.cutout,
+                shadow: clip.look.shadow,
+            }),
+            piece: reelforge_engine::made_of(&p, &id).and_then(|(_, made)| {
+                let (i, promo) = reelforge_engine::PROMOS.iter().enumerate().find(|(_, x)| x.id == made.kind)?;
+                Some(PieceEdit {
+                    name: s.promo_names[i],
+                    text: (!promo.text.is_empty()).then(|| made.text.clone()),
+                    lines: (!promo.lines.is_empty()).then(|| made.lines.join("\n")),
+                    value: made.value,
+                    picture: promo.pictured.then(|| made.media.clone()),
+                })
             }),
             title: match &clip.content {
                 ClipContent::Text { text, size, style, .. } => Some(Title {
@@ -3064,6 +3224,9 @@ impl EditorApp {
                     leading: style.leading * 100.0,
                     italic: style.italic,
                     underline: style.underline,
+                    karaoke: style
+                        .karaoke
+                        .map(|k| (k.mode, [k.color[0], k.color[1], k.color[2]].map(|v| (v * 255.0).round() as u8))),
                 }),
                 _ => None,
             },
@@ -3087,6 +3250,7 @@ impl EditorApp {
             ClipContent::Media { media, .. } => match p.media.get(media).map(|m| m.kind) {
                 Some(MediaKind::Image) => (icon::IMAGE, s.kind_picture),
                 Some(MediaKind::Audio) => (icon::MUSIC, s.kind_sound),
+                Some(MediaKind::Lottie) => (icon::SPARKLE, "Lottie"),
                 _ => (icon::VIDEO, s.kind_video),
             },
             ClipContent::Text { .. } => (icon::TEXT, s.kind_title),
@@ -3130,6 +3294,46 @@ impl EditorApp {
         let looks = self.looks.as_deref().unwrap_or_default();
         // tools that work on several clips take the whole selection when this clip is in it
         let chosen = Some(self.selection()).filter(|all| all.contains(&id)).unwrap_or_else(|| vec![id.clone()]);
+        // what could carry it: the other clips drawn on this timeline that it does not carry
+        // itself, each by what it shows
+        let carried_by = clip.parent.clone();
+        fn carries(p: &reelforge_model::Project, id: &str, c: &reelforge_model::Clip) -> bool {
+            let mut up = c.parent.as_deref();
+            for _ in 0..=reelforge_renderspec::PARENTS {
+                match up.and_then(|up| p.clip(up)) {
+                    Some((_, c)) if c.id == id => return true,
+                    Some((_, c)) => up = c.parent.as_deref(),
+                    None => return false,
+                }
+            }
+            true
+        }
+        let carriers: Vec<(String, String)> = p
+            .tracks
+            .iter()
+            .filter(|t| t.kind != TrackKind::Audio)
+            .flat_map(|t| &t.clips)
+            .filter(|c| c.id != id && !c.is_adjustment() && !carries(&p, &id, c))
+            .map(|c| {
+                let what = match &c.content {
+                    ClipContent::Text { text, .. } => text.chars().take(12).collect(),
+                    ClipContent::Media { media, .. } => p.media.get(media).map_or(String::new(), |m| m.name.clone()),
+                    ClipContent::Shape { shape } => {
+                        let i = reelforge_model::ShapeKind::ALL.iter().position(|k| *k == shape.kind).unwrap_or(0);
+                        s.shape_names[i].to_string()
+                    }
+                    ClipContent::Solid { .. } => s.kind_colour.to_string(),
+                    ClipContent::Compound { .. } => s.kind_compound.to_string(),
+                    ClipContent::Adjustment => String::new(),
+                };
+                (c.id.clone(), if what.is_empty() { c.id.clone() } else { format!("{what} · {}", c.id) })
+            })
+            .collect();
+        let on_path = clip.path.as_ref().map(|path| path.points.len());
+        let spaced = clip.transform.in_space()
+            || clip.parent.is_some()
+            || clip.path.is_some()
+            || Prop::SPACE.iter().any(|p| clip.keyed(*p));
         let edit = self.inspector.as_mut().expect("set above");
         let mut commit = false;
         let mut reshape = false;
@@ -3173,13 +3377,80 @@ impl EditorApp {
             (cmd, json!({"clip": id, "prop": prop.name(), "at": at}))
         };
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            if let Some(piece) = &mut edit.piece {
+                // a ready-made piece: its words are given here, and it is made again to fit them
+                let was = current.piece.as_ref();
+                theme::section(ui, piece.name, |ui| {
+                    let mut told = serde_json::Map::new();
+                    if let Some(text) = &mut piece.text {
+                        let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+                        if r.lost_focus() && was.is_some_and(|w| w.text.as_ref() != Some(text)) {
+                            told.insert("text".into(), json!(text));
+                        }
+                    }
+                    if let Some(lines) = &mut piece.lines {
+                        let rows = lines.lines().count().clamp(2, 6);
+                        let r =
+                            ui.add(egui::TextEdit::multiline(lines).desired_rows(rows).desired_width(f32::INFINITY));
+                        if r.lost_focus() && was.is_some_and(|w| w.lines.as_ref() != Some(lines)) {
+                            let rows: Vec<&str> = lines.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+                            told.insert("lines".into(), json!(rows));
+                        }
+                    }
+                    if let Some(value) = &mut piece.value {
+                        egui::Grid::new("piece").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                            if row(ui, s.piece_number, value, 1.0, -1e9..=1e9, "") {
+                                told.insert("value".into(), json!(*value));
+                            }
+                        });
+                    }
+                    if let Some(picture) = &mut piece.picture {
+                        let pictures: Vec<(&str, &str)> = p
+                            .media
+                            .values()
+                            .filter(|m| matches!(m.kind, MediaKind::Image | MediaKind::Video))
+                            .map(|m| (m.id.as_str(), m.name.as_str()))
+                            .collect();
+                        let shown = picture
+                            .as_deref()
+                            .and_then(|at| pictures.iter().find(|(id, _)| *id == at))
+                            .map_or(s.none, |(_, name)| *name);
+                        let was = picture.clone();
+                        egui::Grid::new("piece picture").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                            theme::field_name(ui, s.piece_picture);
+                            egui::ComboBox::from_id_salt("piece picture")
+                                .selected_text(shown)
+                                .width(ui.available_width())
+                                .truncate()
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(picture, None, s.none);
+                                    for (id, name) in &pictures {
+                                        ui.selectable_value(picture, Some(id.to_string()), *name);
+                                    }
+                                });
+                            ui.end_row();
+                        });
+                        if *picture != was {
+                            told.insert("media".into(), json!(picture));
+                        }
+                    }
+                    ui.label(egui::RichText::new(s.piece_tip).small().color(theme::color::WEAK));
+                    if !told.is_empty() {
+                        told.insert("clip".into(), json!(id));
+                        actions.push(("promo.set", Value::Object(told)));
+                    }
+                });
+            }
             if let Some(t) = &mut edit.title {
                 theme::section(ui, s.sec_text, |ui| {
                     let r = ui.add(egui::TextEdit::multiline(&mut t.text).desired_rows(3).desired_width(f32::INFINITY));
                     commit |= r.lost_focus();
                     egui::Grid::new("title").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
                         theme::field_name(ui, s.font);
-                        ui.horizontal(|ui| {
+                        // right to left, so the list takes exactly what the button leaves: a row
+                        // that asks for more than there is widens the panel, frame after frame
+                        let room = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+                        ui.allocate_ui_with_layout(room, egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let fonts: Vec<(&str, &str)> = p
                                 .media
                                 .values()
@@ -3192,9 +3463,11 @@ impl EditorApp {
                                 .and_then(|f| fonts.iter().find(|(id, _)| *id == f))
                                 .map_or(s.font_default, |(_, name)| *name);
                             let was = t.font.clone();
+                            pick_font |= ui.button(icon::ADD).on_hover_text(s.font_import).clicked();
                             egui::ComboBox::from_id_salt("font")
                                 .selected_text(shown)
-                                .width(ui.available_width() - 40.0)
+                                .width(ui.available_width())
+                                .truncate()
                                 .show_ui(ui, |ui| {
                                     ui.selectable_value(&mut t.font, None, s.font_default);
                                     for (fid, name) in &fonts {
@@ -3202,7 +3475,6 @@ impl EditorApp {
                                     }
                                 });
                             commit |= t.font != was;
-                            pick_font |= ui.button(icon::ADD).on_hover_text(s.font_import).clicked();
                         });
                         ui.end_row();
                         commit |= row(ui, s.size, &mut t.size, 1.0, 8.0..=600.0, " px");
@@ -3210,12 +3482,12 @@ impl EditorApp {
                         commit |= row(ui, s.tracking, &mut t.tracking, 1.0, lo * 100.0..=hi * 100.0, " %");
                         commit |= row(ui, s.leading, &mut t.leading, 1.0, lo * 100.0..=hi * 100.0, " %");
                     });
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         commit |= ui.toggle_value(&mut t.bold, s.bold).changed();
                         commit |= ui.toggle_value(&mut t.italic, s.italic).changed();
                         commit |= ui.toggle_value(&mut t.underline, s.underline).changed();
                     });
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         commit |= ui.toggle_value(&mut t.outline, s.outline).changed();
                         commit |= ui.toggle_value(&mut t.boxed, s.boxed).changed();
                         commit |= ui.toggle_value(&mut t.shadow, s.shadowed).changed();
@@ -3223,6 +3495,27 @@ impl EditorApp {
                             // boxes per line need a box
                             t.boxed |= t.line_boxes;
                             commit = true;
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        let mut on = t.karaoke.is_some();
+                        if ui.toggle_value(&mut on, s.karaoke).on_hover_text(s.karaoke_tip).changed() {
+                            t.karaoke = on.then_some((reelforge_model::KaraokeMode::Sweep, [255, 214, 26]));
+                            commit = true;
+                        }
+                        if let Some((mode, rgb)) = &mut t.karaoke {
+                            let at = reelforge_model::KaraokeMode::ALL.iter().position(|m| m == mode).unwrap_or(0);
+                            egui::ComboBox::from_id_salt("karaoke").selected_text(s.karaoke_modes[at]).show_ui(
+                                ui,
+                                |ui| {
+                                    for (m, name) in reelforge_model::KaraokeMode::ALL.into_iter().zip(s.karaoke_modes)
+                                    {
+                                        commit |= ui.selectable_value(mode, m, name).changed();
+                                    }
+                                },
+                            );
+                            // sent once the picker is let go
+                            ui.color_edit_button_srgb(rgb);
                         }
                     });
                 });
@@ -3330,7 +3623,96 @@ impl EditorApp {
                             });
                             ui.end_row();
                         }
+                        // smeared along its way while it moves: a switch, and beside it how long
+                        // the shutter is open, as a share of a frame
+                        theme::field_name(ui, s.motion_blur).on_hover_text(s.motion_blur_tip);
+                        ui.horizontal(|ui| {
+                            let mut on = edit.blur > 0.0;
+                            if ui.checkbox(&mut on, "").on_hover_text(s.motion_blur_tip).changed() {
+                                edit.blur = if on { ClipTransform::SHUTTERS.0 } else { 0.0 };
+                                commit = true;
+                            }
+                            if on {
+                                let mut percent = edit.blur * 100.0;
+                                let r = ui.add_sized(
+                                    [ui.available_width() - 26.0, 24.0],
+                                    egui::DragValue::new(&mut percent)
+                                        .speed(1.0)
+                                        .range(5.0..=ClipTransform::SHUTTERS.1 * 100.0)
+                                        .fixed_decimals(0)
+                                        .suffix(" %"),
+                                );
+                                if r.changed() {
+                                    edit.blur = percent / 100.0;
+                                }
+                                commit |= r.drag_stopped() || (r.changed() && !r.dragged());
+                            }
+                        });
+                        ui.end_row();
                     });
+                    // stretched, turned in space, placed by another point, carried: out of the way
+                    // until one of them is wanted
+                    if theme::disclosure(ui, s.sec_space, spaced) {
+                        egui::Grid::new("space").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                            let rows = [
+                                (Prop::ScaleX, s.stretch_x, 0.01, -10.0..=10.0, "×"),
+                                (Prop::ScaleY, s.stretch_y, 0.01, -10.0..=10.0, "×"),
+                                (Prop::RotationX, s.turn_x, 0.5, -360.0..=360.0, "°"),
+                                (Prop::RotationY, s.turn_y, 0.5, -360.0..=360.0, "°"),
+                            ];
+                            for ((prop, name, speed, range, suffix), v) in rows.into_iter().zip(&mut edit.space) {
+                                theme::field_name(ui, name);
+                                ui.horizontal(|ui| {
+                                    let r = ui.add_sized(
+                                        [ui.available_width() - 26.0, 24.0],
+                                        egui::DragValue::new(v).speed(speed).range(range).suffix(suffix),
+                                    );
+                                    commit |= r.drag_stopped() || (r.changed() && !r.dragged());
+                                    if key_button(ui, mark_of(prop)) {
+                                        actions.push(toggle(prop, mark_of(prop)));
+                                    }
+                                });
+                                ui.end_row();
+                            }
+                            theme::field_name(ui, s.anchor).on_hover_text(s.anchor_tip);
+                            ui.horizontal(|ui| {
+                                let w = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+                                for v in &mut edit.anchor {
+                                    let r = ui.add_sized(
+                                        [w, 24.0],
+                                        egui::DragValue::new(v).speed(0.01).range(0.0..=1.0).fixed_decimals(2),
+                                    );
+                                    commit |= r.drag_stopped() || (r.changed() && !r.dragged());
+                                }
+                            });
+                            ui.end_row();
+                            theme::field_name(ui, s.parent).on_hover_text(s.parent_tip);
+                            let name = |id: &String| carriers.iter().find(|(c, _)| c == id).map(|(_, n)| n.as_str());
+                            let mut picked = carried_by.clone();
+                            egui::ComboBox::from_id_salt("parent")
+                                .selected_text(carried_by.as_ref().and_then(name).unwrap_or(s.none))
+                                .width(ui.available_width())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut picked, None, s.none);
+                                    for (c, name) in &carriers {
+                                        ui.selectable_value(&mut picked, Some(c.clone()), name);
+                                    }
+                                });
+                            if picked != carried_by {
+                                actions.push(("clip.setParent", json!({"clip": id, "parent": picked, "at": at})));
+                            }
+                            ui.end_row();
+                        });
+                        if let Some(points) = on_path {
+                            ui.horizontal(|ui| {
+                                let said = fill(s.path_points, &[&points]);
+                                ui.label(egui::RichText::new(said).small().color(theme::color::WEAK));
+                                if ui.small_button("×").on_hover_text(s.path_remove).clicked() {
+                                    actions.push(("clip.setPath", json!({"clip": id, "points": null})));
+                                }
+                            });
+                        }
+                    }
                 });
             }
             // how the values travel between the keyframes around the playhead
@@ -3542,6 +3924,78 @@ impl EditorApp {
                                     *value = percent / 100.0;
                                     if changed(&r) {
                                         actions.push(("clip.setChromaKey", json!({"clip": id, name: *value})));
+                                    }
+                                    ui.end_row();
+                                }
+                            }
+                        }
+                        if l.media {
+                            // lifted off a plain backdrop, and the shadow under what is left
+                            theme::field_name(ui, s.cutout);
+                            let mut on = l.cutout.is_some();
+                            if ui.checkbox(&mut on, "").on_hover_text(s.cutout_tip).changed() {
+                                actions.push(("clip.setCutout", json!({"clip": id, "on": on})));
+                            }
+                            ui.end_row();
+                            if let Some(c) = &mut l.cutout {
+                                let rows = [
+                                    (s.cutout_names[0], "tolerance", &mut c.tolerance),
+                                    (s.cutout_names[1], "holes", &mut c.holes),
+                                ];
+                                for (label, name, value) in rows {
+                                    theme::field_name(ui, label);
+                                    let mut percent = *value * 100.0;
+                                    let r = ui.add_sized(
+                                        [ui.available_width(), 22.0],
+                                        egui::DragValue::new(&mut percent).speed(0.5).range(0.0..=100.0).suffix(" %"),
+                                    );
+                                    *value = percent / 100.0;
+                                    if changed(&r) {
+                                        actions.push(("clip.setCutout", json!({"clip": id, name: *value})));
+                                    }
+                                    ui.end_row();
+                                }
+                            }
+                            theme::field_name(ui, s.cast_shadow);
+                            ui.horizontal(|ui| {
+                                let mut on = l.shadow.is_some();
+                                if ui.checkbox(&mut on, "").on_hover_text(s.cast_shadow_tip).changed() {
+                                    actions.push(("clip.setShadow", json!({"clip": id, "on": on})));
+                                }
+                                if let Some(sh) = &mut l.shadow {
+                                    // the colour as on screen; it is sent once the picker is let go
+                                    let mut rgb = sh.color.map(|v| (v * 255.0).round() as u8);
+                                    if ui.color_edit_button_srgb(&mut rgb).changed() {
+                                        sh.color = rgb.map(|v| f32::from(v) / 255.0);
+                                    }
+                                    ui.menu_button(s.cast_shadow_kind, |ui| {
+                                        for (kind, name) in
+                                            reelforge_model::CastShadow::KINDS.iter().zip(s.cast_shadow_kinds)
+                                        {
+                                            if ui.button(name).clicked() {
+                                                actions.push(("clip.setShadow", json!({"clip": id, "kind": kind})));
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                }
+                            });
+                            ui.end_row();
+                            if let Some(sh) = &mut l.shadow {
+                                let rows = [
+                                    (s.cast_shadow_names[0], "opacity", &mut sh.opacity, 100.0),
+                                    (s.cast_shadow_names[1], "blur", &mut sh.blur, 10.0),
+                                ];
+                                for (label, name, value, most) in rows {
+                                    theme::field_name(ui, label);
+                                    let mut percent = *value * 100.0;
+                                    let r = ui.add_sized(
+                                        [ui.available_width(), 22.0],
+                                        egui::DragValue::new(&mut percent).speed(0.2).range(0.0..=most).suffix(" %"),
+                                    );
+                                    *value = percent / 100.0;
+                                    if changed(&r) {
+                                        actions.push(("clip.setShadow", json!({"clip": id, name: *value})));
                                     }
                                     ui.end_row();
                                 }
@@ -3880,7 +4334,7 @@ impl EditorApp {
                                 |ui| {
                                     ui.selectable_value(&mut picked, None, s.anim_none);
                                     for (k, name) in AnimKind::ALL.into_iter().zip(names.iter()) {
-                                        if (!k.titles_only() || titled) && (!k.shapes_only() || shaped) {
+                                        if (!k.titles_only() || titled) && (!k.drawn_only() || shaped || titled) {
                                             ui.selectable_value(&mut picked, Some(k), *name);
                                         }
                                     }
@@ -4032,7 +4486,8 @@ impl EditorApp {
             }
         }
         // a colour is committed once the pointer lets go of the picker
-        let picked = self.inspector.as_ref().is_some_and(|e| e.color != current.color);
+        let lit = |i: &Inspector| i.title.as_ref().and_then(|t| t.karaoke).map(|k| k.1);
+        let picked = self.inspector.as_ref().is_some_and(|e| e.color != current.color || lit(e) != lit(&current));
         commit |= picked && !ui.ctx().egui_is_using_pointer();
         for (cmd, params) in actions {
             if cmd == "clip.pickChromaKey" {
@@ -4065,6 +4520,14 @@ impl EditorApp {
         {
             let _ = self.execute("clip.setChromaKey", json!({"clip": id, "color": now}));
         }
+        // and so is a shadow's
+        let cast = |i: &Inspector| i.look.as_ref().and_then(|l| l.shadow).map(|s| s.color);
+        if let (Some(now), Some(was)) = (self.inspector.as_ref().and_then(cast), cast(&current))
+            && now != was
+            && !ui.ctx().egui_is_using_pointer()
+        {
+            let _ = self.execute("clip.setShadow", json!({"clip": id, "color": now}));
+        }
         if commit && self.inspector.as_ref() != Some(&current) {
             let e = self.inspector.clone().expect("set");
             // only what changed is sent, at the playhead, so keyframed values change only there
@@ -4075,10 +4538,24 @@ impl EditorApp {
                 (Prop::Scale, e.scale, current.scale),
                 (Prop::Rotation, e.rotation, current.rotation),
                 (Prop::Opacity, e.opacity, current.opacity),
+                (Prop::ScaleX, e.space[0], current.space[0]),
+                (Prop::ScaleY, e.space[1], current.space[1]),
+                (Prop::RotationX, e.space[2], current.space[2]),
+                (Prop::RotationY, e.space[3], current.space[3]),
             ] {
                 if now != was {
                     params[prop.name()] = json!(now);
                 }
+            }
+            for (name, now, was) in
+                [("anchorX", e.anchor[0], current.anchor[0]), ("anchorY", e.anchor[1], current.anchor[1])]
+            {
+                if now != was {
+                    params[name] = json!(now);
+                }
+            }
+            if e.blur != current.blur {
+                params["motionBlur"] = json!(e.blur);
             }
             if let Some(c) = e.color
                 && e.color != current.color
@@ -4136,6 +4613,15 @@ impl EditorApp {
                 if was.is_some_and(|w| w.underline != t.underline) {
                     params["underline"] = json!(t.underline);
                 }
+                if was.is_some_and(|w| w.karaoke != t.karaoke) {
+                    params["karaoke"] = match t.karaoke {
+                        Some((mode, rgb)) => {
+                            let [r, g, b] = rgb.map(|v| f32::from(v) / 255.0);
+                            json!({"mode": mode.name(), "color": [r, g, b, 1.0]})
+                        }
+                        None => Value::Null,
+                    };
+                }
             }
             if self.execute("clip.set", params).is_err() {
                 self.inspector = Some(current);
@@ -4150,8 +4636,14 @@ impl EditorApp {
         }
     }
 
-    fn preview(&mut self, ui: &mut egui::Ui) {
+    fn preview(&mut self, ui: &mut egui::Ui, edge: f32) {
         self.lit = None;
+        // the picture is fitted above the transport, which floats over the bottom of the stage
+        let stage = ui.available_rect_before_wrap();
+        let area = egui::Rect::from_min_max(
+            stage.min + egui::vec2(edge, edge),
+            stage.max - egui::vec2(edge, edge + TRANSPORT_ROOM),
+        );
         let mut p = self.project();
         // a gesture in progress is drawn from a copy with the clip's new placement
         if let Some(g) = &self.gesture
@@ -4195,7 +4687,6 @@ impl EditorApp {
         let revision = self.session.revision();
         let long = p.canvas.width.max(p.canvas.height) as f32;
         // as many pixels as the frame covers on this screen
-        let area = ui.available_rect_before_wrap();
         let fit = (area.width() / p.canvas.width.max(1) as f32).min(area.height() / p.canvas.height.max(1) as f32);
         let on_screen = long * fit * self.zoom * ui.ctx().pixels_per_point();
         let mut scale = preview_scale(long, on_screen, self.gpu.is_some(), self.playing, self.full_quality);
@@ -4275,6 +4766,14 @@ impl EditorApp {
                             Some(ui.ctx().load_texture("preview glow", glow, egui::TextureOptions::LINEAR));
                     }
                 }
+                let frost = theme::frosted(&color);
+                match &mut self.preview_frost {
+                    Some(t) => t.set(frost, egui::TextureOptions::LINEAR),
+                    None => {
+                        self.preview_frost =
+                            Some(ui.ctx().load_texture("preview frost", frost, egui::TextureOptions::LINEAR));
+                    }
+                }
                 match &mut self.preview {
                     Some(t) => t.set(color, egui::TextureOptions::LINEAR),
                     None => self.preview = Some(ui.ctx().load_texture("preview", color, egui::TextureOptions::LINEAR)),
@@ -4283,33 +4782,47 @@ impl EditorApp {
             self.preview.as_ref().map(|t| (t.id(), t.size().map(|v| v as f32)))
         };
         let Some((id, [w, h])) = shown else { return };
-        let area = ui.available_rect_before_wrap();
-        let response = ui.allocate_rect(area, egui::Sense::click_and_drag());
-        // Ctrl + wheel (or a pinch) zooms around the pointer; the middle button pans
+        let response = ui.allocate_rect(stage, egui::Sense::click_and_drag());
+        // Ctrl + wheel (or a pinch) zooms around the pointer; the wheel alone, two fingers on a
+        // trackpad and the middle button move the picture
+        let mut panning = response.dragged_by(egui::PointerButton::Middle);
         if response.hovered() {
-            let (z, pointer) = ui.input(|i| (i.zoom_delta(), i.pointer.hover_pos()));
+            // (taken, so that nothing else scrolls by what moved the picture)
+            let (z, scroll, pointer) =
+                ui.input_mut(|i| (i.zoom_delta(), std::mem::take(&mut i.smooth_scroll_delta), i.pointer.hover_pos()));
             if z != 1.0 {
                 let zoom = (self.zoom * z).clamp(0.25, 8.0);
                 let at = pointer.unwrap_or(area.center()) - area.center();
                 self.pan = at - (at - self.pan) * (zoom / self.zoom);
                 self.zoom = zoom;
             }
+            self.pan += scroll;
+            panning |= scroll != egui::Vec2::ZERO;
         }
         if response.dragged_by(egui::PointerButton::Middle) {
             self.pan += response.drag_delta();
         }
-        if self.zoom == 1.0 && self.pan.length() < 1.0 {
+        // a fitted picture stays put, but for a move that is under way (a slow one is less than a
+        // point a frame)
+        if self.zoom == 1.0 && self.pan.length() < 1.0 && !panning {
             self.pan = egui::Vec2::ZERO;
         }
         let s = (area.width() / w).min(area.height() / h) * self.zoom;
-        let frame_rect = egui::Rect::from_center_size(area.center() + self.pan, egui::vec2(w * s, h * s));
+        let size = egui::vec2(w * s, h * s);
+        self.pan = held_in_sight(self.pan, size, area.size());
+        let frame_rect = egui::Rect::from_center_size(area.center() + self.pan, size);
         // its light, for the stage around it
         let glow = match &self.gpu {
             Some(g) if g.texture.is_some() => g.glow,
             _ => self.preview_glow.as_ref().map(egui::TextureHandle::id),
         };
-        self.lit = glow.map(|glow| (glow, frame_rect));
-        ui.painter_at(area).image(
+        let frost = match &self.gpu {
+            Some(g) if g.texture.is_some() => g.frost,
+            _ => self.preview_frost.as_ref().map(egui::TextureHandle::id),
+        };
+        self.lit = glow.map(|glow| theme::Lit { glow, frost, frame: frame_rect });
+        // over the whole stage: moved or enlarged, the picture passes behind the transport
+        ui.painter_at(stage).image(
             id,
             frame_rect,
             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
@@ -4360,7 +4873,10 @@ impl EditorApp {
             shaping,
             &mut self.gesture,
             // where the clip is now: its keyframed placement at the playhead
-            |id| committed.clip(id).map(|(_, c)| placement_at(c, at)),
+            |id| {
+                let (_, c) = committed.clip(id)?;
+                Some((placement_at(c, at), reelforge_engine::space::carried_move(&committed, id, at)))
+            },
         );
         if let Some(sel) = out.select {
             self.selected = sel;
@@ -4484,6 +5000,7 @@ fn placement_at(c: &reelforge_model::Clip, at: Tick) -> ClipTransform {
         y: c.value_at(Prop::Y, t),
         scale: c.value_at(Prop::Scale, t),
         rotation: c.value_at(Prop::Rotation, t),
+        ..c.transform
     }
 }
 
@@ -4492,11 +5009,11 @@ fn placement_at(c: &reelforge_model::Clip, at: Tick) -> ClipTransform {
 /// What Import offers: video, pictures, sound, LUTs, fonts, captions and CapCut drafts.
 const IMPORTABLE: &[&str] = &[
     "mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "webp", "gif", "mp3", "wav", "m4a", "aac", "flac", "ogg",
-    "opus", "cube", "ttf", "otf", "ttc", "srt", "json",
+    "opus", "cube", "ttf", "otf", "ttc", "srt", "json", "lottie",
 ];
 
 /// What fills a template's slot or takes a clip's place: video and pictures.
-const PICTURES: &[&str] = &["mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "webp", "gif"];
+const PICTURES: &[&str] = &["mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "webp", "gif", "json", "lottie"];
 
 /// What a title's font button offers.
 const FONTS: &[&str] = &["ttf", "otf", "ttc"];
@@ -4584,6 +5101,17 @@ const RECOVERY_DELAY: f64 = 1.0;
 /// held upright, a narrow browser window).
 /// How wide the capsule under the preview gets.
 const TRANSPORT_WIDEST: f32 = 780.0;
+/// The height at the bottom of the stage that the transport floats in: a fitted picture ends
+/// above it.
+const TRANSPORT_ROOM: f32 = 58.0;
+
+/// `pan` (how far the picture's middle is from the middle of its `room`) no further than leaves
+/// some of a picture of `size` in sight.
+fn held_in_sight(pan: egui::Vec2, size: egui::Vec2, room: egui::Vec2) -> egui::Vec2 {
+    const IN_SIGHT: f32 = 64.0;
+    let most = ((size + room) / 2.0 - egui::Vec2::splat(IN_SIGHT)).max(egui::Vec2::ZERO);
+    pan.clamp(-most, most)
+}
 const NARROW_BELOW: f32 = 860.0;
 
 /// What shows under the preview of a narrow window.
@@ -4719,8 +5247,8 @@ impl eframe::App for EditorApp {
         // everything sits on the stage: the bars straight on it, the panels as islands with gaps
         ui.painter().rect_filled(ctx.content_rect(), 0.0, theme::color::STAGE);
         // the picture lights the stage around it (from where it was drawn a frame ago)
-        if let Some((texture, frame)) = self.lit {
-            theme::ambient(ui.painter(), texture, frame, 1.0);
+        if let Some(lit) = self.lit {
+            theme::ambient(ui.painter(), lit.glow, lit.frame, 1.0);
         }
         let bar = |_| egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 6));
         let gap = theme::GAP;
@@ -4798,28 +5326,21 @@ impl eframe::App for EditorApp {
                 egui::Margin { left: gap / 2, right: gap, top: 0, bottom: gap / 2 }
             }))
             .show_collapsible(ui, &mut adjust_on.clone(), |ui| self.inspector(ui));
-        let edge = if narrow { 8 } else { 16 };
-        // the transport is a capsule of glass under the picture, no wider than it needs to be
-        egui::Panel::bottom("transport").exact_size(58.0).show_separator_line(false).frame(egui::Frame::new()).show(
-            ui,
-            |ui| {
-                let room = ui.max_rect();
-                let w = (room.width() - if narrow { 16.0 } else { 48.0 }).min(TRANSPORT_WIDEST);
-                let capsule = egui::Rect::from_center_size(room.center() - egui::vec2(0.0, 4.0), egui::vec2(w, 50.0));
-                ui.painter().rect(
-                    capsule,
-                    egui::CornerRadius::same(25),
-                    theme::color::GLASS,
-                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(34)),
-                    egui::StrokeKind::Inside,
-                );
-                let inner = capsule.shrink2(egui::vec2(18.0, 8.0));
-                ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| self.transport(ui));
-            },
-        );
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().inner_margin(egui::Margin::same(edge)))
-            .show(ui, |ui| self.preview(ui));
+        let edge = if narrow { 8.0 } else { 16.0 };
+        egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
+            let stage = ui.max_rect();
+            self.preview(ui, edge);
+            // the transport is a capsule of glass floating over the bottom of the stage, no wider
+            // than it needs to be: the picture shows through it, frosted
+            let room = stage.with_min_y(stage.bottom() - TRANSPORT_ROOM);
+            let w = (room.width() - if narrow { 16.0 } else { 48.0 }).min(TRANSPORT_WIDEST);
+            let capsule = egui::Rect::from_center_size(room.center() - egui::vec2(0.0, 4.0), egui::vec2(w, 50.0));
+            theme::floating_capsule(ui.painter(), capsule, self.lit);
+            // what is under the glass is not clicked, dragged or scrolled through it
+            ui.interact(capsule, ui.scope_id().with("transport"), egui::Sense::click_and_drag());
+            let inner = capsule.shrink2(egui::vec2(18.0, 8.0));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| self.transport(ui));
+        });
 
         if let Some(t) = out.seek {
             let before = self.playhead;
@@ -4890,6 +5411,8 @@ impl eframe::App for EditorApp {
             }
             Some(assets::Action::Captions(ask)) => self.captions_ask(ask, &ctx),
             Some(assets::Action::Template(id)) => self.use_template(id),
+            Some(assets::Action::Storyboard(id)) => self.use_storyboard(id),
+            Some(assets::Action::Copy(name, words)) => self.fill_copy(&name, &words),
             Some(assets::Action::Fill) => self.pick_fill(&ctx),
             None => {}
         }

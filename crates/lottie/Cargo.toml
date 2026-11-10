@@ -1,0 +1,15 @@
+[package]
+name = "reelforge-lottie"
+description = "Lottie animations (Bodymovin JSON and dotLottie) read and drawn in plain Rust: shape, solid, image, precomposition and glyph-text layers, keyframes with their easing, masks, track mattes, trim paths, repeaters, gradients."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+base64 = { workspace = true }
+miniz_oxide = "0.8"

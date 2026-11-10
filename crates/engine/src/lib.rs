@@ -15,14 +15,19 @@ mod captions;
 mod commands;
 mod compound;
 mod cut;
+mod decor;
+mod layout;
 pub mod listen;
 mod outline;
 mod params;
+mod pieces;
 mod promo;
 mod remix;
 mod schema;
 mod script;
 mod shared;
+pub mod space;
+mod storyboard;
 mod templates;
 mod voiceover;
 
@@ -34,11 +39,14 @@ use thiserror::Error;
 
 pub use captions::{CAPTIONS_TRACK, CAPTIONS_TRACK_2, Cue, format_srt, parse_srt};
 pub use commands::{CommandSpec, media_uses, registry};
+pub use layout::{LAYOUTS, Layout};
 pub use params::parse_time;
-pub use promo::{PROMOS, Promo};
+pub use pieces::{Category, PROMOS, Promo};
+pub use promo::made_of;
 pub use remix::{TimelineTemplate, is_empty_slot, slot_colour, slot_states, timeline_template, timeline_templates};
 pub use schema::input_schema;
 pub use shared::{Change, SharedSession};
+pub use storyboard::{Field, Lang, Said, Scene, Storyboard, field_label, scene_label, storyboards};
 pub use templates::{TitleTemplate, title_template, title_templates};
 pub use voiceover::{Spoken, VOICEOVER_TRACK, spoken_lines};
 

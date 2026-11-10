@@ -284,10 +284,31 @@ pub(crate) fn brand(ui: &mut egui::Ui, name: bool) {
     }
 }
 
+/// The picture as the stage and the glass over it show it: where it is drawn, its light (`glow`:
+/// the picture far out of focus, a few texels, the compositor's or [`out_of_focus`]) and, where
+/// there is one, the picture as frosted glass shows it (the compositor's or [`frosted`]).
+#[derive(Clone, Copy)]
+pub(crate) struct Lit {
+    pub glow: egui::TextureId,
+    pub frost: Option<egui::TextureId>,
+    pub frame: egui::Rect,
+}
+
+/// Where in the glow the light at `pos` comes from, and how much of it there is: light beside the
+/// picture comes from the side of it that is nearest, and falls off with the distance.
+fn light(frame: egui::Rect, strength: f32, pos: egui::Pos2) -> (egui::Pos2, Color32) {
+    let reach = 1.5 * frame.width().max(frame.height());
+    let fall = 0.3 + 0.7 * (1.0 - frame.distance_to_pos(pos) / reach * 1.6).clamp(0.0, 1.0).powi(2);
+    // where along the picture (-1 to 1) the light at `a` half-widths from its middle comes from:
+    // over half of the way out at its edge, and nearer the edge the further off
+    let from = |a: f32| a.signum() * if a.abs() < 1.0 { 0.6 * a.abs() } else { 1.0 - 0.4 / a.abs() };
+    let off = (pos - frame.center()) / (frame.size() * 0.5);
+    let uv = egui::pos2(0.5 + 0.5 * from(off.x), 0.5 + 0.5 * from(off.y));
+    (uv, Color32::WHITE.gamma_multiply(strength * 0.62 * fall))
+}
+
 /// The picture's light, on the stage and through the glass over it. `glow` is the picture far out
-/// of focus (a few texels: the compositor's, or [`out_of_focus`]), drawn once over all it lights:
-/// light beside the picture comes from the side of it that is nearest, and falls off with the
-/// distance. `strength` is 1 for a picture that is the only light.
+/// of focus, drawn once over all it lights. `strength` is 1 for a picture that is the only light.
 pub(crate) fn ambient(painter: &egui::Painter, glow: egui::TextureId, frame: egui::Rect, strength: f32) {
     /// Cells across the lit area: the fall of the light is drawn through their corners.
     const CELLS: usize = 32;
@@ -296,21 +317,12 @@ pub(crate) fn ambient(painter: &egui::Painter, glow: egui::TextureId, frame: egu
     if lit.width() <= 0.0 || lit.height() <= 0.0 || frame.width() <= 0.0 || frame.height() <= 0.0 {
         return;
     }
-    let fall = |at: egui::Pos2| {
-        let d = frame.distance_to_pos(at) / reach;
-        0.3 + 0.7 * (1.0 - d * 1.6).clamp(0.0, 1.0).powi(2)
-    };
-    // where along the picture (-1 to 1) the light at `a` half-widths from its middle comes from:
-    // over half of the way out at its edge, and nearer the edge the further off
-    let from = |a: f32| a.signum() * if a.abs() < 1.0 { 0.6 * a.abs() } else { 1.0 - 0.4 / a.abs() };
     let (across, down) = (CELLS, ((CELLS as f32 * lit.height() / lit.width()).ceil() as usize).clamp(2, CELLS * 4));
     let mut mesh = egui::Mesh::with_texture(glow);
     for j in 0..=down {
         for i in 0..=across {
             let pos = lit.min + lit.size() * egui::vec2(i as f32 / across as f32, j as f32 / down as f32);
-            let off = (pos - frame.center()) / (frame.size() * 0.5);
-            let uv = egui::pos2(0.5 + 0.5 * from(off.x), 0.5 + 0.5 * from(off.y));
-            let color = Color32::WHITE.gamma_multiply(strength * 0.62 * fall(pos));
+            let (uv, color) = light(frame, strength, pos);
             mesh.vertices.push(egui::epaint::Vertex { pos, uv, color });
         }
     }
@@ -323,6 +335,115 @@ pub(crate) fn ambient(painter: &egui::Painter, glow: egui::TextureId, frame: egu
         }
     }
     painter.add(egui::Shape::mesh(mesh));
+}
+
+/// A capsule (a rectangle with round ends) of `texture`, each corner of its cells drawn as `at`
+/// says: a clip rectangle has no round ends, a mesh of this shape does.
+fn capsule_mesh(
+    capsule: egui::Rect,
+    texture: egui::TextureId,
+    at: impl Fn(egui::Pos2) -> (egui::Pos2, Color32),
+) -> egui::Mesh {
+    const ACROSS: usize = 24;
+    /// Rows, evenly along the round ends.
+    const DOWN: usize = 16;
+    let r = capsule.height() / 2.0;
+    let mut mesh = egui::Mesh::with_texture(texture);
+    for j in 0..=DOWN {
+        let turn = std::f32::consts::PI * j as f32 / DOWN as f32;
+        let y = capsule.center().y - r * turn.cos();
+        // how far in the round ends are at this height
+        let inset = (r - r * turn.sin()).min(capsule.width() / 2.0);
+        for i in 0..=ACROSS {
+            let x = egui::lerp(capsule.left() + inset..=capsule.right() - inset, i as f32 / ACROSS as f32);
+            let pos = egui::pos2(x, y);
+            let (uv, color) = at(pos);
+            mesh.vertices.push(egui::epaint::Vertex { pos, uv, color });
+        }
+    }
+    let row = ACROSS as u32 + 1;
+    for j in 0..DOWN as u32 {
+        for i in 0..ACROSS as u32 {
+            let at = j * row + i;
+            mesh.add_triangle(at, at + 1, at + row + 1);
+            mesh.add_triangle(at, at + row + 1, at + row);
+        }
+    }
+    mesh
+}
+
+/// A capsule of glass floating over the stage. Where the picture lies behind it, the glass shows
+/// it frosted: what is behind is covered by the stage and its light again, then by the picture
+/// as the glass blurs it (egui cannot blur what it has drawn; the picture comes blurred from the
+/// compositor), under the tint and the rim of the glass.
+pub(crate) fn floating_capsule(painter: &egui::Painter, capsule: egui::Rect, lit: Option<Lit>) {
+    let radius = capsule.height() / 2.0;
+    if let Some(lit) = lit.filter(|l| l.frame.width() > 0.0 && l.frame.height() > 0.0) {
+        // all of one shape, so that no layer shows beside another at the edge
+        let stage = |_| (egui::epaint::WHITE_UV, color::STAGE);
+        painter.add(egui::Shape::mesh(capsule_mesh(capsule, egui::TextureId::default(), stage)));
+        painter.add(egui::Shape::mesh(capsule_mesh(capsule, lit.glow, |pos| light(lit.frame, 1.0, pos))));
+        if let Some(frost) = lit.frost {
+            let whole = lit.frame.expand2(lit.frame.size() * FROST_ROOM);
+            // a little dimmed: what is on the glass stays readable over a white picture
+            let seen = |pos: egui::Pos2| (((pos - whole.min) / whole.size()).to_pos2(), Color32::from_gray(184));
+            painter.add(egui::Shape::mesh(capsule_mesh(capsule, frost, seen)));
+        }
+    }
+    painter.rect(
+        capsule,
+        radius,
+        color::GLASS,
+        Stroke::new(1.0, Color32::from_white_alpha(34)),
+        egui::StrokeKind::Inside,
+    );
+}
+
+/// How much of each of the picture's sides the frost shows around the picture.
+use reelforge_render::gpu::FROST_ROOM;
+
+/// `image` as frosted glass over it shows it: blurred, with [`FROST_ROOM`] of its sides around it
+/// where its light ends, and nothing in the outermost pixels (drawn past its edge, a texture
+/// repeats them). What the GPU compositor makes of its own frames (`fs_frost`), for a frame drawn
+/// without it: coarser, and blurred as the screen's numbers rather than as light.
+pub(crate) fn frosted(image: &egui::ColorImage) -> egui::ColorImage {
+    const SIDE: usize = 64;
+    const TAPS: usize = 10;
+    /// One deviation of the blur, as a part of the picture's longer side.
+    const SPREAD: f32 = 0.025;
+    let [w, h] = image.size;
+    if w == 0 || h == 0 {
+        return egui::ColorImage::filled([1, 1], Color32::TRANSPARENT);
+    }
+    let size = egui::vec2(w as f32, h as f32);
+    let spread = SPREAD * size.max_elem();
+    let mut pixels = vec![Color32::TRANSPARENT; SIDE * SIDE];
+    for y in 1..SIDE - 1 {
+        for x in 1..SIDE - 1 {
+            let at = (egui::vec2(x as f32 + 0.5, y as f32 + 0.5) / SIDE as f32 * (1.0 + 2.0 * FROST_ROOM)
+                - egui::Vec2::splat(FROST_ROOM))
+                * size;
+            let (mut sum, mut weight) = ([0.0f32; 4], 0.0);
+            for j in 0..TAPS {
+                for i in 0..TAPS {
+                    // out to two and a half deviations
+                    let d = egui::vec2(i as f32 + 0.5, j as f32 + 0.5) / TAPS as f32 * 5.0 - egui::Vec2::splat(2.5);
+                    let k = (-0.5 * d.length_sq()).exp();
+                    weight += k;
+                    let p = at + d * spread;
+                    if p.x >= 0.0 && p.y >= 0.0 && p.x < size.x && p.y < size.y {
+                        let c = image.pixels[p.y as usize * w + p.x as usize].to_array();
+                        for (s, v) in sum.iter_mut().zip(c) {
+                            *s += k * v as f32;
+                        }
+                    }
+                }
+            }
+            let [r, g, b, a] = sum.map(|s| (s / weight).round() as u8);
+            pixels[y * SIDE + x] = Color32::from_rgba_premultiplied(r, g, b, a);
+        }
+    }
+    egui::ColorImage::new([SIDE, SIDE], pixels)
 }
 
 /// `image` far out of focus, a few pixels a side: each the light of a wide part of the picture.
@@ -485,6 +606,29 @@ pub(crate) fn field_name(ui: &mut egui::Ui, name: &str) -> egui::Response {
     response
 }
 
+/// A line that opens and closes what is below it: a small arrow and a name. Says whether it is
+/// open; `open` is how it starts.
+pub(crate) fn disclosure(ui: &mut egui::Ui, name: &str, open: bool) -> bool {
+    let id = ui.scope_id().with(("disclosure", name));
+    let mut open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(open);
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), egui::Sense::click());
+    let tone = if r.hovered() { color::TEXT } else { color::WEAK };
+    let c = egui::pos2(rect.left() + 5.0, rect.center().y);
+    let arrow = if open {
+        vec![c + egui::vec2(-4.0, -2.5), c + egui::vec2(4.0, -2.5), c + egui::vec2(0.0, 3.0)]
+    } else {
+        vec![c + egui::vec2(-2.5, -4.0), c + egui::vec2(3.0, 0.0), c + egui::vec2(-2.5, 4.0)]
+    };
+    ui.painter().add(egui::Shape::convex_polygon(arrow, tone, egui::Stroke::NONE));
+    let galley = ui.painter().layout_no_wrap(name.to_string(), FontId::proportional(12.0), tone);
+    ui.painter().galley(egui::pos2(rect.left() + 16.0, rect.center().y - galley.size().y / 2.0), galley, tone);
+    if r.clicked() {
+        open = !open;
+    }
+    ui.data_mut(|d| d.insert_temp(id, open));
+    open
+}
+
 /// `t` as `m:ss.cc`, or `h:mm:ss.cc` past an hour.
 pub(crate) fn timecode(seconds: f64) -> String {
     let cs = (seconds.max(0.0) * 100.0).round() as u64;
@@ -500,6 +644,49 @@ pub(crate) fn ruler_label(seconds: f64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_picture_behind_glass_is_blurred_and_ends_softly_around_itself() {
+        use eframe::egui::{Color32, ColorImage};
+        let frost = super::frosted(&ColorImage::filled([40, 70], Color32::from_rgb(200, 100, 0)));
+        let [w, h] = frost.size;
+        let at = |x: usize, y: usize| frost.pixels[y * w + x];
+        // the picture's own colour in the middle, half of it at its edge, nothing at the texture's
+        assert_eq!(at(w / 2, h / 2), Color32::from_rgb(200, 100, 0));
+        let edge = (super::FROST_ROOM / (1.0 + 2.0 * super::FROST_ROOM) * w as f32) as usize;
+        assert!((90..=165).contains(&at(edge, h / 2).a()), "{:?}", at(edge, h / 2));
+        assert!((0..w / 2).all(|x| at(x, h / 2).a() <= at(x + 1, h / 2).a()));
+        assert!((0..w).all(|i| [at(i, 0), at(i, h - 1), at(0, i), at(w - 1, i)] == [Color32::TRANSPARENT; 4]));
+        // a hard edge in the picture is a soft one behind the glass
+        let mut half = ColorImage::filled([256, 256], Color32::BLACK);
+        for y in 0..256 {
+            for x in 0..128 {
+                half.pixels[y * 256 + x] = Color32::WHITE;
+            }
+        }
+        let frost = super::frosted(&half);
+        let row: Vec<u8> = (edge + 6..w - edge - 6).map(|x| frost.pixels[h / 2 * w + x].r()).collect();
+        assert!(row[0] > 250 && *row.last().unwrap() < 5, "{row:?}");
+        assert!(row.windows(2).all(|p| p[0] >= p[1] && p[0] - p[1] < 120), "{row:?}");
+    }
+
+    #[test]
+    fn glass_over_the_stage_is_a_mesh_with_round_ends() {
+        use eframe::egui;
+        let capsule = egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(400.0, 50.0));
+        let mesh = super::capsule_mesh(capsule, egui::TextureId::default(), |pos| (pos, egui::Color32::WHITE));
+        assert!(mesh.is_valid());
+        let r = 25.0;
+        let (left, right) = (egui::pos2(125.0, 65.0), egui::pos2(475.0, 65.0));
+        for v in &mesh.vertices {
+            // no further from the line through the middle than the ends are round
+            let nearest = egui::pos2(v.pos.x.clamp(left.x, right.x), 65.0);
+            assert!(v.pos.distance(nearest) <= r + 0.01, "{:?}", v.pos);
+        }
+        // and as far as the capsule goes
+        let bounds = mesh.calc_bounds();
+        assert!((bounds.min - capsule.min).length() < 0.01 && (bounds.max - capsule.max).length() < 0.01, "{bounds:?}");
+    }
+
     #[test]
     fn a_picture_out_of_focus_keeps_its_light_and_loses_its_shapes() {
         use eframe::egui::{Color32, ColorImage};

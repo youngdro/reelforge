@@ -178,6 +178,49 @@ pub fn trimmed(contours: &[Contour], start: f32, end: f32) -> Vec<Vec<[f32; 2]>>
     out
 }
 
+/// The ink of a round pen `half` wide either side of `lines` (target pixels), on a mask of
+/// `size` whose top left pixel is `origin`: each pixel by its distance from the nearest segment.
+pub(crate) fn inked(lines: &[Vec<[f32; 2]>], origin: [i32; 2], size: [usize; 2], half: f32) -> Mask {
+    let ([x0, y0], [w, h]) = (origin, size);
+    let mut line = Mask::new(w, h);
+    if lines.is_empty() {
+        return line;
+    }
+    let mut near = vec![f32::MAX; w * h];
+    for run in lines {
+        for seg in run.windows(2) {
+            let (a, b) =
+                ([seg[0][0] - x0 as f32, seg[0][1] - y0 as f32], [seg[1][0] - x0 as f32, seg[1][1] - y0 as f32]);
+            let lo = [
+                (a[0].min(b[0]) - half - 1.0).floor().max(0.0) as usize,
+                (a[1].min(b[1]) - half - 1.0).floor().max(0.0) as usize,
+            ];
+            let hi = [
+                ((a[0].max(b[0]) + half + 1.0).ceil().max(0.0) as usize).min(w),
+                ((a[1].max(b[1]) + half + 1.0).ceil().max(0.0) as usize).min(h),
+            ];
+            let (ex, ey) = (b[0] - a[0], b[1] - a[1]);
+            let len2 = ex * ex + ey * ey;
+            for y in lo[1]..hi[1] {
+                for x in lo[0]..hi[0] {
+                    let (px, py) = (x as f32 + 0.5 - a[0], y as f32 + 0.5 - a[1]);
+                    let t = if len2 > 0.0 { ((px * ex + py * ey) / len2).clamp(0.0, 1.0) } else { 0.0 };
+                    let (qx, qy) = (px - ex * t, py - ey * t);
+                    let dist = (qx * qx + qy * qy).sqrt();
+                    let i = y * w + x;
+                    if dist < near[i] {
+                        near[i] = dist;
+                    }
+                }
+            }
+        }
+    }
+    for (c, d) in line.a.iter_mut().zip(near) {
+        *c = (half - d + 0.5).clamp(0.0, 1.0);
+    }
+    line
+}
+
 /// Draws `sh` for `layer` on a `target`-sized frame; `k` is target pixels per output pixel.
 /// `None` when nothing lands in the frame. The last few sprites are kept, as for text.
 pub fn rasterize(layer: &PlannedLayer, sh: &ShapeContent, k: f32, target: [u32; 2]) -> Option<Sprite> {
@@ -270,43 +313,7 @@ fn draw(layer: &PlannedLayer, sh: &ShapeContent, k: f32, target: [u32; 2]) -> Op
     if !path.is_empty() {
         fill_into(&path, &mut fill, -x0 as f32, -y0 as f32);
     }
-    // the stroke: each pixel's distance from the nearest drawn segment, segment by segment
-    let mut line = Mask::new(w, h);
-    if !lines.is_empty() {
-        let half = stroke_w / 2.0;
-        let mut near = vec![f32::MAX; w * h];
-        for run in &lines {
-            for seg in run.windows(2) {
-                let (a, b) =
-                    ([seg[0][0] - x0 as f32, seg[0][1] - y0 as f32], [seg[1][0] - x0 as f32, seg[1][1] - y0 as f32]);
-                let lo = [
-                    (a[0].min(b[0]) - half - 1.0).floor().max(0.0) as usize,
-                    (a[1].min(b[1]) - half - 1.0).floor().max(0.0) as usize,
-                ];
-                let hi = [
-                    ((a[0].max(b[0]) + half + 1.0).ceil().max(0.0) as usize).min(w),
-                    ((a[1].max(b[1]) + half + 1.0).ceil().max(0.0) as usize).min(h),
-                ];
-                let (ex, ey) = (b[0] - a[0], b[1] - a[1]);
-                let len2 = ex * ex + ey * ey;
-                for y in lo[1]..hi[1] {
-                    for x in lo[0]..hi[0] {
-                        let (px, py) = (x as f32 + 0.5 - a[0], y as f32 + 0.5 - a[1]);
-                        let t = if len2 > 0.0 { ((px * ex + py * ey) / len2).clamp(0.0, 1.0) } else { 0.0 };
-                        let (qx, qy) = (px - ex * t, py - ey * t);
-                        let dist = (qx * qx + qy * qy).sqrt();
-                        let i = y * w + x;
-                        if dist < near[i] {
-                            near[i] = dist;
-                        }
-                    }
-                }
-            }
-        }
-        for (c, d) in line.a.iter_mut().zip(near) {
-            *c = (half - d + 0.5).clamp(0.0, 1.0);
-        }
-    }
+    let line = inked(&lines, [x0, y0], [w, h], stroke_w / 2.0);
     for a in &mut fill.a {
         *a *= fill_op;
     }
@@ -368,7 +375,7 @@ fn draw(layer: &PlannedLayer, sh: &ShapeContent, k: f32, target: [u32; 2]) -> Op
             *px = over(stroke_c, l, *px);
         }
     }
-    Some(Sprite { x: x0, y: y0, image: Arc::new(image) })
+    Some(Sprite { x: x0, y: y0, image: Arc::new(image), map: None, smear: Vec::new() })
 }
 
 #[cfg(test)]
@@ -444,6 +451,12 @@ mod tests {
             crop: [0.0; 4],
             flip: [false; 2],
             shape: None,
+            stretch: [1.0, 1.0],
+            anchor: [0.5, 0.5],
+            turn: None,
+            carried: vec![],
+            frame: [300.0, 200.0],
+            smear: Vec::new(),
         };
         let mut sh = shape(ShapeKind::Rectangle);
         sh.stroke = Some(ShapeStroke { color: Color([0.0, 0.0, 1.0, 1.0]), width: 10.0 });
