@@ -635,7 +635,7 @@ fn effects_tab(ui: &mut egui::Ui, s: &Strings, action: &mut Option<Action>) {
             *action = Some(a);
         }
         ui.add_space(8.0);
-        for (title, group) in s.fx_groups.into_iter().zip([FxGroup::Motion, FxGroup::Light, FxGroup::Focus]) {
+        for (title, group) in s.fx_groups.into_iter().zip(FxGroup::ALL) {
             ui.label(egui::RichText::new(title).small().strong().color(color::WEAK));
             ui.add_space(2.0);
             for kind in FxKind::ALL.into_iter().filter(|k| k.group() == group) {

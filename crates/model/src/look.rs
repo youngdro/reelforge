@@ -26,6 +26,60 @@ pub struct Look {
     /// a little to 1 very (media clips).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backdrop: Option<f32>,
+    /// A colour made see-through, as for a green screen (media clips).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chroma: Option<ChromaKey>,
+}
+
+/// A colour of a picture made see-through (剪映's 色度抠图).
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ChromaKey {
+    /// The colour that goes: red, green and blue as on screen, 0 to 1.
+    pub color: [f32; 3],
+    /// How far from it a colour still goes, 0 to 1.
+    #[serde(default = "ChromaKey::tolerance")]
+    pub tolerance: f32,
+    /// How gradually what is further comes back, 0 (a hard edge) to 1.
+    #[serde(default = "ChromaKey::softness")]
+    pub softness: f32,
+    /// How much of the colour's tint is taken off what stays near it, 0 to 1.
+    #[serde(default = "ChromaKey::spill")]
+    pub spill: f32,
+}
+
+impl ChromaKey {
+    /// The green of a green screen as cameras see it.
+    pub const GREEN: [f32; 3] = [0.1, 0.75, 0.2];
+
+    /// `color` keyed out as most screens need. A dull or dark colour is nearer to grey than a
+    /// bright one, so it is given less room: what has no colour at all (hair, a white shirt)
+    /// always stays whole.
+    pub fn new(color: [f32; 3]) -> ChromaKey {
+        // how far the colour is from grey, as `key.chroma@1` measures it (BT.601 Cb and Cr)
+        let [r, g, b] = color;
+        let cb = -0.168_736 * r - 0.331_264 * g + 0.5 * b;
+        let cr = 0.5 * r - 0.418_688 * g - 0.081_312 * b;
+        let far = cb.hypot(cr);
+        let round = |v: f32| (v * 1000.0).round() / 1000.0;
+        ChromaKey {
+            color,
+            tolerance: round((far * 0.6).clamp(0.02, Self::tolerance())),
+            softness: round((far * 0.3).min(Self::softness())),
+            spill: Self::spill(),
+        }
+    }
+
+    fn tolerance() -> f32 {
+        0.2
+    }
+
+    fn softness() -> f32 {
+        0.1
+    }
+
+    fn spill() -> f32 {
+        0.5
+    }
 }
 
 /// How far a backdrop of blur `amount` (0 to 1) blurs, as a fraction of the picture's shorter side.
@@ -52,6 +106,12 @@ impl Look {
         }
         if self.backdrop.is_some_and(|b| !(0.0..=1.0).contains(&b)) {
             return Some("a backdrop's blur is from 0 to 1");
+        }
+        if let Some(k) = &self.chroma {
+            let v = [k.color[0], k.color[1], k.color[2], k.tolerance, k.softness, k.spill];
+            if v.iter().any(|x| !(0.0..=1.0).contains(x)) {
+                return Some("a chroma key's colour, tolerance, softness and spill are from 0 to 1");
+            }
         }
         if let Some(m) = &self.mask {
             let v = [m.center[0], m.center[1], m.size[0], m.size[1], m.rotation, m.feather];
@@ -221,5 +281,27 @@ impl Mask {
             _ => [0.5, 0.5],
         };
         Mask { kind, center: [0.5, 0.5], size, rotation: 0.0, feather: 0.05, invert: false }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_key_never_reaches_grey() {
+        // a bright screen gets the usual room
+        let bright = ChromaKey::new([0.0, 1.0, 0.0]);
+        assert_eq!((bright.tolerance, bright.softness), (0.2, 0.1));
+        // a dim one, a blue one, a nearly grey one: all end before what has no colour
+        for color in [ChromaKey::GREEN, [0.13, 0.7, 0.23], [0.1, 0.2, 0.8], [0.2, 0.35, 0.25], [0.5, 0.5, 0.5]] {
+            let key = ChromaKey::new(color);
+            let [r, g, b] = color;
+            let cb = -0.168_736 * r - 0.331_264 * g + 0.5 * b;
+            let cr = 0.5 * r - 0.418_688 * g - 0.081_312 * b;
+            let grey = cb.hypot(cr);
+            assert!(key.tolerance >= 0.02 && key.softness >= 0.0, "{key:?}");
+            assert!(grey < 0.03 || key.tolerance + key.softness < grey, "{key:?} reaches grey at {grey}");
+        }
     }
 }

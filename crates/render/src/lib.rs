@@ -20,6 +20,7 @@
 //! [`FrameReport`] says so, so a draft preview keeps working while a final render can refuse.
 
 pub mod cpu;
+pub mod distort;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod image;
@@ -56,8 +57,13 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "color.saturation@1",
     "crop/1",
     "crop/2",
+    "distort.glitch@1",
+    "distort.mosaic@1",
+    "distort.split@1",
+    "distort.wave@1",
     "encode.size/1",
     "flip/1",
+    "key.chroma@1",
     "mask.shape/1",
     "mask.shape/2",
     "text/1",

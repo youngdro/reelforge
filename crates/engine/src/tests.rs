@@ -1450,3 +1450,102 @@ fn a_title_is_set_in_an_imported_font_and_spaced() {
     );
     s.execute("media.remove", &json!({"media": font})).unwrap();
 }
+
+#[test]
+fn a_colour_is_keyed_out_and_pictures_are_distorted() {
+    let mut s = Session::default();
+    let v = video_track(&s);
+    let m = s
+        .execute(
+            "media.import",
+            &json!({"path": "/nowhere/host.mp4", "kind": "video", "duration": {"seconds": 6}, "size": [1920, 1080], "sha256": "ab".repeat(32)}),
+        )
+        .unwrap()["media"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let c = s.execute("clip.add", &json!({"track": v, "media": m})).unwrap()["clip"].as_str().unwrap().to_string();
+    let chroma = |s: &Session| s.project().clip(&c).unwrap().1.look.chroma;
+
+    // a key needs a colour first; the rest starts as most screens need and is changed one by one
+    assert!(s.execute("clip.setChromaKey", &json!({"clip": c, "tolerance": 0.3})).is_err());
+    let set = s.execute("clip.setChromaKey", &json!({"clip": c, "color": [0.1, 0.8, 0.2]})).unwrap();
+    assert_eq!(set["chroma"]["tolerance"], json!(0.2f32));
+    s.execute("clip.setChromaKey", &json!({"clip": c, "softness": 0.25, "spill": 1})).unwrap();
+    let k = chroma(&s).unwrap();
+    assert_eq!((k.color, k.tolerance, k.softness, k.spill), ([0.1, 0.8, 0.2], 0.2, 0.25, 1.0));
+    s.execute("clip.setChromaKey", &json!({"clip": c, "color": [0, 0, 1]})).unwrap();
+    assert_eq!((chroma(&s).unwrap().color, chroma(&s).unwrap().softness), ([0.0, 0.0, 1.0], 0.25));
+    for bad in [json!({"tolerance": 2}), json!({"color": [0, 1]}), json!({"color": "green"}), json!({"spill": -1})] {
+        let mut params = bad.clone();
+        params["clip"] = json!(c);
+        assert!(s.execute("clip.setChromaKey", &params).is_err(), "{bad}");
+    }
+    // only videos and pictures: not a colour, not a title
+    let red = add_red(&mut s, 10.0, 2.0);
+    assert!(s.execute("clip.setChromaKey", &json!({"clip": red, "color": [0, 1, 0]})).is_err());
+
+    // it is the layer's first effect, before its colour work
+    s.execute("clip.setColor", &json!({"clip": c, "exposure": 0.5})).unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let fx = spec["layers"][0]["fx"].as_array().unwrap();
+    assert_eq!((fx[0]["id"].as_str(), fx[1]["id"].as_str()), (Some("key.chroma@1"), Some("color.grade@1")));
+    assert_eq!(fx[0]["params"]["b"], json!(1.0));
+    assert_eq!(fx[0]["params"]["softness"], json!(0.25));
+    assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("key.chroma@1")));
+    // null takes it off
+    s.execute("clip.setChromaKey", &json!({"clip": c, "color": null})).unwrap();
+    assert_eq!(chroma(&s), None);
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert!(!spec["engine"]["features"].as_array().unwrap().contains(&json!("key.chroma@1")));
+
+    // the distortions are listed as a group of their own and become the renderer's four
+    let list = s.execute("fx.list", &json!({})).unwrap();
+    let distort: Vec<&str> = list["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["group"] == "distort")
+        .map(|e| e["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(distort, ["rgbSplit", "glitch", "mosaic", "wave"]);
+    s.execute("clip.setFx", &json!({"clip": c, "fx": ["glitch", "mosaic", "wave"]})).unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let ids: Vec<&str> =
+        spec["layers"][0]["fx"].as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["color.grade@1", "distort.wave@1", "distort.glitch@1", "distort.mosaic@1", "distort.split@1"]);
+    let params = |id: &str| {
+        spec["layers"][0]["fx"].as_array().unwrap().iter().find(|e| e["id"] == id).unwrap()["params"].clone()
+    };
+    // a mosaic stands still; a glitch tears in bursts, each tear a whole-numbered pattern
+    let size: Vec<f64> =
+        params("distort.mosaic@1")["size"].as_array().unwrap().iter().map(|k| k["v"].as_f64().unwrap()).collect();
+    assert!(size.iter().all(|v| (*v - 0.05).abs() < 1e-6));
+    let glitch = params("distort.glitch@1");
+    let amounts: Vec<f64> = glitch["amount"].as_array().unwrap().iter().map(|k| k["v"].as_f64().unwrap()).collect();
+    assert!(amounts.iter().any(|v| *v > 0.0) && amounts.contains(&0.0));
+    assert!(glitch["seed"].as_array().unwrap().iter().all(|k| k["v"].as_f64().unwrap().fract() == 0.0));
+    let features = spec["engine"]["features"].as_array().unwrap();
+    for id in ["distort.wave@1", "distort.glitch@1", "distort.mosaic@1", "distort.split@1"] {
+        assert!(features.contains(&json!(id)), "{id}");
+    }
+
+    // from an adjustment clip above, a distortion plays on the layers below only while it lasts
+    s.execute("clip.setFx", &json!({"clip": c, "fx": []})).unwrap();
+    let above = s.execute("track.add", &json!({"kind": "video"})).unwrap()["track"].as_str().unwrap().to_string();
+    s.execute(
+        "clip.add",
+        &json!({"track": above, "adjustment": true, "fx": ["mosaic"], "start": {"seconds": 2}, "duration": {"seconds": 1}}),
+    )
+    .unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let layer = spec["layers"].as_array().unwrap().iter().find(|l| l["id"] == json!(c)).unwrap();
+    let size =
+        &layer["fx"].as_array().unwrap().iter().find(|e| e["id"] == "distort.mosaic@1").unwrap()["params"]["size"];
+    let at = |secs: f64| {
+        let t = (secs * reelforge_time::TICKS_PER_SECOND as f64) as i64;
+        size.as_array().unwrap().iter().rev().find(|k| k["t"].as_i64().unwrap() <= t).unwrap()["v"].as_f64().unwrap()
+    };
+    assert_eq!((at(1.0), at(3.5)), (0.0, 0.0));
+    assert!((at(2.5) - 0.05).abs() < 1e-6);
+}

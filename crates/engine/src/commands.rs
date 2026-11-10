@@ -3,7 +3,7 @@
 use reelforge_compile::{CompileOptions, compile};
 use reelforge_model::timeline as model_timeline;
 use reelforge_model::{
-    Adjust, AnimKind, Animation, BlendMode, Clip, ClipContent, ClipEffect, ClipTransform, Codec, CurvePoint,
+    Adjust, AnimKind, Animation, BlendMode, ChromaKey, Clip, ClipContent, ClipEffect, ClipTransform, Codec, CurvePoint,
     CurvePreset, Denoise, Ease, ExportSettings, Filter, FilterKind, Fx, FxGroup, FxKind, Key, LutUse, Mask, MaskKind,
     Media, MediaKind, Outline, Project, Prop, Quality, Resolution, Shadow, Timeline, TitleStyle, Track, TrackKind,
     Transition, TransitionKind, Voice, VoiceKind, anim, export, timing,
@@ -505,6 +505,15 @@ static REGISTRY: &[CommandSpec] = &[
         edits: true,
         enabled: always,
         run: clip_set_backdrop,
+    },
+    CommandSpec {
+        id: "clip.setChromaKey",
+        label: "Chroma Key",
+        params: r#"{"clip": id, "color"?: [r, g, b] | null, "tolerance"?: 0-1, "softness"?: 0-1, "spill"?: 0-1}"#,
+        doc: "Makes one colour of a video or picture clip see-through, as for a green screen (剪映's 色度抠图), so the tracks below show there. `color` is the colour that goes, as on screen (clip.pickChromaKey finds it from the picture); `tolerance` is how far from it still goes (0.2 at first, less for a dull colour so that greys stay whole), `softness` how gradually the rest comes back (0.1 or less), `spill` how much of the colour's tint comes off what stays near it (0.5). `color` null removes the key.",
+        edits: true,
+        enabled: always,
+        run: clip_set_chroma_key,
     },
     CommandSpec {
         id: "clip.setBlend",
@@ -2137,6 +2146,7 @@ fn fx_list(_: &mut Session, _: &Value) -> CmdResult {
                     FxGroup::Motion => "motion",
                     FxGroup::Light => "light",
                     FxGroup::Focus => "focus",
+                    FxGroup::Distort => "distort",
                 },
                 "hasSpeed": k.has_speed(),
             })
@@ -2534,6 +2544,46 @@ fn clip_set_crop(s: &mut Session, v: &Value) -> CmdResult {
             return Err(EngineError::Params(why.into()));
         }
         Ok(json!({ "clip": id, "look": serde_json::to_value(&clip.look).expect("serialises") }))
+    })
+}
+
+fn clip_set_chroma_key(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let off = matches!(v.get("color"), Some(Value::Null));
+    let color = if off { None } else { p.opt_color("color")?.map(|c| [c[0], c[1], c[2]]) };
+    let mut tweaks = [None; 3];
+    for (slot, name) in tweaks.iter_mut().zip(["tolerance", "softness", "spill"]) {
+        *slot = match p.opt_f64(name)? {
+            Some(x) if (0.0..=1.0).contains(&x) => Some(x as f32),
+            Some(_) => return Err(EngineError::Params(format!("`{name}` must be from 0 to 1"))),
+            None => None,
+        };
+    }
+    s.edit("Chroma Key", |proj| {
+        let (ti, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        if proj.tracks[ti].kind != TrackKind::Video || !matches!(clip.content, ClipContent::Media { .. }) {
+            return Err(EngineError::Params("only video and picture clips can have a colour keyed out".into()));
+        }
+        let clip = proj.clip_mut(&id).expect("found above");
+        if off {
+            clip.look.chroma = None;
+        } else {
+            let mut key = match (clip.look.chroma, color) {
+                (Some(k), Some(c)) => ChromaKey { color: c, ..k },
+                (Some(k), None) => k,
+                (None, Some(c)) => ChromaKey::new(c),
+                (None, None) => {
+                    return Err(EngineError::Params("the clip has no chroma key; give a `color`".into()));
+                }
+            };
+            let [tolerance, softness, spill] = tweaks;
+            key.tolerance = tolerance.unwrap_or(key.tolerance);
+            key.softness = softness.unwrap_or(key.softness);
+            key.spill = spill.unwrap_or(key.spill);
+            clip.look.chroma = Some(key);
+        }
+        Ok(json!({ "clip": id, "chroma": serde_json::to_value(clip.look.chroma).expect("serialises") }))
     })
 }
 

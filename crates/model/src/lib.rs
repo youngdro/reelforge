@@ -31,7 +31,7 @@ pub use anim::{AnimKind, Animation, Animations, Ease, Key, Keys, Offset, Prop};
 pub use color::{Adjust, ColorGrade, Filter, FilterKind, LutUse};
 pub use export::{Codec, ExportSettings, Quality, Resolution};
 pub use fx::{Fx, FxChannel, FxGroup, FxKind, FxSample};
-pub use look::{BlendMode, Crop, Look, Mask, MaskKind};
+pub use look::{BlendMode, ChromaKey, Crop, Look, Mask, MaskKind};
 pub use timeline::{Timeline, TimelineInfo};
 pub use timing::{CurvePoint, CurvePreset, Timing};
 pub use transition::{Transition, TransitionKind};

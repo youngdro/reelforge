@@ -1,11 +1,13 @@
-//! Picture effects: presets that shake, pulse, flash or blur a picture for as long as they last.
+//! Picture effects: presets that shake, pulse, flash, blur or distort a picture for as long as
+//! they last.
 //!
 //! An effect sits on a clip ([`crate::Clip::fx`]) and plays over that clip, or on an adjustment
 //! clip ([`crate::ClipContent::Adjustment`]) and plays on everything on the tracks below while
 //! that clip lasts. Like in and out animations, an effect is a function of time
-//! ([`Fx::sample`]): what it adds to the placement, and how it changes the exposure, the
-//! saturation, the corners and the focus. The compiler lowers that to RenderSpec keys and to the
-//! effects the renderer already has, so a renderer needs to know nothing about them.
+//! ([`Fx::sample`]): what it adds to the placement, how it changes the exposure, the
+//! saturation, the corners and the focus, and how it distorts the picture. The compiler lowers
+//! that to RenderSpec keys and to a handful of renderer effects, so a renderer needs to know
+//! nothing about the presets.
 
 use reelforge_time::Tick;
 use schemars::JsonSchema;
@@ -43,6 +45,14 @@ pub enum FxKind {
     ColorIn,
     /// Dark corners that breathe.
     Vignette,
+    /// Red and blue pull apart on every beat (剪映's 色差).
+    RgbSplit,
+    /// Bursts of bands that jump sideways, their colours apart (故障).
+    Glitch,
+    /// Square blocks of one colour (马赛克).
+    Mosaic,
+    /// Rows that sway like water.
+    Wave,
 }
 
 /// What kind of thing an effect does; the effects panel lists them by this.
@@ -54,6 +64,13 @@ pub enum FxGroup {
     Light,
     /// Changes its focus or colour.
     Focus,
+    /// Changes where its picture is read: split, torn, blocked, bent.
+    Distort,
+}
+
+impl FxGroup {
+    /// Every group, in menu order.
+    pub const ALL: [FxGroup; 4] = [FxGroup::Motion, FxGroup::Light, FxGroup::Focus, FxGroup::Distort];
 }
 
 /// One thing an effect changes.
@@ -67,11 +84,35 @@ pub enum FxChannel {
     Vignette,
     /// Blur radius, as a share of the picture's shorter side.
     Blur,
+    /// How far red and blue are read apart, as a share of the width.
+    Split,
+    /// How far bands jump sideways, as a share of the width.
+    Glitch,
+    /// Which bands jump: a whole number, a new pattern for each.
+    GlitchSeed,
+    /// A mosaic block's side, as a share of the picture's shorter side.
+    Mosaic,
+    /// How far rows sway, as a share of the width.
+    Wave,
+    /// Where the sway is, in turns.
+    WavePhase,
+}
+
+impl FxChannel {
+    /// The channels that distort the picture.
+    pub const DISTORT: [FxChannel; 6] = [
+        FxChannel::Split,
+        FxChannel::Glitch,
+        FxChannel::GlitchSeed,
+        FxChannel::Mosaic,
+        FxChannel::Wave,
+        FxChannel::WavePhase,
+    ];
 }
 
 impl FxKind {
     /// Every preset, in menu order.
-    pub const ALL: [FxKind; 13] = [
+    pub const ALL: [FxKind; 17] = [
         FxKind::Shake,
         FxKind::Pulse,
         FxKind::Swing,
@@ -85,6 +126,10 @@ impl FxKind {
         FxKind::BlurIn,
         FxKind::BlurOut,
         FxKind::ColorIn,
+        FxKind::RgbSplit,
+        FxKind::Glitch,
+        FxKind::Mosaic,
+        FxKind::Wave,
     ];
 
     /// The name commands use.
@@ -103,6 +148,10 @@ impl FxKind {
             FxKind::BlurOut => "blurOut",
             FxKind::ColorIn => "colorIn",
             FxKind::Vignette => "vignette",
+            FxKind::RgbSplit => "rgbSplit",
+            FxKind::Glitch => "glitch",
+            FxKind::Mosaic => "mosaic",
+            FxKind::Wave => "wave",
         }
     }
 
@@ -119,6 +168,7 @@ impl FxKind {
             }
             FxKind::Flash | FxKind::Strobe | FxKind::Flicker | FxKind::Vignette => FxGroup::Light,
             FxKind::BlurIn | FxKind::BlurOut | FxKind::ColorIn => FxGroup::Focus,
+            FxKind::RgbSplit | FxKind::Glitch | FxKind::Mosaic | FxKind::Wave => FxGroup::Distort,
         }
     }
 
@@ -145,12 +195,17 @@ impl FxKind {
             FxChannel::Saturation => self == FxKind::ColorIn,
             FxChannel::Vignette => self == FxKind::Vignette,
             FxChannel::Blur => matches!(self, FxKind::BlurIn | FxKind::BlurOut),
+            FxChannel::Split => matches!(self, FxKind::RgbSplit | FxKind::Glitch),
+            FxChannel::Glitch | FxChannel::GlitchSeed => self == FxKind::Glitch,
+            FxChannel::Mosaic => self == FxKind::Mosaic,
+            FxChannel::Wave | FxChannel::WavePhase => self == FxKind::Wave,
         }
     }
 
-    /// Whether `speed` changes it (the slow zooms take the whole length whatever it is).
+    /// Whether `speed` changes it (the slow zooms take the whole length whatever it is, and a
+    /// mosaic stands still).
     pub fn has_speed(self) -> bool {
-        !matches!(self, FxKind::ZoomIn | FxKind::ZoomOut)
+        !matches!(self, FxKind::ZoomIn | FxKind::ZoomOut | FxKind::Mosaic)
     }
 }
 
@@ -188,12 +243,35 @@ pub struct FxSample {
     pub vignette: f32,
     /// Blur radius, as a share of the picture's shorter side.
     pub blur: f32,
+    /// How far red and blue are read apart, as a share of the width.
+    pub split: f32,
+    /// How far bands jump sideways, as a share of the width.
+    pub glitch: f32,
+    /// Which bands jump.
+    pub glitch_seed: f32,
+    /// A mosaic block's side, as a share of the shorter side.
+    pub mosaic: f32,
+    /// How far rows sway, as a share of the width.
+    pub wave: f32,
+    /// Where the sway is, in turns.
+    pub wave_phase: f32,
 }
 
 impl FxSample {
     /// No change.
-    pub const REST: FxSample =
-        FxSample { offset: Offset::REST, exposure: 0.0, saturation: 0.0, vignette: 0.0, blur: 0.0 };
+    pub const REST: FxSample = FxSample {
+        offset: Offset::REST,
+        exposure: 0.0,
+        saturation: 0.0,
+        vignette: 0.0,
+        blur: 0.0,
+        split: 0.0,
+        glitch: 0.0,
+        glitch_seed: 0.0,
+        mosaic: 0.0,
+        wave: 0.0,
+        wave_phase: 0.0,
+    };
 
     /// Both at once.
     pub fn and(self, o: FxSample) -> FxSample {
@@ -203,6 +281,13 @@ impl FxSample {
             saturation: self.saturation + o.saturation,
             vignette: self.vignette + o.vignette,
             blur: self.blur + o.blur,
+            split: self.split + o.split,
+            glitch: self.glitch + o.glitch,
+            glitch_seed: self.glitch_seed + o.glitch_seed,
+            // two mosaics are as coarse as the coarser
+            mosaic: self.mosaic.max(o.mosaic),
+            wave: self.wave + o.wave,
+            wave_phase: self.wave_phase + o.wave_phase,
         }
     }
 
@@ -213,6 +298,12 @@ impl FxSample {
             FxChannel::Saturation => self.saturation.clamp(-1.0, 1.0),
             FxChannel::Vignette => self.vignette.clamp(0.0, 1.0),
             FxChannel::Blur => self.blur.max(0.0),
+            FxChannel::Split => self.split.clamp(-0.25, 0.25),
+            FxChannel::Glitch => self.glitch.clamp(0.0, 0.5),
+            FxChannel::GlitchSeed => self.glitch_seed.max(0.0).floor(),
+            FxChannel::Mosaic => self.mosaic.clamp(0.0, 0.5),
+            FxChannel::Wave => self.wave.clamp(-0.25, 0.25),
+            FxChannel::WavePhase => self.wave_phase,
         }
     }
 }
@@ -297,6 +388,22 @@ impl Fx {
             FxKind::BlurOut => s.blur = 0.05 * a * ending.powi(2),
             FxKind::ColorIn => s.saturation = -(a * (1.0 - begun)).min(1.0),
             FxKind::Vignette => s.vignette = (a * (0.6 + 0.4 * (TAU * beats * 0.5).sin() as f32)).min(1.0),
+            // a little always, a lot on the beat
+            FxKind::RgbSplit => s.split = (0.003 + 0.02 * (1.0 - part as f32).powi(3)) * a,
+            FxKind::Glitch => {
+                // two bursts a beat, a new tear fifteen times a beat
+                if part < 0.3 || (0.55..0.65).contains(&part) {
+                    let step = (beats * 15.0).floor().max(0.0);
+                    s.glitch = 0.12 * a;
+                    s.glitch_seed = step as f32;
+                    s.split = 0.012 * a * hash(step as i64, 5);
+                }
+            }
+            FxKind::Mosaic => s.mosaic = 0.05 * a,
+            FxKind::Wave => {
+                s.wave = 0.012 * a;
+                s.wave_phase = (beats * 0.5) as f32;
+            }
         }
         s
     }
@@ -319,6 +426,7 @@ mod tests {
             let moves = Prop::MOTION.iter().any(|p| k.moves(*p));
             let colours = [FxChannel::Exposure, FxChannel::Saturation, FxChannel::Vignette, FxChannel::Blur]
                 .iter()
+                .chain(&FxChannel::DISTORT)
                 .any(|c| k.changes(*c));
             assert!(moves != colours, "{k:?}");
             assert_eq!(moves, k.moves_any());
@@ -343,6 +451,11 @@ mod tests {
                 }
                 if !k.changes(FxChannel::Blur) {
                     assert_eq!(s.blur, 0.0);
+                }
+                for c in FxChannel::DISTORT {
+                    if !k.changes(c) {
+                        assert_eq!(s.channel(c), 0.0, "{k:?} {c:?}");
+                    }
                 }
             }
         }
@@ -372,6 +485,23 @@ mod tests {
             let o = at(FxKind::Shake, Tick(len.0 * i / 200)).offset;
             assert!(o.dx.abs() <= 0.02 && o.dy.abs() <= 0.02 && (o.scale - 1.05).abs() < 1e-6);
         }
+        // a glitch comes in bursts: torn at the start of a beat, whole in between, a new tear
+        // each time, and its seed is always a whole number
+        let torn = at(FxKind::Glitch, Tick(Tick::SECOND.0 / 10));
+        assert!(torn.glitch > 0.0 && torn.split != 0.0);
+        assert_eq!(at(FxKind::Glitch, Tick(Tick::SECOND.0 * 4 / 10)).glitch, 0.0);
+        assert_ne!(at(FxKind::Glitch, Tick(Tick::SECOND.0 * 2 / 10)).glitch_seed, torn.glitch_seed);
+        for i in 0..200 {
+            let s = at(FxKind::Glitch, Tick(len.0 * i / 200));
+            assert_eq!(s.glitch_seed, s.glitch_seed.floor());
+        }
+        // colours are furthest apart on the beat, a mosaic stands still, a wave travels
+        assert!(
+            at(FxKind::RgbSplit, Tick::SECOND).split > at(FxKind::RgbSplit, Tick(Tick::SECOND.0 * 3 / 2)).split * 2.0
+        );
+        assert_eq!(at(FxKind::Mosaic, Tick::ZERO), at(FxKind::Mosaic, Tick::SECOND * 3));
+        assert!((at(FxKind::Mosaic, Tick::ZERO).mosaic - 0.05).abs() < 1e-6);
+        assert!(at(FxKind::Wave, Tick::SECOND).wave_phase > at(FxKind::Wave, Tick::ZERO).wave_phase);
         assert!(Fx { strength: 1.5, ..Fx::new(FxKind::Shake) }.problem().is_some());
         assert!(Fx { speed: 0.1, ..Fx::new(FxKind::Shake) }.problem().is_some());
     }

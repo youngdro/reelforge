@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use reelforge_renderspec::{Blend, RenderSpec, effects};
 
+use crate::distort::Warp;
 use crate::plan::{FramePlan, PlannedLayer, PlannedSource, invert};
 use crate::text::Sprite;
 use crate::{FrameReport, Image, Lut, MediaSource, Quality, RenderError};
@@ -233,6 +234,7 @@ fn blit(out: &mut Image, layer: &PlannedLayer, pic: &Image, m: [f32; 6], flat: O
     let x1 = corners.iter().map(|c| c.0).fold(f32::NEG_INFINITY, f32::max).ceil().min(out.width as f32) as u32;
     let y0 = corners.iter().map(|c| c.1).fold(f32::INFINITY, f32::min).floor().max(0.0) as u32;
     let y1 = corners.iter().map(|c| c.1).fold(f32::NEG_INFINITY, f32::max).ceil().min(out.height as f32) as u32;
+    let warp = if flat.is_some() { None } else { Warp::of(&layer.fx) };
     for y in y0..y1 {
         for x in x0..x1 {
             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
@@ -240,13 +242,16 @@ fn blit(out: &mut Image, layer: &PlannedLayer, pic: &Image, m: [f32; 6], flat: O
             if sx < 0.0 || sy < 0.0 || sx >= cw || sy >= ch {
                 continue;
             }
-            let mut s = if flat.is_some() {
-                pic.pixels[0]
-            } else {
+            let uv = [sx / cw, sy / ch];
+            let read = |sx: f32, sy: f32| {
                 let (px, py) = layer.in_picture(sx, sy, cw, ch, pw, ph);
                 pic.sample(px, py)
             };
-            let uv = [sx / cw, sy / ch];
+            let mut s = match &warp {
+                _ if flat.is_some() => pic.pixels[0],
+                Some(w) => w.sample(uv, [cw, ch], read),
+                None => read(sx, sy),
+            };
             apply_fx(&mut s, &layer.fx, uv, lut);
             let k = layer.opacity * layer.shape.map_or(1.0, |m| m.coverage(uv, mw, mh));
             for c in &mut s {
@@ -284,6 +289,11 @@ pub(crate) fn apply_fx(p: &mut [f32; 4], fx: &[(String, Vec<(String, f32)>)], uv
                     lut.apply(p, get("amount", 1.0).clamp(0.0, 1.0));
                 }
             }
+            effects::CHROMA_KEY => chroma_key(
+                p,
+                [get("r", 0.0), get("g", 1.0), get("b", 0.0)],
+                [get("tolerance", 0.3), get("softness", 0.1), get("spill", 0.5)],
+            ),
             _ => {}
         }
     }
@@ -296,6 +306,45 @@ fn luma(c: [f32; 3]) -> f32 {
 fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+/// `key.chroma@1` on a premultiplied linear pixel: `key` is sRGB-encoded, `how` is the tolerance,
+/// the softness and the spill. `composite.wgsl` does the same, step for step.
+pub(crate) fn chroma_key(p: &mut [f32; 4], key: [f32; 3], how: [f32; 3]) {
+    let a = p[3];
+    if a <= 0.0 {
+        return;
+    }
+    let [tolerance, softness, spill] = how.map(|v| v.clamp(0.0, 1.0));
+    let c = [p[0] / a, p[1] / a, p[2] / a];
+    let chroma = |c: [f32; 3]| {
+        [-0.168_736 * c[0] - 0.331_264 * c[1] + 0.5 * c[2], 0.5 * c[0] - 0.418_688 * c[1] - 0.081_312 * c[2]]
+    };
+    let e = c.map(|v| crate::image::linear_to_srgb(v.clamp(0.0, 1.0)));
+    let (k, q) = (chroma(key), chroma(e));
+    let d = ((q[0] - k[0]) * (q[0] - k[0]) + (q[1] - k[1]) * (q[1] - k[1])).sqrt();
+    let keep = if softness > 0.0 {
+        smoothstep(tolerance, tolerance + softness, d)
+    } else if d > tolerance {
+        1.0
+    } else {
+        0.0
+    };
+    // what stays near the key loses the key's tint: its chroma towards the key, not its lightness
+    let near = 1.0 - ((d - tolerance) / (softness + 0.3)).clamp(0.0, 1.0);
+    let len = (k[0] * k[0] + k[1] * k[1]).sqrt();
+    let towards = if len > 1e-4 { (q[0] * k[0] + q[1] * k[1]) / len } else { 0.0 };
+    let mut c = c;
+    if spill * near > 0.0 && towards > 0.0 {
+        let off = -towards * spill * near / len;
+        let (cb, cr) = (k[0] * off, k[1] * off);
+        let e = [e[0] + 1.402 * cr, e[1] - 0.344_136 * cb - 0.714_136 * cr, e[2] + 1.772 * cb];
+        c = e.map(|v| crate::image::srgb_to_linear(v.clamp(0.0, 1.0)));
+    }
+    for i in 0..3 {
+        p[i] = c[i] * a * keep;
+    }
+    p[3] = a * keep;
 }
 
 /// `color.grade@1` on a premultiplied linear pixel; `composite.wgsl` does the same, step for step.
@@ -357,4 +406,71 @@ pub(crate) fn blend(mode: Blend, s: [f32; 4], d: [f32; 4]) -> [f32; 4] {
         };
     }
     o
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::image::premultiply_srgb;
+
+    fn keyed(srgb: [f32; 3], how: [f32; 3]) -> [f32; 4] {
+        let mut p = premultiply_srgb([srgb[0], srgb[1], srgb[2], 1.0]);
+        chroma_key(&mut p, [0.0, 1.0, 0.0], how);
+        p
+    }
+
+    #[test]
+    fn a_keyed_colour_goes_and_the_rest_stays() {
+        let how = [0.3, 0.1, 0.5];
+        // the key and its lighter and darker shades are gone
+        for green in [[0.0, 1.0, 0.0], [0.1, 0.85, 0.15], [0.05, 0.7, 0.05]] {
+            assert_eq!(keyed(green, how), [0.0; 4], "{green:?}");
+        }
+        // skin, white, grey, black, red and blue are as they were
+        for other in
+            [[0.9, 0.7, 0.6], [1.0, 1.0, 1.0], [0.5, 0.5, 0.5], [0.0, 0.0, 0.0], [0.9, 0.1, 0.1], [0.1, 0.2, 0.9]]
+        {
+            let p = keyed(other, how);
+            let was = premultiply_srgb([other[0], other[1], other[2], 1.0]);
+            assert_eq!(p[3], 1.0, "{other:?}");
+            for i in 0..3 {
+                assert!((p[i] - was[i]).abs() < 1e-5, "{other:?}: {p:?} was {was:?}");
+            }
+        }
+        // between the two the pixel is part see-through, more so with more tolerance
+        let edge = [0.35, 0.75, 0.3];
+        let a = keyed(edge, [0.2, 0.2, 0.0])[3];
+        assert!(a > 0.0 && a < 1.0, "{a}");
+        assert!(keyed(edge, [0.3, 0.2, 0.0])[3] < a);
+        // with no softness it is one or the other
+        assert!([0.0, 1.0].contains(&keyed(edge, [0.25, 0.0, 0.0])[3]));
+    }
+
+    #[test]
+    fn spill_takes_the_keys_tint_off_what_stays_near_it() {
+        // a greenish edge that is kept: with spill its green stands out less
+        let edge = [0.45, 0.7, 0.4];
+        let (plain, cleaned) = (keyed(edge, [0.3, 0.05, 0.0]), keyed(edge, [0.3, 0.05, 1.0]));
+        assert!(plain[3] > 0.9 && cleaned[3] == plain[3]);
+        let tint = |p: [f32; 4]| p[1] - (p[0] + p[2]) / 2.0;
+        assert!(tint(cleaned) < tint(plain) * 0.6, "{} {}", tint(cleaned), tint(plain));
+        // its lightness (of the encoded colour, as the eye has it) stays
+        let light = |p: [f32; 4]| {
+            let e = [p[0], p[1], p[2]].map(crate::image::linear_to_srgb);
+            0.299 * e[0] + 0.587 * e[1] + 0.114 * e[2]
+        };
+        assert!((light(cleaned) - light(plain)).abs() < 1e-3, "{} {}", light(cleaned), light(plain));
+        // half the spill takes half as much off
+        let half = keyed(edge, [0.3, 0.05, 0.5]);
+        assert!(tint(half) < tint(plain) && tint(half) > tint(cleaned));
+        // far from the key nothing changes
+        assert_eq!(keyed([0.9, 0.1, 0.1], [0.3, 0.05, 1.0]), keyed([0.9, 0.1, 0.1], [0.3, 0.05, 0.0]));
+        // a see-through pixel keeps its share of light: premultiplied by what is left of it
+        let mut half = premultiply_srgb([0.9, 0.1, 0.1, 0.5]);
+        let was = half;
+        chroma_key(&mut half, [0.0, 1.0, 0.0], [0.3, 0.1, 0.5]);
+        for i in 0..4 {
+            assert!((half[i] - was[i]).abs() < 1e-6);
+        }
+    }
 }

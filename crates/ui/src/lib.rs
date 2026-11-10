@@ -273,6 +273,8 @@ struct LookEdit {
     mask: Option<Mask>,
     /// The canvas blur behind it, when it can have one (a video or picture on a video track).
     backdrop: Option<Option<f32>>,
+    /// The colour keyed out of it, when it can have one (the same clips).
+    chroma: Option<Option<reelforge_model::ChromaKey>>,
 }
 
 /// A picture clip's colour, as the inspector edits it.
@@ -564,6 +566,32 @@ impl EditorApp {
             "audio.denoise" if found.get("noiseDb").is_some() => fill(s.denoise_done, &[&found["noiseDb"]]),
             _ => fill(s.done, &[&name]),
         };
+    }
+
+    /// Keys the backdrop out of clip `id`: the colour most of the frame's border has where the
+    /// playhead is (the clip's first frame when it is elsewhere). When no colour is found, a clip
+    /// with no key yet gets a green one to adjust, and one with a key keeps it.
+    pub fn key_out(&mut self, id: &str) {
+        let p = self.project();
+        let Some((_, clip)) = p.clip(id) else { return };
+        let at = p.canvas.fps.snap(self.playhead);
+        let at = if at >= clip.start && at < clip.end() { at } else { clip.start };
+        let name = self.lang.command("clip.setChromaKey");
+        let s = self.s();
+        match reelforge_engine::listen::plan("clip.pickChromaKey", &p, &self.media, &json!({"clip": id, "at": at})) {
+            Ok(plan) => {
+                if self.execute("edit.batch", json!({"steps": plan.steps, "label": name})).is_ok() {
+                    self.status = s.chroma_found.to_string();
+                }
+            }
+            Err(_) if clip.look.chroma.is_none() => {
+                let green = reelforge_model::ChromaKey::GREEN;
+                if self.execute("clip.setChromaKey", json!({"clip": id, "color": green})).is_ok() {
+                    self.status = s.chroma_guess.to_string();
+                }
+            }
+            Err(_) => self.status = s.chroma_none.to_string(),
+        }
     }
 
     /// Runs a command on this editor's session and, when it joined a server, sends it there.
@@ -1919,6 +1947,10 @@ impl EditorApp {
                         if p.media.get(media).is_some_and(|m| m.kind != MediaKind::Audio))
                     && p.clip(&id).is_some_and(|(ti, _)| p.tracks[ti].kind == TrackKind::Video))
                 .then_some(clip.look.backdrop),
+                chroma: (matches!(&clip.content, ClipContent::Media { media, .. }
+                        if p.media.get(media).is_some_and(|m| m.kind != MediaKind::Audio))
+                    && p.clip(&id).is_some_and(|(ti, _)| p.tracks[ti].kind == TrackKind::Video))
+                .then_some(clip.look.chroma),
             }),
             title: match &clip.content {
                 ClipContent::Text { text, size, style, .. } => Some(Title {
@@ -2329,6 +2361,50 @@ impl EditorApp {
                             });
                             ui.end_row();
                         }
+                        if let Some(chroma) = &mut l.chroma {
+                            ui.label(egui::RichText::new(s.chroma).color(theme::color::WEAK));
+                            ui.horizontal(|ui| {
+                                let mut on = chroma.is_some();
+                                if ui.checkbox(&mut on, "").on_hover_text(s.chroma_tip).changed() {
+                                    if on {
+                                        actions.push(("clip.pickChromaKey", json!({"clip": id})));
+                                    } else {
+                                        actions.push(("clip.setChromaKey", json!({"clip": id, "color": null})));
+                                    }
+                                }
+                                if let Some(k) = chroma {
+                                    // the colour as on screen; it is sent once the picker is let go
+                                    let mut rgb = k.color.map(|v| (v * 255.0).round() as u8);
+                                    if ui.color_edit_button_srgb(&mut rgb).on_hover_text(s.chroma_color).changed() {
+                                        k.color = rgb.map(|v| f32::from(v) / 255.0);
+                                    }
+                                    if ui.small_button(s.chroma_pick).on_hover_text(s.chroma_pick_tip).clicked() {
+                                        actions.push(("clip.pickChromaKey", json!({"clip": id})));
+                                    }
+                                }
+                            });
+                            ui.end_row();
+                            if let Some(k) = chroma {
+                                let rows = [
+                                    (s.chroma_names[0], "tolerance", &mut k.tolerance),
+                                    (s.chroma_names[1], "softness", &mut k.softness),
+                                    (s.chroma_names[2], "spill", &mut k.spill),
+                                ];
+                                for (label, name, value) in rows {
+                                    ui.label(egui::RichText::new(label).color(theme::color::WEAK));
+                                    let mut percent = *value * 100.0;
+                                    let r = ui.add_sized(
+                                        [ui.available_width(), 22.0],
+                                        egui::DragValue::new(&mut percent).speed(0.5).range(0.0..=100.0).suffix(" %"),
+                                    );
+                                    *value = percent / 100.0;
+                                    if changed(&r) {
+                                        actions.push(("clip.setChromaKey", json!({"clip": id, name: *value})));
+                                    }
+                                    ui.end_row();
+                                }
+                            }
+                        }
                         if l.media {
                             ui.label(egui::RichText::new(s.crop).color(theme::color::WEAK));
                             let on = self.cropping.as_deref() == Some(id.as_str());
@@ -2709,11 +2785,21 @@ impl EditorApp {
         let picked = self.inspector.as_ref().is_some_and(|e| e.color != current.color);
         commit |= picked && !ui.ctx().egui_is_using_pointer();
         for (cmd, params) in actions {
-            if cmd.starts_with("audio.") {
+            if cmd == "clip.pickChromaKey" {
+                self.key_out(&id);
+            } else if cmd.starts_with("audio.") {
                 self.listen(cmd, &params);
             } else {
                 let _ = self.execute(cmd, params);
             }
+        }
+        // a key colour is sent once the pointer lets go of the picker
+        let key_color = |i: &Inspector| i.look.as_ref().and_then(|l| l.chroma.flatten()).map(|k| k.color);
+        if let (Some(now), Some(was)) = (self.inspector.as_ref().and_then(key_color), key_color(&current))
+            && now != was
+            && !ui.ctx().egui_is_using_pointer()
+        {
+            let _ = self.execute("clip.setChromaKey", json!({"clip": id, "color": now}));
         }
         if commit && self.inspector.as_ref() != Some(&current) {
             let e = self.inspector.clone().expect("set");
@@ -3180,7 +3266,7 @@ fn fx_section(
             changed = true;
         }
         ui.menu_button(format!("{}  {}", icon::ADD, s.fx_add), |ui| {
-            for (title, group) in s.fx_groups.into_iter().zip([FxGroup::Motion, FxGroup::Light, FxGroup::Focus]) {
+            for (title, group) in s.fx_groups.into_iter().zip(FxGroup::ALL) {
                 ui.label(egui::RichText::new(title).small().color(theme::color::WEAK));
                 for kind in FxKind::ALL.into_iter().filter(|k| k.group() == group) {
                     if ui.button(assets::fx_name(kind, s)).clicked() {

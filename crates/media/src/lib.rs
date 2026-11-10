@@ -14,6 +14,7 @@
 pub mod analysis;
 pub mod export;
 pub mod library;
+pub mod picture;
 mod shrunk;
 pub mod sound;
 pub mod stickers;

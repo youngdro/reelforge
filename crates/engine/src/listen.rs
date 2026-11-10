@@ -1,10 +1,12 @@
-//! Tools that listen before they edit: level a clip's loudness, mark a song's beats, lower music
-//! while a voice speaks, measure a clip's background noise.
+//! Tools that listen or look before they edit: level a clip's loudness, mark a song's beats,
+//! lower music while a voice speaks, measure a clip's background noise, find the colour of a
+//! green screen.
 //!
-//! A session has no sound to listen to, only a project; whoever holds the media does ([`plan`]
-//! takes it). Each tool reads the project, listens to the clips it is about through the export's
-//! own mix, and answers with ordinary commands to run as one `edit.batch`, so what it changes is
-//! undone in one step and reaches every client like any other edit.
+//! A session has no sound to listen to and no picture to look at, only a project; whoever holds
+//! the media does ([`plan`] takes it). Each tool reads the project, listens to the clips it is
+//! about through the export's own mix (or looks at the frame a clip shows), and answers with
+//! ordinary commands to run as one `edit.batch`, so what it changes is undone in one step and
+//! reaches every client like any other edit.
 
 use reelforge_compile::{CompileOptions, compile};
 use reelforge_media::Footage;
@@ -28,7 +30,7 @@ pub struct Tool {
 }
 
 /// Every listening tool.
-pub const TOOLS: [Tool; 4] = [
+pub const TOOLS: [Tool; 5] = [
     Tool {
         name: "audio.normalize",
         title: "Level Loudness",
@@ -48,6 +50,11 @@ pub const TOOLS: [Tool; 4] = [
         name: "audio.denoise",
         title: "Reduce Noise",
         doc: "Measures a clip's steady background noise (hiss, hum, a fan) from its quietest moments and takes out `amount` of it, 0.7 by default (clip.setDenoise holds the result; amount 0 turns it off).",
+    },
+    Tool {
+        name: "clip.pickChromaKey",
+        title: "Key Out Backdrop",
+        doc: "Looks at the frame a video or picture clip shows at `at` (its first frame by default), finds the one colour most of its border has (a green or blue screen) and keys it out (clip.setChromaKey holds the result, to adjust). Fails when the border has no such colour.",
     },
 ];
 
@@ -93,6 +100,13 @@ pub fn tool_schema(name: &str) -> Option<Value> {
             }),
             &["clip"],
         ),
+        "clip.pickChromaKey" => {
+            let mut at = input_schema("clip.split")?["properties"]["at"].clone();
+            at["description"] = json!(
+                "The timeline time of the frame to look at; the clip's first frame by default. Ticks, or {\"seconds\": s}, {\"frame\": n} or {\"ticks\": n}."
+            );
+            object(json!({ "clip": clip, "at": at }), &["clip"])
+        }
         _ => return None,
     })
 }
@@ -197,6 +211,7 @@ pub fn plan(name: &str, project: &Project, media: &Footage, params: &Value) -> R
         "audio.beats" => beats(project, media, params),
         "audio.duck" => duck(project, media, params),
         "audio.denoise" => denoise(project, media, params),
+        "clip.pickChromaKey" => pick_chroma_key(project, media, params),
         other => Err(format!("unknown tool {other:?}")),
     }
 }
@@ -374,5 +389,33 @@ fn denoise(project: &Project, media: &Footage, params: &Value) -> Result<Plan, S
         label: "Reduce Noise",
         steps: vec![step("clip.setDenoise", json!({ "clip": id, "amount": amount, "floor": floor }))],
         found: json!({ "clip": id, "amount": amount, "noiseDb": (level * 10.0).round() / 10.0 }),
+    })
+}
+
+fn pick_chroma_key(project: &Project, media: &Footage, params: &Value) -> Result<Plan, String> {
+    let id = clip_param(params)?;
+    let (_, clip) = clip_of(project, &id)?;
+    let at = match params.get("at").filter(|v| !v.is_null()) {
+        Some(v) => crate::params::parse_time(v, project.canvas.fps).map_err(|e| format!("`at`: {e}"))?,
+        None => clip.start,
+    };
+    if at < clip.start || at >= clip.end() {
+        return Err(format!("clip {id:?} is not on screen at that time"));
+    }
+    // the picture as it was shot: the key is taken before the clip's own colour work
+    let spec = compile(project, &CompileOptions { encode: false }).map_err(|e| e.to_string())?;
+    let picture = reelforge_media::picture::layer_picture(&spec, media, &id, at)?;
+    let (color, share) = reelforge_media::picture::backdrop_color(&picture)
+        .ok_or("no one colour fills the edges of this picture; set the colour to key with clip.setChromaKey")?;
+    // how far from it still goes is fitted to the colour: a dim screen is not far from grey
+    let fit = reelforge_model::ChromaKey::new(color);
+    let round = |v: f32| (f64::from(v) * 1000.0).round() / 1000.0;
+    let color = color.map(round);
+    let (tolerance, softness) = (round(fit.tolerance), round(fit.softness));
+    let set = json!({ "clip": id, "color": color, "tolerance": tolerance, "softness": softness });
+    Ok(Plan {
+        label: "Chroma Key",
+        steps: vec![step("clip.setChromaKey", set)],
+        found: json!({ "clip": id, "color": color, "share": (f64::from(share) * 100.0).round() / 100.0 }),
     })
 }

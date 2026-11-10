@@ -450,3 +450,80 @@ fn tools_listen_and_then_edit() {
     assert!(matches!(hub.call("audio.normalize", &json!({"target": 3})), Err(CallError::Failed(_))));
     assert_eq!(hub.session().revision(), revision);
 }
+
+#[test]
+fn a_green_screen_is_found_and_keyed_out() {
+    // a presenter (a skin-coloured box) before an unevenly lit green screen
+    let shot = temp("presenter.png");
+    image::RgbaImage::from_fn(160, 90, |x, y| {
+        if (60..100).contains(&x) && y >= 30 {
+            image::Rgba([210, 160, 130, 255])
+        } else {
+            image::Rgba([25 + (x / 8) as u8, 175 + (y / 3) as u8, 55, 255])
+        }
+    })
+    .save(&shot)
+    .unwrap();
+    // and a holiday snap with no backdrop to speak of
+    let snap = temp("snap.png");
+    image::RgbaImage::from_fn(160, 90, |x, y| {
+        let t = (x as f32 / 160.0 + y as f32 / 90.0) * 9.0;
+        let ch = |o: f32| (127.0 + 120.0 * (t + o).sin()) as u8;
+        image::Rgba([ch(0.0), ch(2.1), ch(4.2), 255])
+    })
+    .save(&snap)
+    .unwrap();
+
+    let hub = Hub::new(Session::default());
+    let json = |out: Result<Output, CallError>| match out.expect("ok") {
+        Output::Json(v) => v,
+        Output::Png { .. } => panic!("json"),
+    };
+    let id = |v: Value, key: &str| v[key].as_str().unwrap().to_string();
+    json(hub.call("project.setCanvas", &json!({"width": 160, "height": 90})));
+    let below =
+        hub.session().project().tracks.iter().find(|t| t.kind == reelforge_model::TrackKind::Video).unwrap().id.clone();
+    let above = id(json(hub.call("track.add", &json!({"kind": "video"}))), "track");
+    // blue fills the frame behind the presenter
+    json(hub.call("clip.add", &json!({"track": below, "color": [0, 0, 1], "start": 0, "duration": {"seconds": 4}})));
+    let media = |path: &std::path::Path| json(hub.call("media.import", &json!({"path": path})))["media"]["id"].clone();
+    let host = id(json(hub.call("clip.add", &json!({"track": above, "media": media(&shot), "start": 0}))), "clip");
+    let other = id(
+        json(hub.call("clip.add", &json!({"track": above, "media": media(&snap), "start": {"seconds": 10}}))),
+        "clip",
+    );
+
+    let op = crate::find_op("clip.pickChromaKey").expect("an operation");
+    assert!(!op.read_only && op.schema["required"] == json!(["clip"]));
+    let frame = || match hub.call("render.frame", &json!({"at": {"seconds": 1}, "scale": 1})).expect("renders") {
+        Output::Png { png, .. } => image::load_from_memory(&png).unwrap().to_rgba8(),
+        Output::Json(_) => panic!("a picture"),
+    };
+    let before = frame();
+    assert!(before.get_pixel(10, 10)[1] > 150, "green at first");
+
+    let found = json(hub.call("clip.pickChromaKey", &json!({"clip": host})));
+    let c: Vec<f64> = found["color"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+    assert!(c[1] > 0.65 && c[0] < 0.25 && c[2] < 0.3, "{found}");
+    assert!(found["share"].as_f64().unwrap() > 0.8, "{found}");
+    let key = hub.session().project().clip(&host).unwrap().1.look.chroma.expect("keyed");
+    assert!((f64::from(key.color[1]) - c[1]).abs() < 1e-6);
+    // the screen is gone, lit evenly or not: blue shows; the presenter is as before
+    let after = frame();
+    for (x, y) in [(10, 10), (150, 5), (20, 80), (140, 85), (80, 10)] {
+        let p = after.get_pixel(x, y);
+        assert!(p[2] > 240 && p[1] < 12 && p[0] < 12, "({x}, {y}): {p:?}");
+    }
+    for (x, y) in [(80, 60), (62, 32), (98, 88)] {
+        assert_eq!(after.get_pixel(x, y), before.get_pixel(x, y), "({x}, {y})");
+    }
+    // one undo takes the key off
+    hub.call("edit.undo", &json!({})).unwrap();
+    assert!(hub.session().project().clip(&host).unwrap().1.look.chroma.is_none());
+
+    // no backdrop, no key; and a time the clip is not on screen
+    for bad in [json!({"clip": other, "at": {"seconds": 11}}), json!({"clip": host, "at": {"seconds": 30}})] {
+        assert!(matches!(hub.call("clip.pickChromaKey", &bad), Err(CallError::Failed(_))), "{bad}");
+    }
+    assert!(hub.session().project().clip(&other).unwrap().1.look.chroma.is_none());
+}

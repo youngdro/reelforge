@@ -878,7 +878,34 @@ pub struct Effect {
 ///   standard deviation as a fraction of the picture's shorter side (default 0.02). Text and colour
 ///   layers are left as they are. Editors use it for a blurred copy of a clip behind it (a
 ///   "canvas blur" background).
+/// - `key.chroma@1`: makes one colour see-through, as for a green screen. `r`, `g`, `b` are the
+///   key colour, sRGB-encoded (default green, 0 1 0). A pixel's distance from it is measured on
+///   the chroma plane (BT.601 Cb and Cr of the encoded colour, so light and shade count little):
+///   up to `tolerance` (0 to 1, default 0.3) it is gone, from there over `softness` (0 to 1,
+///   default 0.1) it comes back, and `spill` (0 to 1, default 0.5) takes the key's tint off what
+///   stays near it: that much of its chroma towards the key, its lightness kept.
+/// - The `distort.*` effects change where a layer's picture is read, in this order whatever
+///   their order in the list, each once per layer. Positions are fractions of the layer's visible
+///   picture and are held at its edges.
+///   - `distort.wave@1`: rows slide sideways along a sine: `amount` (of the width), `waves` down
+///     the picture (default 4), `phase` in turns.
+///   - `distort.glitch@1`: bands slide sideways and wrap around: up to `amount` of the width, in
+///     a pattern picked by the whole part of `seed`.
+///   - `distort.mosaic@1`: square blocks of one colour, `size` of the shorter side each.
+///   - `distort.split@1`: red is read `x`, `y` away and blue as far the other way.
 pub mod effects {
+    /// A colour made see-through.
+    pub const CHROMA_KEY: &str = "key.chroma@1";
+    /// Rows sliding along a sine.
+    pub const WAVE: &str = "distort.wave@1";
+    /// Bands sliding sideways.
+    pub const GLITCH: &str = "distort.glitch@1";
+    /// Blocks of one colour.
+    pub const MOSAIC: &str = "distort.mosaic@1";
+    /// Red and blue read apart.
+    pub const SPLIT: &str = "distort.split@1";
+    /// The `distort.*` effects.
+    pub const DISTORT: [&str; 4] = [WAVE, GLITCH, MOSAIC, SPLIT];
     /// A blur of the layer's picture.
     pub const BLUR: &str = "blur.gaussian@1";
     /// Brightness.
