@@ -3618,3 +3618,118 @@ fn titles_come_in_by_the_word_are_written_on_and_sung() {
     s.execute("edit.undo", &json!({})).unwrap();
     assert!(style(&s, &title).is_some());
 }
+
+#[test]
+fn the_next_clip_is_wiped_opened_flipped_and_torn_in() {
+    let mut s = Session::default();
+    let track = video_track(&s);
+    add_red(&mut s, 0.0, 2.0);
+    let blue = s
+        .execute(
+            "clip.add",
+            &json!({"track": track, "color": [0, 0, 1], "start": {"seconds": 2}, "duration": {"seconds": 2}}),
+        )
+        .unwrap()["clip"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let set = |s: &mut Session, kind: &str| {
+        s.execute("clip.setTransition", &json!({"clip": blue, "kind": kind, "duration": {"seconds": 1}})).unwrap();
+    };
+    let spec = |s: &mut Session| s.execute("render.compile", &json!({})).unwrap();
+    // a frame a quarter the size, and the pixel at a place in it as [red, blue] (sRGB-ish, 0 to 1)
+    let frame = |s: &mut Session, at: f64| {
+        let spec: reelforge_renderspec::RenderSpec = serde_json::from_value(spec(s)).unwrap();
+        reelforge_render::render_frame(
+            &spec,
+            Tick::from_seconds(at),
+            0.25,
+            &reelforge_render::NoMedia,
+            reelforge_render::Quality::Final,
+        )
+        .unwrap()
+        .0
+    };
+    let at = |img: &reelforge_render::Image, x: f32, y: f32| {
+        let (px, py) = ((x * img.width as f32) as u32, (y * img.height as f32) as u32);
+        let p = img.pixels[(py.min(img.height - 1) * img.width + px.min(img.width - 1)) as usize];
+        [p[0], p[2]]
+    };
+    let (is_red, is_blue) = (|p: [f32; 2]| p[0] > 0.9 && p[1] < 0.1, |p: [f32; 2]| p[1] > 0.9 && p[0] < 0.1);
+    let plain = frame(&mut s, 3.0);
+    for kind in reelforge_model::TransitionKind::ALL {
+        set(&mut s, kind.name());
+        // before it the last clip, after it the next, as if there were no transition
+        let (before, after) = (frame(&mut s, 1.0), frame(&mut s, 3.0));
+        assert!(is_red(at(&before, 0.5, 0.5)) && is_red(at(&before, 0.05, 0.05)), "{kind:?}");
+        assert!(after.pixels == plain.pixels, "{kind:?}");
+    }
+
+    // a wipe to the right has uncovered the left half at the cut, behind a soft edge
+    set(&mut s, "wipeRight");
+    let mid = frame(&mut s, 2.0);
+    assert!(is_blue(at(&mid, 0.2, 0.5)) && is_red(at(&mid, 0.8, 0.5)), "{:?}", at(&mid, 0.2, 0.5));
+    let edge = at(&mid, 0.5, 0.5);
+    assert!(edge[0] > 0.05 && edge[1] > 0.05, "{edge:?}");
+    set(&mut s, "wipeUp");
+    let mid = frame(&mut s, 2.0);
+    assert!(is_blue(at(&mid, 0.5, 0.8)) && is_red(at(&mid, 0.5, 0.2)));
+    // a circle and a diamond open from the middle
+    for kind in ["circle", "diamond", "box"] {
+        set(&mut s, kind);
+        let early = frame(&mut s, 1.75);
+        assert!(is_blue(at(&early, 0.5, 0.5)) && is_red(at(&early, 0.1, 0.1)), "{kind}");
+    }
+    let layers = spec(&mut s)["layers"].clone();
+    assert_eq!(layers[1]["shape_mask"]["shape"], "rectangle");
+    assert!(layers[1]["shape_mask_keys"]["size"].as_array().unwrap().len() > 20);
+    // a clip with a mask of its own dissolves instead
+    s.execute("clip.setMask", &json!({"clip": blue, "shape": "circle"})).unwrap();
+    let layers = spec(&mut s)["layers"].clone();
+    assert!(layers[1]["shape_mask"]["shape"] == "circle" && layers[1].get("shape_mask_keys").is_none());
+    assert!(layers[1]["opacity"].as_array().unwrap()[0]["v"] == json!(0.0));
+    s.execute("clip.setMask", &json!({"clip": blue, "shape": null})).unwrap();
+
+    // a card: before the cut the last clip is turned, seen narrower; after it the next one is
+    set(&mut s, "flip");
+    let (early, late) = (frame(&mut s, 1.85), frame(&mut s, 2.15));
+    assert!(is_red(at(&early, 0.5, 0.5)) && !is_red(at(&early, 0.03, 0.5)) && !is_blue(at(&early, 0.5, 0.5)));
+    assert!(is_blue(at(&late, 0.5, 0.5)) && !is_blue(at(&late, 0.03, 0.5)));
+    let features = spec(&mut s)["engine"]["features"].clone();
+    assert!(features.as_array().unwrap().iter().any(|f| f == "transform.3d/1"));
+    // a page closes from the right edge: at the cut the left of the frame still shows the last clip
+    set(&mut s, "pageTurn");
+    let mid = frame(&mut s, 2.0);
+    assert!(
+        is_red(at(&mid, 0.1, 0.5)) && is_blue(at(&mid, 0.9, 0.5)),
+        "{:?} {:?}",
+        at(&mid, 0.1, 0.5),
+        at(&mid, 0.9, 0.5)
+    );
+
+    // light: three glows screened over both clips, brightest at the cut
+    set(&mut s, "lightLeak");
+    let layers = spec(&mut s)["layers"].clone();
+    let glows: Vec<&Value> =
+        layers.as_array().unwrap().iter().filter(|l| l["id"].as_str().unwrap().contains("~light")).collect();
+    assert!(glows.len() == 3 && glows.iter().all(|l| l["blend"] == "screen" && l["content"]["type"] == "shape"));
+    let mid = frame(&mut s, 2.0);
+    let lit: f32 = mid.pixels.iter().map(|p| p[1]).sum::<f32>() / mid.pixels.len() as f32;
+    assert!(lit > 0.1, "green of the warm light over red and blue: {lit}");
+
+    // torn: both layers jump in bands with their colours apart while it plays, and it cuts
+    set(&mut s, "glitch");
+    let layers = spec(&mut s)["layers"].clone();
+    for l in [&layers[0], &layers[1]] {
+        let ids: Vec<&str> = l["fx"].as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap()).collect();
+        assert!(ids.contains(&"distort.glitch@1") && ids.contains(&"distort.split@1"), "{ids:?}");
+    }
+    let (early, late) = (frame(&mut s, 1.9), frame(&mut s, 2.1));
+    assert!(at(&early, 0.5, 0.5)[1] < 0.1 && at(&late, 0.5, 0.5)[0] < 0.1);
+    // larger: the last clip has grown past the frame by the cut (pictures are blurred as well,
+    // which the compiler's own test looks at)
+    set(&mut s, "zoomBlur");
+    let layers = spec(&mut s)["layers"].clone();
+    let grown = layers[0]["transform"]["scale"].as_array().unwrap().last().unwrap()["v"].as_f64().unwrap();
+    assert!(grown > 2.0, "{grown}");
+}

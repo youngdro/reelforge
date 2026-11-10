@@ -104,6 +104,12 @@ fall and bounce (`charBounce`), and any clip does the same as a whole (`elastic`
 (`karaoke` on `clip.set`, the Karaoke box by a title's style): everything said so far, the edge passing smoothly
 through the character being said, or the word or line being said alone. Give one caption a karaoke and
 `captions.restyle` gives it to the rest, each over its own length.
+Between two clips that touch on a video track (`clip.setTransition`, Transition in a clip's inspector), besides the
+dissolve, dips, pushes, slides and zoom: a soft edge wipes the next clip in from any side (`wipeLeft`, `wipeRight`,
+`wipeUp`, `wipeDown`); it opens from the middle through a circle, a box or a diamond; the last clip turns away in
+space like a card with the next on its back (`flip`, `flipUp`); the next is turned in like a page (`pageTurn`); warm
+light drifts across as it fades in (`lightLeak`); the picture tears into bands with its colours apart and cuts
+(`glitch`); or the camera goes into one clip out of focus and comes back out of the other (`zoomBlur`).
 See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Video and audio codecs and containers are FilmCraft's clean-room, pure-Rust crates

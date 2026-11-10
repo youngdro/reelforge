@@ -1295,7 +1295,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 clip(),
                 (
                     "kind",
-                    json!({"description": "Transition from the clip before; null removes it.", "oneOf": [{"enum": ["dissolve", "fadeBlack", "fadeWhite", "pushLeft", "pushRight", "pushUp", "pushDown", "slideLeft", "slideRight", "slideUp", "slideDown", "zoom"]}, {"type": "null"}]}),
+                    json!({"description": "Transition from the clip before; null removes it. wipe*: a soft edge travels that way and uncovers this clip. circle, box, diamond: it opens from the middle through that shape. flip, flipUp: the last clip turns away in space like a card with this one on its back. pageTurn: this clip is turned in from the right edge like a page. lightLeak: warm light drifts across as it fades in. glitch: the picture tears into bands, its colours apart, and cuts. zoomBlur: zooms into the last clip out of focus and back out of this one.", "oneOf": [{"enum": ["dissolve", "fadeBlack", "fadeWhite", "pushLeft", "pushRight", "pushUp", "pushDown", "slideLeft", "slideRight", "slideUp", "slideDown", "zoom", "wipeLeft", "wipeRight", "wipeUp", "wipeDown", "circle", "box", "diamond", "flip", "flipUp", "pageTurn", "lightLeak", "glitch", "zoomBlur"]}, {"type": "null"}]}),
                 ),
                 (
                     "duration",

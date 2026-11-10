@@ -879,8 +879,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.setTransition",
         label: "Transition",
-        params: r#"{"clip": id, "kind": "dissolve"|"fadeBlack"|"fadeWhite"|"pushLeft"|"pushRight"|"pushUp"|"pushDown"|"slideLeft"|"slideRight"|"slideUp"|"slideDown"|"zoom"|null, "duration"?: time}"#,
-        doc: "Puts a transition from the clip before on a video track into this one, centred on the cut (null removes it); 0.5 s unless `duration` is given. It plays while the two clips touch.",
+        params: r#"{"clip": id, "kind": "dissolve"|"fadeBlack"|"fadeWhite"|"pushLeft"|"pushRight"|"pushUp"|"pushDown"|"slideLeft"|"slideRight"|"slideUp"|"slideDown"|"zoom"|"wipeLeft"|"wipeRight"|"wipeUp"|"wipeDown"|"circle"|"box"|"diamond"|"flip"|"flipUp"|"pageTurn"|"lightLeak"|"glitch"|"zoomBlur"|null, "duration"?: time}"#,
+        doc: "Puts a transition from the clip before on a video track into this one, centred on the cut (null removes it); 0.5 s unless `duration` is given. It plays while the two clips touch. Besides the dissolve, dips, pushes, slides and zoom: `wipeLeft`/`wipeRight`/`wipeUp`/`wipeDown` uncover this clip behind a soft edge that travels that way; `circle`, `box` and `diamond` open it from the middle through that shape (a clip with a mask of its own dissolves instead); `flip` and `flipUp` turn the last clip away in space like a card with this one on its back; `pageTurn` turns this clip in from the frame's right edge like a page; `lightLeak` fades it in under warm light drifting across; `glitch` tears the picture into bands with its colours apart and cuts; `zoomBlur` zooms into the last clip out of focus and back out of this one.",
         edits: true,
         enabled: always,
         run: clip_set_transition,

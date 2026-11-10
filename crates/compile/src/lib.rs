@@ -261,6 +261,18 @@ fn lower_tracks(
                     }));
                 }
                 let media = matches!(clip.content, ClipContent::Media { .. });
+                // a transition that uncovers this clip through a shape, and the picture's width
+                // and height in units of its shorter side, which is what a mask is measured in
+                let reveal = cuts[i].filter(|(kind, _)| kind.reveals());
+                let sides = {
+                    let [w, h] = match &clip.content {
+                        ClipContent::Media { media, .. } => project.media.get(media).and_then(|m| m.size),
+                        _ => None,
+                    }
+                    .unwrap_or([c.width, c.height])
+                    .map(|v| v.max(1) as f32);
+                    [w / w.min(h), h / w.min(h)]
+                };
                 // what is cropped, mirrored and put out of focus like a picture
                 let pictured = clip.is_picture();
                 let crop_keyed = Prop::CROP.iter().any(|p| clip.keyed(*p));
@@ -437,19 +449,23 @@ fn lower_tracks(
                     }),
                     flip_x: pictured && clip.look.flip_x,
                     flip_y: pictured && clip.look.flip_y,
-                    shape_mask: clip.look.mask.map(shape_mask),
+                    shape_mask: clip
+                        .look
+                        .mask
+                        .or_else(|| reveal.and_then(|(kind, _)| kind.reveal(1.0, sides)))
+                        .map(shape_mask),
                     crop_keys: (pictured && crop_keyed).then(|| {
                         let [left, top, right, bottom] = Prop::CROP.map(|p| motion::lower(clip, p, &shape, step));
                         CropKeys { left, top, right, bottom }
                     }),
-                    shape_mask_keys: (clip.look.mask.is_some() && Prop::MASK.iter().any(|p| clip.keyed(*p))).then(
-                        || ShapeMaskKeys {
+                    shape_mask_keys: (clip.look.mask.is_some() && Prop::MASK.iter().any(|p| clip.keyed(*p)))
+                        .then(|| ShapeMaskKeys {
                             center: motion::lower_pair(clip, [Prop::MaskX, Prop::MaskY], &shape, step),
                             size: motion::lower_pair(clip, [Prop::MaskWidth, Prop::MaskHeight], &shape, step),
                             rotation: motion::lower(clip, Prop::MaskRotation, &shape, step),
                             feather: motion::lower(clip, Prop::MaskFeather, &shape, step),
-                        },
-                    ),
+                        })
+                        .or_else(|| reveal.map(|(kind, half)| uncovering(kind, half, sides, step))),
                     fx: {
                         // people are cut out of the picture as it was shot, and a keyed colour
                         // goes from that before anything changes the colours
@@ -506,6 +522,10 @@ fn lower_tracks(
                         shape_mask_keys: None,
                         parent: None,
                     });
+                }
+                // a light leak is light: soft warm glows that drift across over both clips
+                if let Some((TransitionKind::LightLeak, half)) = cuts[i] {
+                    layers.extend(light_leak(&clip.id, clip.start - half, half, [c.width as f32, c.height as f32]));
                 }
             }
             let sound = !track.muted
@@ -708,7 +728,9 @@ fn transitions(track: &Track) -> Vec<Option<(TransitionKind, Tick)>> {
                 return None;
             }
             let half = Tick(t.duration.min(prev.duration).min(clip.duration).0 / 2);
-            (half > Tick::ZERO).then_some((t.kind, half))
+            // a clip shown through a shape of its own cannot be uncovered through another
+            let kind = if t.kind.reveals() && clip.look.mask.is_some() { TransitionKind::Dissolve } else { t.kind };
+            (half > Tick::ZERO).then_some((kind, half))
         })
         .collect()
 }
@@ -790,6 +812,91 @@ fn shape(clip: &Clip, into: Option<(TransitionKind, Tick)>, out: Option<(Transit
         steady: None,
         carried: false,
     }
+}
+
+/// The shape a clip is uncovered through over a transition `half` either side of the cut, from
+/// its layer's start: sampled at every frame, and open for good afterwards.
+fn uncovering(kind: TransitionKind, half: Tick, sides: [f32; 2], step: Tick) -> ShapeMaskKeys {
+    let len = half * 2;
+    let mut times = vec![];
+    let mut t = Tick::ZERO;
+    while t < len {
+        times.push(t);
+        t += step;
+    }
+    times.push(len);
+    let at = |t: Tick| kind.reveal((t.0 as f64 / len.0.max(1) as f64) as f32, sides).expect("a kind that uncovers");
+    let key = |t: Tick, v: [f32; 2]| Key { t, v, ease: Ease::Linear };
+    let rest = at(len);
+    ShapeMaskKeys {
+        center: Animated::Keys(times.iter().map(|t| key(*t, at(*t).center)).collect()),
+        size: Animated::Keys(times.iter().map(|t| key(*t, at(*t).size)).collect()),
+        rotation: Animated::Constant(rest.rotation),
+        feather: Animated::Constant(rest.feather),
+    }
+}
+
+/// The glows of a light leak over the frame, from `at` for `half` either side of the cut: large
+/// soft ellipses, warm at the middle and fading to nothing, screened over what is below, each
+/// drifting across at its own pace and brightest at the cut.
+fn light_leak(clip: &str, at: Tick, half: Tick, canvas: [f32; 2]) -> Vec<Layer> {
+    let key = |t: Tick, v: f32| Key { t, v, ease: Ease::InOut };
+    /// One glow: its colour at the middle, its height in frame heights, where it comes from and
+    /// goes to, and how bright it gets.
+    struct Glow {
+        color: [f32; 3],
+        size: f32,
+        from: [f32; 2],
+        to: [f32; 2],
+        bright: f32,
+    }
+    let glows = [
+        Glow { color: [1.0, 0.78, 0.42], size: 1.5, from: [-0.75, -0.15], to: [0.55, 0.1], bright: 0.95 },
+        Glow { color: [1.0, 0.45, 0.25], size: 1.1, from: [0.8, 0.3], to: [-0.5, -0.2], bright: 0.7 },
+        Glow { color: [1.0, 0.92, 0.75], size: 0.7, from: [-0.6, 0.35], to: [0.7, -0.3], bright: 0.6 },
+    ];
+    glows
+        .into_iter()
+        .enumerate()
+        .map(|(n, Glow { color: [r, g, b], size, from, to, bright })| {
+            let side = size * canvas[1];
+            Layer {
+                id: format!("{clip}~light{n}"),
+                at,
+                dur: half * 2,
+                content: LayerContent::Shape(Box::new(ShapeContent {
+                    kind: SpecShape::Ellipse,
+                    size: [side * 1.25, side],
+                    radius: 0.0,
+                    points: 5,
+                    inner: 0.5,
+                    fill: Some(Paint::Radial { from: Color([r, g, b, 1.0]), to: Color([r, g * 0.6, b * 0.4, 0.0]) }),
+                    stroke: None,
+                    shadow: None,
+                    trim: None,
+                    fill_opacity: None,
+                })),
+                transform: Transform {
+                    position: Animated::Keys(vec![
+                        Key { t: Tick::ZERO, v: from, ease: Ease::Linear },
+                        Key { t: half * 2, v: to, ease: Ease::Linear },
+                    ]),
+                    ..Transform::default()
+                },
+                opacity: Animated::Keys(vec![key(Tick::ZERO, 0.0), key(half, bright), key(half * 2, 0.0)]),
+                blend: Blend::Screen,
+                mask: None,
+                fx: vec![],
+                crop: None,
+                flip_x: false,
+                flip_y: false,
+                shape_mask: None,
+                crop_keys: None,
+                shape_mask_keys: None,
+                parent: None,
+            }
+        })
+        .collect()
 }
 
 /// What a clip's changed voice does to its sound, in the order it is done: noise out first, then
@@ -928,6 +1035,51 @@ mod tests {
         assert_eq!(b.opacity.sample(Tick::SECOND), 1.0);
         assert_eq!((c.at, c.dur), (Tick::SECOND * 5, Tick::SECOND));
         assert_eq!(c.opacity, Animated::Constant(1.0));
+    }
+
+    #[test]
+    fn a_zoom_blur_puts_both_pictures_out_of_focus_and_a_glitch_tears_them() {
+        use reelforge_model::Transition;
+        let mut p = Project::default();
+        p.media.insert(
+            "m9".into(),
+            Media {
+                id: "m9".into(),
+                name: "a.mp4".into(),
+                uri: "file:///a.mp4".into(),
+                sha256: Some("ab".repeat(32)),
+                kind: MediaKind::Video,
+                duration: Some(Tick::SECOND * 10),
+                size: Some([1920, 1080]),
+                folder: None,
+            },
+        );
+        let a = clip("c20", Tick::ZERO, Tick::SECOND * 2, ClipContent::media("m9", Tick::ZERO));
+        let mut b = clip("c21", Tick::SECOND * 2, Tick::SECOND * 2, ClipContent::media("m9", Tick::SECOND * 4));
+        b.transition = Some(Transition { kind: TransitionKind::ZoomBlur, duration: Tick::SECOND });
+        p.tracks[0].clips = vec![a, b];
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        let cut = Tick::SECOND * 2;
+        for l in &spec.layers[..2] {
+            let blur = l.fx.iter().find(|e| e.id == effects::BLUR).expect("a blur");
+            let radius = &blur.params["radius"];
+            // sharp away from the cut and softest at it, in the layer's own time
+            let near = |t: Tick| radius.sample(t - l.at);
+            assert!(near(cut) > 0.05, "{}", near(cut));
+            assert!(near(cut - Tick(Tick::SECOND.0 / 2)) < 0.01 && near(cut + Tick(Tick::SECOND.0 / 2)) < 0.01);
+        }
+        p.tracks[0].clips[1].transition = Some(Transition { kind: TransitionKind::Glitch, duration: Tick::SECOND });
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        for l in &spec.layers[..2] {
+            let ids: Vec<&str> = l.fx.iter().map(|e| e.id.as_str()).collect();
+            assert!(ids.contains(&"distort.glitch@1") && ids.contains(&"distort.split@1"), "{ids:?}");
+            assert!(!ids.contains(&effects::BLUR));
+        }
+        // and a wipe gives the clip coming in a mask that is keyed across the overlap only
+        p.tracks[0].clips[1].transition = Some(Transition { kind: TransitionKind::WipeLeft, duration: Tick::SECOND });
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        assert!(spec.layers[0].shape_mask.is_none() && spec.layers[1].shape_mask.is_some());
+        assert!(spec.layers[1].shape_mask_keys.is_some());
     }
 
     #[test]
