@@ -523,6 +523,33 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["by"],
         ),
+        "captions.add" => object(
+            vec![
+                (
+                    "cues",
+                    json!({
+                        "type": "array",
+                        "description": "The lines, each shown from `start` to `end`; `\\n` in `text` breaks a line.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "start": time("When the line appears."),
+                                "end": time("When it goes."),
+                                "text": {"type": "string"}
+                            },
+                            "required": ["start", "end", "text"],
+                            "additionalProperties": false
+                        }
+                    }),
+                ),
+                ("track", ident("A text track to put them on; a new Captions track by default.")),
+                (
+                    "template",
+                    json!({"type": "string", "description": "Title template id (title.templates); classic by default."}),
+                ),
+            ],
+            &["cues"],
+        ),
         "captions.export" => object(vec![("track", ident("A text track; the Captions track by default."))], &[]),
         "clip.split" => object(vec![clip(), ("at", time("Timeline time inside the clip."))], &["clip", "at"]),
         "clip.trim" => {

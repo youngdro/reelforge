@@ -868,6 +868,42 @@ fn trimming_speech_lists_pauses_and_fillers_and_cuts_the_ticked_ones() {
 }
 
 #[test]
+fn the_palette_finds_actions_titles_and_markers_and_does_what_is_chosen() {
+    use crate::palette::Run;
+    let mut app = EditorApp::new(Session::default());
+    let ctx = eframe::egui::Context::default();
+    let text = first_track(&app, reelforge_model::TrackKind::Text);
+    let at = Tick::from_seconds(2.0);
+    let added = app.execute("clip.add", json!({"track": text, "text": "Hello there", "start": at})).unwrap();
+    let title = added["clip"].as_str().unwrap().to_string();
+    app.execute("marker.add", json!({"at": Tick::from_seconds(1.0), "note": "beat"})).unwrap();
+
+    let entries = app.palette_entries();
+    let find = |label: &str| entries.iter().find(|e| e.label.contains(label)).unwrap_or_else(|| panic!("{label}"));
+    assert_eq!(find("Hello there").run, Run::Clip(title.clone(), at));
+    assert_eq!(find("beat").run, Run::Seek(Tick::from_seconds(1.0)));
+    // nothing is selected yet: there is nothing to delete, and one clip is no group
+    assert!(!find("Duplicate").enabled);
+    assert!(find("Split").enabled);
+
+    // a title chosen is selected, with the playhead at its start
+    app.palette_run(Run::Clip(title.clone(), at), &ctx);
+    assert_eq!(app.selection(), vec![title.clone()]);
+    assert_eq!(app.playhead, at);
+    assert!(app.palette_entries().iter().any(|e| e.label.contains("Duplicate") && e.enabled));
+    // an edit chosen is the edit the key makes
+    app.palette_run(Run::Act(crate::timeline::Action::Delete), &ctx);
+    assert!(app.session().project().clip(&title).is_none());
+    app.palette_run(Run::Undo, &ctx);
+    assert!(app.session().project().clip(&title).is_some());
+    // a time past the end stops at the end
+    app.palette_run(Run::Seek(Tick::from_seconds(99.0)), &ctx);
+    assert_eq!(app.playhead, app.session().project().duration());
+    app.palette_run(Run::Lang(crate::i18n::Lang::Zh), &ctx);
+    assert!(app.palette_entries().iter().any(|e| e.label == "分割"));
+}
+
+#[test]
 fn a_shaky_video_is_watched_and_held_steady() {
     use reelforge_media::export::{Renderer, export_with};
     use reelforge_model::{MediaKind, TrackKind};
@@ -943,4 +979,36 @@ fn a_shaky_video_is_watched_and_held_steady() {
         app.execute("clip.add", json!({"track": text, "text": "标题"})).unwrap()["clip"].as_str().unwrap().to_string();
     app.listen("clip.stabilize", &json!({"clip": title}));
     assert!(app.status.starts_with("防抖: "), "{}", app.status);
+}
+
+#[test]
+fn clips_another_client_changed_are_lit_with_its_name_and_the_news_is_on_a_toast() {
+    let hub = Arc::new(Hub::new(Session::default()));
+    let mut app = EditorApp::shared(hub.session().clone());
+    let ctx = eframe::egui::Context::default();
+    let video = first_track(&app, reelforge_model::TrackKind::Video);
+    // the editor's own edit lights nothing
+    let own = app.execute("clip.add", json!({"track": video, "color": [0, 0, 1], "duration": {"seconds": 1}})).unwrap();
+    let own = own["clip"].as_str().unwrap().to_string();
+    app.notice(1.0);
+    assert!(app.timeline.touched.is_empty());
+
+    // an agent adds a clip, then changes the editor's: both are lit, each once, with who it was
+    let added = agent(&hub, "clip.add", json!({"track": video, "color": [1, 0, 0], "start": {"seconds": 2}}));
+    app.notice(2.0);
+    agent(&hub, "clip.set", json!({"clip": own, "opacity": 0.5}));
+    app.notice(3.0);
+    agent(&hub, "clip.set", json!({"clip": own, "opacity": 0.8}));
+    app.notice(4.0);
+    let lit: Vec<(&str, &str, f64)> =
+        app.timeline.touched.iter().map(|t| (t.clip.as_str(), t.by.as_str(), t.at)).collect();
+    assert_eq!(lit, [(added["clip"].as_str().unwrap(), "agent test", 2.0), (own.as_str(), "agent test", 4.0)]);
+
+    // the news is put on a toast once, and it leaves after a while
+    ctx.run_ui(Default::default(), |ui| app.toasts(ui.ctx())).textures_delta.clear();
+    let (text, warn, _) = app.toast.clone().expect("a toast");
+    assert!(text.contains("agent test") && !warn, "{text}");
+    app.toast = None;
+    ctx.run_ui(Default::default(), |ui| app.toasts(ui.ctx())).textures_delta.clear();
+    assert!(app.toast.is_none(), "the same news is not shown twice");
 }
