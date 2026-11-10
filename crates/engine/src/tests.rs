@@ -3002,6 +3002,202 @@ fn every_piece_is_made_folded_and_compiles() {
     s.project().check().unwrap();
 }
 
+/// `n` picture clips at the same time on tracks one above another, the first lowest: pictures
+/// `sizes` across and high.
+fn stacked_pictures(s: &mut Session, sizes: &[[u32; 2]]) -> Vec<String> {
+    let mut clips = vec![];
+    for (i, size) in sizes.iter().enumerate() {
+        let params = json!({
+            "path": format!("/nowhere/{i}.mp4"), "duration": {"seconds": 10}, "size": size,
+            "sha256": format!("{i:02x}").repeat(32),
+        });
+        let m = s.execute("media.import", &params).unwrap()["media"]["id"].as_str().unwrap().to_string();
+        let track = match i {
+            0 => video_track(s),
+            _ => s.execute("track.add", &json!({"kind": "video"})).unwrap()["track"].as_str().unwrap().to_string(),
+        };
+        let c = s.execute("clip.add", &json!({"track": track, "media": m, "duration": {"seconds": 4}})).unwrap();
+        clips.push(c["clip"].as_str().unwrap().to_string());
+    }
+    clips
+}
+
+#[test]
+fn a_layout_gives_each_clip_a_cell_it_fills() {
+    let listed = Session::default().execute("layout.list", &json!({})).unwrap();
+    let ids: Vec<&str> = listed["layouts"].as_array().unwrap().iter().map(|l| l["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["columns", "rows", "grid", "focus", "pip", "compare"]);
+
+    // where each picture shows on the canvas: the middle and the size of what its crop leaves,
+    // fitted inside the frame and scaled, in pixels
+    let shown = |s: &Session, id: &str| -> [f32; 4] {
+        let p = s.project();
+        let (cw, ch) = (p.canvas.width as f32, p.canvas.height as f32);
+        let clip = p.clip(id).unwrap().1;
+        let ClipContent::Media { media, .. } = &clip.content else { panic!() };
+        let [w, h] = p.media[media].size.unwrap().map(|v| v as f32);
+        let c = clip.look.crop;
+        let (vw, vh) = (w * (1.0 - c.left - c.right), h * (1.0 - c.top - c.bottom));
+        let fit = (cw / vw).min(ch / vh) * clip.transform.scale;
+        [(0.5 + clip.transform.x) * cw, (0.5 + clip.transform.y) * ch, vw * fit, vh * fit]
+    };
+    let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.6);
+
+    // two columns on the default upright frame: a wide picture and a tall one, each cut to its half
+    let mut s = Session::default();
+    let (cw, ch) = (s.project().canvas.width as f32, s.project().canvas.height as f32);
+    let clips = stacked_pictures(&mut s, &[[1920, 1080], [1080, 1920], [1000, 1000], [640, 480]]);
+    let gap = 0.012 * cw.min(ch);
+    let out = s.execute("layout.apply", &json!({"layout": "columns", "clips": clips[..2]})).unwrap();
+    let half = (cw - gap) / 2.0;
+    let (left, right) = (shown(&s, &clips[0]), shown(&s, &clips[1]));
+    assert!(near(left, [half / 2.0, ch / 2.0, half, ch]), "{left:?}");
+    assert!(near(right, [cw - half / 2.0, ch / 2.0, half, ch]), "{right:?}");
+    assert_eq!(out["clips"][0]["width"], json!(half.round()));
+    // the wide one lost its sides, evenly; nothing is squashed
+    let crop = s.project().clip(&clips[0]).unwrap().1.look.crop;
+    assert!(crop.left > 0.3 && crop.left == crop.right && crop.top == 0.0);
+    s.execute("render.compile", &json!({})).unwrap();
+    // one step
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.project().clip(&clips[0]).unwrap().1.look.crop.is_zero());
+
+    // every layout tiles its part of the frame without overlap, on upright and wide frames
+    for canvas in [[1080, 1920], [1920, 1080], [1080, 1080]] {
+        s.execute("project.setCanvas", &json!({"width": canvas[0], "height": canvas[1]})).unwrap();
+        let (cw, ch) = (canvas[0] as f32, canvas[1] as f32);
+        for (layout, n) in [("columns", 4), ("rows", 3), ("grid", 3), ("grid", 4), ("focus", 2), ("focus", 4)] {
+            let asked = json!({"layout": layout, "clips": clips[..n], "gap": 0, "margin": 0.05});
+            s.execute("layout.apply", &asked).unwrap_or_else(|e| panic!("{layout} of {n}: {e}"));
+            let cells: Vec<[f32; 4]> = clips[..n].iter().map(|c| shown(&s, c)).collect();
+            let m = 0.05 * cw.min(ch);
+            let area: f32 = cells.iter().map(|c| c[2] * c[3]).sum();
+            assert!((area - (cw - 2.0 * m) * (ch - 2.0 * m)).abs() < 0.002 * cw * ch, "{layout} of {n}: {cells:?}");
+            for (i, a) in cells.iter().enumerate() {
+                assert!(a[0] - a[2] / 2.0 > m - 1.0 && a[0] + a[2] / 2.0 < cw - m + 1.0, "{layout} of {n}: {a:?}");
+                assert!(a[1] - a[3] / 2.0 > m - 1.0 && a[1] + a[3] / 2.0 < ch - m + 1.0, "{layout} of {n}: {a:?}");
+                for b in &cells[..i] {
+                    let apart = (a[0] - b[0]).abs() > (a[2] + b[2]) / 2.0 - 1.0
+                        || (a[1] - b[1]).abs() > (a[3] + b[3]) / 2.0 - 1.0;
+                    assert!(apart, "{layout} of {n} on {canvas:?}: {a:?} meets {b:?}");
+                }
+            }
+            s.execute("render.compile", &json!({})).unwrap();
+        }
+    }
+    // the first of `focus` is twice the strip beside it
+    let (large, small) = (shown(&s, &clips[0]), shown(&s, &clips[1]));
+    assert!((large[3] / small[3] - 2.0).abs() < 0.01, "{large:?} {small:?}");
+
+    // what a layout cannot be given
+    assert!(s.execute("layout.apply", &json!({"layout": "spiral", "clips": clips[..2]})).is_err());
+    assert!(s.execute("layout.apply", &json!({"layout": "columns", "clips": clips[..1]})).is_err());
+    assert!(s.execute("layout.apply", &json!({"layout": "compare", "clips": clips[..3]})).is_err());
+    assert!(s.execute("layout.apply", &json!({"layout": "rows", "clips": [clips[0], clips[0]]})).is_err());
+    assert!(s.execute("layout.apply", &json!({"layout": "rows", "clips": [clips[0], "c999"]})).is_err());
+    assert!(s.execute("layout.apply", &json!({"layout": "rows", "clips": clips[..2], "gap": 0.5})).is_err());
+    assert!(s.execute("layout.apply", &json!({"layout": "pip", "clips": clips[..2], "corner": "middle"})).is_err());
+    assert!(s.execute("layout.apply", &json!({"layout": "pip", "clips": clips[..2], "border": 4})).is_err());
+    let title = s.execute("clip.add", &json!({"track": "t2", "text": "hi"})).unwrap()["clip"].clone();
+    assert!(s.execute("layout.apply", &json!({"layout": "rows", "clips": [clips[0], title]})).is_err());
+}
+
+#[test]
+fn small_pictures_and_a_comparison_are_drawn_over_the_first_clip() {
+    let mut s = Session::default();
+    let (cw, ch) = (s.project().canvas.width as f32, s.project().canvas.height as f32);
+    let clips = stacked_pictures(&mut s, &[[1080, 1920], [1920, 1080], [1920, 1080]]);
+    let shapes = |s: &Session| -> usize {
+        let p = s.project();
+        p.tracks.iter().flat_map(|t| &t.clips).filter(|c| matches!(c.content, ClipContent::Shape { .. })).count()
+    };
+
+    // picture in picture: the first fills the frame, the others sit in the corner, outlined
+    let out = s.execute("layout.apply", &json!({"layout": "pip", "clips": clips})).unwrap();
+    let p = s.project();
+    let (main, small) = (p.clip(&clips[0]).unwrap().1, p.clip(&clips[1]).unwrap().1);
+    assert_eq!((main.transform.x, main.transform.y, main.transform.scale), (0.0, 0.0, 1.0));
+    assert!(main.look.crop.is_zero());
+    assert!((small.transform.scale - 0.32).abs() < 1e-6 && small.transform.x > 0.25 && small.transform.y < -0.25);
+    // the second is under it, a gap away
+    let next = p.clip(&clips[2]).unwrap().1;
+    assert!((next.transform.y - small.transform.y - 0.32 - 0.012 * cw / ch).abs() < 1e-4);
+    // each outline is a shape its picture carries, as large as its cell whatever the picture's scale
+    let added = out["added"].as_array().unwrap();
+    assert_eq!((added.len(), shapes(&s)), (2, 2));
+    let (ti, edge) = p.clip(added[0].as_str().unwrap()).unwrap();
+    assert!(ti > p.clip(&clips[1]).unwrap().0);
+    assert_eq!(edge.parent.as_deref(), Some(clips[1].as_str()));
+    assert_eq!((edge.start, edge.duration), (small.start, small.duration));
+    assert!((edge.transform.scale * small.transform.scale - 1.0).abs() < 1e-5);
+    let ClipContent::Shape { shape } = &edge.content else { panic!() };
+    assert!(shape.fill.is_none() && shape.stroke.is_some());
+    assert!((shape.size[0] - 0.32 * cw).abs() < 0.5 && (shape.size[1] - 0.32 * ch).abs() < 0.5);
+    s.execute("render.compile", &json!({})).unwrap();
+
+    // again as circles in another corner: the old outlines are replaced, not added to
+    let asked = json!({"layout": "pip", "clips": clips, "round": true, "corner": "bottomLeft", "size": 0.25});
+    let out = s.execute("layout.apply", &asked).unwrap();
+    assert_eq!((out["added"].as_array().unwrap().len(), shapes(&s)), (2, 2));
+    let p = s.project();
+    let small = p.clip(&clips[1]).unwrap().1;
+    assert!(small.transform.x < -0.25 && small.transform.y > 0.25);
+    let mask = small.look.mask.unwrap();
+    assert_eq!((mask.kind, mask.size, mask.feather), (reelforge_model::MaskKind::Circle, [1.0, 1.0], 0.0));
+    // what shows is square
+    let c = small.look.crop;
+    assert!(((1920.0 * (1.0 - c.left - c.right)) - 1080.0 * (1.0 - c.top - c.bottom)).abs() < 1.0);
+    // without outlines, and the circles are gone from a layout that has none
+    s.execute("layout.apply", &json!({"layout": "pip", "clips": clips, "border": null})).unwrap();
+    assert_eq!(shapes(&s), 0);
+    assert!(s.project().clip(&clips[1]).unwrap().1.look.mask.is_none());
+    // a small picture under the large one would not show
+    let e = s.execute("layout.apply", &json!({"layout": "pip", "clips": [clips[1], clips[0]]})).unwrap_err();
+    assert!(e.to_string().contains("track above"), "{e}");
+
+    // a comparison: the upper clip shows past a line that travels, and a divider travels with it
+    let out = s.execute("layout.apply", &json!({"layout": "compare", "clips": clips[..2]})).unwrap();
+    let p = s.project();
+    let upper = p.clip(&clips[1]).unwrap().1;
+    let mask = upper.look.mask.unwrap();
+    assert_eq!((mask.kind, mask.rotation, mask.feather), (reelforge_model::MaskKind::Linear, 90.0, 0.0));
+    let wipe = &upper.keys[&Prop::MaskX];
+    assert_eq!((wipe[0].v, wipe[1].v), (0.85, 0.15));
+    assert!(wipe[0].t > Tick::ZERO && wipe[1].t < upper.duration);
+    let added: Vec<&str> = out["added"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+    assert_eq!(added.len(), 4);
+    let line = p.clip(added[0]).unwrap().1;
+    assert_eq!(line.parent.as_deref(), Some(clips[1].as_str()));
+    let travel = &line.keys[&Prop::X];
+    assert_eq!((travel[0].t, travel[1].t), (wipe[0].t, wipe[1].t));
+    assert!((travel[0].v - 0.35).abs() < 1e-6 && (travel[1].v + 0.35).abs() < 1e-6);
+    for part in &added[1..] {
+        let part = p.clip(part).unwrap().1;
+        assert_eq!((part.parent.as_deref(), part.group.as_ref()), (Some(added[0]), line.group.as_ref()));
+    }
+    s.execute("render.compile", &json!({})).unwrap();
+    s.project().check().unwrap();
+    // down the frame instead, without the line; the old divider goes
+    let asked =
+        json!({"layout": "compare", "clips": clips[..2], "axis": "y", "from": 0.3, "to": 0.7, "divider": false});
+    s.execute("layout.apply", &asked).unwrap();
+    let p = s.project();
+    let upper = p.clip(&clips[1]).unwrap().1;
+    assert_eq!(upper.look.mask.unwrap().rotation, 180.0);
+    assert!(upper.keys.contains_key(&Prop::MaskY) && !upper.keys.contains_key(&Prop::MaskX));
+    assert_eq!(shapes(&s), 0);
+    assert!(s.execute("layout.apply", &json!({"layout": "compare", "clips": clips[..2], "axis": "z"})).is_err());
+    assert!(s.execute("layout.apply", &json!({"layout": "compare", "clips": clips[..2], "from": 2})).is_err());
+    // a compound clip is laid out like any picture
+    let folded =
+        s.execute("clip.compound", &json!({"clips": [clips[2]]})).unwrap()["clip"].as_str().unwrap().to_string();
+    s.execute("layout.apply", &json!({"layout": "rows", "clips": [clips[0], folded], "gap": 0})).unwrap();
+    let p = s.project();
+    let c = p.clip(&folded).unwrap().1;
+    assert!((c.look.crop.top - 0.25).abs() < 1e-6 && (c.transform.y - 0.25).abs() < 1e-6 && c.transform.scale == 1.0);
+    s.execute("render.compile", &json!({})).unwrap();
+}
+
 #[test]
 fn spoken_lines_are_placed_on_voiceover_tracks_in_one_step() {
     let mut s = Session::default();

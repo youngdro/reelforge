@@ -69,6 +69,13 @@ fields with names (`product`, `price`, `cta`), in English, Chinese or Japanese: 
 one from your copy and `storyboard.fill` gives fields other words later, and every piece written from
 them is made again to fit. In the editor they are under Storyboards in the Templates tab, with the copy
 as a form to type over.
+Clips that show at the same time share the frame by a layout (版式): `layout.apply` takes picture clips
+on tracks one above another and makes them equal strips side by side or stacked, a grid, one large with
+the rest beside it, picture in picture (small pictures in a corner, square or round, outlined), or a
+compare slider, where the second picture shows only past a divider that travels across the first (before
+and after). Each clip is cropped about its middle to the shape of its cell and scaled to fill it, so
+nothing is squashed; `clip.setCrop` reframes it inside. In the editor select the clips and pick Layout
+from a clip's menu, or from the command palette.
 A shaky shot is held steady (防抖): `clip.stabilize` watches the frames a video clip shows, follows how the
 camera moved from each to the next, and keeps that path with the clip; the picture is then moved and
 turned against the shake and drawn just large enough that its edges stay out of sight. How much goes
@@ -172,6 +179,7 @@ cargo run -q -p reelforge-cli -- exec cut.reel.json promo.add '{"kind": "checkli
 cargo run -q -p reelforge-cli -- exec cut.reel.json promo.set '{"clip": "c9", "lines": ["持久保湿 12 小时", "敏感肌适用", "无香精"]}' --save   # other words: the piece is made again to fit them
 cargo run -q -p reelforge-cli -- exec ad.reel.json storyboard.apply '{"storyboard": "flashSale", "copy": {"price": 59, "oldPrice": 89}}' --save   # a whole flash-sale video planned ahead: scenes, pieces, music (storyboard.list has twelve)
 cargo run -q -p reelforge-cli -- exec ad.reel.json storyboard.fill '{"copy": {"discount": "直降 30 元", "stock": 12}}' --save   # other copy: every piece written from it is made again
+cargo run -q -p reelforge-cli -- exec ad.reel.json layout.apply '{"layout": "compare", "clips": ["c1", "c2"]}' --save   # before and after: c2, on the track above, shows past a divider that slides across c1 (layout.list has columns, rows, grid, focus, pip)
 cargo run -q -p reelforge-cli -- exec ad.reel.json decor.add '{"decor": "confettiBurst", "start": {"seconds": 12}}' --save   # confetti over the closing scene, in the brand's colours (decor.list has twenty animated decorations)
 cargo run -q -p reelforge-cli -- exec ad.reel.json decor.add '{"decor": "circleMark", "start": {"seconds": 6}, "x": 0.1, "y": 0.2, "color": [1, 0.8, 0.2]}' --save   # a ring drawn by hand round the price
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t1", "shape": {"kind": "star", "points": 16, "inner": 0.8, "size": [300, 300], "fill": {"type": "radial", "from": [1, 0.8, 0.2], "to": [1, 0.4, 0]}}}' --save   # a shape of your own

@@ -837,6 +837,50 @@ fn keying_finds_the_backdrop_or_says_it_guessed() {
 }
 
 #[test]
+fn selected_pictures_are_laid_out_from_the_lowest_track_up() {
+    use crate::timeline::{Action, Select};
+    use reelforge_model::TrackKind;
+    let mut app = EditorApp::new(Session::default());
+    app.lang = crate::i18n::Lang::Zh;
+    let mut clips = vec![];
+    for i in 0..2 {
+        let file = json!({
+            "path": format!("/nowhere/{i}.mp4"), "duration": {"seconds": 10}, "size": [1920, 1080],
+            "sha256": format!("{i:02x}").repeat(32),
+        });
+        let media = app.execute("media.import", file).unwrap()["media"]["id"].as_str().unwrap().to_string();
+        let track = match i {
+            0 => first_track(&app, TrackKind::Video),
+            _ => app.execute("track.add", json!({"kind": "video"})).unwrap()["track"].as_str().unwrap().to_string(),
+        };
+        let at = json!({"track": track, "media": media, "duration": {"seconds": 4}});
+        clips.push(app.execute("clip.add", at).unwrap()["clip"].as_str().unwrap().to_string());
+    }
+    // chosen from the top down, laid out from the bottom up: the lower clip is the large one
+    app.select(Select::Set(vec![clips[1].clone(), clips[0].clone()]));
+    app.act(Action::Layout("pip"));
+    let p = app.project();
+    assert_eq!(p.clip(&clips[0]).unwrap().1.transform.scale, 1.0);
+    assert!(p.clip(&clips[1]).unwrap().1.transform.scale < 0.5);
+    assert!(app.status.contains("画中画"), "{}", app.status);
+    app.act(Action::Layout("rows"));
+    let p = app.project();
+    assert!(p.clip(&clips[0]).unwrap().1.transform.y < 0.0 && p.clip(&clips[1]).unwrap().1.transform.y > 0.0);
+    // one clip alone is left as it is
+    app.select(Select::Only(clips[0].clone()));
+    let before = app.project().clip(&clips[0]).unwrap().1.clone();
+    app.act(Action::Layout("columns"));
+    assert_eq!(*app.project().clip(&clips[0]).unwrap().1, before);
+    // every layout is named in every language, and found in the palette
+    for lang in crate::i18n::Lang::ALL {
+        let s = lang.strings();
+        assert_eq!(s.layout_names.len(), reelforge_engine::LAYOUTS.len());
+        assert!(s.layout_names.iter().all(|n| !n.is_empty()) && s.layout_done.contains("{}"));
+    }
+    assert!(app.palette_entries().len() > reelforge_engine::LAYOUTS.len());
+}
+
+#[test]
 fn a_group_is_chosen_as_one_and_a_compound_clip_is_opened_and_left() {
     use crate::timeline::{Action, Select};
     use reelforge_model::TrackKind;

@@ -16,6 +16,7 @@ mod commands;
 mod compound;
 mod cut;
 mod decor;
+mod layout;
 pub mod listen;
 mod outline;
 mod params;
@@ -37,6 +38,7 @@ use thiserror::Error;
 
 pub use captions::{CAPTIONS_TRACK, CAPTIONS_TRACK_2, Cue, format_srt, parse_srt};
 pub use commands::{CommandSpec, media_uses, registry};
+pub use layout::{LAYOUTS, Layout};
 pub use params::parse_time;
 pub use pieces::{Category, PROMOS, Promo};
 pub use promo::made_of;

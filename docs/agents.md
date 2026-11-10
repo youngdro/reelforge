@@ -124,6 +124,12 @@ decor_add {"decor": "circleMark", "start": {"seconds": 14}, "x": 0.13, "y": 0.2,
 render_frame {"at": {"seconds": 14}, "scale": 0.3} → look, then fix: promo_set moves or rewrites one piece
 ```
 
+Two shots of the same thing, before and after, go one over the other and are told apart by a
+divider: `clip_add` the second on a track above the first for the same stretch of time, then
+`layout_apply {"layout": "compare", "clips": ["c1", "c2"]}`. `"layout": "pip"` makes the second a
+small picture in a corner instead (a presenter over the product), `"columns"` or `"grid"` puts
+two to six shots side by side.
+
 A storyboard is laid out for an upright 9:16 frame, its pieces clear of the bottom fifth where
 apps put their own buttons and captions. On a wider canvas the pieces keep to a column down the
 middle, smaller. A field a piece counts to (`price`, `stock`, `rating`) must be a number. A piece
@@ -187,6 +193,7 @@ path is taken away (`points: null`).
 | Groups and compound clips | `clip_group`, `clip_ungroup`, `clip_compound`, `clip_uncompound`, `timeline_list` / `timeline_switch` |
 | Timelines and templates (剪同款) | `timeline_add` / `timeline_switch` / …, `template_list`, `template_apply`, `template_slots`, `template_fill`, `template_mark`, `clip_replace` |
 | Storyboards (whole marketing videos planned ahead) | `storyboard_list` (launch, flashSale, bogo, beforeAfter, roundup, storeVisit: scenes with what to film and the line to say, the fields of the copy; `lang` en, zh or ja), `storyboard_apply` (`copy` by field name, `media` for the scenes' pictures in order, `seconds`, `captions`; builds slots, pieces, transitions, markers and music in one step), `storyboard_fill` (other words or numbers for fields: every piece written from them is made again), `storyboard_copy`; pictures go in with `template_fill` |
+| Layouts (split screen, picture in picture, compare) | `layout_list` (columns, rows, grid, focus, pip, compare: how many clips each takes and which parameters it reads), `layout_apply` (`layout`, `clips` in order, on tracks one above another and showing at the same time; `gap`, `margin`; for `pip` `corner`, `size`, `round`; for `compare` `from`, `to`, `axis`, `divider`; `border` outlines the cells. Each clip is cropped about its middle to its cell and scaled to fill it; its place, scale, turn, crop, mask, path and carrier become the layout's. Outlines and the divider are shape clips carried by their clip; applying again replaces them. Reframe inside a cell with `clip_setCrop`) |
 | Media | `media_import`, `media_set` (rename, folders), `media_remove` |
 | CapCut / 剪映 drafts | `capcut_import` |
 | Looking and exporting | `render_frame`, `render_compile`, `project_setCanvas`, `project_setExport`, `project_setCover`, `render_export` (`format`: mp4, gif, m4a, wav), `render_jobs` |
