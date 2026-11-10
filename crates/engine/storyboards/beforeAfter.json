@@ -1,0 +1,291 @@
+{
+ "id": "beforeAfter",
+ "name": {
+  "en": "Before and after",
+  "zh": "前后对比",
+  "ja": "ビフォーアフター"
+ },
+ "about": {
+  "en": "The problem, before, after with a number, what buyers say, and a button",
+  "zh": "痛点开场，使用前、使用后加效果数字，再放买家口碑，最后引导下单",
+  "ja": "悩み、使用前、数字つきの使用後、購入者の声、購入への誘導"
+ },
+ "music": "lofi",
+ "fields": [
+  {
+   "id": "hook",
+   "text": {
+    "en": "Tired of dull skin?",
+    "zh": "毛孔粗大怎么办？",
+    "ja": "毛穴、気になりませんか？"
+   }
+  },
+  {
+   "id": "before",
+   "text": {
+    "en": "Before",
+    "zh": "使用前",
+    "ja": "使用前"
+   }
+  },
+  {
+   "id": "beforeNote",
+   "text": {
+    "en": "Dull, with visible pores",
+    "zh": "暗沉 · 毛孔明显",
+    "ja": "くすみ・毛穴が目立つ"
+   }
+  },
+  {
+   "id": "after",
+   "text": {
+    "en": "After 28 days",
+    "zh": "使用 28 天后",
+    "ja": "28 日後"
+   }
+  },
+  {
+   "id": "afterNote",
+   "text": {
+    "en": "Bright and smooth",
+    "zh": "透亮 · 细腻平滑",
+    "ja": "明るく、なめらか"
+   }
+  },
+  {
+   "id": "result",
+   "number": 92
+  },
+  {
+   "id": "resultNote",
+   "text": {
+    "en": "saw smoother skin",
+    "zh": "用户表示肤质改善",
+    "ja": "が肌の変化を実感"
+   }
+  },
+  {
+   "id": "rating",
+   "number": 4.9
+  },
+  {
+   "id": "reviews",
+   "text": {
+    "en": "23,000 reviews",
+    "zh": "2.3 万条好评",
+    "ja": "レビュー 2.3 万件"
+   }
+  },
+  {
+   "id": "review",
+   "text": {
+    "en": "Two weeks in and my skin has never looked this even. On my third bottle!",
+    "zh": "用了两周，真的不卡粉，回购第三瓶了！",
+    "ja": "2 週間で肌がなめらかに。もう 3 本目です！"
+   }
+  },
+  {
+   "id": "reviewer",
+   "text": {
+    "en": "Mia",
+    "zh": "小鹿",
+    "ja": "ミカ"
+   }
+  },
+  {
+   "id": "deadline",
+   "text": {
+    "en": "Ends Sunday at midnight",
+    "zh": "活动截至本周日 24:00",
+    "ja": "今週日曜 24:00 まで"
+   }
+  },
+  {
+   "id": "closing",
+   "text": {
+    "en": "Start today",
+    "zh": "改变从今天开始",
+    "ja": "今日から始めよう"
+   }
+  },
+  {
+   "id": "cta",
+   "text": {
+    "en": "Shop now",
+    "zh": "立即抢购",
+    "ja": "今すぐ購入"
+   }
+  },
+  {
+   "id": "hint",
+   "text": {
+    "en": "Tap the link below",
+    "zh": "点击下方小黄车",
+    "ja": "下のリンクをタップ"
+   }
+  }
+ ],
+ "scenes": [
+  {
+   "id": "hook",
+   "seconds": 3.0,
+   "shot": {
+    "en": "The problem, close up",
+    "zh": "痛点特写",
+    "ja": "悩みのアップ"
+   },
+   "fx": "zoomIn",
+   "voice": {
+    "en": "{hook}",
+    "zh": "{hook}",
+    "ja": "{hook}"
+   },
+   "pieces": [
+    {
+     "kind": "hookQuestion",
+     "at": 0.2,
+     "text": "{hook}",
+     "y": -0.05
+    }
+   ]
+  },
+  {
+   "id": "before",
+   "seconds": 4.0,
+   "shot": {
+    "en": "Before: frame it the way you will frame the after",
+    "zh": "使用前：和使用后保持同一构图",
+    "ja": "使用前：使用後と同じ構図で"
+   },
+   "cut": "dissolve",
+   "voice": {
+    "en": "{before}: {beforeNote}.",
+    "zh": "{before}：{beforeNote}。",
+    "ja": "{before}：{beforeNote}。"
+   },
+   "pieces": [
+    {
+     "kind": "lowerThird",
+     "at": 0.3,
+     "text": "{before}",
+     "lines": [
+      "{beforeNote}"
+     ],
+     "y": 0.2
+    }
+   ]
+  },
+  {
+   "id": "after",
+   "seconds": 4.0,
+   "shot": {
+    "en": "After: the same framing",
+    "zh": "使用后：同一构图",
+    "ja": "使用後：同じ構図で"
+   },
+   "sweep": "right",
+   "voice": {
+    "en": "{after}: {afterNote}.",
+    "zh": "{after}：{afterNote}。",
+    "ja": "{after}：{afterNote}。"
+   },
+   "pieces": [
+    {
+     "kind": "lowerThird",
+     "at": 0.3,
+     "text": "{after}",
+     "lines": [
+      "{afterNote}"
+     ],
+     "y": 0.2
+    },
+    {
+     "kind": "bigNumber",
+     "at": 0.8,
+     "value": "{result}",
+     "text": "{n}%",
+     "lines": [
+      "{resultNote}"
+     ],
+     "y": -0.22,
+     "scale": 0.8
+    }
+   ]
+  },
+  {
+   "id": "proof",
+   "seconds": 4.0,
+   "shot": {
+    "en": "The product, close up",
+    "zh": "产品特写",
+    "ja": "商品のアップ"
+   },
+   "cut": "dissolve",
+   "voice": {
+    "en": "Rated {rating} by buyers.",
+    "zh": "{rating} 分好评，{reviews}。",
+    "ja": "評価 {rating}、{reviews}。"
+   },
+   "pieces": [
+    {
+     "kind": "rating",
+     "at": 0.2,
+     "value": "{rating}",
+     "text": {
+      "en": "{n} / 5",
+      "zh": "{n} 分",
+      "ja": "{n} 点"
+     },
+     "lines": [
+      "{reviews}"
+     ],
+     "y": -0.25,
+     "scale": 0.9
+    },
+    {
+     "kind": "reviewBubble",
+     "at": 0.9,
+     "text": "{review}",
+     "lines": [
+      "{reviewer}"
+     ],
+     "y": 0.13
+    }
+   ]
+  },
+  {
+   "id": "cta",
+   "seconds": 3.0,
+   "backdrop": "brand",
+   "sweep": "up",
+   "voice": {
+    "en": "{closing}. {hint}.",
+    "zh": "{closing}，{hint}。",
+    "ja": "{closing}。{hint}。"
+   },
+   "pieces": [
+    {
+     "kind": "endCard",
+     "at": 0.1,
+     "text": "{closing}",
+     "lines": [
+      "{deadline}"
+     ],
+     "y": -0.22
+    },
+    {
+     "kind": "buyButton",
+     "at": 0.7,
+     "text": "{cta}",
+     "y": -0.01
+    },
+    {
+     "kind": "arrowHint",
+     "at": 1.0,
+     "text": "{hint}",
+     "y": 0.14
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,272 @@
+{
+ "id": "bogo",
+ "name": {
+  "en": "Buy one, get one",
+  "zh": "买一送一",
+  "ja": "1 つ買うと 1 つ無料"
+ },
+ "about": {
+  "en": "The offer, the gift close up, what the pair saves, and a button",
+  "zh": "先讲活动，再特写赠品，算清楚省多少，最后引导下单",
+  "ja": "特典を伝え、プレゼントを見せ、お得さを数字で示して購入へ"
+ },
+ "music": "upbeat",
+ "fields": [
+  {
+   "id": "offer",
+   "text": {
+    "en": "Buy 1 get 1",
+    "zh": "买一送一",
+    "ja": "1 つ買うと 1 つ無料"
+   }
+  },
+  {
+   "id": "product",
+   "text": {
+    "en": "Glow Serum",
+    "zh": "焕亮精华",
+    "ja": "ブライトセラム"
+   }
+  },
+  {
+   "id": "tagline",
+   "text": {
+    "en": "30 ml · the second one is free",
+    "zh": "正装 30 ml · 第二瓶 0 元",
+    "ja": "30ml・2 本目は 0 円"
+   }
+  },
+  {
+   "id": "giftLine",
+   "text": {
+    "en": "Buy one, get the same again",
+    "zh": "买正装 送同款正装",
+    "ja": "1 本買うと同じものをもう 1 本"
+   }
+  },
+  {
+   "id": "gift",
+   "text": {
+    "en": "A second 30 ml bottle",
+    "zh": "同款正装 30 ml",
+    "ja": "同じ 30ml ボトル"
+   }
+  },
+  {
+   "id": "oldPrice",
+   "number": 398
+  },
+  {
+   "id": "price",
+   "number": 199
+  },
+  {
+   "id": "promise1",
+   "text": {
+    "en": "Free shipping",
+    "zh": "包邮",
+    "ja": "送料無料"
+   }
+  },
+  {
+   "id": "promise2",
+   "text": {
+    "en": "Genuine",
+    "zh": "正品保障",
+    "ja": "正規品保証"
+   }
+  },
+  {
+   "id": "promise3",
+   "text": {
+    "en": "7-day returns",
+    "zh": "七天无理由",
+    "ja": "7 日間返品 OK"
+   }
+  },
+  {
+   "id": "deadline",
+   "text": {
+    "en": "Ends Sunday at midnight",
+    "zh": "活动截至本周日 24:00",
+    "ja": "今週日曜 24:00 まで"
+   }
+  },
+  {
+   "id": "closing",
+   "text": {
+    "en": "Stock up now",
+    "zh": "囤货就趁现在",
+    "ja": "まとめ買いは今"
+   }
+  },
+  {
+   "id": "cta",
+   "text": {
+    "en": "Shop now",
+    "zh": "立即抢购",
+    "ja": "今すぐ購入"
+   }
+  },
+  {
+   "id": "hint",
+   "text": {
+    "en": "Tap the link below",
+    "zh": "点击下方小黄车",
+    "ja": "下のリンクをタップ"
+   }
+  }
+ ],
+ "scenes": [
+  {
+   "id": "hook",
+   "seconds": 3.0,
+   "shot": {
+    "en": "Two of the product, side by side",
+    "zh": "两件产品并排摆放",
+    "ja": "商品を 2 つ並べて"
+   },
+   "fx": "zoomIn",
+   "voice": {
+    "en": "{product}: {offer}!",
+    "zh": "{product}，{offer}！",
+    "ja": "{product}、{offer}！"
+   },
+   "pieces": [
+    {
+     "kind": "bogo",
+     "at": 0.1,
+     "text": "{offer}",
+     "scale": 1.3,
+     "y": -0.08
+    },
+    {
+     "kind": "lowerThird",
+     "at": 0.5,
+     "text": "{product}",
+     "lines": [
+      "{tagline}"
+     ],
+     "y": 0.2
+    }
+   ]
+  },
+  {
+   "id": "gift",
+   "seconds": 4.5,
+   "shot": {
+    "en": "The gift, close up",
+    "zh": "赠品特写",
+    "ja": "プレゼントのアップ"
+   },
+   "sweep": "right",
+   "voice": {
+    "en": "{giftLine}.",
+    "zh": "{giftLine}。",
+    "ja": "{giftLine}。"
+   },
+   "pieces": [
+    {
+     "kind": "banner",
+     "at": 0.2,
+     "text": "{giftLine}",
+     "y": -0.38
+    },
+    {
+     "kind": "callout",
+     "at": 0.6,
+     "text": "{gift}",
+     "x": -0.2,
+     "y": 0.0
+    }
+   ]
+  },
+  {
+   "id": "value",
+   "seconds": 4.5,
+   "shot": {
+    "en": "The product in use",
+    "zh": "产品使用画面",
+    "ja": "商品を使っているところ"
+   },
+   "cut": "dissolve",
+   "voice": {
+    "en": "Two for {price}, not {oldPrice}.",
+    "zh": "两瓶原价 {oldPrice}，现在只要 {price}。",
+    "ja": "2 本で通常 {oldPrice} 円が {price} 円。"
+   },
+   "pieces": [
+    {
+     "kind": "priceCompare",
+     "at": 0.2,
+     "values": [
+      "{oldPrice}",
+      "{price}"
+     ],
+     "lines": [
+      {
+       "en": "Apart",
+       "zh": "分开买",
+       "ja": "別々に"
+      },
+      {
+       "en": "Together",
+       "zh": "买一送一",
+       "ja": "セットで"
+      }
+     ],
+     "text": {
+      "en": "Save ${n}",
+      "zh": "立省 ¥{n}",
+      "ja": "¥{n} お得"
+     },
+     "y": -0.05
+    },
+    {
+     "kind": "trustBadges",
+     "at": 1.2,
+     "lines": [
+      "{promise1}",
+      "{promise2}",
+      "{promise3}"
+     ],
+     "y": 0.22
+    }
+   ]
+  },
+  {
+   "id": "cta",
+   "seconds": 4.0,
+   "backdrop": "brand",
+   "sweep": "left",
+   "voice": {
+    "en": "{closing}. {hint}.",
+    "zh": "{closing}，{hint}。",
+    "ja": "{closing}。{hint}。"
+   },
+   "pieces": [
+    {
+     "kind": "endCard",
+     "at": 0.1,
+     "text": "{closing}",
+     "lines": [
+      "{deadline}"
+     ],
+     "y": -0.22
+    },
+    {
+     "kind": "buyButton",
+     "at": 0.7,
+     "text": "{cta}",
+     "y": -0.01
+    },
+    {
+     "kind": "arrowHint",
+     "at": 1.0,
+     "text": "{hint}",
+     "y": 0.14
+    }
+   ]
+  }
+ ]
+}

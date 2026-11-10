@@ -464,6 +464,58 @@ fn a_template_starts_a_draft_whose_slots_take_the_pictures_added() {
 }
 
 #[test]
+fn a_storyboard_is_used_in_the_interface_s_language_and_its_copy_typed_over() {
+    use crate::i18n::Lang;
+    use reelforge_engine::{made_of, slot_states};
+    let mut app = EditorApp::new(Session::default()).with_lang(Lang::Zh);
+    app.use_storyboard("launch");
+    let p = app.project();
+    // its slots wait for pictures, its copy is the storyboard's in Chinese, and the status says what next
+    assert_eq!(slot_states(&p).len(), 4);
+    assert_eq!(p.copy.iter().find(|f| f.name == "cta").unwrap().value, "立即抢购");
+    assert_eq!(app.status, "新品首发：添加 4 段图片或视频，再改文案");
+    assert_eq!(p.markers.len(), 5);
+    // folded pieces are not counted among the timelines to switch between
+    let pieces = p.timelines.iter().filter(|t| t.made.is_some()).count();
+    assert!(pieces >= 10 && p.timeline_list().len() > pieces);
+    // a field typed over: the piece written from it is made again, in one step
+    let button = {
+        let clips = p.tracks.iter().flat_map(|t| &t.clips);
+        clips.filter(|c| made_of(&p, &c.id).is_some_and(|(_, m)| m.kind == "buyButton")).map(|c| c.id.clone()).next()
+    };
+    let button = button.expect("a button");
+    app.fill_copy("cta", "马上带一个回家");
+    assert_eq!(made_of(&app.project(), &button).unwrap().1.text, "马上带一个回家");
+    assert_eq!(app.status, "文案已更新，1 个组件已重排");
+    // a price that is no number is refused, and says why
+    let before = app.project();
+    app.fill_copy("price", "面议");
+    assert_eq!(app.project(), before);
+    assert!(app.status.contains("price"), "{}", app.status);
+    // the templates tab draws the storyboards and the copy form without going wrong, in every language
+    for lang in Lang::ALL {
+        app.lang = lang;
+        app.assets.show_storyboards();
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, lang == Lang::Ja);
+        for _ in 0..2 {
+            ctx.run_ui(Default::default(), |ui| {
+                let (p, media) = (app.project(), app.media.clone());
+                let _ = app.assets.show(ui, &p, &media, lang, &[], false, Tick::ZERO, &[]);
+            })
+            .textures_delta
+            .clear();
+        }
+    }
+    // on a project with something on it, a storyboard gets a timeline of its own, undone in one step
+    let mut app = EditorApp::demo().with_lang(Lang::En);
+    app.use_storyboard("flashSale");
+    assert_eq!(app.project().timeline_list().iter().find(|t| t.current).unwrap().name, "Flash sale");
+    app.execute("edit.undo", json!({})).unwrap();
+    assert!(app.project().copy.is_empty());
+}
+
+#[test]
 fn new_empties_the_project_and_undo_brings_it_back() {
     let mut app = EditorApp::demo();
     let before = app.project();

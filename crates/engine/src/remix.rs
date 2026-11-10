@@ -341,7 +341,7 @@ pub fn slot_states(proj: &Project) -> Vec<(u32, String, bool)> {
         .collect()
 }
 
-fn slots_json(proj: &Project) -> Value {
+pub(crate) fn slots_json(proj: &Project) -> Value {
     let slots = slots_of(proj);
     let texts: Vec<Value> = proj
         .tracks

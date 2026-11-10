@@ -149,6 +149,10 @@ pub(crate) enum Action {
     Template(&'static str),
     /// Pick files to put in the empty slots of the timeline's template.
     Fill,
+    /// Use this built-in storyboard.
+    Storyboard(&'static str),
+    /// Give a field of the project's copy these words.
+    Copy(String, String),
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -206,6 +210,10 @@ pub(crate) struct AssetPanel {
     /// The stickers' pictures, drawn the first time the stickers are shown.
     stickers: Vec<egui::TextureHandle>,
     captions: crate::captions::CaptionsTab,
+    /// Whether the templates tab shows the storyboards, not the timeline templates.
+    boards: bool,
+    /// The project's copy as it is typed over there.
+    copy: crate::storyboard::CopyForm,
 }
 
 /// A name being typed in the media tab.
@@ -300,7 +308,7 @@ impl AssetPanel {
             Tab::Text => text_tab(ui, s, looks, action),
             Tab::Stickers => panel.stickers_tab(ui, s, action),
             Tab::Effects => effects_tab(ui, &mut panel.query, s, action),
-            Tab::Templates => templates_tab(ui, p, s, action),
+            Tab::Templates => panel.templates_tab(ui, p, lang, action),
             Tab::Captions => {
                 if let Some(ask) = panel.captions.show(ui, p, lang, playhead, selected, playing) {
                     *action = Some(Action::Captions(ask));
@@ -330,6 +338,13 @@ impl AssetPanel {
     pub(crate) fn show_templates(&mut self) {
         self.tab = Tab::Templates;
         self.query.clear();
+    }
+
+    /// Shows the storyboards: one was just used, and its copy is to be typed over there.
+    pub(crate) fn show_storyboards(&mut self) {
+        self.show_templates();
+        self.boards = true;
+        self.copy.reset();
     }
 
     /// Whether the text tab is showing (and so needs the templates' pictures).
@@ -997,51 +1012,80 @@ fn effects_tab(ui: &mut egui::Ui, query: &mut String, s: &Strings, action: &mut 
     });
 }
 
-/// Timeline templates (剪同款): how far the slots of the timeline being edited are filled, with a
-/// way to pick files for them, then the built-in templates to use.
-fn templates_tab(ui: &mut egui::Ui, p: &Project, s: &Strings, action: &mut Option<Action>) {
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        let slots = reelforge_engine::slot_states(p);
-        if !slots.is_empty() {
-            let filled = slots.iter().filter(|(_, _, filled)| *filled).count();
-            ui.label(
-                egui::RichText::new(fill(s.remix_progress, &[&filled.to_string(), &slots.len().to_string()])).strong(),
-            );
-            ui.add_space(2.0);
-            // one piece of the bar for each slot
-            let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
-            let gap = 2.0;
-            let w = (bar.width() - gap * (slots.len() - 1) as f32) / slots.len() as f32;
-            for (i, (_, _, filled)) in slots.iter().enumerate() {
-                let piece = Rect::from_min_size(
-                    bar.left_top() + vec2((w + gap) * i as f32, 0.0),
-                    vec2(w.max(1.0), bar.height()),
-                );
-                ui.painter().rect_filled(piece, 2.0, if *filled { color::ACCENT } else { color::RAISED });
-            }
-            ui.add_space(6.0);
-            if filled < slots.len() {
-                if theme::primary(ui, icon::IMPORT, s.remix_pick, true).on_hover_text(s.remix_pick_tip).clicked() {
-                    *action = Some(Action::Fill);
+impl AssetPanel {
+    /// Timeline templates (剪同款) or storyboards: how far the slots of the timeline being edited
+    /// are filled, with a way to pick files for them; the project's copy to type over, where a
+    /// storyboard wrote it; then the built-in ones to use.
+    fn templates_tab(&mut self, ui: &mut egui::Ui, p: &Project, lang: crate::i18n::Lang, action: &mut Option<Action>) {
+        let s = lang.strings();
+        if let Some(picked) = theme::segmented(ui, &[s.sec_remix, s.sec_boards], usize::from(self.boards)) {
+            self.boards = picked == 1;
+        }
+        ui.add_space(8.0);
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            slots_progress(ui, p, s, action);
+            if self.boards {
+                if !p.copy.is_empty() {
+                    if let Some((name, words)) = self.copy.show(ui, p, lang, s) {
+                        *action = Some(Action::Copy(name, words));
+                    }
+                    ui.add_space(10.0);
+                }
+                ui.label(egui::RichText::new(s.boards_tip).small().color(color::WEAK));
+                ui.add_space(8.0);
+                for board in reelforge_engine::storyboards() {
+                    let w = ui.available_width();
+                    if crate::storyboard::card(ui, board, lang, s, w).clicked() {
+                        *action = Some(Action::Storyboard(board.id.as_str()));
+                    }
+                    ui.add_space(8.0);
                 }
             } else {
-                ui.label(egui::RichText::new(format!("{}  {}", icon::DONE, s.remix_done)).small().color(color::WEAK));
+                ui.label(egui::RichText::new(s.remix_tip).small().color(color::WEAK));
+                ui.add_space(8.0);
+                for (i, t) in reelforge_engine::timeline_templates().iter().enumerate() {
+                    let w = ui.available_width();
+                    if crate::remix::card(ui, i, t, s, w).clicked() {
+                        *action = Some(Action::Template(t.id));
+                    }
+                    ui.add_space(8.0);
+                }
             }
-            ui.add_space(8.0);
-            let y = ui.cursor().top();
-            ui.painter().hline(ui.max_rect().x_range(), y, Stroke::new(1.0, color::LINE));
-            ui.add_space(8.0);
+        });
+    }
+}
+
+/// How far the slots of the timeline being edited are filled, with a way to pick files for them;
+/// nothing when it has none.
+fn slots_progress(ui: &mut egui::Ui, p: &Project, s: &Strings, action: &mut Option<Action>) {
+    let slots = reelforge_engine::slot_states(p);
+    if slots.is_empty() {
+        return;
+    }
+    let filled = slots.iter().filter(|(_, _, filled)| *filled).count();
+    ui.label(egui::RichText::new(fill(s.remix_progress, &[&filled.to_string(), &slots.len().to_string()])).strong());
+    ui.add_space(2.0);
+    // one piece of the bar for each slot
+    let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
+    let gap = 2.0;
+    let w = (bar.width() - gap * (slots.len() - 1) as f32) / slots.len() as f32;
+    for (i, (_, _, filled)) in slots.iter().enumerate() {
+        let piece =
+            Rect::from_min_size(bar.left_top() + vec2((w + gap) * i as f32, 0.0), vec2(w.max(1.0), bar.height()));
+        ui.painter().rect_filled(piece, 2.0, if *filled { color::ACCENT } else { color::RAISED });
+    }
+    ui.add_space(6.0);
+    if filled < slots.len() {
+        if theme::primary(ui, icon::IMPORT, s.remix_pick, true).on_hover_text(s.remix_pick_tip).clicked() {
+            *action = Some(Action::Fill);
         }
-        ui.label(egui::RichText::new(s.remix_tip).small().color(color::WEAK));
-        ui.add_space(8.0);
-        for (i, t) in reelforge_engine::timeline_templates().iter().enumerate() {
-            let w = ui.available_width();
-            if crate::remix::card(ui, i, t, s, w).clicked() {
-                *action = Some(Action::Template(t.id));
-            }
-            ui.add_space(8.0);
-        }
-    });
+    } else {
+        ui.label(egui::RichText::new(format!("{}  {}", icon::DONE, s.remix_done)).small().color(color::WEAK));
+    }
+    ui.add_space(8.0);
+    let y = ui.cursor().top();
+    ui.painter().hline(ui.max_rect().x_range(), y, Stroke::new(1.0, color::LINE));
+    ui.add_space(8.0);
 }
 
 /// A row of the effects list: click adds at the playhead, drag goes to the timeline.
