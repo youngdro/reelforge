@@ -1012,3 +1012,40 @@ fn clips_another_client_changed_are_lit_with_its_name_and_the_news_is_on_a_toast
     ctx.run_ui(Default::default(), |ui| app.toasts(ui.ctx())).textures_delta.clear();
     assert!(app.toast.is_none(), "the same news is not shown twice");
 }
+
+#[test]
+fn a_lottie_animation_dropped_on_the_editor_is_placed_and_says_what_it_cannot_draw() {
+    use crate::i18n::Lang;
+    use reelforge_model::{ClipContent, MediaKind, TrackKind};
+    // a dot, two seconds long; the second one is moved by an expression, which is not run
+    let dot = |extra: &str| {
+        format!(
+            r#"{{"v":"5.7.0","fr":25,"ip":0,"op":50,"w":200,"h":100,"layers":[
+          {{"ty":4,"ind":1,"ip":0,"op":50,"st":0,"ks":{{"p":{{"a":0,"k":[100,50]{extra}}}}},
+           "shapes":[{{"ty":"el","p":{{"a":0,"k":[0,0]}},"s":{{"a":0,"k":[40,40]}}}},
+                     {{"ty":"fl","c":{{"a":0,"k":[0,0,1,1]}},"o":{{"a":0,"k":100}}}}]}}]}}"#
+        )
+        .into_bytes()
+    };
+    let mut app = EditorApp::demo().with_lang(Lang::Zh);
+    let clips = |app: &EditorApp| app.project().tracks.iter().map(|t| t.clips.len()).sum::<usize>();
+    let before = clips(&app);
+
+    app.import_bytes("dot.json", dot(""), true);
+    let p = app.project();
+    let m = p.media.values().find(|m| m.name == "dot.json").expect("imported");
+    assert_eq!((m.kind, m.size, m.duration), (MediaKind::Lottie, Some([800, 400]), Some(Tick::SECOND * 2)));
+    // placed on a video track at the playhead, selected, as long as it is
+    let (t, c) = p.clip(app.selected.as_ref().expect("selected")).unwrap();
+    assert_eq!(p.tracks[t].kind, TrackKind::Video);
+    assert!(matches!(&c.content, ClipContent::Media { media, .. } if *media == m.id));
+    assert_eq!((clips(&app), c.duration), (before + 1, Tick::SECOND * 2));
+    assert_eq!(app.status, "已导入 dot.json");
+
+    app.import_bytes("moved.json", dot(r#","x":"var $bm_rt = time;""#), false);
+    assert_eq!(app.status, "已添加 moved.json。其中这些内容不会绘制：表达式");
+    // what is not an animation is not added
+    let media = app.project().media.len();
+    app.import_bytes("package.json", br#"{"name": "x"}"#.to_vec(), true);
+    assert_eq!(app.project().media.len(), media);
+}

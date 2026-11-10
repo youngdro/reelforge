@@ -236,6 +236,7 @@ impl Remote {
             reelforge_renderspec::AssetKind::Image => "image",
             reelforge_renderspec::AssetKind::Lut => "lut",
             reelforge_renderspec::AssetKind::Font => "font",
+            reelforge_renderspec::AssetKind::Lottie => "lottie",
             _ => "audio",
         };
         // a font is called by its family's name

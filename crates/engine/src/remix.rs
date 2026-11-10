@@ -391,8 +391,11 @@ pub(crate) fn replace(
     let (track, clip) = proj.clip(id).ok_or_else(|| not_found("clip", id))?;
     let fits = matches!(
         (&clip.content, proj.tracks[track].kind, item.kind),
-        (ClipContent::Media { .. } | ClipContent::Solid { .. }, TrackKind::Video, MediaKind::Video | MediaKind::Image)
-            | (ClipContent::Media { .. }, TrackKind::Audio, MediaKind::Audio | MediaKind::Video)
+        (
+            ClipContent::Media { .. } | ClipContent::Solid { .. },
+            TrackKind::Video,
+            MediaKind::Video | MediaKind::Image | MediaKind::Lottie
+        ) | (ClipContent::Media { .. }, TrackKind::Audio, MediaKind::Audio | MediaKind::Video)
     );
     if !fits {
         return Err(EngineError::Refused(

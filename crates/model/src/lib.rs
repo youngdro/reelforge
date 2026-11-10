@@ -152,6 +152,32 @@ pub enum MediaKind {
     Lut,
     /// A font file (TrueType or OpenType), set on titles rather than placed.
     Font,
+    /// A Lottie animation (Bodymovin JSON or a dotLottie archive): placed like a video, drawn
+    /// as sharp as its `size` says, see-through where it draws nothing, and going round again
+    /// when a clip of it is longer than it is.
+    Lottie,
+}
+
+impl MediaKind {
+    /// Whether it has a picture, and so goes on a video track.
+    pub fn pictured(self) -> bool {
+        matches!(self, MediaKind::Video | MediaKind::Image | MediaKind::Lottie)
+    }
+
+    /// Whether its picture changes over time: it can be sped up, slowed, reversed and frozen.
+    pub fn moves(self) -> bool {
+        matches!(self, MediaKind::Video | MediaKind::Lottie)
+    }
+
+    /// Whether it may have sound.
+    pub fn sounds(self) -> bool {
+        matches!(self, MediaKind::Video | MediaKind::Audio)
+    }
+
+    /// Whether it goes round again past its end, so a clip of it can be any length.
+    pub fn loops(self) -> bool {
+        self == MediaKind::Lottie
+    }
 }
 
 /// A track.
@@ -862,8 +888,8 @@ impl Project {
                             }
                         }
                         match track.kind {
-                            TrackKind::Video => matches!(m.kind, MediaKind::Video | MediaKind::Image),
-                            TrackKind::Audio => matches!(m.kind, MediaKind::Video | MediaKind::Audio),
+                            TrackKind::Video => m.kind.pictured(),
+                            TrackKind::Audio => m.kind.sounds(),
                             TrackKind::Text => false,
                         }
                     }

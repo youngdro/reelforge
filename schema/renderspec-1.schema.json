@@ -113,6 +113,11 @@
           "const": "lut",
           "description": "A colour lookup table.",
           "type": "string"
+        },
+        {
+          "const": "lottie",
+          "description": "A Lottie animation (feature `lottie/1`): Bodymovin JSON or a dotLottie archive. It has\nno frames of its own: any instant is drawn, at the size the asset's `probe` gives, and\npast its length it goes round again. A media layer shows it as it shows a video.",
+          "type": "string"
         }
       ]
     },

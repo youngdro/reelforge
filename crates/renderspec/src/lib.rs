@@ -255,6 +255,10 @@ pub enum AssetKind {
     MaskSequence,
     /// A colour lookup table.
     Lut,
+    /// A Lottie animation (feature `lottie/1`): Bodymovin JSON or a dotLottie archive. It has
+    /// no frames of its own: any instant is drawn, at the size the asset's `probe` gives, and
+    /// past its length it goes round again. A media layer shows it as it shows a video.
+    Lottie,
 }
 
 /// Measured properties of an asset.
@@ -1537,6 +1541,9 @@ impl RenderSpec {
         let mut out: BTreeSet<String> = self.engine.features.iter().cloned().collect();
         if !self.comps.is_empty() {
             out.insert("comp/1".to_string());
+        }
+        if self.assets.values().any(|a| a.kind == AssetKind::Lottie) {
+            out.insert("lottie/1".to_string());
         }
         for layer in self.layers.iter().chain(self.comps.values().flat_map(|c| &c.layers)) {
             if let LayerContent::Text(t) = &layer.content {

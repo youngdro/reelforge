@@ -19,6 +19,27 @@ pub enum Lang {
 #[path = "lang/ja.rs"]
 mod ja;
 
+/// What `reelforge-lottie` says a file uses that is not drawn: its words, Chinese, Japanese.
+const LOTTIE_NOTES: &[[&str; 3]] = &[
+    ["expressions", "表达式", "エクスプレッション"],
+    ["effects", "AE 特效", "エフェクト"],
+    ["layer styles", "图层样式", "レイヤースタイル"],
+    ["text animators", "文字动画器", "テキストアニメーター"],
+    ["text that changes over time", "随时间变化的文字", "時間で変わるテキスト"],
+    ["text wrapped in a box", "段落文本框", "ボックステキスト"],
+    ["text whose letter shapes are not in the file", "没有内嵌字形的文字", "字形が含まれないテキスト"],
+    ["pictures that are not in the file", "文件里缺少的图片", "ファイルにない画像"],
+    ["blend modes inside the animation", "动画内部的混合模式", "アニメーション内の描画モード"],
+    ["layers turned in space (3D)", "3D 图层", "3D レイヤー"],
+    ["merge paths other than plain merging", "合并路径的相减、相交等模式", "パスの結合（追加以外）"],
+    ["offset paths", "位移路径", "パスのオフセット"],
+    ["zig zag, pucker and twist", "锯齿、收缩膨胀和扭转", "ジグザグ・パンク膨張・旋回"],
+    ["lighten, darken and difference masks", "变亮、变暗和差值蒙版", "比較（明）・比較（暗）・差のマスク"],
+    ["mask expansion", "蒙版扩展", "マスクの拡張"],
+    ["the highlight of a radial gradient", "径向渐变的高光", "円形グラデーションのハイライト"],
+    ["audio, video and camera layers", "音频、视频和摄像机图层", "オーディオ・ビデオ・カメラレイヤー"],
+];
+
 impl Lang {
     /// Every language, in the order the picker lists them.
     pub const ALL: [Lang; 3] = [Lang::En, Lang::Zh, Lang::Ja];
@@ -50,6 +71,17 @@ impl Lang {
             Lang::Zh => &ZH,
             Lang::Ja => &ja::JA,
         }
+    }
+
+    /// What a Lottie animation uses that is not drawn, as `reelforge-lottie` words it, in this
+    /// language; anything it words that is not listed here is shown as it is.
+    pub fn lottie_note(self, note: &str) -> &str {
+        let at = match self {
+            Lang::En => return note,
+            Lang::Zh => 1,
+            Lang::Ja => 2,
+        };
+        LOTTIE_NOTES.iter().find(|n| n[0] == note).map_or(note, |n| n[at])
     }
 
     /// A command's name, for the status bar: `clip.split` is "Split" or "分割"; empty for one
@@ -517,6 +549,10 @@ pub(crate) struct Strings {
     pub(crate) media_in_use: &'static str,
     pub(crate) media_removed: &'static str,
     pub(crate) added_to_media: &'static str,
+    /// A Lottie animation was added that uses what is not drawn: its name, and what.
+    pub(crate) lottie_partial: &'static str,
+    /// What goes between the things of a list.
+    pub(crate) list_comma: &'static str,
     pub(crate) text_default: &'static str,
     pub(crate) text_basic: &'static str,
     pub(crate) item_tip: &'static str,
@@ -1224,6 +1260,8 @@ static EN: Strings = Strings {
     media_in_use: "{} clips use it; delete them first",
     media_removed: "Removed {} from the project",
     added_to_media: "Added {} to Media",
+    lottie_partial: "Added {}. Not drawn in it: {}",
+    list_comma: ", ",
     text_default: "Default text",
     text_basic: "BASIC",
     item_tip: "Click to add at the playhead, or drag to the timeline",
@@ -1926,6 +1964,8 @@ static ZH: Strings = Strings {
     media_in_use: "有 {} 个片段在用，请先删除这些片段",
     media_removed: "已从项目中移除 {}",
     added_to_media: "已把 {} 加入素材",
+    lottie_partial: "已添加 {}。其中这些内容不会绘制：{}",
+    list_comma: "、",
     text_default: "默认文本",
     text_basic: "基础",
     item_tip: "点击添加到播放头处，或拖到时间线",
@@ -2182,6 +2222,7 @@ mod tests {
                 s.ago_minutes,
                 s.ago_hours,
                 s.ago_days,
+                s.lottie_partial,
             ]
         };
         for l in Lang::ALL {

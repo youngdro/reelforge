@@ -960,3 +960,83 @@ fn a_picture_between_two_frames_of_a_video_is_mixed_or_made_from_them() {
     let still_made = stills.picture_between("p", &still, half, Between::Flow, 1).unwrap().expect("a picture");
     assert!(Arc::ptr_eq(&still_made, &stills.picture("p", &still, half).unwrap().expect("a picture")));
 }
+
+/// A red square that slides from left to right in a second, on a see-through 100 × 100 picture.
+const SLIDING_SQUARE: &str = r#"{"v":"5.7.0","fr":30,"ip":0,"op":30,"w":100,"h":100,"layers":[
+  {"ty":4,"ind":1,"ip":0,"op":30,"st":0,"ks":{"p":{"a":1,"k":[{"t":0,"s":[20,50]},{"t":30,"s":[80,50]}]}},
+   "shapes":[{"ty":"gr","it":[
+      {"ty":"rc","p":{"a":0,"k":[0,0]},"s":{"a":0,"k":[20,20]},"r":{"a":0,"k":0}},
+      {"ty":"fl","c":{"a":0,"k":[1,0,0,1]},"o":{"a":0,"k":100}},
+      {"ty":"tr","p":{"a":0,"k":[0,0]},"a":{"a":0,"k":[0,0]},"s":{"a":0,"k":[100,100]},"r":{"a":0,"k":0},"o":{"a":0,"k":100}}]}]}
+]}"#;
+
+#[test]
+fn a_lottie_animation_is_drawn_for_any_instant_and_goes_round() {
+    let path = temp("slide.json");
+    std::fs::write(&path, SLIDING_SQUARE).expect("write");
+    let probe = probe_path(&path).expect("probe");
+    // small animations are drawn larger than they say, to be placed large
+    assert_eq!((probe.kind, probe.size, probe.duration), (AssetKind::Lottie, Some([400, 400]), Some(Tick::SECOND)));
+    assert!(probe.notes.is_empty() && !probe.has_audio);
+    assert_eq!(probe_bytes("slide.json", SLIDING_SQUARE.as_bytes().into()).expect("bytes"), probe);
+    // any other JSON is not footage
+    assert!(probe_bytes("package.json", br#"{"name":"x"}"#.as_slice().into()).is_err());
+
+    let asset = Asset {
+        kind: AssetKind::Lottie,
+        sha256: sha(21),
+        uri: path.to_string_lossy().into_owned(),
+        of: None,
+        probe: Some(reelforge_renderspec::Probe { width: Some(400), height: Some(400), duration: probe.duration }),
+    };
+    let media = Footage::new();
+    let half = Tick::from_seconds(0.5);
+    let img = media.picture("l", &asset, half).expect("picture").expect("some");
+    assert_eq!((img.width, img.height), (400, 400));
+    assert_eq!(centre(&img), [255, 0, 0, 255]);
+    // the same instant is the same picture, a round later too
+    assert!(Arc::ptr_eq(&img, &media.picture("l", &asset, half).expect("picture").expect("some")));
+    let later = media.picture("l", &asset, half + Tick::SECOND * 3).expect("picture").expect("some");
+    assert_eq!(centre(&later), [255, 0, 0, 255]);
+    // at its start the square is on the left, and the middle is see-through
+    let first = media.picture("l", &asset, Tick::ZERO).expect("picture").expect("some");
+    assert_eq!(centre(&first)[3], 0);
+    // a draft draws it small instead of shrinking it
+    let small = media.picture_shrunk("l", &asset, half, 4).expect("picture").expect("some");
+    assert_eq!((small.width, small.height), (100, 100));
+    assert_eq!(centre(&small), [255, 0, 0, 255]);
+    let thumb = media.thumbnail(&asset, half, 50).expect("thumbnail").expect("some");
+    assert_eq!((thumb.width, thumb.height), (50, 50));
+
+    // on a frame: over the background where it is drawn, the background elsewhere
+    let mut spec = two_colours();
+    spec.assets.insert("l".into(), asset.clone());
+    spec.layers.push(layer(
+        "square",
+        Tick::ZERO,
+        Tick::SECOND * 2,
+        LayerContent::Media {
+            asset: "l".into(),
+            time: TimeMap::default(),
+            fit: Fit::Contain,
+            between: Default::default(),
+        },
+    ));
+    assert!(spec.required_features().contains("lottie/1"));
+    spec.engine.features = spec.required_features().into_iter().collect();
+    reelforge_renderspec::validate(&spec).expect("valid");
+    let (frame, report) = render_frame(&spec, half + Tick::SECOND, 1.0, &media, Quality::Final).expect("render");
+    assert!(report.placeholders.is_empty());
+    assert!(near(centre(&frame), [255, 0, 0]), "{:?}", centre(&frame));
+    let (frame, _) = render_frame(&spec, Tick::SECOND, 1.0, &media, Quality::Final).expect("render");
+    assert!(near(centre(&frame), [0, 0, 255]), "{:?}", centre(&frame));
+
+    // from bytes, as the browser hands them over; and offline it is a placeholder
+    let web = Footage::new();
+    let got = web.insert_bytes(&sha(22), "slide.json", SLIDING_SQUARE.as_bytes().to_vec()).expect("bytes");
+    assert_eq!(got.kind, AssetKind::Lottie);
+    let there = Asset { sha256: sha(22), uri: "opfs://slide.json".into(), ..asset.clone() };
+    assert_eq!(centre(&web.picture("l", &there, half).expect("picture").expect("some")), [255, 0, 0, 255]);
+    let gone = Asset { sha256: sha(23), uri: "/nowhere/slide.json".into(), ..asset };
+    assert!(web.picture("l", &gone, half).expect("picture").is_none());
+}

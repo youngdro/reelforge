@@ -130,7 +130,8 @@ fn layers_ok(spec: &RenderSpec, at: &str, layers: &[crate::Layer]) -> Result<(),
         }
         match &layer.content {
             LayerContent::Media { asset, time, .. } => {
-                asset_of_kind(spec, &format!("{path}.content.asset"), asset, &[AssetKind::Video, AssetKind::Image])?;
+                let kinds = [AssetKind::Video, AssetKind::Image, AssetKind::Lottie];
+                asset_of_kind(spec, &format!("{path}.content.asset"), asset, &kinds)?;
                 time_ok(&format!("{path}.content.time"), time, layer.dur)?;
             }
             LayerContent::Solid { color } => color_ok(&format!("{path}.content.color"), color.0)?,

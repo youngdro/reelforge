@@ -2646,3 +2646,51 @@ fn a_voiceover_reads_the_titles_picked_or_the_captions() {
     let v = add_video(&mut s, 2.0);
     assert!(crate::spoken_lines(&s.project(), &[v]).unwrap_err().contains("not a title"));
 }
+
+#[test]
+fn a_lottie_animation_is_imported_and_placed_like_a_video_that_goes_round() {
+    // a blue dot on a see-through 200 × 100 picture, two seconds long; it uses an expression
+    let json = r#"{"v":"5.7.0","fr":25,"ip":0,"op":50,"w":200,"h":100,"layers":[
+      {"ty":4,"ind":1,"ip":0,"op":50,"st":0,"ks":{"p":{"a":0,"k":[100,50],"x":"var $bm_rt = time;"}},
+       "shapes":[{"ty":"el","p":{"a":0,"k":[0,0]},"s":{"a":0,"k":[40,40]}},
+                 {"ty":"fl","c":{"a":0,"k":[0,0,1,1]},"o":{"a":0,"k":100}}]}]}"#;
+    let dir = std::env::temp_dir().join(format!("reelforge-engine-lottie-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("dot.json");
+    std::fs::write(&path, json).unwrap();
+
+    let mut s = Session::default();
+    let r = s.execute("media.import", &json!({"path": path.to_string_lossy()})).unwrap();
+    assert_eq!(r["media"]["kind"], "lottie");
+    assert_eq!(r["unsupported"], json!(["expressions"]));
+    let id = r["media"]["id"].as_str().unwrap().to_string();
+    let m = &s.project().media[&id];
+    // drawn larger than it says, so that it can be placed large
+    assert_eq!((m.size, m.duration), (Some([800, 400]), Some(Tick::SECOND * 2)));
+
+    // on a video track, not a sound track; and longer than it is, since it goes round
+    let audio = s.project().tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().id.clone();
+    assert!(s.execute("clip.add", &json!({"track": audio, "media": id})).is_err());
+    let video = s.project().tracks.iter().find(|t| t.kind == TrackKind::Video).unwrap().id.clone();
+    let c = s.execute("clip.add", &json!({"track": video, "media": id})).unwrap();
+    assert_eq!(c["duration"], json!(Tick::SECOND * 2));
+    let c = c["clip"].as_str().unwrap().to_string();
+    s.execute("clip.trim", &json!({"clip": c, "end": {"seconds": 7}})).unwrap();
+    s.execute("clip.slip", &json!({"clip": c, "by": {"seconds": 5}})).unwrap();
+    assert_eq!(s.project().clip(&c).unwrap().1.duration, Tick::SECOND * 7);
+
+    // the renderer is told what it is, and that it must know how to draw one; it has no sound
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert_eq!(spec["assets"][&id]["kind"], "lottie");
+    assert_eq!(spec["assets"][&id]["probe"]["width"], 800);
+    assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("lottie/1")));
+    assert_eq!(spec["layers"][0]["content"]["asset"], json!(id));
+    assert!(spec["audio"].as_array().is_none_or(Vec::is_empty));
+
+    // any other JSON is refused, and nothing changes
+    std::fs::write(&path, br#"{"name": "not an animation"}"#).unwrap();
+    let before = s.revision();
+    assert!(s.execute("media.import", &json!({"path": path.to_string_lossy()})).is_err());
+    assert_eq!(s.revision(), before);
+    let _ = std::fs::remove_dir_all(&dir);
+}
