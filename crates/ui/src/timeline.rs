@@ -59,9 +59,24 @@ pub(crate) struct TimelineView {
     /// are cut from: every track that is not locked, or the ones named.
     pub(crate) cuts: Vec<(Tick, Tick)>,
     pub(crate) cut_tracks: Option<Vec<String>>,
+    /// Clips someone else just changed: lit for a moment, with who it was.
+    pub(crate) touched: Vec<Touched>,
+    /// Where the snap guide is, and when it got there: it flashes as it catches.
+    snapped: Option<(Tick, f64)>,
 }
 
 /// The heights a row cycles through.
+/// A clip another client changed.
+pub(crate) struct Touched {
+    pub clip: String,
+    pub by: String,
+    /// The time (egui's) it happened at.
+    pub at: f64,
+}
+
+/// How long a touched clip stays lit, in seconds.
+pub(crate) const TOUCH_GLOW: f64 = 2.6;
+
 pub(crate) const ROW_HEIGHTS: [f32; 3] = [40.0, ROW, 76.0];
 
 #[derive(Clone)]
@@ -153,6 +168,8 @@ impl Default for TimelineView {
             row: ROW,
             cuts: Vec::new(),
             cut_tracks: None,
+            touched: Vec::new(),
+            snapped: None,
         }
     }
 }
@@ -502,6 +519,11 @@ impl TimelineView {
         };
 
         // Rows.
+        let now_time = ui.input(|i| i.time);
+        self.touched.retain(|t| now_time - t.at < TOUCH_GLOW);
+        if !self.touched.is_empty() {
+            ui.ctx().request_repaint();
+        }
         let mut chosen_at: Option<(Rect, TrackKind)> = None;
         for (row, (index, track)) in order.iter().map(|&i| (i, &p.tracks[i])).enumerate() {
             let top = rect.top() + RULER + row as f32 * row_h;
@@ -567,6 +589,10 @@ impl TimelineView {
                     &mut self.strips,
                     &seconds_of,
                 );
+                if let Some(touch) = self.touched.iter().find(|t| t.clip == clip.id) {
+                    let left = (1.0 - (now_time - touch.at) / TOUCH_GLOW).clamp(0.0, 1.0) as f32;
+                    paint_touch(&lane, r, &touch.by, left);
+                }
             }
             // transitions on the cuts they play on
             if track.kind == TrackKind::Video && ghost.is_none() && cut.is_none() {
@@ -708,10 +734,22 @@ impl TimelineView {
         }
 
         // Snap guide.
-        if let Some(t) = snapped_at {
+        let now = ui.input(|i| i.time);
+        self.snapped = snapped_at.map(|t| match self.snapped {
+            Some((was, since)) if was == t => (t, since),
+            _ => (t, now),
+        });
+        if let Some((t, since)) = self.snapped {
             let x = x_of(t);
             let on_lanes = painter.with_clip_rect(lanes);
             let line = [egui::pos2(x, ruler.bottom()), egui::pos2(x, rect.bottom())];
+            // it flashes wide as it catches, then settles
+            let fresh = (1.0 - (now - since) / 0.22).clamp(0.0, 1.0) as f32;
+            if fresh > 0.0 {
+                on_lanes
+                    .line_segment(line, Stroke::new(5.0 + 22.0 * fresh, color::ACCENT_2.gamma_multiply(0.22 * fresh)));
+                ui.ctx().request_repaint();
+            }
             on_lanes.line_segment(line, Stroke::new(5.0, color::ACCENT_2.gamma_multiply(0.25)));
             on_lanes.line_segment(line, Stroke::new(1.0, color::ACCENT_2));
         }
@@ -1249,6 +1287,28 @@ fn paint_clip(
             let align = if kind == TrackKind::Audio { Align2::LEFT_TOP } else { Align2::LEFT_CENTER };
             text.text(at, align, name, FontId::proportional(12.0), text_color);
         }
+    }
+}
+
+/// A clip someone else just changed: an outline of light that fades (`left` from 1 to 0), and who
+/// it was on a tag.
+fn paint_touch(painter: &egui::Painter, r: Rect, by: &str, left: f32) {
+    if left <= 0.0 {
+        return;
+    }
+    // it breathes twice as it fades
+    let pulse = 0.75 + 0.25 * (left * std::f32::consts::TAU * 2.0).cos();
+    let light = color::ACCENT_2.gamma_multiply(left.sqrt() * pulse);
+    crate::theme::glow(painter, r, 7.0, light.gamma_multiply(0.3), 14);
+    painter.rect_stroke(r, CornerRadius::same(7), Stroke::new(2.0, light), StrokeKind::Outside);
+    if r.width() > 40.0 {
+        let name = format!("{}  {by}", icon::AGENT);
+        let galley =
+            painter.layout_no_wrap(name, FontId::proportional(10.5), color::ON_ACCENT.gamma_multiply(left.sqrt()));
+        let tag =
+            Rect::from_min_size(r.right_top() - vec2(galley.size().x + 14.0, -3.0), galley.size() + vec2(10.0, 4.0));
+        painter.rect_filled(tag, CornerRadius::same(8), light);
+        painter.galley(tag.min + vec2(5.0, 2.0), galley, color::ON_ACCENT);
     }
 }
 
