@@ -213,10 +213,22 @@ pub fn reveal(clip: &Clip, shape: &Shape) -> Option<Animated<f32>> {
 fn shifts(kind: TransitionKind, incoming: bool, p: Prop) -> bool {
     use TransitionKind::*;
     match p {
-        Prop::Opacity => incoming && matches!(kind, Dissolve | FadeBlack | FadeWhite | Zoom),
-        Prop::X => matches!((kind, incoming), (PushLeft | PushRight, _) | (SlideLeft | SlideRight, true)),
+        Prop::Opacity => {
+            matches!(kind, Flip | FlipUp)
+                || incoming
+                    && (kind.reveals()
+                        || matches!(
+                            kind,
+                            Dissolve | FadeBlack | FadeWhite | Zoom | PageTurn | LightLeak | Glitch | ZoomBlur
+                        ))
+        }
+        Prop::X => {
+            matches!((kind, incoming), (PushLeft | PushRight, _) | (SlideLeft | SlideRight | PageTurn, true))
+        }
         Prop::Y => matches!((kind, incoming), (PushUp | PushDown, _) | (SlideUp | SlideDown, true)),
-        Prop::Scale => kind == Zoom,
+        Prop::Scale => matches!(kind, Zoom | ZoomBlur),
+        Prop::RotationY => kind == Flip || (kind == PageTurn && incoming),
+        Prop::RotationX => kind == FlipUp,
         _ => false,
     }
 }
@@ -243,6 +255,16 @@ impl Overlay {
             return self.kind.offset(1.0, self.incoming);
         }
         self.kind.offset(((t - self.from).0 as f64 / (self.to - self.from).0 as f64) as f32, self.incoming)
+    }
+
+    /// How far through it is at `t`, 0 to 1.
+    pub fn progress(&self, t: Tick) -> f32 {
+        (((t - self.from).0 as f64 / (self.to - self.from).0.max(1) as f64) as f32).clamp(0.0, 1.0)
+    }
+
+    /// What it does to the layer's look at `t`: nothing outside it.
+    fn look(&self, t: Tick) -> FxSample {
+        if t <= self.from || t >= self.to { FxSample::REST } else { self.kind.look(self.progress(t)) }
     }
 }
 
@@ -354,6 +376,9 @@ impl Shape {
         for f in self.frames.iter().filter(|f| f.fx.kind.changes(channel)) {
             s = s.and(f.sample(t));
         }
+        for o in self.overlays.iter().filter(|o| o.kind.touches(channel)) {
+            s = s.and(o.look(t));
+        }
         s.channel(channel)
     }
 }
@@ -364,6 +389,8 @@ pub fn fx_channel(clip: &Clip, shape: &Shape, channel: FxChannel, step: Tick) ->
     let own = clip.fx.iter().any(|fx| fx.kind.changes(channel));
     let mut windows: Vec<(Tick, Tick)> =
         shape.frames.iter().filter(|f| f.fx.kind.changes(channel)).map(|f| (f.from, f.to)).collect();
+    // a transition's look comes and goes over its own length
+    windows.extend(shape.overlays.iter().filter(|o| o.kind.touches(channel)).map(|o| (o.from, o.to)));
     if own {
         windows = vec![(Tick::ZERO, shape.len)];
     }
