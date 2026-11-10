@@ -412,11 +412,29 @@ pub enum AnimKind {
     FlipY,
     /// Tips up into place in space about its horizontal axis, like a lid, from edge on.
     FlipX,
+    /// Grows from nothing and swings past its size and back several times, like something on a
+    /// spring.
+    Elastic,
+    /// Falls into place from above and bounces three times, like a dropped ball.
+    Drop,
+    /// A title's words fade in one after another; titles only.
+    WordFade,
+    /// A title's words rise into place one after another; titles only.
+    WordRise,
+    /// A title's words pop up one after another, each overshooting a little; titles only.
+    WordPop,
+    /// A title's lines rise into place one after another; titles only.
+    LineRise,
+    /// A title's characters spring up one after another, each swinging past its size and back;
+    /// titles only.
+    CharElastic,
+    /// A title's characters fall into place one after another, each bouncing; titles only.
+    CharBounce,
 }
 
 impl AnimKind {
     /// Every preset, in menu order.
-    pub const ALL: [AnimKind; 17] = [
+    pub const ALL: [AnimKind; 25] = [
         AnimKind::Fade,
         AnimKind::SlideUp,
         AnimKind::SlideDown,
@@ -434,6 +452,14 @@ impl AnimKind {
         AnimKind::Draw,
         AnimKind::FlipY,
         AnimKind::FlipX,
+        AnimKind::Elastic,
+        AnimKind::Drop,
+        AnimKind::WordFade,
+        AnimKind::WordRise,
+        AnimKind::WordPop,
+        AnimKind::LineRise,
+        AnimKind::CharElastic,
+        AnimKind::CharBounce,
     ];
 
     /// The name commands use.
@@ -456,6 +482,14 @@ impl AnimKind {
             AnimKind::Draw => "draw",
             AnimKind::FlipY => "flipY",
             AnimKind::FlipX => "flipX",
+            AnimKind::Elastic => "elastic",
+            AnimKind::Drop => "drop",
+            AnimKind::WordFade => "wordFade",
+            AnimKind::WordRise => "wordRise",
+            AnimKind::WordPop => "wordPop",
+            AnimKind::LineRise => "lineRise",
+            AnimKind::CharElastic => "charElastic",
+            AnimKind::CharBounce => "charBounce",
         }
     }
 
@@ -464,14 +498,27 @@ impl AnimKind {
         self == AnimKind::Typewriter || self.by_character()
     }
 
-    /// Whether only shapes take it.
-    pub fn shapes_only(self) -> bool {
+    /// Whether only shapes and titles take it: what has an outline a pen can follow.
+    pub fn drawn_only(self) -> bool {
         self == AnimKind::Draw
     }
 
-    /// Whether it moves a title's characters one after another instead of the title as a whole.
+    /// Whether it moves a title's characters, words or lines one after another instead of the
+    /// title as a whole.
     pub fn by_character(self) -> bool {
-        matches!(self, AnimKind::CharFade | AnimKind::CharRise | AnimKind::CharDrop | AnimKind::CharPop)
+        matches!(
+            self,
+            AnimKind::CharFade
+                | AnimKind::CharRise
+                | AnimKind::CharDrop
+                | AnimKind::CharPop
+                | AnimKind::WordFade
+                | AnimKind::WordRise
+                | AnimKind::WordPop
+                | AnimKind::LineRise
+                | AnimKind::CharElastic
+                | AnimKind::CharBounce
+        )
     }
 
     /// The preset a command names.
@@ -520,13 +567,32 @@ impl AnimKind {
                 }
                 o.opacity = (u * 4.0).min(1.0);
             }
+            AnimKind::Elastic => {
+                o.scale = if u >= 1.0 {
+                    1.0
+                } else {
+                    1.0 + 2.0f32.powf(-10.0 * u) * ((u * 10.0 - 0.75) * std::f32::consts::TAU / 3.0).sin()
+                };
+                o.opacity = (u * 4.0).min(1.0);
+            }
+            AnimKind::Drop => {
+                // four falls, each a parabola, the first from above
+                let (k, d) = (7.5625f32, 2.75f32);
+                let down = if u < 1.0 / d {
+                    k * u * u
+                } else if u < 2.0 / d {
+                    k * (u - 1.5 / d).powi(2) + 0.75
+                } else if u < 2.5 / d {
+                    k * (u - 2.25 / d).powi(2) + 0.9375
+                } else {
+                    k * (u - 2.625 / d).powi(2) + 0.984375
+                };
+                o.dy = -0.35 * (1.0 - down.min(1.0));
+                o.opacity = (u * 6.0).min(1.0);
+            }
             // the text itself changes (`reveal`, or its characters move), not its placement
-            AnimKind::Typewriter
-            | AnimKind::CharFade
-            | AnimKind::CharRise
-            | AnimKind::CharDrop
-            | AnimKind::CharPop
-            | AnimKind::Draw => o = Offset::REST,
+            _ if self.titles_only() || self.drawn_only() => o = Offset::REST,
+            _ => unreachable!("every other animation moves the clip as a whole"),
         }
         o
     }

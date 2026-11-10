@@ -2485,13 +2485,12 @@ fn shapes_draw_themselves_on_and_titles_count() {
     assert_eq!((fill[0]["v"].as_f64(), fill.last().unwrap()["v"].as_f64()), (Some(0.0), Some(1.0)));
     // the shape itself is not faded by it
     assert_eq!(spec["layers"][0]["opacity"], json!(1.0));
-    // a title is not drawn on
+    // a title has no outline to key by hand (it is written on by its own animation)
     let title =
         s.execute("clip.add", &json!({"track": text, "text": "¥{n}", "duration": {"seconds": 2}})).unwrap()["clip"]
             .as_str()
             .unwrap()
             .to_string();
-    assert!(s.execute("clip.setAnimation", &json!({"clip": title, "slot": "in", "kind": "draw"})).is_err());
 
     // its outline keyed by hand, and its values changed
     s.execute("clip.setAnimation", &json!({"clip": shape, "slot": "in", "kind": null})).unwrap();
@@ -3488,4 +3487,134 @@ fn a_clip_travels_along_a_path_at_an_even_speed() {
     assert!(s.execute("clip.setPath", &json!({"clip": c, "orient": true})).is_err());
     let spec = s.execute("render.compile", &json!({})).unwrap();
     assert!(spec["layers"][0]["transform"]["position"][0].is_number());
+}
+
+#[test]
+fn titles_come_in_by_the_word_are_written_on_and_sung() {
+    let mut s = Session::default();
+    let track = |kind: TrackKind| s.project().tracks.iter().find(|t| t.kind == kind).unwrap().id.clone();
+    let (video, text) = (track(TrackKind::Video), track(TrackKind::Text));
+    let add =
+        |s: &mut Session, params: Value| s.execute("clip.add", &params).unwrap()["clip"].as_str().unwrap().to_string();
+    let title = add(&mut s, json!({"track": text, "text": "限时特价 big sale", "duration": {"seconds": 4}}));
+    let content = |s: &mut Session| s.execute("render.compile", &json!({})).unwrap()["layers"][0]["content"].clone();
+    let features = |s: &mut Session| s.execute("render.compile", &json!({})).unwrap()["engine"]["features"].clone();
+    let has = |f: &Value, id: &str| f.as_array().unwrap().iter().any(|v| v == id);
+    assert!(!has(&features(&mut s), "text/7"));
+
+    // word by word, then springing letter by letter as it leaves... which settles instead
+    s.execute(
+        "clip.setAnimation",
+        &json!({"clip": title, "slot": "in", "kind": "wordRise", "duration": {"seconds": 1}}),
+    )
+    .unwrap();
+    s.execute("clip.setAnimation", &json!({"clip": title, "slot": "out", "kind": "charElastic"})).unwrap();
+    let c = content(&mut s);
+    let chars = c["chars"].as_array().unwrap();
+    assert_eq!((chars[0]["unit"].as_str(), chars[0]["curve"].as_str()), (Some("word"), Some("settle")));
+    assert_eq!(
+        (chars[1].get("unit"), chars[1]["curve"].as_str(), chars[1]["reverse"].as_bool()),
+        (None, Some("settle"), Some(true))
+    );
+    assert!(has(&features(&mut s), "text/7"));
+    s.execute("clip.setAnimation", &json!({"clip": title, "slot": "in", "kind": "charBounce"})).unwrap();
+    s.execute("clip.setAnimation", &json!({"clip": title, "slot": "out", "kind": null})).unwrap();
+    assert_eq!(content(&mut s)["chars"][0]["curve"], "bounce");
+    s.execute("clip.setAnimation", &json!({"clip": title, "slot": "in", "kind": "lineRise"})).unwrap();
+    assert_eq!(content(&mut s)["chars"][0]["unit"], "line");
+
+    // written on: a pen over the animation's length, and off again
+    s.execute("clip.setAnimation", &json!({"clip": title, "slot": "in", "kind": "draw", "duration": {"seconds": 2}}))
+        .unwrap();
+    let c = content(&mut s);
+    let keys = c["draw"]["progress"].as_array().unwrap();
+    assert_eq!((keys[0]["v"].as_f64(), keys[1]["v"].as_f64()), (Some(0.0), Some(1.0)));
+    assert_eq!(keys[1]["t"], json!(Tick::from_seconds(2.0)));
+    assert!(c.get("chars").is_none() && c["draw"]["width"].as_f64().unwrap() > 0.0);
+    // a picture has no outline for a pen, and words are a title's
+    let picture = add(
+        &mut s,
+        json!({"track": video, "shape": {"kind": "rectangle", "size": [200, 200]}, "duration": {"seconds": 2}}),
+    );
+    assert!(s.execute("clip.setAnimation", &json!({"clip": picture, "slot": "in", "kind": "wordFade"})).is_err());
+    s.execute("clip.setAnimation", &json!({"clip": picture, "slot": "in", "kind": "draw"})).unwrap();
+    // any clip springs in or drops in: its scale goes past its size, its place comes down from above
+    s.execute(
+        "clip.setAnimation",
+        &json!({"clip": picture, "slot": "in", "kind": "elastic", "duration": {"seconds": 1}}),
+    )
+    .unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let scales = spec["layers"][0]["transform"]["scale"].as_array().unwrap();
+    assert!(scales.iter().any(|k| k["v"].as_f64().unwrap() > 1.15) && scales.last().unwrap()["v"] == json!(1.0));
+    s.execute("clip.setAnimation", &json!({"clip": picture, "slot": "in", "kind": "drop", "duration": {"seconds": 1}}))
+        .unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let places = spec["layers"][0]["transform"]["position"].as_array().unwrap();
+    let y = |k: &Value| k["v"][1].as_f64().unwrap();
+    assert!(y(&places[0]) < -0.3 && places.iter().all(|k| y(k) <= 1e-6) && y(places.last().unwrap()).abs() < 1e-6);
+    s.execute("clip.remove", &json!({"clips": [picture]})).unwrap();
+    s.execute("clip.setAnimation", &json!({"clip": title, "slot": "in", "kind": null})).unwrap();
+
+    // sung: the voice goes through the title over its length, yellow unless told
+    let k = s.execute("clip.set", &json!({"clip": title, "karaoke": {}})).unwrap();
+    assert_eq!(k["clip"]["content"]["style"]["karaoke"]["mode"], "sweep");
+    let c = content(&mut s);
+    let h = &c["highlight"];
+    let keys = h["progress"].as_array().unwrap();
+    assert_eq!((keys.len(), keys[0]["v"].as_f64(), keys[1]["v"].as_f64()), (2, Some(0.0), Some(1.0)));
+    assert_eq!((keys[0]["t"].clone(), keys[1]["t"].clone()), (json!(Tick::ZERO), json!(Tick::from_seconds(4.0))));
+    assert!(h.get("unit").is_none() && h["color"][0] == json!(1.0));
+    // the word being said, from one second in for two: none lit before, and what it had is kept
+    s.execute(
+        "clip.set",
+        &json!({"clip": title, "karaoke": {"mode": "word", "color": [1, 0, 0, 1], "start": {"seconds": 1}, "duration": {"seconds": 2}}}),
+    )
+    .unwrap();
+    s.execute("clip.set", &json!({"clip": title, "karaoke": {"mode": "word"}})).unwrap();
+    let c = content(&mut s);
+    let h = &c["highlight"];
+    let keys = h["progress"].as_array().unwrap();
+    assert_eq!((h["unit"].as_str(), h["color"].clone()), (Some("word"), json!([1.0, 0.0, 0.0, 1.0])));
+    assert_eq!((keys[0]["v"].as_f64(), keys[0]["ease"].as_str()), (Some(-1.0), Some("hold")));
+    assert_eq!(
+        (keys[1]["t"].clone(), keys[2]["t"].clone()),
+        (json!(Tick::from_seconds(1.0)), json!(Tick::from_seconds(3.0)))
+    );
+    // a voice that would outlast the clip keeps its pace and is cut short
+    s.execute("clip.set", &json!({"clip": title, "karaoke": {"start": 0, "duration": {"seconds": 8}}})).unwrap();
+    let keys = content(&mut s)["highlight"]["progress"].as_array().unwrap().clone();
+    assert_eq!((keys.len(), keys[1]["v"].as_f64()), (2, Some(0.5)));
+    // the frame shows it: red ink half way through, none without
+    s.execute("clip.set", &json!({"clip": title, "karaoke": {"mode": "sweep", "duration": null}})).unwrap();
+    let red = |s: &mut Session| {
+        let spec: reelforge_renderspec::RenderSpec =
+            serde_json::from_value(s.execute("render.compile", &json!({})).unwrap()).unwrap();
+        let (img, _) = reelforge_render::render_frame(
+            &spec,
+            Tick::from_seconds(2.0),
+            0.25,
+            &reelforge_render::NoMedia,
+            reelforge_render::Quality::Final,
+        )
+        .unwrap();
+        img.pixels.iter().filter(|p| p[0] > 0.8 && p[1] < 0.2 && p[3] > 0.8).count()
+    };
+    assert!(red(&mut s) > 20);
+    // bad values are refused, null takes it off, and captions take it from one another
+    for bad in [json!({"mode": "loud"}), json!({"start": {"seconds": -1}}), json!({"duration": 0}), json!(3)] {
+        assert!(s.execute("clip.set", &json!({"clip": title, "karaoke": bad})).is_err(), "{bad}");
+    }
+    let other =
+        add(&mut s, json!({"track": text, "text": "第二句", "start": {"seconds": 5}, "duration": {"seconds": 2}}));
+    s.execute("captions.restyle", &json!({"from": title})).unwrap();
+    let style = |s: &Session, id: &str| match &s.project().clip(id).unwrap().1.content {
+        ClipContent::Text { style, .. } => style.karaoke,
+        _ => None,
+    };
+    assert_eq!(style(&s, &other).map(|k| (k.mode, k.duration)), Some((reelforge_model::KaraokeMode::Sweep, None)));
+    s.execute("clip.set", &json!({"clip": title, "karaoke": null})).unwrap();
+    assert!(style(&s, &title).is_none() && red(&mut s) == 0);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(style(&s, &title).is_some());
 }

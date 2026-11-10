@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use filmcraft_text::fonts;
 use filmcraft_text::layout::{Align, Glyph, Layout, ParagraphStyle, StyleRun, TextStyle};
 use filmcraft_text::mask::{StrokeKind, blur, offset, stroke};
-use filmcraft_text::raster::{Mask, Path, Xform, compose, fill_into};
-use filmcraft_text::render::{device_bounds, draw};
-use reelforge_renderspec::{CharPose, TextAlign, TextContent};
+use filmcraft_text::raster::{IDENTITY, Mask, Path, Xform, compose, fill_into};
+use filmcraft_text::render::{device_bounds, draw, glyph_path};
+use reelforge_renderspec::{CharPose, TextAlign, TextContent, TextUnit};
 
 use crate::Image;
 use crate::cpu::{apply_fx, blend};
@@ -266,6 +266,27 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
         }
         l = Arc::new(part);
     }
+    // written on: a character not yet done leaves the layout; a pen follows as much of its
+    // outline as it has got to, and its ink comes in behind the pen
+    let mut written: Vec<(Glyph, f32)> = vec![];
+    if let Some(dr) = &text.draw
+        && let p = dr.progress.sample(reelforge_time::Tick::ZERO).clamp(0.0, 1.0)
+        && p < 1.0
+    {
+        let starts = starts(&text.text);
+        let step = dr.step.max(0.0);
+        let own = 1.0 / (1.0 + step * starts.len().saturating_sub(1) as f32);
+        let along = |g: &Glyph| {
+            let i = starts.partition_point(|s| *s <= g.cluster).saturating_sub(1) as f32;
+            ((p - i * step * own) / own).clamp(0.0, 1.0)
+        };
+        let mut rest = (*l).clone();
+        written = rest.glyphs.iter().map(|g| (*g, along(g))).filter(|(_, u)| *u > 0.0 && *u < 1.0).collect();
+        rest.glyphs.retain(|g| along(g) >= 1.0);
+        rest.underlines.clear();
+        rest.underline_runs.clear();
+        l = Arc::new(rest);
+    }
     // characters on the move are drawn one by one, each about its own centre
     let mut movers = vec![];
     if !text.chars.is_empty() {
@@ -315,7 +336,37 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
         let (x0, x1) = if x0 <= x1 { (x0, x1) } else { (b[0], b[2]) };
         vec![Path::round_rect(x0 - pad, b[1] - pad, x1 + pad, b[3] + pad, r).transformed(&m)]
     });
+    // the pen's lines on the target, and how much of each shows: it goes as the ink arrives
+    let pen_half = text.draw.as_ref().map_or(0.0, |dr| (dr.width * text.size * s / 2.0).max(0.5));
+    let mut pens: Vec<(Vec<Vec<[f32; 2]>>, f32)> = vec![];
+    for (g, u) in &written {
+        let outline = glyph_path(g, &compose(&m, &[1.0, 0.0, 0.0, 1.0, g.x, g.y]));
+        let end = 1.0 - (1.0 - (u / 0.7).min(1.0)).powi(3);
+        let lines: Vec<Vec<[f32; 2]>> = outline
+            .contours
+            .iter()
+            .flat_map(|c| {
+                let one = crate::shape::Contour { points: c.iter().map(|p| [p.0, p.1]).collect(), closed: true };
+                crate::shape::trimmed(&[one], 0.0, end)
+            })
+            .collect();
+        let ink = ((u - 0.6) / 0.4).clamp(0.0, 1.0);
+        pens.push((lines, 1.0 - ink));
+        if ink > 0.0 {
+            let bounds = [g.x, g.y - g.size, g.x + g.size, g.y + g.size * 0.3];
+            let one = Layout { glyphs: vec![*g], bounds, ..Layout::default() };
+            movers.push(Mover { one, to: IDENTITY, opacity: ink });
+        }
+    }
     let mut d = device_bounds(&l, &m);
+    for p in pens.iter().flat_map(|(lines, _)| lines.iter().flatten()) {
+        d = [
+            d[0].min(p[0] - pen_half),
+            d[1].min(p[1] - pen_half),
+            d[2].max(p[0] + pen_half),
+            d[3].max(p[1] + pen_half),
+        ];
+    }
     for mv in &mut movers {
         mv.to = compose(&m, &mv.to);
         let at = device_bounds(&mv.one, &mv.to);
@@ -387,6 +438,37 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
             std::array::from_fn(|i| fill_c[i] + (bottom[i] - fill_c[i]) * t)
         }
     });
+    // what is being said takes another colour: by where a target pixel is in the text
+    let said = text.highlight.as_ref().and_then(|h| {
+        let whole = laid(text, family);
+        let spans = said(text, &whole, h.unit, h.progress.sample(reelforge_time::Tick::ZERO));
+        if spans.is_empty() {
+            return None;
+        }
+        // a line's ground runs halfway to its neighbours
+        let between: Vec<f32> = whole
+            .lines
+            .windows(2)
+            .map(|w| (w[0].baseline + w[0].descent + w[1].baseline - w[1].ascent) / 2.0)
+            .collect();
+        let det = m[0] * m[3] - m[1] * m[2];
+        let color = premultiply_srgb(h.color.0);
+        Some(move |x: f32, y: f32| -> ([f32; 4], f32) {
+            if det.abs() <= 1e-9 {
+                return (color, 0.0);
+            }
+            let (px, py) = (x - m[4], y - m[5]);
+            let (tx, ty) = ((m[3] * px - m[2] * py) / det, (m[0] * py - m[1] * px) / det);
+            let line = between.partition_point(|edge| *edge <= ty);
+            let edge = |d: f32| (d * s + 0.5).clamp(0.0, 1.0);
+            let cover = spans
+                .iter()
+                .filter(|(at, ..)| *at == line)
+                .map(|(_, from, to)| edge(tx - from).min(edge(to - tx)))
+                .fold(0.0, f32::max);
+            (color, cover)
+        })
+    });
     let outer_c = text.outer.as_ref().map(|st| premultiply_srgb(st.color.0));
     let shadow_c = text.shadow.as_ref().map(|sh| premultiply_srgb(sh.color.0));
     let stroke_c = text.stroke.as_ref().map(|st| premultiply_srgb(st.color.0));
@@ -406,10 +488,16 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
         if let (Some(mk), Some(c)) = (&coat.outline, stroke_c) {
             px = over(c, mk.a[i].clamp(0.0, 1.0), px);
         }
-        let c = match &fade {
+        let mut c = match &fade {
             Some(f) if coat.fill.a[i] > 0.0 => f(x as f32 + 0.5, y as f32 + 0.5),
             _ => fill_c,
         };
+        if let Some(said) = &said
+            && coat.fill.a[i] > 0.0
+        {
+            let (color, cover) = said(x as f32 + 0.5, y as f32 + 0.5);
+            c = std::array::from_fn(|k| c[k] + (color[k] - c[k]) * cover);
+        }
         over(c, coat.fill.a[i].clamp(0.0, 1.0), px)
     };
     let mut image = Image::filled(r.w as u32, r.h as u32, [0.0; 4]);
@@ -429,7 +517,108 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
             }
         }
     }
+    // the pen's line over everything, in the outline's colour or the fill's
+    let pen_c = stroke_c.unwrap_or(fill_c);
+    for (lines, shows) in &pens {
+        let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+        for p in lines.iter().flatten() {
+            (lo, hi) = ([lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])]);
+        }
+        let reach = pen_half + 1.0;
+        let (ax, ay) = (((lo[0] - reach).floor() as i32).max(r.x), ((lo[1] - reach).floor() as i32).max(r.y));
+        let (bx, by) = (
+            ((hi[0] + reach).ceil() as i32).min(r.x + r.w as i32),
+            ((hi[1] + reach).ceil() as i32).min(r.y + r.h as i32),
+        );
+        if bx <= ax || by <= ay {
+            continue;
+        }
+        let (w, h) = ((bx - ax) as usize, (by - ay) as usize);
+        let line = crate::shape::inked(lines, [ax, ay], [w, h], pen_half);
+        for (i, cover) in line.a.iter().enumerate().filter(|(_, c)| **c > 0.0) {
+            let o = (ay - r.y) as usize * r.w + (ax - r.x) as usize + (i / w) * r.w + i % w;
+            image.pixels[o] = over(pen_c, cover * shows, image.pixels[o]);
+        }
+    }
     Some(Sprite { x: r.x, y: r.y, image: Arc::new(image), map: None })
+}
+
+/// The byte each character of `text` starts at, white space left out.
+fn starts(text: &str) -> Vec<usize> {
+    text.char_indices().filter(|(_, c)| !c.is_whitespace()).map(|(i, _)| i).collect()
+}
+
+/// The line of `l` the character at byte `at` is on, and its left and right edges there.
+fn span(l: &Layout, at: usize) -> Option<(usize, f32, f32)> {
+    let (k, ln) = l.lines.iter().enumerate().find(|(_, ln)| ln.range.contains(&at))?;
+    let here = ln.carets.iter().find(|(b, _)| *b == at)?.1;
+    let next = ln.carets.iter().filter(|(b, _)| *b > at).min_by_key(|(b, _)| *b)?.1;
+    Some((k, here.min(next), here.max(next)))
+}
+
+/// Which of its units each character of the text is in (white space left out), counted from 0.
+fn units(text: &str, l: &Layout, starts: &[usize], unit: TextUnit) -> Vec<usize> {
+    match unit {
+        TextUnit::Char => (0..starts.len()).collect(),
+        TextUnit::Word => reelforge_renderspec::words(text),
+        // the lines that have characters, in order
+        TextUnit::Line => {
+            let mut out: Vec<usize> = Vec::with_capacity(starts.len());
+            let mut on: Option<usize> = None;
+            for at in starts {
+                let line = l.lines.iter().position(|ln| ln.range.contains(at)).or(on).unwrap_or(0);
+                let before = out.last().copied();
+                out.push(match (before, on) {
+                    (Some(u), Some(was)) if was != line => u + 1,
+                    (Some(u), _) => u,
+                    (None, _) => 0,
+                });
+                on = Some(line);
+            }
+            out
+        }
+    }
+}
+
+/// What of the text a highlight at `progress` colours: for each stretch its line and the edges
+/// it runs between, in the text's own space.
+fn said(text: &TextContent, l: &Layout, unit: TextUnit, progress: f32) -> Vec<(usize, f32, f32)> {
+    let starts = starts(&text.text);
+    let n = starts.len();
+    if n == 0 || progress.is_nan() {
+        return vec![];
+    }
+    let at = progress.clamp(0.0, 1.0) * n as f32;
+    let i = (at.floor() as usize).min(n - 1);
+    if unit == TextUnit::Char {
+        // everything so far: the lines above whole, this one up to where the voice is
+        if progress <= 0.0 {
+            return vec![];
+        }
+        let Some((line, x0, x1)) = span(l, starts[i]) else { return vec![] };
+        let mut out: Vec<(usize, f32, f32)> = (0..line).map(|k| (k, f32::MIN, f32::MAX)).collect();
+        out.push((line, f32::MIN, x0 + (x1 - x0) * (at - i as f32).min(1.0)));
+        return out;
+    }
+    // the word or line the voice is in, alone
+    if !(0.0..1.0).contains(&progress) {
+        return vec![];
+    }
+    let of = units(&text.text, l, &starts, unit);
+    let mut out: Vec<(usize, f32, f32)> = vec![];
+    for (c, _) in of.iter().enumerate().filter(|(_, u)| **u == of[i]) {
+        let Some((line, x0, x1)) = span(l, starts[c]) else { continue };
+        match out.iter_mut().find(|(k, ..)| *k == line) {
+            Some(s) => (s.1, s.2) = (s.1.min(x0), s.2.max(x1)),
+            None => out.push((line, x0, x1)),
+        }
+    }
+    if unit == TextUnit::Line {
+        for s in &mut out {
+            (s.1, s.2) = (f32::MIN, f32::MAX);
+        }
+    }
+    out
 }
 
 /// One coat of ink as coverage: the glyphs, their outlines and their shadow.
@@ -456,65 +645,93 @@ impl Coat {
     }
 }
 
-/// A character somewhere else than the layout puts it.
+/// Characters somewhere else than the layout puts them.
 struct Mover {
-    /// Its glyphs, as a layout of their own.
+    /// Their glyphs, as a layout of their own.
     one: Layout,
     /// Takes them there: in the text's own space as [`moved`] returns it, then on the target.
     to: Xform,
-    /// How much of it shows; above 0.
+    /// How much of them shows; above 0.
     opacity: f32,
 }
 
-/// Takes the characters that `text.chars` moves out of `l`: those on their way are returned, those
-/// that do not show at all are dropped, and those at rest stay.
+/// Takes the characters that `text.chars` moves out of `l`: those on their way are returned
+/// (together where they go the same way, as the characters of a word do), those that do not show
+/// at all are dropped, and those at rest stay.
 fn moved(text: &TextContent, l: &mut Layout) -> Vec<Mover> {
     // characters are counted without white space
-    let starts: Vec<usize> = text.text.char_indices().filter(|(_, c)| !c.is_whitespace()).map(|(i, _)| i).collect();
+    let starts = starts(&text.text);
     let n = starts.len();
-    let poses: Vec<CharPose> = (0..n)
-        .map(|i| {
-            text.chars
-                .iter()
-                .fold(CharPose::REST, |p, m| p.and(m.at(i, n, m.progress.sample(reelforge_time::Tick::ZERO))))
-        })
-        .collect();
     let index = |g: &Glyph| starts.partition_point(|s| *s <= g.cluster).checked_sub(1);
-    let mut out: Vec<(usize, Mover)> = vec![];
+    // each character's box (between its carets, about its line) and the size it is set in
+    let mut boxes: Vec<Option<[f32; 4]>> = vec![None; n];
+    let mut sizes = vec![text.size; n];
     for g in &l.glyphs {
-        let Some(i) = index(g) else { continue };
-        let pose = poses[i];
-        if pose == CharPose::REST || pose.opacity <= 0.0 {
-            continue;
-        }
-        if let Some((_, mv)) = out.iter_mut().find(|(at, _)| *at == i) {
-            mv.one.glyphs.push(*g);
-            continue;
-        }
-        // its centre: halfway to the next caret on its line, a little above the baseline
-        let line = l.lines.iter().find(|ln| ln.range.contains(&g.cluster));
-        let next = line.and_then(|ln| ln.carets.iter().filter(|(at, _)| *at > g.cluster).min_by_key(|(at, _)| *at));
-        let here = line.and_then(|ln| ln.carets.iter().find(|(at, _)| *at == g.cluster));
-        let (x0, x1) = match (here, next) {
-            (Some((_, a)), Some((_, b))) => (a.min(*b), a.max(*b)),
-            _ => (g.x, g.x + g.size * 0.6),
-        };
-        let (cx, cy) = ((x0 + x1) / 2.0, g.y - g.size * 0.36);
-        let (sin, cos) = pose.rotation.to_radians().sin_cos();
-        let (a, b) = (pose.scale * cos, pose.scale * sin);
-        let to: Xform = [
-            a,
-            b,
-            -b,
-            a,
-            cx + pose.offset[0] * g.size - (a * cx - b * cy),
-            cy + pose.offset[1] * g.size - (b * cx + a * cy),
-        ];
-        let one = Layout { glyphs: vec![*g], bounds: [x0, g.y - g.size, x1, g.y + g.size * 0.3], ..Layout::default() };
-        out.push((i, Mover { one, to, opacity: pose.opacity.min(1.0) }));
+        let Some(i) = index(g).filter(|i| boxes[*i].is_none()) else { continue };
+        let (x0, x1) = span(l, g.cluster).map_or((g.x, g.x + g.size * 0.6), |(_, a, b)| (a, b));
+        boxes[i] = Some([x0, g.y - g.size, x1, g.y + g.size * 0.3]);
+        sizes[i] = g.size;
     }
-    l.glyphs.retain(|g| index(g).is_none_or(|i| poses[i] == CharPose::REST));
-    out.into_iter().map(|(_, mv)| mv).collect()
+    // where each character goes: what moves its line, then its word, then itself
+    let mut to: Vec<Xform> = vec![IDENTITY; n];
+    let mut shown = vec![1.0f32; n];
+    for unit in [TextUnit::Char, TextUnit::Word, TextUnit::Line] {
+        let motions: Vec<_> = text.chars.iter().filter(|m| m.unit == unit).collect();
+        if motions.is_empty() {
+            continue;
+        }
+        let of = units(&text.text, l, &starts, unit);
+        let count = of.iter().max().map_or(0, |m| m + 1);
+        // a unit's centre: the middle of its characters, a little above their baselines
+        let mut span = vec![(f32::MAX, f32::MIN, 0.0f32, 0.0f32); count];
+        for (i, b) in boxes.iter().enumerate() {
+            if let Some(b) = b {
+                let s = &mut span[of[i]];
+                *s = (s.0.min(b[0]), s.1.max(b[2]), s.2 + b[1] + sizes[i] * 0.64, s.3 + 1.0);
+            }
+        }
+        for i in 0..n {
+            let (u, s) = (of[i], span[of[i]]);
+            let pose = motions
+                .iter()
+                .fold(CharPose::REST, |p, m| p.and(m.at(u, count, m.progress.sample(reelforge_time::Tick::ZERO))));
+            if pose == CharPose::REST || s.3 == 0.0 {
+                continue;
+            }
+            let (cx, cy) = ((s.0 + s.1) / 2.0, s.2 / s.3);
+            let (sin, cos) = pose.rotation.to_radians().sin_cos();
+            let (a, b) = (pose.scale * cos, pose.scale * sin);
+            let about: Xform = [
+                a,
+                b,
+                -b,
+                a,
+                cx + pose.offset[0] * sizes[i] - (a * cx - b * cy),
+                cy + pose.offset[1] * sizes[i] - (b * cx + a * cy),
+            ];
+            to[i] = if to[i] == IDENTITY { about } else { compose(&about, &to[i]) };
+            shown[i] *= pose.opacity.clamp(0.0, 1.0);
+        }
+    }
+    let rests = |i: usize| to[i] == IDENTITY && shown[i] >= 1.0;
+    let mut out: Vec<Mover> = vec![];
+    for g in &l.glyphs {
+        let Some(i) = index(g).filter(|i| !rests(*i) && shown[*i] > 0.0) else { continue };
+        let b = boxes[i].unwrap_or([g.x, g.y - g.size, g.x + g.size * 0.6, g.y + g.size * 0.3]);
+        match out.iter_mut().find(|mv| mv.to == to[i] && mv.opacity == shown[i]) {
+            Some(mv) => {
+                mv.one.glyphs.push(*g);
+                let o = mv.one.bounds;
+                mv.one.bounds = [o[0].min(b[0]), o[1].min(b[1]), o[2].max(b[2]), o[3].max(b[3])];
+            }
+            None => {
+                let one = Layout { glyphs: vec![*g], bounds: b, ..Layout::default() };
+                out.push(Mover { one, to: to[i], opacity: shown[i] });
+            }
+        }
+    }
+    l.glyphs.retain(|g| index(g).is_none_or(rests));
+    out
 }
 
 /// How many bytes of `text` show: all of it, or the characters a `reveal` lets through.

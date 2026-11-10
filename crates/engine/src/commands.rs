@@ -4,9 +4,10 @@ use reelforge_compile::{CompileOptions, compile};
 use reelforge_model::timeline as model_timeline;
 use reelforge_model::{
     Adjust, AnimKind, Animation, BlendMode, ChromaKey, Clip, ClipContent, ClipEffect, ClipTransform, Codec, CurvePoint,
-    CurvePreset, Denoise, Ease, ExportSettings, Filter, FilterKind, Fx, FxGroup, FxKind, Inbetween, Key, Loop,
-    LoopKind, LutUse, Mask, MaskKind, Media, MediaKind, Outline, Project, Prop, Quality, Resolution, Shadow, Steady,
-    Timeline, TitleStyle, Track, TrackKind, Transition, TransitionKind, Voice, VoiceKind, anim, export, timing,
+    CurvePreset, Denoise, Ease, ExportSettings, Filter, FilterKind, Fx, FxGroup, FxKind, Inbetween, Karaoke,
+    KaraokeMode, Key, Loop, LoopKind, LutUse, Mask, MaskKind, Media, MediaKind, Outline, Project, Prop, Quality,
+    Resolution, Shadow, Steady, Timeline, TitleStyle, Track, TrackKind, Transition, TransitionKind, Voice, VoiceKind,
+    anim, export, timing,
 };
 use reelforge_renderspec::AssetKind;
 use reelforge_time::{FrameRate, Tick};
@@ -356,7 +357,7 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.add",
         label: "Add Clip",
-        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "name"?: string, "adjustment"?: bool, "timeline"?: id, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "shape"?: {"kind"?, "size"?: [w, h], "radius"?, "points"?, "inner"?, "fill"?, "stroke"?, "shadow"?, "trim"?}, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "template"?: id}"#,
+        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "name"?: string, "adjustment"?: bool, "timeline"?: id, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "shape"?: {"kind"?, "size"?: [w, h], "radius"?, "points"?, "inner"?, "fill"?, "stroke"?, "shadow"?, "trim"?}, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "karaoke"?: {"color"?: [r,g,b,a], "mode"?: "sweep"|"word"|"line", "start"?: time, "duration"?: time | null} | null, "template"?: id}"#,
         doc: "Places media, a library sticker, text, a drawn shape (`shape`, on a video track: see clip.setShape), a colour or an adjustment clip on a track; starts at the track's end unless `start` is given. Titles default to bold white with a black outline, wrapping at 90 % of the canvas. A sticker (sticker.library) is an image a third of the frame wide; `name` is what the project's media calls it (its English name by default). An adjustment clip shows nothing: its effects (`fx`) and colour work on the tracks below it while it lasts. `timeline` places another timeline of the project as a compound clip on a video track, from `sourceIn`.",
         edits: true,
         enabled: always,
@@ -581,7 +582,7 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.set",
         label: "Clip Properties",
-        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "scaleX"?, "scaleY"?, "rotationX"?, "rotationY"?, "perspective"?, "anchorX"?, "anchorY"?, "keep"?: bool, "at"?: time, "fadeIn"?: time, "fadeOut"?: time, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "template"?: id}"#,
+        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "scaleX"?, "scaleY"?, "rotationX"?, "rotationY"?, "perspective"?, "anchorX"?, "anchorY"?, "keep"?: bool, "at"?: time, "fadeIn"?: time, "fadeOut"?: time, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "karaoke"?: {"color"?: [r,g,b,a], "mode"?: "sweep"|"word"|"line", "start"?: time, "duration"?: time | null} | null, "template"?: id}"#,
         doc: "Sets a clip's placement, opacity, volume, sound fades or title. A property with keyframes is set at `at` (a timeline time), adding or changing the keyframe there. Beyond moving, scaling and turning it in the plane, a clip can be stretched (`scaleX`, `scaleY`: width and height apart, on top of `scale`; negative mirrors) and turned in space (`rotationX` tips its top edge away, `rotationY` swings its right edge away, in degrees; past 90 it shows its back), seen in perspective from `perspective` canvas heights away (2 unless told; nearer is stronger). It is placed, scaled and turned about its anchor: `anchorX` and `anchorY` are shares of its picture from the top left (0.5, 0.5 is its middle; 0, 0.5 the middle of its left edge, to swing it like a door; 0.5, 1 the middle of its bottom edge, to grow it from its base). Giving it another anchor leaves the picture where it lies and changes `x` and `y` to match, unless `keep` is false.",
         edits: true,
         enabled: always,
@@ -797,8 +798,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.setAnimation",
         label: "Animation",
-        params: r#"{"clip": id, "slot": "in"|"out"|"loop", "kind": "fade"|"slideUp"|"slideDown"|"slideLeft"|"slideRight"|"zoomIn"|"zoomOut"|"pop"|"spin"|"typewriter"|"charFade"|"charRise"|"charDrop"|"charPop"|"draw"|"flipY"|"flipX" | "breathe"|"heartbeat"|"swing"|"float"|"bounce"|"shake"|"spin"|"blink"|"wave"|"jump"|"flip"|"tilt" | null, "duration"?: time}"#,
-        doc: "Puts an in or out animation on a picture or title clip, or one that repeats for as long as it is on screen (slot `loop`, with the kinds from `breathe` on); null removes it. In and out take 0.5 s unless `duration` is given; for a loop `duration` is one round (1 s or so by default, by kind). For titles only: `typewriter` types the words in or erases them, `charFade`, `charRise`, `charDrop` and `charPop` bring the characters in (or take them out) one after another, and the loops `wave` and `jump` move them one after another. In space: `flipY` swings a clip in like a door and `flipX` tips it up like a lid, from edge on (about its anchor: set `anchorX` 0 for a door hinged on its left edge); the loop `flip` turns it round and round showing its back, and `tilt` rocks it from side to side like a card being shown.",
+        params: r#"{"clip": id, "slot": "in"|"out"|"loop", "kind": "fade"|"slideUp"|"slideDown"|"slideLeft"|"slideRight"|"zoomIn"|"zoomOut"|"pop"|"spin"|"typewriter"|"charFade"|"charRise"|"charDrop"|"charPop"|"draw"|"flipY"|"flipX"|"elastic"|"drop"|"wordFade"|"wordRise"|"wordPop"|"lineRise"|"charElastic"|"charBounce" | "breathe"|"heartbeat"|"swing"|"float"|"bounce"|"shake"|"spin"|"blink"|"wave"|"jump"|"flip"|"tilt" | null, "duration"?: time}"#,
+        doc: "Puts an in or out animation on a picture or title clip, or one that repeats for as long as it is on screen (slot `loop`, with the kinds from `breathe` on); null removes it. In and out take 0.5 s unless `duration` is given; for a loop `duration` is one round (1 s or so by default, by kind). For titles only: `typewriter` types the words in or erases them, `charFade`, `charRise`, `charDrop` and `charPop` bring the characters in (or take them out) one after another, and the loops `wave` and `jump` move them one after another; `wordFade`, `wordRise` and `wordPop` do it word by word (a Chinese character is a word of its own) and `lineRise` line by line; `charElastic` springs each character up past its size and back, `charBounce` drops each and lets it bounce; `draw` writes a title on, a pen following each character's outline before its ink comes in (shapes take `draw` too). For any clip: `elastic` grows it in on a spring and `drop` lets it fall in and bounce. In space: `flipY` swings a clip in like a door and `flipX` tips it up like a lid, from edge on (about its anchor: set `anchorX` 0 for a door hinged on its left edge); the loop `flip` turns it round and round showing its back, and `tilt` rocks it from side to side like a card being shown.",
         edits: true,
         enabled: always,
         run: clip_set_animation,
@@ -2361,7 +2362,8 @@ fn clip_set_speed(s: &mut Session, v: &Value) -> CmdResult {
     })
 }
 
-const STYLE_KEYS: [&str; 16] = [
+const STYLE_KEYS: [&str; 17] = [
+    "karaoke",
     "font",
     "tracking",
     "leading",
@@ -2481,6 +2483,38 @@ fn title_style(p: &P, base: TitleStyle) -> Result<TitleStyle, EngineError> {
     }
     if let Some(b) = p.opt_bool("underline")? {
         st.underline = b;
+    }
+    match p.v.get("karaoke") {
+        Some(Value::Null) => st.karaoke = None,
+        Some(v) if v.is_object() => {
+            let o = P::new(v, p.fps);
+            // what it had stays unless said again; yellow unless a colour is given
+            let current = st.karaoke.unwrap_or(Karaoke {
+                color: [1.0, 0.84, 0.1, 1.0],
+                mode: KaraokeMode::Sweep,
+                start: Tick::ZERO,
+                duration: None,
+            });
+            let mode = match o.opt_str("mode")? {
+                Some(m) => KaraokeMode::parse(m)
+                    .ok_or_else(|| EngineError::Params("`karaoke.mode` must be sweep, word or line".into()))?,
+                None => current.mode,
+            };
+            let duration = match v.get("duration") {
+                Some(Value::Null) => None,
+                Some(_) => o.opt_time("duration")?,
+                None => current.duration,
+            };
+            let start = o.opt_time("start")?.unwrap_or(current.start);
+            if start < Tick::ZERO || duration.is_some_and(|d| d <= Tick::ZERO) {
+                return Err(EngineError::Params(
+                    "`karaoke.start` must not be before the clip and `karaoke.duration` must be above nothing".into(),
+                ));
+            }
+            st.karaoke = Some(Karaoke { color: o.opt_color("color")?.unwrap_or(current.color), mode, start, duration });
+        }
+        Some(_) => return Err(EngineError::Params("`karaoke` must be an object or null".into())),
+        None => {}
     }
     Ok(st)
 }
@@ -3055,10 +3089,13 @@ fn clip_set_animation(s: &mut Session, v: &Value) -> CmdResult {
         {
             return Err(EngineError::Params(format!("{} applies to titles", name.unwrap_or_default())));
         }
-        if kind.is_some_and(AnimKind::shapes_only)
-            && !matches!(proj.clip(&id).map(|(_, c)| &c.content), Some(ClipContent::Shape { .. }))
+        if kind.is_some_and(AnimKind::drawn_only)
+            && !matches!(
+                proj.clip(&id).map(|(_, c)| &c.content),
+                Some(ClipContent::Shape { .. } | ClipContent::Text { .. })
+            )
         {
-            return Err(EngineError::Params(format!("{} applies to shapes", name.unwrap_or_default())));
+            return Err(EngineError::Params(format!("{} applies to shapes and titles", name.unwrap_or_default())));
         }
         let clip = proj.clip_mut(&id).expect("found above");
         if slot == "loop" {

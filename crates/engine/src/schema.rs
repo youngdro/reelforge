@@ -122,6 +122,19 @@ fn title_props() -> Vec<(&'static str, Value)> {
         ("italic", json!({"type": "boolean", "description": "Slanted."})),
         ("underline", json!({"type": "boolean", "description": "Underlined."})),
         (
+            "karaoke",
+            nullable(json!({
+                "description": "What is being said takes another colour: a voice goes through the title's characters at an even pace. null removes it. Give one caption a karaoke and captions.restyle gives it to the rest, each over its own length.",
+                "type": "object",
+                "properties": {
+                    "color": color("The colour of what is lit; yellow unless given."),
+                    "mode": {"enum": ["sweep", "word", "line"], "description": "sweep: everything said so far, the edge passing smoothly through the character being said. word: the word being said, alone (a Chinese character is a word of its own). line: the line being said, alone."},
+                    "start": time("When the voice starts, from the clip's start; 0 by default."),
+                    "duration": nullable(time("How long the voice takes; null, until the clip ends."))
+                },
+            })),
+        ),
+        (
             "template",
             json!({"type": "string", "description": "A title template id from title.templates (classic, variety, sticker, candy, fire, neon, retro, soft, boxed, label); other parameters given override it."}),
         ),
@@ -1123,7 +1136,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ),
                 (
                     "kind",
-                    json!({"description": "Preset; null removes the animation. In and out: fade to spin, flipY (swings in like a door) and flipX (tips up like a lid), both in space about the clip's anchor, and for titles only typewriter (types the words in, or erases them) and charFade, charRise, charDrop, charPop (the characters one after another), and for shapes only draw (the outline draws itself on, then the fill comes in). Loop: breathe, heartbeat, swing, float, bounce, shake, spin, blink, flip (round and round in space, showing its back), tilt (rocks from side to side in space), and for titles only wave and jump (the characters one after another).", "oneOf": [{"enum": ["fade", "slideUp", "slideDown", "slideLeft", "slideRight", "zoomIn", "zoomOut", "pop", "spin", "typewriter", "charFade", "charRise", "charDrop", "charPop", "draw", "flipY", "flipX", "breathe", "heartbeat", "swing", "float", "bounce", "shake", "blink", "wave", "jump", "flip", "tilt"]}, {"type": "null"}]}),
+                    json!({"description": "Preset; null removes the animation. In and out: fade to spin, flipY (swings in like a door) and flipX (tips up like a lid), both in space about the clip's anchor, and for titles only typewriter (types the words in, or erases them) and charFade, charRise, charDrop, charPop (the characters one after another), wordFade, wordRise, wordPop (word by word), lineRise (line by line), charElastic (each springs up past its size and back) and charBounce (each falls and bounces), for shapes and titles draw (a pen draws the outline on, then the fill comes in), and for any clip elastic (grows in on a spring) and drop (falls in and bounces). Loop: breathe, heartbeat, swing, float, bounce, shake, spin, blink, flip (round and round in space, showing its back), tilt (rocks from side to side in space), and for titles only wave and jump (the characters one after another).", "oneOf": [{"enum": ["fade", "slideUp", "slideDown", "slideLeft", "slideRight", "zoomIn", "zoomOut", "pop", "spin", "typewriter", "charFade", "charRise", "charDrop", "charPop", "draw", "flipY", "flipX", "elastic", "drop", "wordFade", "wordRise", "wordPop", "lineRise", "charElastic", "charBounce", "breathe", "heartbeat", "swing", "float", "bounce", "shake", "blink", "wave", "jump", "flip", "tilt"]}, {"type": "null"}]}),
                 ),
                 (
                     "duration",

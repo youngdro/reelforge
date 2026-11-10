@@ -107,6 +107,14 @@ In rough priority order for short videos:
    animations to it (`charFade`, `charRise`, `charDrop`, `charPop` in and out, the loops `wave` and
    `jump`); a loop of the whole clip (`breathe`, `swing`, `blink`…) is sampled into the layer's
    ordinary keys like any other animation.
+   `text/7` lets a movement take words or lines as its unit (`CharMotion.unit`; `words` says what
+   a word is, so every renderer counts alike), adds the curves `elastic` and `bounce`, a
+   `highlight` (karaoke: a progress through the characters and a colour, for all said so far or
+   for the word or line being said; the renderer colours the fill by where a pixel is in the
+   text) and `draw` (written on: a character not yet done leaves the layout, a pen inks as much
+   of its outline as it has got to, the way a shape's trimmed outline is inked, and its fill
+   fades in behind). The model's side is animation kinds (`wordRise`, `charBounce`, `draw`…) and
+   `TitleStyle.karaoke`; the compiler turns their times into the progress keys.
    `shape/1` draws shapes the way text is drawn: `reelforge_render::shape` makes a sprite in target
    pixels, already placed, scaled and turned by its layer, which both compositors lay over the frame,
    so CPU and GPU agree. The outline is a polyline; the part `trim` keeps is inked by distance, so

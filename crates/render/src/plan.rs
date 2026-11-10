@@ -389,6 +389,13 @@ fn plan_layers(
                 for m in &mut text.chars {
                     m.progress = Animated::Constant(m.progress.sample(local));
                 }
+                // and how much of it has been said or written
+                if let Some(h) = &mut text.highlight {
+                    h.progress = Animated::Constant(h.progress.sample(local));
+                }
+                if let Some(d) = &mut text.draw {
+                    d.progress = Animated::Constant(d.progress.sample(local).clamp(0.0, 1.0));
+                }
                 // and so is the number it shows: written into its words
                 if let Some(n) = text.number.take() {
                     text.text = n.fill(&text.text, n.value.sample(local));
