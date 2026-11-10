@@ -210,6 +210,15 @@ static REGISTRY: &[CommandSpec] = &[
         run: project_inspect,
     },
     CommandSpec {
+        id: "project.outline",
+        label: "Outline",
+        params: "{}",
+        doc: "The timeline being edited in brief, with times in seconds: each track's clips (start, end, what they show, and what is set on them: placement, keyframed properties, animations, transition, effects, colour, crop or mask, voice, group), the media with their lengths, markers and the cover. Read this first; project.inspect is the whole document in ticks.",
+        edits: false,
+        enabled: always,
+        run: |s, _| Ok(crate::outline::outline(&s.project())),
+    },
+    CommandSpec {
         id: "project.new",
         label: "New Project",
         params: "{}",
@@ -347,7 +356,7 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.add",
         label: "Add Clip",
-        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "name"?: string, "adjustment"?: bool, "timeline"?: id, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "shape"?: {"kind"?, "size"?: [w, h], "radius"?, "points"?, "inner"?, "fill"?, "stroke"?, "shadow"?, "trim"?}, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "template"?: id}"#,
+        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "name"?: string, "adjustment"?: bool, "timeline"?: id, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "shape"?: {"kind"?, "size"?: [w, h], "radius"?, "points"?, "inner"?, "fill"?, "stroke"?, "shadow"?, "trim"?}, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "template"?: id}"#,
         doc: "Places media, a library sticker, text, a drawn shape (`shape`, on a video track: see clip.setShape), a colour or an adjustment clip on a track; starts at the track's end unless `start` is given. Titles default to bold white with a black outline, wrapping at 90 % of the canvas. A sticker (sticker.library) is an image a third of the frame wide; `name` is what the project's media calls it (its English name by default). An adjustment clip shows nothing: its effects (`fx`) and colour work on the tracks below it while it lasts. `timeline` places another timeline of the project as a compound clip on a video track, from `sourceIn`.",
         edits: true,
         enabled: always,
@@ -879,7 +888,7 @@ static REGISTRY: &[CommandSpec] = &[
         id: "edit.batch",
         label: "Batch",
         params: r#"{"steps": [{"id": string, "params"?: object}], "label"?: string}"#,
-        doc: "Runs several commands as one undo step; if any fails, none applies.",
+        doc: "Runs several commands as one undo step; if any fails, none applies. A parameter written `${n.field}` is what step n (from 0) replied there, such as `${0.clip}` for the clip step 0 added, or `${1.clips.0.clip}`.",
         edits: true,
         enabled: always,
         run: edit_batch,
@@ -1570,6 +1579,13 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
     let fx = fx_param(&p)?.unwrap_or_default();
     let adjustment = p.opt_bool("adjustment")?.unwrap_or(false);
     let timeline = p.opt_str("timeline")?.map(str::to_string);
+    // placed as it lands, so a title or sticker needs no clip.set after
+    let place = |name: &str| p.opt_f64(name).map(|o| o.map(|x| x as f32));
+    let (x, y, scale, rotation) = (place("x")?, place("y")?, place("scale")?, place("rotation")?);
+    let (opacity, volume_db) = (place("opacity")?, place("volumeDb")?);
+    if opacity.is_some_and(|o| !(0.0..=1.0).contains(&o)) {
+        return Err(EngineError::Params("`opacity` must be between 0 and 1".into()));
+    }
     let shape = p.opt("shape").map(crate::promo::shape_param).transpose()?;
     let sticker = match p.opt_str("sticker")? {
         None => None,
@@ -1671,9 +1687,14 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
             duration,
             content,
             // a sticker starts a third of the frame wide
-            transform: ClipTransform { scale: if sticker.is_some() { 0.35 } else { 1.0 }, ..Default::default() },
-            opacity: 1.0,
-            volume_db: 0.0,
+            transform: ClipTransform {
+                x: x.unwrap_or(0.0),
+                y: y.unwrap_or(0.0),
+                scale: scale.unwrap_or(if sticker.is_some() { 0.35 } else { 1.0 }),
+                rotation: rotation.unwrap_or(0.0),
+            },
+            opacity: opacity.unwrap_or(1.0),
+            volume_db: volume_db.unwrap_or(0.0),
             effects: vec![],
             keys: Default::default(),
             anim: Default::default(),
@@ -3388,7 +3409,9 @@ fn edit_batch(s: &mut Session, v: &Value) -> CmdResult {
         let mut results = Vec::new();
         for (i, step) in steps.iter().enumerate() {
             let id = step.get("id").and_then(Value::as_str).unwrap_or_default();
-            let params = step.get("params").cloned().unwrap_or(Value::Null);
+            let mut params = step.get("params").cloned().unwrap_or(Value::Null);
+            fill_refs(&mut params, &results)
+                .map_err(|e| EngineError::Params(format!("step {i} ({id}), nothing applied: {e}")))?;
             let r = if id == "edit.undo" || id == "edit.redo" || id == "edit.batch" {
                 Err(EngineError::Params(format!("{id} cannot run inside a batch")))
             } else {
@@ -3399,6 +3422,36 @@ fn edit_batch(s: &mut Session, v: &Value) -> CmdResult {
         Ok(results)
     })?;
     Ok(json!({ "results": results }))
+}
+
+/// Replaces every string of the form `${n.path}` in a batch step's parameters with what an
+/// earlier step `n` (from 0) replied there: `${0.clip}` is the id of the clip step 0 added,
+/// `${1.clips.0.clip}` the first of a list, so a batch can add a clip and go on editing it.
+fn fill_refs(v: &mut Value, results: &[Value]) -> Result<(), String> {
+    match v {
+        Value::String(s) => {
+            let Some(inner) = s.strip_prefix("${").and_then(|r| r.strip_suffix('}')) else { return Ok(()) };
+            let mut parts = inner.split('.');
+            let n: usize = parts
+                .next()
+                .and_then(|n| n.trim().parse().ok())
+                .ok_or_else(|| format!("{s:?} must name an earlier step by number, as ${{0.clip}}"))?;
+            let mut at = results.get(n).ok_or_else(|| format!("{s:?} names step {n}, which has not run"))?;
+            for key in parts {
+                at = match at {
+                    Value::Array(a) => key.parse::<usize>().ok().and_then(|i| a.get(i)),
+                    Value::Object(o) => o.get(key),
+                    _ => None,
+                }
+                .ok_or_else(|| format!("{s:?}: step {n} replied with no `{key}` there"))?;
+            }
+            *v = at.clone();
+        }
+        Value::Array(a) => a.iter_mut().try_for_each(|x| fill_refs(x, results))?,
+        Value::Object(o) => o.values_mut().try_for_each(|x| fill_refs(x, results))?,
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Runs `f`, which may run several commands, as one undo step called `label`; if it fails,

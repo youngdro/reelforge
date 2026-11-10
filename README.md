@@ -139,6 +139,8 @@ cargo run -q -p reelforge-cli -- exec cut.reel.json project.setCover '{"at": {"s
 `reelforge-cli serve` puts a project behind the Model Context Protocol: every command is a tool
 (`clip_split`, `clip_add`…, each with a JSON Schema), plus `render_frame` (returns a PNG the agent can
 look at), `render_export` and `project_save`. Every edit is saved to the project file as it commits.
+[docs/agents.md](docs/agents.md) is the guide for agents: setting up Claude Code, Claude Desktop and
+other clients, how the tools take time and ids, and which tools each feature uses.
 
 ```sh
 cargo build -r -p reelforge-cli

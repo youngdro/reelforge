@@ -237,13 +237,44 @@ fn object(props: Vec<(&'static str, Value)>, required: &[&str]) -> Value {
     json!({"type": "object", "properties": p, "required": required, "additionalProperties": false})
 }
 
+/// The parameter names command `id` takes, from its schema; `None` for an unknown id or one
+/// whose schema lists no properties.
+fn names(id: &str) -> Option<&'static [String]> {
+    static NAMES: std::sync::OnceLock<std::collections::HashMap<&'static str, Vec<String>>> =
+        std::sync::OnceLock::new();
+    let all = NAMES.get_or_init(|| {
+        crate::registry()
+            .iter()
+            .filter_map(|c| {
+                let props = input_schema(c.id)?.get("properties")?.as_object()?.keys().cloned().collect::<Vec<_>>();
+                Some((c.id, props))
+            })
+            .collect()
+    });
+    all.get(id).map(Vec::as_slice)
+}
+
+/// Refuses a parameter that command `id` does not take, so a misspelt or misplaced one (`y` on
+/// clip.add, which places with clip.set) is not silently dropped; names a close one if there is.
+pub(crate) fn check_names(id: &str, params: &Value) -> Result<(), String> {
+    let (Some(names), Some(given)) = (names(id), params.as_object()) else { return Ok(()) };
+    let Some(odd) = given.keys().find(|k| !names.iter().any(|n| n == *k)) else { return Ok(()) };
+    let close = names.iter().find(|n| n.eq_ignore_ascii_case(odd) || n.replace('_', "") == odd.replace('_', ""));
+    let hint = match close {
+        Some(n) => format!("; did you mean `{n}`?"),
+        None if names.is_empty() => "; it takes none".to_string(),
+        None => format!("; it takes {}", names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")),
+    };
+    Err(format!("{id} has no parameter `{odd}`{hint}"))
+}
+
 /// The JSON Schema of command `id`'s parameters, or `None` for an unknown id.
 pub fn input_schema(id: &str) -> Option<Value> {
     let clip = || ("clip", ident("Clip id, such as c4."));
     Some(match id {
-        "commands.list" | "project.inspect" | "project.new" | "edit.undo" | "edit.redo" | "title.templates"
-        | "sound.library" | "timeline.list" | "fx.list" | "sticker.library" | "voice.list" | "template.list"
-        | "template.slots" | "promo.list" => object(vec![], &[]),
+        "commands.list" | "project.inspect" | "project.outline" | "project.new" | "edit.undo" | "edit.redo"
+        | "title.templates" | "sound.library" | "timeline.list" | "fx.list" | "sticker.library" | "voice.list"
+        | "template.list" | "template.slots" | "promo.list" => object(vec![], &[]),
         "sound.add" => object(
             vec![
                 (
@@ -437,7 +468,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
             let mut props = vec![
                 ("track", ident("Track id, such as t1 (project.inspect lists them).")),
                 ("start", time("Timeline start; the end of the track by default.")),
-                ("duration", time("Timeline length; the media's remaining length, or 3 s, by default.")),
+                ("duration", time("Timeline length; the media's remaining length, or 5 s, by default.")),
                 ("media", ident("Media id (from media.import) for a video, image or audio clip.")),
                 ("sourceIn", time("Where in the media the clip starts.")),
                 (
@@ -459,6 +490,15 @@ pub fn input_schema(id: &str) -> Option<Value> {
                     ),
                 ),
                 ("fx", fx("Picture effects the clip starts with.")),
+                ("x", num("Horizontal offset as a share of the canvas width; 0 (centred) by default.")),
+                ("y", num("Vertical offset as a share of the canvas height; 0 is centred, positive is down.")),
+                ("scale", num("Size; 1 fits the canvas (a sticker starts at 0.35).")),
+                ("rotation", num("Clockwise, degrees.")),
+                (
+                    "opacity",
+                    json!({"type": "number", "minimum": 0, "maximum": 1, "description": "Opacity; 1 by default."}),
+                ),
+                ("volumeDb", num("Gain in dB; 0 is unchanged.")),
                 (
                     "shape",
                     shape_schema(
@@ -1148,8 +1188,8 @@ pub fn input_schema(id: &str) -> Option<Value> {
                     "steps",
                     json!({
                         "type": "array",
-                        "description": "Commands to run in order; if any fails, none applies.",
-                        "items": {"type": "object", "properties": {"id": {"type": "string"}, "params": {"type": "object"}}, "required": ["id"]}
+                        "description": "Commands to run in order; if any fails, none applies. A parameter written \"${n.field}\" is what step n (from 0) replied there: \"${0.clip}\" is the clip step 0 added.",
+                        "items": {"type": "object", "properties": {"id": {"type": "string", "description": "A command id, such as clip.add."}, "params": {"type": "object"}}, "required": ["id"]}
                     }),
                 ),
                 ("label", json!({"type": "string", "description": "Undo label."})),

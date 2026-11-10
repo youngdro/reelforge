@@ -14,7 +14,7 @@ pub mod mcp;
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use reelforge_engine::{EngineError, Session, SharedSession, input_schema, listen, parse_time, registry};
 use reelforge_media::{Footage, Renderer};
@@ -84,6 +84,7 @@ pub struct Op {
 const RENDER_FRAME: &str = "render.frame";
 const RENDER_EXPORT: &str = "render.export";
 const PROJECT_SAVE: &str = "project.save";
+const RENDER_JOBS: &str = "render.jobs";
 const CAPTIONS_TRANSCRIBE: &str = "captions.transcribe";
 const VOICE_SPEAK: &str = "voice.speak";
 
@@ -126,9 +127,22 @@ pub fn ops() -> Vec<Op> {
             "properties": {
                 "path": {"type": "string", "description": "Where to write the file on the server; relative paths are beside the project."},
                 "format": {"enum": ["mp4", "gif", "m4a", "wav"], "description": "The kind of file for this export, whatever the project's export settings say."},
-                "renderer": {"enum": ["auto", "cpu", "gpu"], "description": "What draws the frames; the GPU when there is one by default."}
+                "renderer": {"enum": ["auto", "cpu", "gpu"], "description": "What draws the frames; the GPU when there is one by default."},
+                "wait": {"type": "boolean", "description": "true (the default) answers when the file is written. false answers at once with a `job` to follow with render.jobs, for an export longer than the client waits for a reply (often 60 s)."}
             },
             "required": ["path"],
+            "additionalProperties": false
+        }),
+        read_only: true,
+        destructive: false,
+    });
+    out.push(Op {
+        name: RENDER_JOBS,
+        title: "Export Jobs",
+        doc: "The exports started with `wait: false`, newest first, or only `job`: each one's file, `state` (running, done or failed), frames `done` of `total`, and when done what render.export would have answered (or, failed, why).".into(),
+        schema: json!({
+            "type": "object",
+            "properties": {"job": {"type": "string", "description": "One job, such as e1; every one by default."}},
             "additionalProperties": false
         }),
         read_only: true,
@@ -209,7 +223,9 @@ pub fn tool_name(op: &str) -> String {
 /// One shared session, its media and its file.
 pub struct Hub {
     shared: Arc<SharedSession>,
-    footage: Footage,
+    footage: Arc<Footage>,
+    /// Exports running or done in the background (`render.export` with `wait: false`), oldest first.
+    jobs: Arc<Mutex<Vec<Job>>>,
     file: Option<PathBuf>,
     /// Where files clients send are kept: `media/` beside the project file, or a temporary folder.
     media_dir: PathBuf,
@@ -251,7 +267,8 @@ impl Hub {
         let speech = reelforge_speech::Recogniser::new(reelforge_speech::default_model_dir());
         Ok(Hub {
             shared,
-            footage: Footage::new(),
+            footage: Arc::new(Footage::new()),
+            jobs: Arc::default(),
             file,
             media_dir,
             speech,
@@ -336,9 +353,11 @@ impl Hub {
         if !params.is_object() {
             return Err(CallError::Failed("parameters must be a JSON object".into()));
         }
+        check_names(&op, params)?;
         match op.name {
             RENDER_FRAME => self.frame(params),
             RENDER_EXPORT => self.export(params),
+            RENDER_JOBS => self.jobs(params),
             CAPTIONS_TRANSCRIBE => self.transcribe(params, by),
             VOICE_SPEAK => self.speak(params, by),
             PROJECT_SAVE => {
@@ -395,7 +414,7 @@ impl Hub {
         let t = fps.snap(at);
         let quality = if draft { Quality::Draft } else { Quality::Final };
         let (img, report) =
-            render_frame(&spec, t, scale, &self.footage, quality).map_err(|e| CallError::Failed(e.to_string()))?;
+            render_frame(&spec, t, scale, &*self.footage, quality).map_err(|e| CallError::Failed(e.to_string()))?;
         let mut png = Vec::new();
         image::write_buffer_with_format(
             &mut Cursor::new(&mut png),
@@ -502,6 +521,10 @@ impl Hub {
             "gpu" => Renderer::Gpu,
             other => return Err(CallError::Failed(format!("`renderer` must be auto, cpu or gpu, not {other:?}"))),
         };
+        let wait = match params.get("wait") {
+            None | Some(Value::Null) => true,
+            Some(v) => v.as_bool().ok_or_else(|| CallError::Failed("`wait` must be true or false".into()))?,
+        };
         let mut project = (*self.shared.project()).clone();
         if let Some(f) = params.get("format") {
             project.export.format = f
@@ -509,43 +532,157 @@ impl Hub {
                 .and_then(reelforge_model::export::Format::parse)
                 .ok_or_else(|| CallError::Failed("`format` must be mp4, gif, m4a or wav".into()))?;
         }
-        let spec = reelforge_compile::compile(&project, &reelforge_compile::CompileOptions { encode: true })
-            .map_err(|e| CallError::Failed(e.to_string()))?;
         let out = self.resolve(path);
-        let tmp = part_of(&out);
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp)
-            .map_err(|e| CallError::Failed(format!("cannot write {}: {e}", tmp.display())))?;
-        let started = std::time::Instant::now();
-        let result = reelforge_media::export_with(&spec, &self.footage, file, renderer, &mut |_| true);
-        let stats = match result {
-            Ok((_, stats)) => stats,
-            Err(e) => {
-                let _ = std::fs::remove_file(&tmp);
-                return Err(CallError::Failed(e.to_string()));
+        if wait {
+            return export_file(&project, &self.footage, &out, renderer, &mut |_| ()).map(Output::Json);
+        }
+        let mut jobs = self.jobs.lock().expect("jobs");
+        if jobs.iter().any(|j| j.path == out && j.state == JobState::Running) {
+            return Err(CallError::Failed(format!("{} is already being exported", out.display())));
+        }
+        let id = format!("e{}", jobs.len() + 1);
+        jobs.push(Job {
+            id: id.clone(),
+            path: out.clone(),
+            state: JobState::Running,
+            done: 0,
+            total: 0,
+            reply: Value::Null,
+        });
+        drop(jobs);
+        let (all, footage) = (self.jobs.clone(), self.footage.clone());
+        let job = id.clone();
+        let update = move |f: &mut dyn FnMut(&mut Job)| {
+            if let Some(j) = all.lock().expect("jobs").iter_mut().find(|j| j.id == job) {
+                f(j);
             }
         };
-        std::fs::rename(&tmp, &out).map_err(|e| CallError::Failed(format!("cannot write {}: {e}", out.display())))?;
-        let cover = if project.export.format.pictured() {
-            write_cover(&project, &self.footage, &out).map_err(CallError::Failed)?
-        } else {
-            None
-        };
-        Ok(Output::Json(json!({
-            "path": out,
-            "format": project.export.format.name(),
-            "cover": cover,
-            "frames": stats.frames,
-            "audioSamples": stats.audio_samples,
-            "renderer": stats.renderer,
-            "encoder": stats.encoder,
-            "seconds": started.elapsed().as_secs_f64(),
-        })))
+        std::thread::spawn(move || {
+            let result = export_file(&project, &footage, &out, renderer, &mut |p| {
+                update(&mut |j| (j.done, j.total) = (p.done, p.total));
+            });
+            update(&mut |j| match &result {
+                Ok(reply) => (j.state, j.reply) = (JobState::Done, reply.clone()),
+                Err(e) => (j.state, j.reply) = (JobState::Failed, json!(e.to_string())),
+            });
+        });
+        Ok(Output::Json(json!({"job": id, "state": "running", "path": self.resolve(path)})))
     }
+
+    fn jobs(&self, params: &Value) -> Result<Output, CallError> {
+        let jobs = self.jobs.lock().expect("jobs");
+        let one = params.get("job").and_then(Value::as_str);
+        if let Some(id) = one.filter(|id| !jobs.iter().any(|j| j.id == *id)) {
+            return Err(CallError::Failed(format!("no export job {id:?}")));
+        }
+        let list: Vec<Value> =
+            jobs.iter().rev().filter(|j| one.is_none_or(|id| j.id == id)).map(Job::to_json).collect();
+        Ok(Output::Json(match one {
+            Some(_) => list.into_iter().next().expect("found above"),
+            None => json!({"jobs": list}),
+        }))
+    }
+}
+
+/// An export started with `wait: false`.
+struct Job {
+    id: String,
+    path: PathBuf,
+    state: JobState,
+    done: u64,
+    total: u64,
+    /// When done, what a waiting export answers; when failed, why.
+    reply: Value,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JobState {
+    Running,
+    Done,
+    Failed,
+}
+
+impl Job {
+    fn to_json(&self) -> Value {
+        let state = match self.state {
+            JobState::Running => "running",
+            JobState::Done => "done",
+            JobState::Failed => "failed",
+        };
+        let mut v = json!({"job": self.id, "path": self.path, "state": state, "done": self.done, "total": self.total});
+        match self.state {
+            JobState::Running => {}
+            JobState::Done => v["result"] = self.reply.clone(),
+            JobState::Failed => v["error"] = self.reply.clone(),
+        }
+        v
+    }
+}
+
+/// Refuses a parameter operation `op` does not take (its schema lists what it does), so a
+/// misspelt one is not silently dropped.
+fn check_names(op: &Op, params: &Value) -> Result<(), CallError> {
+    let (Some(names), Some(given)) = (op.schema.get("properties").and_then(Value::as_object), params.as_object())
+    else {
+        return Ok(());
+    };
+    match given.keys().find(|k| !names.contains_key(*k)) {
+        None => Ok(()),
+        Some(odd) => {
+            let list: Vec<String> = names.keys().map(|n| format!("`{n}`")).collect();
+            let takes = if list.is_empty() { "none".to_string() } else { list.join(", ") };
+            Err(CallError::Failed(format!("{} has no parameter `{odd}`; it takes {takes}", op.name)))
+        }
+    }
+}
+
+/// Exports `project` to `out` (through a `.part` file beside it), calling `progress` as frames are
+/// written, and writes the cover beside a video; answers what `render.export` replies.
+fn export_file(
+    project: &Project,
+    footage: &Footage,
+    out: &Path,
+    renderer: Renderer,
+    progress: &mut dyn FnMut(reelforge_media::Progress),
+) -> Result<Value, CallError> {
+    let spec = reelforge_compile::compile(project, &reelforge_compile::CompileOptions { encode: true })
+        .map_err(|e| CallError::Failed(e.to_string()))?;
+    let tmp = part_of(out);
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&tmp)
+        .map_err(|e| CallError::Failed(format!("cannot write {}: {e}", tmp.display())))?;
+    let started = std::time::Instant::now();
+    let result = reelforge_media::export_with(&spec, footage, file, renderer, &mut |p| {
+        progress(p);
+        true
+    });
+    let stats = match result {
+        Ok((_, stats)) => stats,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(CallError::Failed(e.to_string()));
+        }
+    };
+    std::fs::rename(&tmp, out).map_err(|e| CallError::Failed(format!("cannot write {}: {e}", out.display())))?;
+    let cover = if project.export.format.pictured() {
+        write_cover(project, footage, out).map_err(CallError::Failed)?
+    } else {
+        None
+    };
+    Ok(json!({
+        "path": out,
+        "format": project.export.format.name(),
+        "cover": cover,
+        "frames": stats.frames,
+        "audioSamples": stats.audio_samples,
+        "renderer": stats.renderer,
+        "encoder": stats.encoder,
+        "seconds": started.elapsed().as_secs_f64(),
+    }))
 }
 
 /// Where an export is written until it is whole: `path` with `.part` after its name.
