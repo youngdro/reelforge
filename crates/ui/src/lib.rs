@@ -167,9 +167,11 @@ pub struct EditorApp {
     preview: Option<egui::TextureHandle>,
     /// The frame far out of focus, when it is drawn without the GPU compositor (which has its own).
     preview_glow: Option<egui::TextureHandle>,
+    /// The frame drawn without the GPU as frosted glass shows it ([`theme::frosted`]).
+    preview_frost: Option<egui::TextureHandle>,
     preview_key: Option<PreviewKey>,
     /// The picture far out of focus and where the picture was drawn last: what lights the stage.
-    lit: Option<(egui::TextureId, egui::Rect)>,
+    lit: Option<theme::Lit>,
     /// The RenderSpec the preview draws, and the revision and gesture it was compiled for: a
     /// playing preview compiles once, not every frame.
     preview_spec: Option<((u64, Moving), Option<Spec>)>,
@@ -248,6 +250,9 @@ struct GpuPreview {
     /// The compositor's glow (the frame far out of focus), registered once: it is one texture
     /// for every frame.
     glow: Option<egui::TextureId>,
+    /// The compositor's frost (the frame as frosted glass shows it), registered once like the
+    /// glow.
+    frost: Option<egui::TextureId>,
 }
 
 impl GpuPreview {
@@ -277,6 +282,13 @@ impl GpuPreview {
             let view = glow.create_view(&Default::default());
             let filter = eframe::wgpu::FilterMode::Linear;
             self.glow = Some(self.renderer.write().register_native_texture(&self.device, &view, filter));
+        }
+        if let Some(frost) = self.compositor.frost()
+            && self.frost.is_none()
+        {
+            let view = frost.create_view(&Default::default());
+            let filter = eframe::wgpu::FilterMode::Linear;
+            self.frost = Some(self.renderer.write().register_native_texture(&self.device, &view, filter));
         }
     }
 }
@@ -459,6 +471,7 @@ impl EditorApp {
             status: String::new(),
             preview: None,
             preview_glow: None,
+            preview_frost: None,
             preview_key: None,
             lit: None,
             preview_spec: None,
@@ -568,6 +581,7 @@ impl EditorApp {
                     device: rs.device.clone(),
                     texture: None,
                     glow: None,
+                    frost: None,
                 });
             }
         }
@@ -2878,7 +2892,7 @@ impl EditorApp {
         }
         // in quickly, out slowly
         let shown = ((age / 0.16).min(1.0) * ((STAYS - age) / 0.5).min(1.0)) as f32;
-        let middle = self.lit.map_or(ctx.content_rect().center().x, |(_, frame)| frame.center().x);
+        let middle = self.lit.map_or(ctx.content_rect().center().x, |lit| lit.frame.center().x);
         let (glyph, tint) =
             if *warn { (icon::WARNING, theme::color::WARN) } else { (icon::DONE, theme::color::ACCENT_2) };
         egui::Area::new(egui::Id::unique("toast"))
@@ -3196,7 +3210,10 @@ impl EditorApp {
                     commit |= r.lost_focus();
                     egui::Grid::new("title").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
                         theme::field_name(ui, s.font);
-                        ui.horizontal(|ui| {
+                        // right to left, so the list takes exactly what the button leaves: a row
+                        // that asks for more than there is widens the panel, frame after frame
+                        let room = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+                        ui.allocate_ui_with_layout(room, egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let fonts: Vec<(&str, &str)> = p
                                 .media
                                 .values()
@@ -3209,9 +3226,11 @@ impl EditorApp {
                                 .and_then(|f| fonts.iter().find(|(id, _)| *id == f))
                                 .map_or(s.font_default, |(_, name)| *name);
                             let was = t.font.clone();
+                            pick_font |= ui.button(icon::ADD).on_hover_text(s.font_import).clicked();
                             egui::ComboBox::from_id_salt("font")
                                 .selected_text(shown)
-                                .width(ui.available_width() - 40.0)
+                                .width(ui.available_width())
+                                .truncate()
                                 .show_ui(ui, |ui| {
                                     ui.selectable_value(&mut t.font, None, s.font_default);
                                     for (fid, name) in &fonts {
@@ -3219,7 +3238,6 @@ impl EditorApp {
                                     }
                                 });
                             commit |= t.font != was;
-                            pick_font |= ui.button(icon::ADD).on_hover_text(s.font_import).clicked();
                         });
                         ui.end_row();
                         commit |= row(ui, s.size, &mut t.size, 1.0, 8.0..=600.0, " px");
@@ -3227,12 +3245,12 @@ impl EditorApp {
                         commit |= row(ui, s.tracking, &mut t.tracking, 1.0, lo * 100.0..=hi * 100.0, " %");
                         commit |= row(ui, s.leading, &mut t.leading, 1.0, lo * 100.0..=hi * 100.0, " %");
                     });
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         commit |= ui.toggle_value(&mut t.bold, s.bold).changed();
                         commit |= ui.toggle_value(&mut t.italic, s.italic).changed();
                         commit |= ui.toggle_value(&mut t.underline, s.underline).changed();
                     });
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         commit |= ui.toggle_value(&mut t.outline, s.outline).changed();
                         commit |= ui.toggle_value(&mut t.boxed, s.boxed).changed();
                         commit |= ui.toggle_value(&mut t.shadow, s.shadowed).changed();
@@ -4167,8 +4185,14 @@ impl EditorApp {
         }
     }
 
-    fn preview(&mut self, ui: &mut egui::Ui) {
+    fn preview(&mut self, ui: &mut egui::Ui, edge: f32) {
         self.lit = None;
+        // the picture is fitted above the transport, which floats over the bottom of the stage
+        let stage = ui.available_rect_before_wrap();
+        let area = egui::Rect::from_min_max(
+            stage.min + egui::vec2(edge, edge),
+            stage.max - egui::vec2(edge, edge + TRANSPORT_ROOM),
+        );
         let mut p = self.project();
         // a gesture in progress is drawn from a copy with the clip's new placement
         if let Some(g) = &self.gesture
@@ -4212,7 +4236,6 @@ impl EditorApp {
         let revision = self.session.revision();
         let long = p.canvas.width.max(p.canvas.height) as f32;
         // as many pixels as the frame covers on this screen
-        let area = ui.available_rect_before_wrap();
         let fit = (area.width() / p.canvas.width.max(1) as f32).min(area.height() / p.canvas.height.max(1) as f32);
         let on_screen = long * fit * self.zoom * ui.ctx().pixels_per_point();
         let mut scale = preview_scale(long, on_screen, self.gpu.is_some(), self.playing, self.full_quality);
@@ -4292,6 +4315,14 @@ impl EditorApp {
                             Some(ui.ctx().load_texture("preview glow", glow, egui::TextureOptions::LINEAR));
                     }
                 }
+                let frost = theme::frosted(&color);
+                match &mut self.preview_frost {
+                    Some(t) => t.set(frost, egui::TextureOptions::LINEAR),
+                    None => {
+                        self.preview_frost =
+                            Some(ui.ctx().load_texture("preview frost", frost, egui::TextureOptions::LINEAR));
+                    }
+                }
                 match &mut self.preview {
                     Some(t) => t.set(color, egui::TextureOptions::LINEAR),
                     None => self.preview = Some(ui.ctx().load_texture("preview", color, egui::TextureOptions::LINEAR)),
@@ -4300,33 +4331,47 @@ impl EditorApp {
             self.preview.as_ref().map(|t| (t.id(), t.size().map(|v| v as f32)))
         };
         let Some((id, [w, h])) = shown else { return };
-        let area = ui.available_rect_before_wrap();
-        let response = ui.allocate_rect(area, egui::Sense::click_and_drag());
-        // Ctrl + wheel (or a pinch) zooms around the pointer; the middle button pans
+        let response = ui.allocate_rect(stage, egui::Sense::click_and_drag());
+        // Ctrl + wheel (or a pinch) zooms around the pointer; the wheel alone, two fingers on a
+        // trackpad and the middle button move the picture
+        let mut panning = response.dragged_by(egui::PointerButton::Middle);
         if response.hovered() {
-            let (z, pointer) = ui.input(|i| (i.zoom_delta(), i.pointer.hover_pos()));
+            // (taken, so that nothing else scrolls by what moved the picture)
+            let (z, scroll, pointer) =
+                ui.input_mut(|i| (i.zoom_delta(), std::mem::take(&mut i.smooth_scroll_delta), i.pointer.hover_pos()));
             if z != 1.0 {
                 let zoom = (self.zoom * z).clamp(0.25, 8.0);
                 let at = pointer.unwrap_or(area.center()) - area.center();
                 self.pan = at - (at - self.pan) * (zoom / self.zoom);
                 self.zoom = zoom;
             }
+            self.pan += scroll;
+            panning |= scroll != egui::Vec2::ZERO;
         }
         if response.dragged_by(egui::PointerButton::Middle) {
             self.pan += response.drag_delta();
         }
-        if self.zoom == 1.0 && self.pan.length() < 1.0 {
+        // a fitted picture stays put, but for a move that is under way (a slow one is less than a
+        // point a frame)
+        if self.zoom == 1.0 && self.pan.length() < 1.0 && !panning {
             self.pan = egui::Vec2::ZERO;
         }
         let s = (area.width() / w).min(area.height() / h) * self.zoom;
-        let frame_rect = egui::Rect::from_center_size(area.center() + self.pan, egui::vec2(w * s, h * s));
+        let size = egui::vec2(w * s, h * s);
+        self.pan = held_in_sight(self.pan, size, area.size());
+        let frame_rect = egui::Rect::from_center_size(area.center() + self.pan, size);
         // its light, for the stage around it
         let glow = match &self.gpu {
             Some(g) if g.texture.is_some() => g.glow,
             _ => self.preview_glow.as_ref().map(egui::TextureHandle::id),
         };
-        self.lit = glow.map(|glow| (glow, frame_rect));
-        ui.painter_at(area).image(
+        let frost = match &self.gpu {
+            Some(g) if g.texture.is_some() => g.frost,
+            _ => self.preview_frost.as_ref().map(egui::TextureHandle::id),
+        };
+        self.lit = glow.map(|glow| theme::Lit { glow, frost, frame: frame_rect });
+        // over the whole stage: moved or enlarged, the picture passes behind the transport
+        ui.painter_at(stage).image(
             id,
             frame_rect,
             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
@@ -4601,6 +4646,17 @@ const RECOVERY_DELAY: f64 = 1.0;
 /// held upright, a narrow browser window).
 /// How wide the capsule under the preview gets.
 const TRANSPORT_WIDEST: f32 = 780.0;
+/// The height at the bottom of the stage that the transport floats in: a fitted picture ends
+/// above it.
+const TRANSPORT_ROOM: f32 = 58.0;
+
+/// `pan` (how far the picture's middle is from the middle of its `room`) no further than leaves
+/// some of a picture of `size` in sight.
+fn held_in_sight(pan: egui::Vec2, size: egui::Vec2, room: egui::Vec2) -> egui::Vec2 {
+    const IN_SIGHT: f32 = 64.0;
+    let most = ((size + room) / 2.0 - egui::Vec2::splat(IN_SIGHT)).max(egui::Vec2::ZERO);
+    pan.clamp(-most, most)
+}
 const NARROW_BELOW: f32 = 860.0;
 
 /// What shows under the preview of a narrow window.
@@ -4736,8 +4792,8 @@ impl eframe::App for EditorApp {
         // everything sits on the stage: the bars straight on it, the panels as islands with gaps
         ui.painter().rect_filled(ctx.content_rect(), 0.0, theme::color::STAGE);
         // the picture lights the stage around it (from where it was drawn a frame ago)
-        if let Some((texture, frame)) = self.lit {
-            theme::ambient(ui.painter(), texture, frame, 1.0);
+        if let Some(lit) = self.lit {
+            theme::ambient(ui.painter(), lit.glow, lit.frame, 1.0);
         }
         let bar = |_| egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 6));
         let gap = theme::GAP;
@@ -4815,28 +4871,21 @@ impl eframe::App for EditorApp {
                 egui::Margin { left: gap / 2, right: gap, top: 0, bottom: gap / 2 }
             }))
             .show_collapsible(ui, &mut adjust_on.clone(), |ui| self.inspector(ui));
-        let edge = if narrow { 8 } else { 16 };
-        // the transport is a capsule of glass under the picture, no wider than it needs to be
-        egui::Panel::bottom("transport").exact_size(58.0).show_separator_line(false).frame(egui::Frame::new()).show(
-            ui,
-            |ui| {
-                let room = ui.max_rect();
-                let w = (room.width() - if narrow { 16.0 } else { 48.0 }).min(TRANSPORT_WIDEST);
-                let capsule = egui::Rect::from_center_size(room.center() - egui::vec2(0.0, 4.0), egui::vec2(w, 50.0));
-                ui.painter().rect(
-                    capsule,
-                    egui::CornerRadius::same(25),
-                    theme::color::GLASS,
-                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(34)),
-                    egui::StrokeKind::Inside,
-                );
-                let inner = capsule.shrink2(egui::vec2(18.0, 8.0));
-                ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| self.transport(ui));
-            },
-        );
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().inner_margin(egui::Margin::same(edge)))
-            .show(ui, |ui| self.preview(ui));
+        let edge = if narrow { 8.0 } else { 16.0 };
+        egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
+            let stage = ui.max_rect();
+            self.preview(ui, edge);
+            // the transport is a capsule of glass floating over the bottom of the stage, no wider
+            // than it needs to be: the picture shows through it, frosted
+            let room = stage.with_min_y(stage.bottom() - TRANSPORT_ROOM);
+            let w = (room.width() - if narrow { 16.0 } else { 48.0 }).min(TRANSPORT_WIDEST);
+            let capsule = egui::Rect::from_center_size(room.center() - egui::vec2(0.0, 4.0), egui::vec2(w, 50.0));
+            theme::floating_capsule(ui.painter(), capsule, self.lit);
+            // what is under the glass is not clicked, dragged or scrolled through it
+            ui.interact(capsule, ui.scope_id().with("transport"), egui::Sense::click_and_drag());
+            let inner = capsule.shrink2(egui::vec2(18.0, 8.0));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| self.transport(ui));
+        });
 
         if let Some(t) = out.seek {
             let before = self.playhead;

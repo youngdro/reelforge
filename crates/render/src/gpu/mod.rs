@@ -32,6 +32,12 @@ const PICTURE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 const DISPLAY: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// The side of the [glow](GpuCompositor::glow) in texels (`GLOW_SIDE` in convert.wgsl).
 const GLOW: u32 = 16;
+/// The side of the [frost](GpuCompositor::frost) in texels (`FROST_SIDE` in convert.wgsl).
+const FROST: u32 = 96;
+/// How much of each of the picture's sides the [frost](GpuCompositor::frost) shows around the
+/// picture: the picture is the middle `1 / (1 + 2 * FROST_ROOM)` of it (`FROST_ROOM` in
+/// convert.wgsl).
+pub const FROST_ROOM: f32 = 0.125;
 /// Effects one layer can carry on the GPU (the uniform's array length).
 const MAX_FX: usize = 16;
 /// The `Layer` uniform's length in 32-bit words.
@@ -99,6 +105,9 @@ pub struct GpuCompositor {
     glow_pipeline: wgpu::RenderPipeline,
     glow: wgpu::Texture,
     glow_view: wgpu::TextureView,
+    frost_pipeline: wgpu::RenderPipeline,
+    frost: wgpu::Texture,
+    frost_view: wgpu::TextureView,
     /// Y'CbCr readback; the browser has no blocking readback, so it never reads them.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     luma_pipeline: Option<wgpu::ComputePipeline>,
@@ -383,6 +392,10 @@ impl GpuCompositor {
         let glow =
             texture(&device, "glow", GLOW, GLOW, DISPLAY, U::RENDER_ATTACHMENT | U::TEXTURE_BINDING | U::COPY_SRC);
         let glow_view = glow.create_view(&Default::default());
+        let frost_pipeline = to_display("fs_frost");
+        let frost =
+            texture(&device, "frost", FROST, FROST, DISPLAY, U::RENDER_ATTACHMENT | U::TEXTURE_BINDING | U::COPY_SRC);
+        let frost_view = frost.create_view(&Default::default());
         let compute = adapter_has_compute(&device);
         let compute_pipeline = |entry: &str| {
             compute.then(|| {
@@ -437,6 +450,9 @@ impl GpuCompositor {
             glow_pipeline,
             glow,
             glow_view,
+            frost_pipeline,
+            frost,
+            frost_view,
             luma_pipeline,
             chroma_pipeline,
             no_picture,
@@ -751,6 +767,16 @@ impl GpuCompositor {
         let frame = self.frame.as_ref()?;
         self.draw_working(&self.glow_pipeline, frame, &self.glow_view, "glow");
         Some(&self.glow)
+    }
+
+    /// The last frame as frosted glass over it shows it: the picture blurred, with
+    /// [`FROST_ROOM`] of its sides around it where its light ends, as sRGB with premultiplied
+    /// alpha. For glass that floats over the picture in the editor, which registers the texture
+    /// once: it is the same one for every frame.
+    pub fn frost(&self) -> Option<&wgpu::Texture> {
+        let frame = self.frame.as_ref()?;
+        self.draw_working(&self.frost_pipeline, frame, &self.frost_view, "frost");
+        Some(&self.frost)
     }
 
     /// Converts the working picture into the display texture with `display_pipelines[which]`.
