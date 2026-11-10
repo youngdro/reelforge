@@ -53,6 +53,8 @@ mod round_trip {
                 flip_x: false,
                 flip_y: false,
                 shape_mask: None,
+                crop_keys: None,
+                shape_mask_keys: None,
             });
         }
         s

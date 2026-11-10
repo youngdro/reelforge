@@ -13,9 +13,10 @@ use reelforge_model::{
     TrackKind, TransitionKind,
 };
 use reelforge_renderspec::{
-    Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Blend, Color, Crop, Ease, Effect, Fit, Key,
-    Layer, LayerContent, MaskShape, Output, Probe, RenderSpec, ShapeMask, SpeedKey, TextAlign, TextBackground,
-    TextContent, TextShadow, TextStroke, TimeMap, Transform, VideoCodec, VideoEncoding, effects, validate,
+    Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Blend, Color, Crop, CropKeys, Ease, Effect, Fit,
+    Key, Layer, LayerContent, MaskShape, Output, Probe, RenderSpec, ShapeMask, ShapeMaskKeys, SpeedKey, TextAlign,
+    TextBackground, TextContent, TextShadow, TextStroke, TimeMap, Transform, VideoCodec, VideoEncoding, effects,
+    validate,
 };
 use reelforge_time::Tick;
 use thiserror::Error;
@@ -170,6 +171,7 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
             if picture {
                 let shape = shape(clip, cuts[i], cuts.get(i + 1).copied().flatten());
                 let media = matches!(clip.content, ClipContent::Media { .. });
+                let crop_keyed = Prop::CROP.iter().any(|p| clip.keyed(*p));
                 let content = match &clip.content {
                     ClipContent::Media { media, .. } => LayerContent::Media {
                         asset: asset_for(media)?,
@@ -213,7 +215,7 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                 };
                 // a blurred copy filling the frame behind it
                 if let (Some(amount), LayerContent::Media { asset, time, .. }) = (clip.look.backdrop, &content) {
-                    let mut fx = color_fx(clip, &mut asset_for)?;
+                    let mut fx = color_fx(clip, &shape, step, &mut asset_for)?;
                     fx.push(Effect {
                         id: effects::BLUR.into(),
                         params: [(
@@ -236,6 +238,8 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                         flip_x: clip.look.flip_x,
                         flip_y: clip.look.flip_y,
                         shape_mask: None,
+                        crop_keys: None,
+                        shape_mask_keys: None,
                         fx,
                     });
                 }
@@ -252,15 +256,27 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                     opacity: motion::lower(clip, Prop::Opacity, &shape, step),
                     blend: blend(clip.look.blend),
                     mask: None,
-                    crop: (media && !clip.look.crop.is_zero()).then(|| {
+                    crop: (media && !crop_keyed && !clip.look.crop.is_zero()).then(|| {
                         let c = clip.look.crop;
                         Crop { left: c.left, top: c.top, right: c.right, bottom: c.bottom }
                     }),
                     flip_x: media && clip.look.flip_x,
                     flip_y: media && clip.look.flip_y,
                     shape_mask: clip.look.mask.map(shape_mask),
+                    crop_keys: (media && crop_keyed).then(|| {
+                        let [left, top, right, bottom] = Prop::CROP.map(|p| motion::lower(clip, p, &shape, step));
+                        CropKeys { left, top, right, bottom }
+                    }),
+                    shape_mask_keys: (clip.look.mask.is_some() && Prop::MASK.iter().any(|p| clip.keyed(*p))).then(
+                        || ShapeMaskKeys {
+                            center: motion::lower_pair(clip, [Prop::MaskX, Prop::MaskY], &shape, step),
+                            size: motion::lower_pair(clip, [Prop::MaskWidth, Prop::MaskHeight], &shape, step),
+                            rotation: motion::lower(clip, Prop::MaskRotation, &shape, step),
+                            feather: motion::lower(clip, Prop::MaskFeather, &shape, step),
+                        },
+                    ),
                     fx: {
-                        let mut fx = color_fx(clip, &mut asset_for)?;
+                        let mut fx = color_fx(clip, &shape, step, &mut asset_for)?;
                         fx.extend(clip.effects.iter().map(|e| Effect {
                             id: e.id.clone(),
                             params: e.params.iter().map(|(k, v)| (k.clone(), Animated::Constant(*v))).collect(),
@@ -291,6 +307,8 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                         flip_x: false,
                         flip_y: false,
                         shape_mask: None,
+                        crop_keys: None,
+                        shape_mask_keys: None,
                     });
                 }
             }
@@ -330,6 +348,8 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
 /// A clip's colour as effects: its filter, its lookup table, then its own adjustments.
 fn color_fx(
     clip: &Clip,
+    shape: &Shape,
+    step: Tick,
     asset_for: &mut impl FnMut(&str) -> Result<String, CompileError>,
 ) -> Result<Vec<Effect>, CompileError> {
     let grade = |a: Adjust| Effect {
@@ -354,7 +374,20 @@ fn color_fx(
             asset: Some(asset_for(&l.media)?),
         });
     }
-    if !c.adjust.is_zero() {
+    let keyed = Prop::ADJUST.iter().any(|p| clip.keyed(*p));
+    if keyed {
+        // the adjustments with keyframes move; the others are as constant as ever
+        fx.push(Effect {
+            id: effects::GRADE.into(),
+            params: Adjust::RANGES
+                .iter()
+                .zip(Prop::ADJUST)
+                .filter(|(_, p)| clip.keyed(*p) || clip.base(*p) != 0.0)
+                .map(|((name, ..), p)| (name.to_string(), motion::lower(clip, p, shape, step)))
+                .collect(),
+            asset: None,
+        });
+    } else if !c.adjust.is_zero() {
         fx.push(grade(c.adjust));
     }
     Ok(fx)

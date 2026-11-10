@@ -105,6 +105,8 @@ fn layer(id: &str, content: LayerContent) -> Layer {
         flip_x: false,
         flip_y: false,
         shape_mask: None,
+        crop_keys: None,
+        shape_mask_keys: None,
     }
 }
 

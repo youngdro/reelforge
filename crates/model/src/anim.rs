@@ -29,13 +29,96 @@ pub enum Prop {
     Opacity,
     /// Gain in dB.
     VolumeDb,
+    /// The crop: the share cut off the picture's left edge.
+    CropLeft,
+    /// The share cut off the top.
+    CropTop,
+    /// The share cut off the right.
+    CropRight,
+    /// The share cut off the bottom.
+    CropBottom,
+    /// The mask's centre across the picture, 0 to 1.
+    MaskX,
+    /// The mask's centre down the picture, 0 to 1.
+    MaskY,
+    /// The mask's width, in units of the picture's shorter side.
+    MaskWidth,
+    /// The mask's height.
+    MaskHeight,
+    /// The mask's turn, degrees clockwise.
+    MaskRotation,
+    /// The mask's soft edge.
+    MaskFeather,
+    /// The colour adjustments, as [`crate::Adjust`] names them.
+    Exposure,
+    /// See [`crate::Adjust`].
+    Contrast,
+    /// See [`crate::Adjust`].
+    Saturation,
+    /// See [`crate::Adjust`].
+    Temperature,
+    /// See [`crate::Adjust`].
+    Tint,
+    /// See [`crate::Adjust`].
+    Highlights,
+    /// See [`crate::Adjust`].
+    Shadows,
+    /// See [`crate::Adjust`].
+    Fade,
+    /// See [`crate::Adjust`].
+    Vignette,
 }
 
 impl Prop {
-    /// Every property, in inspector order.
-    pub const ALL: [Prop; 6] = [Prop::X, Prop::Y, Prop::Scale, Prop::Rotation, Prop::Opacity, Prop::VolumeDb];
+    /// Where and how loud: what `clip.set` sets, in inspector order.
+    pub const MOTION: [Prop; 6] = [Prop::X, Prop::Y, Prop::Scale, Prop::Rotation, Prop::Opacity, Prop::VolumeDb];
+    /// The crop's edges: left, top, right, bottom.
+    pub const CROP: [Prop; 4] = [Prop::CropLeft, Prop::CropTop, Prop::CropRight, Prop::CropBottom];
+    /// The mask: centre, size, turn, soft edge.
+    pub const MASK: [Prop; 6] =
+        [Prop::MaskX, Prop::MaskY, Prop::MaskWidth, Prop::MaskHeight, Prop::MaskRotation, Prop::MaskFeather];
+    /// The colour adjustments, in [`crate::Adjust::RANGES`] order.
+    pub const ADJUST: [Prop; 9] = [
+        Prop::Exposure,
+        Prop::Contrast,
+        Prop::Saturation,
+        Prop::Temperature,
+        Prop::Tint,
+        Prop::Highlights,
+        Prop::Shadows,
+        Prop::Fade,
+        Prop::Vignette,
+    ];
+    /// Every property.
+    pub const ALL: [Prop; 25] = [
+        Prop::X,
+        Prop::Y,
+        Prop::Scale,
+        Prop::Rotation,
+        Prop::Opacity,
+        Prop::VolumeDb,
+        Prop::CropLeft,
+        Prop::CropTop,
+        Prop::CropRight,
+        Prop::CropBottom,
+        Prop::MaskX,
+        Prop::MaskY,
+        Prop::MaskWidth,
+        Prop::MaskHeight,
+        Prop::MaskRotation,
+        Prop::MaskFeather,
+        Prop::Exposure,
+        Prop::Contrast,
+        Prop::Saturation,
+        Prop::Temperature,
+        Prop::Tint,
+        Prop::Highlights,
+        Prop::Shadows,
+        Prop::Fade,
+        Prop::Vignette,
+    ];
 
-    /// The name commands use (`x`, `volumeDb`…).
+    /// The name commands use (`x`, `volumeDb`, `cropLeft`, `maskX`, `exposure`…).
     pub fn name(self) -> &'static str {
         match self {
             Prop::X => "x",
@@ -44,12 +127,50 @@ impl Prop {
             Prop::Rotation => "rotation",
             Prop::Opacity => "opacity",
             Prop::VolumeDb => "volumeDb",
+            Prop::CropLeft => "cropLeft",
+            Prop::CropTop => "cropTop",
+            Prop::CropRight => "cropRight",
+            Prop::CropBottom => "cropBottom",
+            Prop::MaskX => "maskX",
+            Prop::MaskY => "maskY",
+            Prop::MaskWidth => "maskWidth",
+            Prop::MaskHeight => "maskHeight",
+            Prop::MaskRotation => "maskRotation",
+            Prop::MaskFeather => "maskFeather",
+            Prop::Exposure => "exposure",
+            Prop::Contrast => "contrast",
+            Prop::Saturation => "saturation",
+            Prop::Temperature => "temperature",
+            Prop::Tint => "tint",
+            Prop::Highlights => "highlights",
+            Prop::Shadows => "shadows",
+            Prop::Fade => "fade",
+            Prop::Vignette => "vignette",
         }
     }
 
     /// The property a command names.
     pub fn parse(name: &str) -> Option<Prop> {
         Prop::ALL.into_iter().find(|p| p.name() == name)
+    }
+
+    /// The values a key of this property may take, where they are bounded.
+    pub fn range(self) -> Option<(f32, f32)> {
+        if let Some(i) = Prop::ADJUST.iter().position(|p| *p == self) {
+            let (_, lo, hi) = crate::Adjust::RANGES[i];
+            return Some((lo, hi));
+        }
+        match self {
+            Prop::Opacity => Some((0.0, 1.0)),
+            p if Prop::CROP.contains(&p) => Some((0.0, 0.98)),
+            Prop::MaskWidth | Prop::MaskHeight | Prop::MaskFeather => Some((0.0, f32::MAX)),
+            _ => None,
+        }
+    }
+
+    /// Whether in and out animations and transitions never touch it: it is lowered key for key.
+    pub fn plain(self) -> bool {
+        !Prop::MOTION.contains(&self)
     }
 }
 
@@ -261,7 +382,7 @@ impl Offset {
             Prop::Scale => base * self.scale,
             Prop::Rotation => base + self.rotation,
             Prop::Opacity => base * self.opacity,
-            Prop::VolumeDb => base,
+            _ => base,
         }
     }
 }
@@ -334,6 +455,20 @@ impl Clip {
             Prop::Rotation => self.transform.rotation,
             Prop::Opacity => self.opacity,
             Prop::VolumeDb => self.volume_db,
+            Prop::CropLeft => self.look.crop.left,
+            Prop::CropTop => self.look.crop.top,
+            Prop::CropRight => self.look.crop.right,
+            Prop::CropBottom => self.look.crop.bottom,
+            Prop::MaskX => self.look.mask.map_or(0.5, |m| m.center[0]),
+            Prop::MaskY => self.look.mask.map_or(0.5, |m| m.center[1]),
+            Prop::MaskWidth => self.look.mask.map_or(0.5, |m| m.size[0]),
+            Prop::MaskHeight => self.look.mask.map_or(0.5, |m| m.size[1]),
+            Prop::MaskRotation => self.look.mask.map_or(0.0, |m| m.rotation),
+            Prop::MaskFeather => self.look.mask.map_or(0.0, |m| m.feather),
+            p => {
+                let i = Prop::ADJUST.iter().position(|a| *a == p).expect("every other property is an adjustment");
+                self.color.adjust.values()[i]
+            }
         }
     }
 
@@ -346,7 +481,51 @@ impl Clip {
             Prop::Rotation => self.transform.rotation = v,
             Prop::Opacity => self.opacity = v,
             Prop::VolumeDb => self.volume_db = v,
+            Prop::CropLeft => self.look.crop.left = v,
+            Prop::CropTop => self.look.crop.top = v,
+            Prop::CropRight => self.look.crop.right = v,
+            Prop::CropBottom => self.look.crop.bottom = v,
+            // a clip without a mask has none of its values to set
+            Prop::MaskX | Prop::MaskY | Prop::MaskWidth | Prop::MaskHeight | Prop::MaskRotation | Prop::MaskFeather => {
+                if let Some(m) = &mut self.look.mask {
+                    match p {
+                        Prop::MaskX => m.center[0] = v,
+                        Prop::MaskY => m.center[1] = v,
+                        Prop::MaskWidth => m.size[0] = v,
+                        Prop::MaskHeight => m.size[1] = v,
+                        Prop::MaskRotation => m.rotation = v,
+                        _ => m.feather = v,
+                    }
+                }
+            }
+            p => {
+                let i = Prop::ADJUST.iter().position(|a| *a == p).expect("every other property is an adjustment");
+                let mut values = self.color.adjust.values();
+                values[i] = v;
+                self.color.adjust = crate::Adjust::from_values(values);
+            }
         }
+    }
+
+    /// The crop at `t` from the clip's start: left, top, right, bottom, each side's pair kept
+    /// to at most 99 % of the picture however the keys run.
+    pub fn crop_at(&self, t: Tick) -> [f32; 4] {
+        let [l, tp, r, b] = Prop::CROP.map(|p| self.value_at(p, t).clamp(0.0, 0.98));
+        let fit = |a: f32, b: f32| if a + b > 0.99 { (a * 0.99 / (a + b), b * 0.99 / (a + b)) } else { (a, b) };
+        let ((l, r), (tp, b)) = (fit(l, r), fit(tp, b));
+        [l, tp, r, b]
+    }
+
+    /// The mask at `t` from the clip's start, if the clip has one.
+    pub fn mask_at(&self, t: Tick) -> Option<crate::Mask> {
+        let m = self.look.mask?;
+        let [x, y, w, h, rotation, feather] = Prop::MASK.map(|p| self.value_at(p, t));
+        Some(crate::Mask { center: [x, y], size: [w.max(0.0), h.max(0.0)], rotation, feather: feather.max(0.0), ..m })
+    }
+
+    /// The colour adjustments at `t` from the clip's start.
+    pub fn adjust_at(&self, t: Tick) -> crate::Adjust {
+        crate::Adjust::from_values(Prop::ADJUST.map(|p| self.value_at(p, t)))
     }
 
     /// Whether `p` has keyframes.

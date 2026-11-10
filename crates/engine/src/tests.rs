@@ -1,4 +1,4 @@
-use reelforge_model::{ClipContent, TrackKind};
+use reelforge_model::{ClipContent, Prop, TrackKind};
 use reelforge_time::Tick;
 use serde_json::json;
 
@@ -1162,4 +1162,51 @@ fn captions_are_edited_as_a_list() {
     assert!(matches!(&t.clips[0].content, ClipContent::Text { size, .. } if *size < 60.0));
     // the first language is still what exports by default
     assert!(s.execute("captions.export", &json!({})).unwrap()["srt"].as_str().unwrap().contains("heLLo"));
+}
+
+#[test]
+fn crops_masks_and_colour_move_with_keyframes() {
+    let mut s = Session::default();
+    let v = add_video(&mut s, 4.0);
+    // a crop that closes in from the left over two seconds
+    s.execute("clip.setKey", &json!({"clip": v, "prop": "cropLeft", "at": 0, "value": 0.0})).unwrap();
+    s.execute("clip.setKey", &json!({"clip": v, "prop": "cropLeft", "at": {"seconds": 2}, "value": 0.4})).unwrap();
+    // once keyed, the setter needs to know where, and changes the key there
+    assert!(s.execute("clip.setCrop", &json!({"clip": v, "left": 0.5})).unwrap_err().to_string().contains("keyframes"));
+    s.execute("clip.setCrop", &json!({"clip": v, "left": 0.5, "top": 0.1, "at": {"seconds": 2}})).unwrap();
+    // a mask that slides, and a look that fades to grey
+    assert!(s.execute("clip.setKey", &json!({"clip": v, "prop": "maskX", "at": 0})).is_err(), "no mask yet");
+    s.execute("clip.setMask", &json!({"clip": v, "shape": "circle"})).unwrap();
+    s.execute("clip.setKey", &json!({"clip": v, "prop": "maskX", "at": 0, "value": 0.2})).unwrap();
+    s.execute("clip.setKey", &json!({"clip": v, "prop": "maskX", "at": {"seconds": 4}, "value": 0.8})).unwrap();
+    s.execute("clip.setColor", &json!({"clip": v, "exposure": 0.5})).unwrap();
+    s.execute("clip.setKey", &json!({"clip": v, "prop": "saturation", "at": 0})).unwrap();
+    s.execute("clip.setColor", &json!({"clip": v, "saturation": -1, "at": {"seconds": 4}})).unwrap();
+    assert!(s.execute("clip.setKey", &json!({"clip": v, "prop": "saturation", "at": 0, "value": 3})).is_err());
+
+    let p = s.project();
+    let clip = p.clip(&v).unwrap().1;
+    assert_eq!(clip.crop_at(Tick::from_seconds(1.0)), [0.25, 0.1, 0.0, 0.0]);
+    assert!((clip.mask_at(Tick::from_seconds(2.0)).unwrap().center[0] - 0.5).abs() < 1e-6);
+    assert!((clip.adjust_at(Tick::from_seconds(2.0)).saturation + 0.5).abs() < 1e-6);
+
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let layer = spec["layers"].as_array().unwrap().iter().find(|l| l["id"] == json!(v)).unwrap();
+    assert!(layer.get("crop").is_none());
+    assert_eq!(layer["crop_keys"]["left"][1]["v"], json!(0.5f32));
+    assert_eq!(layer["crop_keys"]["top"], json!(0.1f32));
+    assert_eq!(layer["shape_mask_keys"]["center"][1]["v"], json!([0.8f32, 0.5f32]));
+    let grade = layer["fx"].as_array().unwrap().iter().find(|f| f["id"] == "color.grade@1").unwrap();
+    assert_eq!(grade["params"]["exposure"], json!(0.5f32));
+    assert_eq!(grade["params"]["saturation"][1]["v"], json!(-1.0f32));
+    let features = spec["engine"]["features"].as_array().unwrap();
+    for f in ["crop/2", "mask.shape/2"] {
+        assert!(features.contains(&json!(f)), "{f}");
+    }
+    // taking the mask away takes its keys; resetting the colour takes its keys
+    s.execute("clip.setMask", &json!({"clip": v, "shape": null})).unwrap();
+    s.execute("clip.setColor", &json!({"clip": v, "reset": true})).unwrap();
+    let p = s.project();
+    let keys: Vec<Prop> = p.clip(&v).unwrap().1.keys.keys().copied().collect();
+    assert_eq!(keys, [Prop::CropLeft]);
 }

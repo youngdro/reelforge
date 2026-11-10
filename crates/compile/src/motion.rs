@@ -25,7 +25,7 @@ fn moves(kind: reelforge_model::AnimKind, p: Prop) -> bool {
         Prop::Y => matches!(kind, SlideUp | SlideDown),
         Prop::Scale => matches!(kind, ZoomIn | ZoomOut | Pop | Spin),
         Prop::Rotation => matches!(kind, Spin),
-        Prop::VolumeDb => false,
+        _ => false,
     }
 }
 
@@ -68,7 +68,7 @@ fn shifts(kind: TransitionKind, incoming: bool, p: Prop) -> bool {
         Prop::X => matches!((kind, incoming), (PushLeft | PushRight, _) | (SlideLeft | SlideRight, true)),
         Prop::Y => matches!((kind, incoming), (PushUp | PushDown, _) | (SlideUp | SlideDown, true)),
         Prop::Scale => kind == Zoom,
-        Prop::Rotation | Prop::VolumeDb => false,
+        _ => false,
     }
 }
 
@@ -279,9 +279,14 @@ pub fn lower(clip: &Clip, prop: Prop, shape: &Shape, step: Tick) -> Animated<f32
 
 /// Position `[x, y]` of `clip`'s layer, keyed together.
 pub fn lower_position(clip: &Clip, shape: &Shape, step: Tick) -> Animated<[f32; 2]> {
-    let curves = [Curve::new(clip, Prop::X, shape), Curve::new(clip, Prop::Y, shape)];
+    lower_pair(clip, [Prop::X, Prop::Y], shape, step)
+}
+
+/// Two properties of `clip`'s layer as one value, keyed together.
+pub fn lower_pair(clip: &Clip, props: [Prop; 2], shape: &Shape, step: Tick) -> Animated<[f32; 2]> {
+    let curves = props.map(|p| Curve::new(clip, p, shape));
     if curves.iter().all(Curve::still) {
-        return Animated::Constant([clip.base(Prop::X), clip.base(Prop::Y)]);
+        return Animated::Constant(props.map(|p| clip.base(p)));
     }
     let keys = plan(&curves, step, shape.len);
     let [x, y] = &curves;

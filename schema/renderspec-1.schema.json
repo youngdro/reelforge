@@ -311,6 +311,33 @@
       },
       "type": "object"
     },
+    "CropKeys": {
+      "additionalProperties": false,
+      "description": "A crop that changes: each edge as in [`Crop`], keyed. A renderer keeps at least 1 % of the\npicture, shrinking a pair of opposite edges in proportion where their keys would cut more.",
+      "properties": {
+        "bottom": {
+          "$ref": "#/$defs/Animated",
+          "default": 0.0,
+          "description": "From the bottom edge."
+        },
+        "left": {
+          "$ref": "#/$defs/Animated",
+          "default": 0.0,
+          "description": "From the left edge."
+        },
+        "right": {
+          "$ref": "#/$defs/Animated",
+          "default": 0.0,
+          "description": "From the right edge."
+        },
+        "top": {
+          "$ref": "#/$defs/Animated",
+          "default": 0.0,
+          "description": "From the top edge."
+        }
+      },
+      "type": "object"
+    },
     "Ease": {
       "description": "Interpolation from one key to the next.",
       "oneOf": [
@@ -506,6 +533,17 @@
           ],
           "description": "Edges cut off a media layer's picture before it is fitted (feature `crop/1`)."
         },
+        "crop_keys": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CropKeys"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The crop over the layer's time, in place of `crop` (feature `crop/2`)."
+        },
         "dur": {
           "$ref": "#/$defs/Tick",
           "description": "How long it lasts; positive."
@@ -551,6 +589,17 @@
             }
           ],
           "description": "A shape that shows part of the layer, in the layer's own picture (feature `mask.shape/1`)."
+        },
+        "shape_mask_keys": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ShapeMaskKeys"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where and how big `shape_mask` is over the layer's time, in place of its own centre, size,\nrotation and feather (feature `mask.shape/2`)."
         },
         "transform": {
           "$ref": "#/$defs/Transform",
@@ -934,6 +983,35 @@
       },
       "required": [
         "shape"
+      ],
+      "type": "object"
+    },
+    "ShapeMaskKeys": {
+      "additionalProperties": false,
+      "description": "A shape mask that moves: the values of [`ShapeMask`] that can, keyed.",
+      "properties": {
+        "center": {
+          "$ref": "#/$defs/Animated2",
+          "description": "The centre."
+        },
+        "feather": {
+          "$ref": "#/$defs/Animated",
+          "description": "Width of the soft edge."
+        },
+        "rotation": {
+          "$ref": "#/$defs/Animated",
+          "description": "Clockwise turn, degrees."
+        },
+        "size": {
+          "$ref": "#/$defs/Animated2",
+          "description": "Width and height."
+        }
+      },
+      "required": [
+        "center",
+        "size",
+        "rotation",
+        "feather"
       ],
       "type": "object"
     },

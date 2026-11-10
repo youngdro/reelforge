@@ -53,9 +53,11 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "color.lut@1",
     "color.saturation@1",
     "crop/1",
+    "crop/2",
     "encode.size/1",
     "flip/1",
     "mask.shape/1",
+    "mask.shape/2",
     "text/1",
     "text/2",
     "text/3",
@@ -199,7 +201,7 @@ mod tests {
     use reelforge_time::FrameRate;
     use std::sync::Arc;
 
-    fn spec() -> RenderSpec {
+    pub(crate) fn spec() -> RenderSpec {
         let mut s = RenderSpec::new(Output {
             width: 40,
             height: 20,
@@ -227,6 +229,8 @@ mod tests {
             flip_x: false,
             flip_y: false,
             shape_mask: None,
+            crop_keys: None,
+            shape_mask_keys: None,
         });
         s
     }
