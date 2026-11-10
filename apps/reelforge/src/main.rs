@@ -21,6 +21,8 @@ fn main() -> eframe::Result {
     use reelforge_server::http::HttpServer;
     use reelforge_ui::EditorApp;
 
+    // exports use the system's (hardware) encoder where there is one
+    reelforge_hwenc::register();
     let fail = |msg: String| -> ! {
         eprintln!("reelforge: {msg}");
         std::process::exit(2)

@@ -1,0 +1,26 @@
+[package]
+name = "reelforge-hwenc"
+description = "The operating system's video encoders (VideoToolbox, Media Foundation, VA-API) behind reelforge-media's VideoEncoder, usually in hardware. The one crate that calls C interfaces."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# not the workspace's lints: those forbid `unsafe`, and system encoders are C interfaces
+[lints.rust]
+missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[dependencies]
+reelforge-time = { workspace = true }
+reelforge-renderspec = { workspace = true }
+reelforge-media = { workspace = true }
+
+[dev-dependencies]
+reelforge-render = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { version = "0.3", features = ["CFData", "CFDictionary", "CFNumber", "CFString", "CFBase"] }
+objc2-core-media = { version = "0.3" }
+objc2-core-video = { version = "0.3" }
+objc2-video-toolbox = { version = "0.3" }

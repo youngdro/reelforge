@@ -366,6 +366,7 @@ impl Hub {
             "frames": stats.frames,
             "audioSamples": stats.audio_samples,
             "renderer": stats.renderer,
+            "encoder": stats.encoder,
             "seconds": started.elapsed().as_secs_f64(),
         })))
     }
