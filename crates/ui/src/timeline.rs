@@ -151,6 +151,10 @@ pub(crate) enum Action {
     Unslot,
     /// Make the selected picture clips share the frame, by a layout's id (`layout.apply`).
     Layout(&'static str),
+    /// Make the selected clips move on every beat, by a move's id (`beat.apply`).
+    Beat(&'static str),
+    /// Lay the selected clips end to end with every cut on a beat (`beat.cut`).
+    BeatCut,
 }
 
 impl Default for TimelineView {
@@ -1085,6 +1089,7 @@ impl TimelineView {
         let (on_picture, on_slot) = (self.menu_picture, self.menu_slot);
         let grouped = selected.iter().any(|id| p.clip(id).is_some_and(|(_, c)| c.group.is_some()));
         let several = selected.len() > 1;
+        let on_sound = selected.iter().all(|id| p.clip(id).is_some_and(|(t, _)| p.tracks[t].kind == TrackKind::Audio));
         let (menu_track, menu_marker, menu_at) = (self.menu_track.clone(), self.menu_marker.clone(), self.menu_at);
         response.context_menu(|ui| {
             ui.set_min_width(190.0);
@@ -1163,6 +1168,24 @@ impl TimelineView {
                         }
                     });
                     laid = picked;
+                }
+                if !on_sound {
+                    // in time with the music: a cut on every beat, or a move on each
+                    let mut picked = None;
+                    ui.menu_button(words.beat, |ui| {
+                        if ui.button(words.beat_cut).clicked() {
+                            picked = Some(Action::BeatCut);
+                            ui.close();
+                        }
+                        ui.separator();
+                        for (mv, name) in reelforge_engine::BEAT_MOVES.iter().zip(words.beat_names) {
+                            if ui.button(name).clicked() {
+                                picked = Some(Action::Beat(mv.id));
+                                ui.close();
+                            }
+                        }
+                    });
+                    laid = laid.or(picked);
                 }
                 if on_picture {
                     ui.separator();

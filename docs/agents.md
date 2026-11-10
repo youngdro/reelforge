@@ -140,6 +140,15 @@ divider: `clip_add` the second on a track above the first for the same stretch o
 small picture in a corner instead (a presenter over the product), `"columns"` or `"grid"` puts
 two to six shots side by side.
 
+A montage that keeps time with its music: put the song on an audio track and mark its beats
+(`audio_beats`, a listening tool, needs the file), or skip that when the tempo is known and pass
+`"bpm": 120` (and `"first"`, the time of the first beat) to the two commands below.
+`beat_cut {"clips": ["c1", "c2", "c3"], "every": 2, "move": "punch"}` lays the clips of one track end
+to end, each two beats long, every one arriving with a punch; `beat_apply {"clips": ["c9"], "move":
+"squash", "every": 4}` then makes a price tag or a title squash on the first beat of each bar. The
+moves are keyframes: `clip_clearKeys` takes one off, and a second `beat_apply` with the same move
+replaces the first.
+
 A storyboard is laid out for an upright 9:16 frame, its pieces clear of the bottom fifth where
 apps put their own buttons and captions. On a wider canvas the pieces keep to a column down the
 middle, smaller. A field a piece counts to (`price`, `stock`, `rating`) must be a number. A piece
@@ -204,6 +213,7 @@ path is taken away (`points: null`).
 | Timelines and templates (剪同款) | `timeline_add` / `timeline_switch` / …, `template_list`, `template_apply`, `template_slots`, `template_fill`, `template_mark`, `clip_replace` |
 | Storyboards (whole marketing videos planned ahead) | `storyboard_list` (launch, flashSale, bogo, beforeAfter, roundup, storeVisit: scenes with what to film and the line to say, the fields of the copy; `lang` en, zh or ja), `storyboard_apply` (`copy` by field name, `media` for the scenes' pictures in order, `seconds`, `captions`; builds slots, pieces, transitions, markers and music in one step), `storyboard_fill` (other words or numbers for fields: every piece written from them is made again), `storyboard_copy`; pictures go in with `template_fill` |
 | Layouts (split screen, picture in picture, compare) | `layout_list` (columns, rows, grid, focus, pip, compare: how many clips each takes and which parameters it reads), `layout_apply` (`layout`, `clips` in order, on tracks one above another and showing at the same time; `gap`, `margin`; for `pip` `corner`, `size`, `round`; for `compare` `from`, `to`, `axis`, `divider`; `border` outlines the cells. Each clip is cropped about its middle to its cell and scaled to fill it; its place, scale, turn, crop, mask, path and carrier become the layout's. Outlines and the divider are shape clips carried by their clip; applying again replaces them. Reframe inside a cell with `clip_setCrop`) |
+| On the beat (卡点) | `beat_list` (punch, pulse, shake, flash, strobe, tilt, bounce, squash: what each looks like and the properties it keys), `beat_apply` (`clips`, `move`, `strength`; the beat is the timeline's ♪ markers from `audio_beats`, or `bpm` with `first`, or `at`; `every`, `offset`), `beat_cut` (`clips` of one track in order, each ending on the next beat that counts; `every`, `offset`, `from`, `move` for a move at each cut) |
 | Media | `media_import`, `media_set` (rename, folders), `media_remove` |
 | CapCut / 剪映 drafts | `capcut_import` |
 | Looking and exporting | `render_frame`, `render_compile`, `project_setCanvas`, `project_setExport`, `project_setCover`, `render_export` (`format`: mp4, gif, m4a, wav), `render_jobs` |

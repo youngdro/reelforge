@@ -1787,6 +1787,8 @@ impl EditorApp {
             Action::Uncompound => self.uncompound(),
             Action::OpenCompound => self.open_compound(),
             Action::Layout(id) => self.lay_out(id),
+            Action::Beat(id) => self.move_on_beat(id),
+            Action::BeatCut => self.cut_on_beat(),
             Action::Slot => self.mark_slots(true),
             Action::Unslot => self.mark_slots(false),
             // needs the window to ask for a file: see `pick_replacement`
@@ -1816,6 +1818,49 @@ impl EditorApp {
             self.inspector = None;
             let at = reelforge_engine::LAYOUTS.iter().position(|l| l.id == id).unwrap_or(0);
             self.status = fill(self.s().layout_done, &[&self.s().layout_names[at]]);
+        }
+    }
+
+    /// The selected clips that are seen (not sound), by track and then by when they start; or
+    /// nothing, with a word on what to do first, while the timeline has no beat marked.
+    fn clips_for_the_beat(&mut self) -> Vec<String> {
+        let p = self.project();
+        if !p.markers.iter().any(|m| m.note == reelforge_engine::listen::BEAT) {
+            self.status = self.s().beat_none.to_string();
+            return vec![];
+        }
+        let mut all: Vec<(usize, Tick, String)> = self
+            .selection()
+            .into_iter()
+            .filter_map(|c| p.clip(&c).map(|(ti, clip)| (ti, clip.start, c)))
+            .filter(|(ti, _, _)| p.tracks[*ti].kind != TrackKind::Audio)
+            .collect();
+        all.sort();
+        all.into_iter().map(|(_, _, c)| c).collect()
+    }
+
+    /// Makes the selected clips do the move `id` on every marked beat.
+    fn move_on_beat(&mut self, id: &'static str) {
+        let clips = self.clips_for_the_beat();
+        if clips.is_empty() {
+            return;
+        }
+        if let Ok(out) = self.execute("beat.apply", json!({"move": id, "clips": clips})) {
+            self.inspector = None;
+            let at = reelforge_engine::BEAT_MOVES.iter().position(|m| m.id == id).unwrap_or(0);
+            self.status = fill(self.s().beat_done, &[&self.s().beat_names[at], &out["beats"]]);
+        }
+    }
+
+    /// Lays the selected clips end to end with every cut on a marked beat.
+    fn cut_on_beat(&mut self) {
+        let clips = self.clips_for_the_beat();
+        if clips.is_empty() {
+            return;
+        }
+        if let Ok(out) = self.execute("beat.cut", json!({"clips": clips})) {
+            self.inspector = None;
+            self.status = fill(self.s().beat_cut_done, &[&out["onBeat"]]);
         }
     }
 
@@ -2181,6 +2226,14 @@ impl EditorApp {
             let fits = (layout.clips.0..=layout.clips.1).contains(&chosen.len());
             let word = format!("{} · {}", s.layout, name);
             all.push(Entry::new(icon::FILM, word, "", Run::Act(Action::Layout(layout.id))).enabled(fits));
+        }
+        // in time with the music
+        all.push(
+            Entry::new(icon::MUSIC, format!("{} · {}", s.beat, s.beat_cut), "", Run::Act(Action::BeatCut)).enabled(any),
+        );
+        for (mv, name) in reelforge_engine::BEAT_MOVES.iter().zip(s.beat_names) {
+            let word = format!("{} · {}", s.beat, name);
+            all.push(Entry::new(icon::MUSIC, word, "", Run::Act(Action::Beat(mv.id))).enabled(any));
         }
         all.extend([
             act(icon::FILM, s.uncompound, "Alt+Shift+G", Action::Uncompound, any),
