@@ -167,6 +167,22 @@ impl Encoder {
                 t.SetUINT32(&MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709.0 as u32)?;
                 t.SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235.0 as u32)
             };
+            // an export: the bitrate on average, a keyframe every two seconds, and no B-frames, so
+            // decode order is display order. Microsoft's own encoders read these when the output
+            // type is set, so they go in first. A transform that lacks one keeps its default;
+            // frames that then come out of order stop the export (see `keep`).
+            let api = transform.cast::<ICodecAPI>().ok();
+            let settings = || {
+                let Some(api) = &api else { return };
+                let mode = eAVEncCommonRateControlMode_UnconstrainedVBR.0 as u32;
+                let _ = api.SetValue(&CODECAPI_AVEncCommonRateControlMode, &number(mode));
+                let _ = api.SetValue(&CODECAPI_AVEncCommonMeanBitRate, &number(kbps.saturating_mul(1000)));
+                let _ = api.SetValue(&CODECAPI_AVEncMPVGOPSize, &number(keyint));
+                let _ = api.SetValue(&CODECAPI_AVEncMPVDefaultBPictureCount, &number(0));
+                let _ = api.SetValue(&CODECAPI_AVLowLatencyMode, &flag(true));
+            };
+            settings();
+
             // an encoder's output type is set first: its input types depend on it
             let out = MFCreateMediaType().map_err(|e| failed("no media type", e))?;
             common(&out, &subtype)
@@ -190,17 +206,8 @@ impl Encoder {
                 transform.SetInputType(ids.0, &plain, 0).map_err(|e| failed("input type refused", e))?;
             }
 
-            // an export: the bitrate on average, a keyframe every two seconds, and no B-frames, so
-            // decode order is display order. A transform that lacks one of these keeps its default;
-            // frames that then come out of order stop the export (see `keep`).
-            if let Ok(api) = transform.cast::<ICodecAPI>() {
-                let mode = eAVEncCommonRateControlMode_UnconstrainedVBR.0 as u32;
-                let _ = api.SetValue(&CODECAPI_AVEncCommonRateControlMode, &number(mode));
-                let _ = api.SetValue(&CODECAPI_AVEncCommonMeanBitRate, &number(kbps.saturating_mul(1000)));
-                let _ = api.SetValue(&CODECAPI_AVEncMPVGOPSize, &number(keyint));
-                let _ = api.SetValue(&CODECAPI_AVEncMPVDefaultBPictureCount, &number(0));
-                let _ = api.SetValue(&CODECAPI_AVLowLatencyMode, &flag(true));
-            }
+            // again for the transforms that only take settings once they have their types
+            settings();
 
             let events = if asynchronous {
                 Some(transform.cast::<IMFMediaEventGenerator>().map_err(|e| failed("encoder has no events", e))?)
@@ -333,8 +340,8 @@ impl Encoder {
             }
             if self.last_pts.is_some_and(|last| pts <= last) {
                 return Err(ExportError::Encode(format!(
-                    "{}: frames came back out of order (B-frames it would not turn off); set REELFORGE_ENCODER=software",
-                    self.label
+                    "{}: frame {} came back out of order, at {time} (B-frames it would not turn off); set REELFORGE_ENCODER=software",
+                    self.label, self.got
                 )));
             }
             self.last_pts = Some(pts);
