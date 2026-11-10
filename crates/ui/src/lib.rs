@@ -42,6 +42,7 @@ mod stage;
 mod strips;
 mod theme;
 mod timeline;
+mod transcribe_job;
 #[cfg(target_arch = "wasm32")]
 mod webcodecs;
 
@@ -107,6 +108,11 @@ pub struct EditorApp {
     /// Files dropped in the browser, read asynchronously: `(name, bytes)`.
     arrivals: Arc<Mutex<Vec<Arrival>>>,
     export: Option<export_job::ExportJob>,
+    /// Automatic captions in progress.
+    transcribe: Option<transcribe_job::TranscribeJob>,
+    /// The local speech model, loaded on first use.
+    #[cfg(not(target_arch = "wasm32"))]
+    speech: Option<Arc<reelforge_speech::Recogniser>>,
     /// The export settings are showing.
     export_open: bool,
     /// The panel on the left: media, sounds, titles.
@@ -373,6 +379,9 @@ impl EditorApp {
             media,
             arrivals: Arc::default(),
             export: None,
+            transcribe: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            speech: None,
             export_open: false,
             assets: assets::AssetPanel::default(),
             second_captions: false,
@@ -2461,6 +2470,7 @@ impl EditorApp {
                 self.add_colour();
             }
             self.record_button(ui);
+            self.transcribe_controls(ui);
             if theme::tool(ui, icon::SPARKLE, s.spoken, s.spoken_tip, true).clicked() {
                 self.spoken.open = !self.spoken.open;
             }

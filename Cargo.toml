@@ -21,6 +21,7 @@ reelforge-hwenc = { path = "crates/hwenc" }
 reelforge-engine = { path = "crates/engine" }
 reelforge-ui = { path = "crates/ui" }
 reelforge-server = { path = "crates/server" }
+reelforge-speech = { path = "crates/speech" }
 
 # foundation
 serde = { version = "1", features = ["derive", "rc"] }

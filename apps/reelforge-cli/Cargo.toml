@@ -26,4 +26,5 @@ serde_json = { workspace = true }
 clap = { workspace = true }
 image = { workspace = true }
 reelforge-server = { workspace = true }
+reelforge-speech = { workspace = true }
 ureq = { workspace = true }

@@ -232,6 +232,30 @@ pub(crate) fn captions_import(s: &mut Session, v: &Value) -> CmdResult {
     })
 }
 
+pub(crate) fn captions_add(s: &mut Session, v: &Value) -> CmdResult {
+    let fps = crate::commands::fps(s);
+    let p = P::new(v, fps);
+    let list = p.opt("cues").and_then(Value::as_array).ok_or(EngineError::Params("`cues` must be an array".into()))?;
+    let mut cues = Vec::with_capacity(list.len());
+    for (i, c) in list.iter().enumerate() {
+        let cp = P::new(c, fps);
+        let field = |e: EngineError| {
+            EngineError::Params(format!("cues[{i}]: {}", e.to_string().trim_start_matches("invalid parameters: ")))
+        };
+        let (start, end) = (cp.time("start").map_err(field)?, cp.time("end").map_err(field)?);
+        if end <= start {
+            return Err(EngineError::Params(format!("cues[{i}]: ends before it starts")));
+        }
+        cues.push(Cue { start, end, text: cp.str("text").map_err(field)?.to_string() });
+    }
+    let track = p.opt_str("track")?.map(str::to_string);
+    let template = p.opt_str("template")?.unwrap_or("classic").to_string();
+    s.edit("Add Captions", |proj| {
+        let (track, clips) = place(proj, &cues, track.as_deref(), &template, false)?;
+        Ok(json!({ "track": track, "clips": clips }))
+    })
+}
+
 pub(crate) fn captions_export(s: &mut Session, v: &Value) -> CmdResult {
     let p = P::new(v, crate::commands::fps(s));
     let project = s.project();
