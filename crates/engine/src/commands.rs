@@ -4,9 +4,9 @@ use reelforge_compile::{CompileOptions, compile};
 use reelforge_model::timeline as model_timeline;
 use reelforge_model::{
     Adjust, AnimKind, Animation, BlendMode, Clip, ClipContent, ClipEffect, ClipTransform, Codec, CurvePoint,
-    CurvePreset, Ease, ExportSettings, Filter, FilterKind, Fx, FxGroup, FxKind, Key, LutUse, Mask, MaskKind, Media,
-    MediaKind, Outline, Project, Prop, Quality, Resolution, Shadow, Timeline, TitleStyle, Track, TrackKind, Transition,
-    TransitionKind, anim, export, timing,
+    CurvePreset, Denoise, Ease, ExportSettings, Filter, FilterKind, Fx, FxGroup, FxKind, Key, LutUse, Mask, MaskKind,
+    Media, MediaKind, Outline, Project, Prop, Quality, Resolution, Shadow, Timeline, TitleStyle, Track, TrackKind,
+    Transition, TransitionKind, Voice, VoiceKind, anim, export, timing,
 };
 use reelforge_renderspec::AssetKind;
 use reelforge_time::{FrameRate, Tick};
@@ -561,6 +561,33 @@ static REGISTRY: &[CommandSpec] = &[
         run: sticker_library,
     },
     CommandSpec {
+        id: "clip.setVoice",
+        label: "Voice",
+        params: r#"{"clip": id, "voice"?: "high"|"low"|"chipmunk"|"monster"|"robot"|"phone"|"megaphone"|"echo" | null, "pitch"?: semitones}"#,
+        doc: "Changes how a clip's sound sounds: a ready-made voice (voice.list names them; null takes it off) and a pitch moved up to 12 semitones either way without changing its length.",
+        edits: true,
+        enabled: always,
+        run: clip_set_voice,
+    },
+    CommandSpec {
+        id: "clip.setDenoise",
+        label: "Reduce Noise",
+        params: r#"{"clip": id, "amount": 0-1, "floor"?: [24 numbers]}"#,
+        doc: "Takes steady background noise out of a clip's sound: `amount` says how much (0 turns it off), `floor` is the noise, its level in dB in 24 bands. audio.denoise measures the floor from the clip and calls this; without `floor` the one the clip has is kept.",
+        edits: true,
+        enabled: always,
+        run: clip_set_denoise,
+    },
+    CommandSpec {
+        id: "voice.list",
+        label: "Voices",
+        params: "{}",
+        doc: "Lists the ready-made voices for clip.setVoice and how far each moves the pitch.",
+        edits: false,
+        enabled: always,
+        run: voice_list,
+    },
+    CommandSpec {
         id: "clip.setKey",
         label: "Add Keyframe",
         params: r#"{"clip": id, "prop": "x"|"y"|"scale"|"rotation"|"opacity"|"volumeDb"|"cropLeft"|"cropTop"|"cropRight"|"cropBottom"|"maskX"|"maskY"|"maskWidth"|"maskHeight"|"maskRotation"|"maskFeather"|"exposure"|"contrast"|"saturation"|"temperature"|"tint"|"highlights"|"shadows"|"fade"|"vignette", "at": time, "value"?: number, "ease"?: "linear"|"hold"|"inOut"}"#,
@@ -789,6 +816,7 @@ fn sound_add(s: &mut Session, v: &Value) -> CmdResult {
             color: Default::default(),
             look: Default::default(),
             fx: vec![],
+            voice: Default::default(),
         };
         proj.track_mut(&track).expect("found above").clips.push(c);
         Ok(json!({ "media": media, "track": track, "clip": clip, "start": start, "duration": duration }))
@@ -1295,6 +1323,7 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
             color: Default::default(),
             look: Default::default(),
             fx,
+            voice: Default::default(),
         };
         proj.track_mut(&track_id).expect("found above").clips.push(clip);
         Ok(json!({ "clip": id, "start": start, "duration": duration }))
@@ -1475,6 +1504,7 @@ fn clip_detach_audio(s: &mut Session, v: &Value) -> CmdResult {
         sound.transition = None;
         sound.color = Default::default();
         sound.look = Default::default();
+        sound.fx.clear();
         let range = sound.range();
         let track = match proj
             .tracks
@@ -1500,9 +1530,12 @@ fn clip_detach_audio(s: &mut Session, v: &Value) -> CmdResult {
         };
         let (sid, tid) = (sound.id.clone(), proj.tracks[track].id.clone());
         proj.tracks[track].clips.push(sound);
-        if let ClipContent::Media { silent, .. } = &mut proj.clip_mut(&id).expect("found").content {
+        let picture = proj.clip_mut(&id).expect("found");
+        if let ClipContent::Media { silent, .. } = &mut picture.content {
             *silent = true;
         }
+        // its voice went with its sound
+        picture.voice = Voice::default();
         Ok(json!({ "clip": id, "audio": sid, "track": tid }))
     })
 }
@@ -2069,6 +2102,81 @@ fn sticker_library(_: &mut Session, _: &Value) -> CmdResult {
         .map(|st| json!({ "id": st.id, "name": st.en, "nameZh": st.zh }))
         .collect();
     Ok(json!({ "stickers": list }))
+}
+
+/// The clip `id` when it has sound of its own: a video with its sound, or audio.
+fn sounding<'a>(proj: &'a mut Project, id: &str) -> Result<&'a mut Clip, EngineError> {
+    let (_, clip) = proj.clip(id).ok_or_else(|| not_found("clip", id))?;
+    let sound = matches!(&clip.content, ClipContent::Media { media, silent: false, .. }
+        if proj.media.get(media).is_some_and(|m| m.kind != MediaKind::Image));
+    if !sound {
+        return Err(EngineError::Params("this clip has no sound".into()));
+    }
+    Ok(proj.clip_mut(id).expect("found above"))
+}
+
+fn clip_set_voice(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let kind = match v.get("voice") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(name) => Some(Some(name.as_str().and_then(VoiceKind::parse).ok_or_else(|| {
+            EngineError::Params(format!(
+                "`voice` must be null or one of {}",
+                VoiceKind::ALL.map(VoiceKind::name).join(", ")
+            ))
+        })?)),
+    };
+    let pitch = p.opt_f64("pitch")?.map(|x| x as f32);
+    if pitch.is_some_and(|x| x.abs() > Voice::PITCH_RANGE) {
+        return Err(EngineError::Params("`pitch` must be from -12 to 12 semitones".into()));
+    }
+    s.edit("Voice", |proj| {
+        let clip = sounding(proj, &id)?;
+        if let Some(k) = kind {
+            clip.voice.kind = k;
+        }
+        if let Some(x) = pitch {
+            clip.voice.pitch = x;
+        }
+        Ok(json!({ "clip": id, "voice": clip.voice.kind.map(VoiceKind::name), "pitch": clip.voice.pitch, "semitones": clip.voice.semitones() }))
+    })
+}
+
+fn clip_set_denoise(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let amount = p.opt_f64("amount")?.ok_or_else(|| EngineError::Params("`amount` is required".into()))? as f32;
+    if !(0.0..=1.0).contains(&amount) {
+        return Err(EngineError::Params("`amount` must be from 0 to 1".into()));
+    }
+    let floor: Option<Vec<f32>> = match p.opt("floor") {
+        None => None,
+        Some(list) => Some(
+            list.as_array()
+                .filter(|l| l.len() == Denoise::BANDS)
+                .and_then(|l| l.iter().map(|x| x.as_f64().filter(|x| x.is_finite()).map(|x| x as f32)).collect())
+                .ok_or_else(|| EngineError::Params(format!("`floor` must be {} numbers", Denoise::BANDS)))?,
+        ),
+    };
+    s.edit("Reduce Noise", |proj| {
+        let clip = sounding(proj, &id)?;
+        if amount == 0.0 {
+            clip.voice.denoise = None;
+            return Ok(json!({ "clip": id, "amount": 0.0 }));
+        }
+        let floor = floor.or_else(|| clip.voice.denoise.take().map(|d| d.floor)).ok_or_else(|| {
+            EngineError::Params("the clip's noise has not been measured: pass `floor`, or use audio.denoise".into())
+        })?;
+        clip.voice.denoise = Some(Denoise { amount, floor });
+        Ok(json!({ "clip": id, "amount": amount }))
+    })
+}
+
+fn voice_list(_: &mut Session, _: &Value) -> CmdResult {
+    let list: Vec<Value> = VoiceKind::ALL.iter().map(|k| json!({ "id": k.name(), "semitones": k.pitch() })).collect();
+    Ok(json!({ "voices": list }))
 }
 
 fn prop(p: &P) -> Result<Prop, EngineError> {

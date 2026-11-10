@@ -213,6 +213,8 @@ fn sound_is_mixed_with_gain_and_written_as_aac() {
         time: TimeMap::default(),
         gain_db: Animated::Constant(-6.0),
         keep_pitch: false,
+        pitch: 0.0,
+        fx: vec![],
     });
     let footage = Footage::new();
     let m = export::mix(&spec, &footage, 48_000, 0, 96_000).expect("mix");
@@ -317,6 +319,8 @@ fn faster_sound_keeps_its_pitch_when_asked() {
         time: TimeMap::new(Tick::ZERO, 2.0),
         gain_db: Animated::Constant(0.0),
         keep_pitch,
+        pitch: 0.0,
+        fx: vec![],
     };
     let crossings = |x: &[f32]| x.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
     let footage = Footage::new();
@@ -363,6 +367,8 @@ fn sound_plays_backwards_ramps_and_holds() {
         time,
         gain_db: Animated::Constant(0.0),
         keep_pitch,
+        pitch: 0.0,
+        fx: vec![],
     };
     let crossings = |x: &[f32]| x.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
     let footage = Footage::new();
@@ -398,6 +404,70 @@ fn sound_plays_backwards_ramps_and_holds() {
     spec.audio = vec![clip(TimeMap::new(Tick::SECOND, 0.0), true)];
     let held = export::mix(&spec, &footage, 48_000, 0, 48_000).expect("mix");
     assert!(held[0].iter().all(|s| *s == 0.0));
+}
+
+#[test]
+fn a_voice_moves_in_pitch_and_keeps_its_length() {
+    let wav = temp("tone-pitch.wav");
+    std::fs::write(&wav, tone_wav(48_000, 3.0)).expect("write wav");
+    let mut spec = two_colours();
+    spec.assets.insert(
+        "a".into(),
+        Asset {
+            kind: AssetKind::Audio,
+            sha256: sha(9),
+            uri: wav.to_string_lossy().into_owned(),
+            of: None,
+            probe: None,
+        },
+    );
+    let clip = |pitch: f32, speed: f64, keep_pitch, fx| AudioClip {
+        id: "tone".into(),
+        asset: "a".into(),
+        at: Tick::from_seconds(0.25),
+        dur: Tick::SECOND,
+        time: TimeMap::new(Tick::ZERO, speed),
+        gain_db: Animated::Constant(0.0),
+        keep_pitch,
+        pitch,
+        fx,
+    };
+    let crossings = |x: &[f32]| x.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count() as i64;
+    let footage = Footage::new();
+    let expected = 16000.0 / 32768.0 / 2f32.sqrt();
+    // half a second of a 440 Hz tone has 220 rises through zero; an octave up 440, an octave down 110
+    for (pitch, speed, keep, want) in [
+        (12.0, 1.0, true, 440),
+        (-12.0, 1.0, true, 110),
+        (7.0, 1.0, true, 330),
+        // at another speed with its pitch kept, the move is from the pitch it had
+        (12.0, 2.0, true, 440),
+        // and like tape, on top of the tape's own
+        (12.0, 0.5, false, 220),
+    ] {
+        spec.audio = vec![clip(pitch, speed, keep, vec![])];
+        let out = export::mix(&spec, &footage, 48_000, 0, 72_000).expect("mix");
+        let c = crossings(&out[0][24_000..48_000]);
+        assert!((c - want).abs() <= 6, "{pitch} at {speed}: {c}");
+        assert!((rms(&out[0][16_800..55_200]) - expected).abs() < 0.05, "{pitch}: {}", rms(&out[0][16_800..55_200]));
+        // nothing before the clip or after it
+        assert!(out[0][..12_000].iter().chain(&out[0][60_000..]).all(|s| *s == 0.0));
+    }
+    // moved, ringed and echoed, slices of the mix are the mix
+    let fx = vec![
+        AudioEffect::Ring { hz: 50.0, mix: 0.5 },
+        AudioEffect::Echo { delay: Tick::from_seconds(0.05), decay: 0.5, repeats: 2 },
+    ];
+    spec.audio = vec![clip(5.0, 1.0, true, fx)];
+    let whole = export::mix(&spec, &footage, 48_000, 0, 72_000).expect("mix");
+    let mut sliced = vec![];
+    for i in 0..6 {
+        sliced.extend(export::mix(&spec, &footage, 48_000, i * 12_000, 12_000).expect("mix")[0].clone());
+    }
+    let worst = sliced.iter().zip(&whole[0]).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    assert!(worst < 1e-4, "{worst}");
+    assert!(spec.required_features().contains("audio.pitch/1") && spec.required_features().contains("audio.fx/1"));
+    reelforge_renderspec::validate(&spec).expect("valid");
 }
 
 #[test]

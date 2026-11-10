@@ -1286,3 +1286,88 @@ fn stickers_effects_and_adjustment_clips() {
     let snd = s.execute("sound.add", &json!({"sound": "pop"})).unwrap()["clip"].as_str().unwrap().to_string();
     assert!(s.execute("clip.setFx", &json!({"clip": snd, "fx": ["shake"]})).is_err());
 }
+
+#[test]
+fn a_voice_is_changed_and_its_noise_taken_out() {
+    let mut s = Session::default();
+    let m = s
+        .execute(
+            "media.import",
+            &json!({"path": "/nowhere/talk.wav", "duration": {"seconds": 10}, "sha256": "ce".repeat(32)}),
+        )
+        .unwrap()["media"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let audio = s.project().tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().id.clone();
+    let c = s.execute("clip.add", &json!({"track": audio, "media": m})).unwrap()["clip"].as_str().unwrap().to_string();
+
+    let voices = s.execute("voice.list", &json!({})).unwrap();
+    assert_eq!(voices["voices"].as_array().unwrap().len(), 8);
+    // a voice and a nudge by hand add up; the sound keeps its length
+    let set = s.execute("clip.setVoice", &json!({"clip": c, "voice": "low", "pitch": -1})).unwrap();
+    assert_eq!((set["voice"].as_str(), set["semitones"].as_f64()), (Some("low"), Some(-5.0)));
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert_eq!(spec["audio"][0]["pitch"], json!(-5.0));
+    assert!(spec["audio"][0].get("fx").is_none());
+    assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("audio.pitch/1")));
+    // the pitch alone can change, and null takes the voice off
+    s.execute("clip.setVoice", &json!({"clip": c, "pitch": 0})).unwrap();
+    assert_eq!(s.project().clip(&c).unwrap().1.voice.semitones(), -4.0);
+    s.execute("clip.setVoice", &json!({"clip": c, "voice": null})).unwrap();
+    assert!(s.project().clip(&c).unwrap().1.voice.is_empty());
+    assert!(s.execute("render.compile", &json!({})).unwrap()["audio"][0].get("pitch").is_none());
+
+    // voices made of effects, in the order they are done, after the noise is out
+    s.execute("clip.setVoice", &json!({"clip": c, "voice": "megaphone"})).unwrap();
+    assert!(
+        s.execute("clip.setDenoise", &json!({"clip": c, "amount": 0.5})).unwrap_err().to_string().contains("floor")
+    );
+    let floor: Vec<f32> = (0..24).map(|i| -90.0 - i as f32).collect();
+    s.execute("clip.setDenoise", &json!({"clip": c, "amount": 0.5, "floor": floor})).unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let fx: Vec<&str> =
+        spec["audio"][0]["fx"].as_array().unwrap().iter().map(|f| f["type"].as_str().unwrap()).collect();
+    assert_eq!(fx, ["denoise", "band", "ring"]);
+    assert_eq!(spec["audio"][0]["fx"][0]["floor"][23], json!(-113.0));
+    assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("audio.fx/1")));
+    // the amount alone keeps what was measured; none turns it off
+    s.execute("clip.setDenoise", &json!({"clip": c, "amount": 1})).unwrap();
+    assert_eq!(s.project().clip(&c).unwrap().1.voice.denoise.as_ref().unwrap().floor[1], -91.0);
+    s.execute("clip.setDenoise", &json!({"clip": c, "amount": 0})).unwrap();
+    assert!(s.project().clip(&c).unwrap().1.voice.denoise.is_none());
+    s.execute("clip.setVoice", &json!({"clip": c, "voice": "echo"})).unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert_eq!(spec["audio"][0]["fx"][0]["repeats"], json!(4));
+
+    // what is refused: a voice nobody has, a pitch too far, a wrong profile, a clip with no sound
+    for bad in [
+        json!({"clip": c, "voice": "dragon"}),
+        json!({"clip": c, "pitch": 13}),
+        json!({"clip": "nope", "voice": "low"}),
+    ] {
+        assert!(s.execute("clip.setVoice", &bad).is_err(), "{bad}");
+    }
+    assert!(s.execute("clip.setDenoise", &json!({"clip": c, "amount": 0.5, "floor": [1, 2]})).is_err());
+    assert!(s.execute("clip.setDenoise", &json!({"clip": c, "amount": 2, "floor": vec![-90; 24]})).is_err());
+    let red = add_red(&mut s, 0.0, 1.0);
+    assert!(
+        s.execute("clip.setVoice", &json!({"clip": red, "voice": "low"})).unwrap_err().to_string().contains("no sound")
+    );
+
+    // detached from its picture, the sound takes its voice along
+    let v = s
+        .execute("media.import", &json!({"path": "/nowhere/v.mp4", "duration": {"seconds": 4}, "size": [64, 64]}))
+        .unwrap()["media"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let video = video_track(&s);
+    let vc = s.execute("clip.add", &json!({"track": video, "media": v})).unwrap()["clip"].as_str().unwrap().to_string();
+    s.execute("clip.setVoice", &json!({"clip": vc, "voice": "robot"})).unwrap();
+    let sound = s.execute("clip.detachAudio", &json!({"clip": vc})).unwrap()["audio"].as_str().unwrap().to_string();
+    let p = s.project();
+    assert!(p.clip(&vc).unwrap().1.voice.is_empty());
+    assert_eq!(p.clip(&sound).unwrap().1.voice.kind, Some(reelforge_model::VoiceKind::Robot));
+    assert!(s.execute("clip.setVoice", &json!({"clip": vc, "voice": "low"})).is_err());
+}

@@ -46,7 +46,7 @@ use reelforge_engine::{Session, SharedSession};
 use reelforge_media::Footage;
 use reelforge_model::{
     Adjust, AnimKind, BlendMode, ClipContent, ClipTransform, CurvePreset, FilterKind, Mask, MaskKind, MediaKind,
-    Project, Prop, TrackKind, TransitionKind,
+    Project, Prop, TrackKind, TransitionKind, VoiceKind,
 };
 use reelforge_render::{Quality, render_frame};
 use reelforge_time::Tick;
@@ -247,6 +247,18 @@ struct Inspector {
     fx: Option<Vec<reelforge_model::Fx>>,
     /// An adjustment clip: nothing to place, only effects and colour.
     adjustment: bool,
+    /// Clips whose sound plays: a changed voice, a moved pitch, noise taken out.
+    voice: Option<VoiceEdit>,
+}
+
+/// A sounding clip's voice, as the inspector edits it.
+#[derive(Clone, PartialEq)]
+struct VoiceEdit {
+    kind: Option<VoiceKind>,
+    /// Semitones, on top of the voice's own.
+    pitch: f32,
+    /// How much noise is taken out, in percent, when any is.
+    denoise: Option<f32>,
 }
 
 /// A picture clip's crop, mirror, blend and mask, as the inspector edits it.
@@ -517,6 +529,34 @@ impl EditorApp {
                 Err(e.to_string())
             }
         }
+    }
+
+    /// Runs a tool that listens to the media before it edits (`reelforge_engine::listen`): what it
+    /// plans is one edit, and what it found, or why it could not, goes to the status bar.
+    pub fn listen(&mut self, tool: &str, params: &Value) {
+        let name = self.lang.command(tool);
+        let plan = match reelforge_engine::listen::plan(tool, &self.project(), &self.media, params) {
+            Ok(plan) => plan,
+            Err(e) => {
+                self.status = format!("{name}: {e}");
+                return;
+            }
+        };
+        if !plan.steps.is_empty() && self.execute("edit.batch", json!({"steps": plan.steps, "label": name})).is_err() {
+            return;
+        }
+        let s = self.s();
+        let found = &plan.found;
+        self.status = match tool {
+            "audio.beats" if found.get("bpm").is_some() => fill(s.beats_found, &[&found["bpm"], &found["beats"]]),
+            "audio.normalize" => {
+                let n = found["clips"].as_array().map_or(0, |l| l.iter().filter(|c| !c["lufs"].is_null()).count());
+                fill(s.loudness_done, &[&n])
+            }
+            "audio.duck" => fill(s.duck_done, &[&found["spans"]]),
+            "audio.denoise" if found.get("noiseDb").is_some() => fill(s.denoise_done, &[&found["noiseDb"]]),
+            _ => fill(s.done, &[&name]),
+        };
     }
 
     /// Runs a command on this editor's session and, when it joined a server, sends it there.
@@ -1825,6 +1865,11 @@ impl EditorApp {
             }),
             fx: picture.then(|| clip.fx.clone()),
             adjustment,
+            voice: (has_sound && matches!(clip.content, ClipContent::Media { silent: false, .. })).then(|| VoiceEdit {
+                kind: clip.voice.kind,
+                pitch: clip.voice.pitch,
+                denoise: clip.voice.denoise.as_ref().map(|d| (d.amount * 100.0).round()),
+            }),
             look: (picture && !adjustment).then(|| LookEdit {
                 media: matches!(&clip.content, ClipContent::Media { media, .. }
                         if p.media.get(media).is_some_and(|m| m.kind != MediaKind::Audio)),
@@ -1911,6 +1956,8 @@ impl EditorApp {
         }
         let mut wear: Option<&'static str> = None;
         let looks = self.looks.as_deref().unwrap_or_default();
+        // tools that work on several clips take the whole selection when this clip is in it
+        let chosen = Some(self.selection()).filter(|all| all.contains(&id)).unwrap_or_else(|| vec![id.clone()]);
         let edit = self.inspector.as_mut().expect("set above");
         let mut commit = false;
         // commands the panel asks for beyond the values above
@@ -2334,7 +2381,92 @@ impl EditorApp {
                                 ui.end_row();
                             }
                         }
+                        if let Some(voice) = &mut edit.voice {
+                            ui.label(egui::RichText::new(s.voice).color(theme::color::WEAK));
+                            let name = |k: Option<VoiceKind>| {
+                                k.and_then(|k| VoiceKind::ALL.iter().position(|x| *x == k))
+                                    .map_or(s.voice_none, |i| s.voice_names[i])
+                            };
+                            let mut picked = voice.kind;
+                            egui::ComboBox::from_id_salt("voice").selected_text(name(voice.kind)).width(110.0).show_ui(
+                                ui,
+                                |ui| {
+                                    ui.selectable_value(&mut picked, None, s.voice_none);
+                                    for (k, label) in VoiceKind::ALL.into_iter().zip(s.voice_names.iter()) {
+                                        ui.selectable_value(&mut picked, Some(k), *label);
+                                    }
+                                },
+                            );
+                            if picked != voice.kind {
+                                actions
+                                    .push(("clip.setVoice", json!({"clip": id, "voice": picked.map(VoiceKind::name)})));
+                            }
+                            ui.label("");
+                            ui.end_row();
+                            ui.label(egui::RichText::new(s.pitch).color(theme::color::WEAK));
+                            let r = ui.add_sized(
+                                [ui.available_width() - 26.0, 24.0],
+                                egui::DragValue::new(&mut voice.pitch).speed(0.1).range(-12.0..=12.0).max_decimals(1),
+                            );
+                            if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                                actions.push(("clip.setVoice", json!({"clip": id, "pitch": voice.pitch})));
+                            }
+                            ui.label("");
+                            ui.end_row();
+                            ui.label(egui::RichText::new(s.denoise).color(theme::color::WEAK));
+                            ui.horizontal(|ui| {
+                                let mut on = voice.denoise.is_some();
+                                if ui.checkbox(&mut on, "").on_hover_text(s.denoise_tip).changed() {
+                                    actions.push(if on {
+                                        ("audio.denoise", json!({"clip": id}))
+                                    } else {
+                                        ("clip.setDenoise", json!({"clip": id, "amount": 0}))
+                                    });
+                                }
+                                if let Some(amount) = &mut voice.denoise {
+                                    let r = ui.add(
+                                        egui::DragValue::new(amount)
+                                            .speed(1.0)
+                                            .range(5.0..=100.0)
+                                            .suffix(" %")
+                                            .max_decimals(0),
+                                    );
+                                    if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                                        actions
+                                            .push(("clip.setDenoise", json!({"clip": id, "amount": *amount / 100.0})));
+                                    }
+                                }
+                            });
+                            ui.label("");
+                            ui.end_row();
+                        }
                     });
+                    if edit.voice.is_some() {
+                        ui.add_space(4.0);
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.button(s.loudness).on_hover_text(s.loudness_tip).clicked() {
+                                actions.push(("audio.normalize", json!({"clips": chosen})));
+                            }
+                            ui.menu_button(s.beats, |ui| {
+                                for (n, label) in [1, 2, 4].into_iter().zip(s.beats_every) {
+                                    if ui.button(label).clicked() {
+                                        actions.push(("audio.beats", json!({"clip": id, "every": n})));
+                                        ui.close();
+                                    }
+                                }
+                                ui.separator();
+                                if ui.button(s.beats_clear).clicked() {
+                                    actions.push(("audio.beats", json!({"clip": id, "clear": true})));
+                                    ui.close();
+                                }
+                            })
+                            .response
+                            .on_hover_text(s.beats_tip);
+                            if ui.button(s.duck).on_hover_text(s.duck_tip).clicked() {
+                                actions.push(("audio.duck", json!({"clip": id})));
+                            }
+                        });
+                    }
                 });
             }
             if let Some(sp) = &mut edit.speed {
@@ -2504,7 +2636,11 @@ impl EditorApp {
         let picked = self.inspector.as_ref().is_some_and(|e| e.color != current.color);
         commit |= picked && !ui.ctx().egui_is_using_pointer();
         for (cmd, params) in actions {
-            let _ = self.execute(cmd, params);
+            if cmd.starts_with("audio.") {
+                self.listen(cmd, &params);
+            } else {
+                let _ = self.execute(cmd, params);
+            }
         }
         if commit && self.inspector.as_ref() != Some(&current) {
             let e = self.inspector.clone().expect("set");

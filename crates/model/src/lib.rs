@@ -25,6 +25,7 @@ pub mod look;
 pub mod timeline;
 pub mod timing;
 pub mod transition;
+pub mod voice;
 
 pub use anim::{AnimKind, Animation, Animations, Ease, Key, Keys, Offset, Prop};
 pub use color::{Adjust, ColorGrade, Filter, FilterKind, LutUse};
@@ -34,6 +35,7 @@ pub use look::{BlendMode, Crop, Look, Mask, MaskKind};
 pub use timeline::{Timeline, TimelineInfo};
 pub use timing::{CurvePoint, CurvePreset, Timing};
 pub use transition::{Transition, TransitionKind};
+pub use voice::{Denoise, Voice, VoiceKind, VoicePart};
 
 /// The document version this build writes. Older documents keep loading.
 pub const DOCUMENT_VERSION: u32 = 1;
@@ -219,6 +221,9 @@ pub struct Clip {
     /// clip, on everything on the tracks below.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fx: Vec<Fx>,
+    /// A changed voice, a moved pitch, noise taken out (clips with sound).
+    #[serde(default, skip_serializing_if = "Voice::is_empty")]
+    pub voice: Voice,
 }
 
 fn yes() -> bool {
@@ -678,6 +683,12 @@ impl Project {
                         return Err(ModelError::UnknownMedia(clip.id.clone(), l.media.clone()));
                     }
                 }
+                if let Some(why) = clip.voice.problem() {
+                    return motion(why);
+                }
+                if !clip.voice.is_empty() && !matches!(clip.content, ClipContent::Media { .. }) {
+                    return motion("only a clip with sound has a voice to change");
+                }
                 if let Some(why) = clip.fx.iter().find_map(Fx::problem) {
                     return motion(why);
                 }
@@ -788,6 +799,7 @@ mod tests {
             color: Default::default(),
             look: Default::default(),
             fx: vec![],
+            voice: Default::default(),
         }
     }
 

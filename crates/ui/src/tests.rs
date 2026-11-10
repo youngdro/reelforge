@@ -372,3 +372,36 @@ fn videos_track(app: &EditorApp, n: usize) -> String {
     let p = app.project();
     p.tracks.iter().filter(|t| t.kind == reelforge_model::TrackKind::Video).nth(n).unwrap().id.clone()
 }
+
+#[test]
+fn the_editor_listens_with_the_media_it_holds_and_says_what_it_found() {
+    let wav = std::env::temp_dir().join(format!("reelforge-ui-listen-{}.wav", std::process::id()));
+    std::fs::write(&wav, tone_wav(44_100, 3.0)).unwrap();
+    let mut app = EditorApp::new(Session::default());
+    app.lang = crate::i18n::Lang::Zh;
+    let m = app.execute("media.import", json!({"path": wav})).unwrap()["media"]["id"].as_str().unwrap().to_string();
+    let audio = first_track(&app, reelforge_model::TrackKind::Audio);
+    let clip =
+        app.execute("clip.add", json!({"track": audio, "media": m})).unwrap()["clip"].as_str().unwrap().to_string();
+    let volume = |app: &EditorApp| app.project().clip(&clip).unwrap().1.volume_db;
+
+    // the tone (in one ear, at about -9 dBFS) is brought to the target in one step that undoes as one
+    app.listen("audio.normalize", &json!({"clips": [clip], "target": -20}));
+    assert!(app.status.contains("1 个片段"), "{}", app.status);
+    assert!((-12.0..-4.0).contains(&volume(&app)), "{}", volume(&app));
+    app.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(volume(&app), 0.0);
+
+    // a steady tone has no beat and nothing to duck under: said, and nothing changes
+    let before = app.project();
+    app.listen("audio.beats", &json!({"clip": clip}));
+    assert!(app.status.starts_with("踩点: "), "{}", app.status);
+    app.listen("audio.duck", &json!({"clip": clip}));
+    assert!(app.status.starts_with("自动压低配乐: "), "{}", app.status);
+    assert!(Arc::ptr_eq(&before, &app.project()) || *before == *app.project());
+
+    // its noise is measured (a tone is all there is, so that is what is found) and kept on the clip
+    app.listen("audio.denoise", &json!({"clip": clip, "amount": 0.4}));
+    assert!(app.status.contains("dB"), "{}", app.status);
+    assert_eq!(app.project().clip(&clip).unwrap().1.voice.denoise.as_ref().unwrap().amount, 0.4);
+}

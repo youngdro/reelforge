@@ -895,6 +895,59 @@ pub struct AudioClip {
     /// `audio.stretch/1`) instead of resampling it, which moves the pitch with the speed.
     #[serde(default, skip_serializing_if = "is_false")]
     pub keep_pitch: bool,
+    /// Semitones the sound is moved up (negative: down) without changing how long it lasts
+    /// (feature `audio.pitch/1`). Sound played backwards ignores it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pitch: f32,
+    /// What is done to the sound, in order, before its gain (feature `audio.fx/1`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fx: Vec<AudioEffect>,
+}
+
+/// One thing done to a clip's sound. Each is a function of the clip's own samples, counted from
+/// its start (what came before the clip is silence), so a mix made in pieces matches one made
+/// whole.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AudioEffect {
+    /// Steady background noise taken out. The sound is cut into frames of 1024 samples half a
+    /// frame apart; in each, what does not rise above the noise is turned down.
+    Denoise {
+        /// The noise: its power density in dB (full scale squared per hertz) in each of
+        /// [`AudioEffect::NOISE_BANDS`] bands evenly spaced on a log scale from 60 Hz to 16 kHz,
+        /// the first and last taking what lies beyond.
+        floor: Vec<f32>,
+        /// How much is taken out, from 0 (nothing) to 1.
+        amount: f32,
+    },
+    /// Only what lies between two frequencies is kept, as through a telephone.
+    Band {
+        /// The lowest frequency kept, in Hz.
+        low: f32,
+        /// The highest frequency kept, in Hz.
+        high: f32,
+    },
+    /// The sound multiplied by a sine wave (ring modulation): a robot's voice.
+    Ring {
+        /// The sine's frequency in Hz.
+        hz: f32,
+        /// How much of the result is the modulated sound, from 0 to 1.
+        mix: f32,
+    },
+    /// The sound again, later and quieter, a number of times.
+    Echo {
+        /// The time between repeats.
+        delay: Tick,
+        /// How loud each repeat is next to the one before, from 0 to 1.
+        decay: f32,
+        /// How many repeats, from 1 to 8.
+        repeats: u32,
+    },
+}
+
+impl AudioEffect {
+    /// How many bands a noise profile has.
+    pub const NOISE_BANDS: usize = 24;
 }
 
 fn is_false(b: &bool) -> bool {
@@ -1047,6 +1100,12 @@ impl RenderSpec {
             out.extend(a.time.features().map(str::to_string));
             if a.keep_pitch && (a.time.speed != 1.0 || !a.time.ramp.is_empty()) {
                 out.insert("audio.stretch/1".to_string());
+            }
+            if a.pitch != 0.0 {
+                out.insert("audio.pitch/1".to_string());
+            }
+            if !a.fx.is_empty() {
+                out.insert("audio.fx/1".to_string());
             }
         }
         out

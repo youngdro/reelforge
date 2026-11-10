@@ -42,9 +42,11 @@ pub use media::{MediaSource, NoMedia, StillImages};
 pub use plan::{FramePlan, PlannedLayer, PlannedSource, plan_frame};
 pub use yuv::Yuv;
 
-/// Feature ids this renderer implements; see `RenderSpec::required_features`. (`audio.stretch/1` is
+/// Feature ids this renderer implements; see `RenderSpec::required_features`. (The `audio.*` ones are
 /// `reelforge-media`'s mix, which every reelforge renderer of sound uses.)
 pub const SUPPORTED_FEATURES: &[&str] = &[
+    "audio.fx/1",
+    "audio.pitch/1",
     "audio.stretch/1",
     "blend/2",
     "blur.gaussian@1",

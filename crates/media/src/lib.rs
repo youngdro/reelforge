@@ -11,9 +11,11 @@
 //! No FFmpeg and no C libraries, so the same code builds for the browser. There the page hands
 //! file bytes over with [`Footage::insert_bytes`]; natively a `file:` URI is read on demand.
 
+pub mod analysis;
 pub mod export;
 pub mod library;
 mod shrunk;
+pub mod sound;
 pub mod stickers;
 pub mod stretch;
 pub mod webcodecs;

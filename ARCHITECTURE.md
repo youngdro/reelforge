@@ -94,7 +94,14 @@ In rough priority order for short videos:
    AudioWorklet). In place: fades and volume keyframes (lowered to `gain_db` keys), speed changes
    that keep the pitch (`audio.stretch/1`, WSOLA in `reelforge_media::stretch`, chained in fixed
    blocks so a mix made in slices matches one made whole), sound played backwards or along a speed curve
-   (`time.reverse/1` read like tape; `time.ramp/1` through the same stretch), silent freeze frames (`time.hold/1`), and the export's mix (`reelforge_media::export::mix`) plays in the
+   (`time.reverse/1` read like tape; `time.ramp/1` through the same stretch), silent freeze frames (`time.hold/1`), a clip's pitch moved without
+   changing its length (`audio.pitch/1`: read faster or slower, stretched back) and its sound changed before its gain (`audio.fx/1`,
+   `reelforge_media::sound`: noise taken out against a measured floor, a band kept, a ring, an echo, each a function of the clip's
+   own samples so slices still match the whole; a clip's `voice` in the model is lowered to these). Tools that listen before they
+   edit (`reelforge_engine::listen`, over `reelforge_media::analysis`: BS.1770 loudness, beats, where a voice is heard, a noise
+   floor) read a project and its media and answer with ordinary commands to run as one `edit.batch`; the server exposes them as
+   the operations `audio.normalize`, `audio.beats`, `audio.duck` and `audio.denoise`, and the editor calls them with the media it
+   holds. The export's mix (`reelforge_media::export::mix`) plays in the
    preview (`reelforge-ui`'s `audio`, through cpal: ALSA, CoreAudio, WASAPI, WebAudio), mixed a
    quarter second ahead on the editor's thread; while it plays the device's sample count is the
    playhead, so picture follows sound, and an edit or a seek mixes again from the playhead.
