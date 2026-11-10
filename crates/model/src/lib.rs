@@ -242,6 +242,11 @@ pub struct Clip {
     /// The group it belongs to (`g…`): clips of one group are selected and moved together.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// The slot of a template this clip is, from 1 (剪映's 剪同款): a picture made to be replaced
+    /// by one of the person's own, keeping its place, its length and everything set on it. A slot
+    /// that is still a colour is empty. Clips with the same number take the same file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<u32>,
 }
 
 fn yes() -> bool {
@@ -780,6 +785,15 @@ impl Project {
                 if clip.transition.is_some_and(|t| t.duration <= Tick::ZERO) {
                     return motion("a transition must have a positive length");
                 }
+                if clip.slot == Some(0) {
+                    return motion("template slots count from 1");
+                }
+                if clip.slot.is_some()
+                    && !(track.kind == TrackKind::Video
+                        && matches!(clip.content, ClipContent::Media { .. } | ClipContent::Solid { .. }))
+                {
+                    return motion("only a picture on a video track can be a template slot");
+                }
                 let fits = match &clip.content {
                     ClipContent::Media { media, speed, .. } => {
                         let Some(m) = self.media.get(media) else {
@@ -935,6 +949,7 @@ mod tests {
             fx: vec![],
             voice: Default::default(),
             group: None,
+            slot: None,
         }
     }
 

@@ -2030,3 +2030,161 @@ fn time_is_cut_out_of_every_track_and_filler_captions_go_with_theirs() {
     assert!(s.execute("timeline.cut", &json!({"ranges": [{"from": secs(2.0), "to": secs(2.0)}]})).is_err());
     assert!(s.execute("timeline.cut", &json!({"ranges": [{"from": 0, "to": 5}], "tracks": ["t99"]})).is_err());
 }
+
+fn import(s: &mut Session, name: &str, kind: &str, secs: Option<f64>) -> String {
+    let mut params = json!({"path": format!("/nowhere/{name}"), "kind": kind, "sha256": "cd".repeat(32)});
+    if let Some(secs) = secs {
+        params["duration"] = json!({"seconds": secs});
+    }
+    s.execute("media.import", &params).unwrap()["media"]["id"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn a_template_is_built_with_slots_that_files_fill_keeping_what_is_set_on_them() {
+    let mut s = Session::default();
+    let listed = s.execute("template.list", &json!({})).unwrap();
+    let ids: Vec<&str> = listed["templates"].as_array().unwrap().iter().map(|t| t["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["beat", "vlog", "cinematic", "showcase"]);
+    assert_eq!(
+        (listed["templates"][0]["slots"].as_u64(), listed["templates"][0]["seconds"].as_f64()),
+        (Some(10), Some(16.0))
+    );
+
+    // every built-in template builds a timeline that compiles, with all its slots empty
+    for id in &ids {
+        let mut s = Session::default();
+        let r = s.execute("template.apply", &json!({"template": id})).unwrap();
+        let slots = crate::timeline_template(id).unwrap().slots();
+        assert_eq!((r["slots"].as_array().unwrap().len(), r["empty"].as_u64()), (slots, Some(slots as u64)), "{id}");
+        s.execute("render.compile", &json!({})).unwrap_or_else(|e| panic!("{id}: {e}"));
+        // one undo step takes all of it away
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(s.project().tracks.iter().all(|t| t.clips.is_empty()), "{id}");
+    }
+
+    // on an empty timeline it is built in place, with the titles' words as given
+    let r = s.execute("template.apply", &json!({"template": "cinematic", "texts": ["海边", null]})).unwrap();
+    assert_eq!(s.project().timeline_list().len(), 1);
+    assert_eq!(r["texts"][0]["text"], "海边");
+    assert_eq!(r["texts"][1]["text"], "THE END");
+    let clips: Vec<String> = r["clips"].as_array().unwrap().iter().map(|c| c.as_str().unwrap().to_string()).collect();
+    let before = s.project().clip(&clips[1]).unwrap().1.clone();
+    assert!(crate::is_empty_slot(&before) && before.transition.is_some() && !before.fx.is_empty());
+
+    // files fill the empty slots in order: a still, a long video, a short one (slowed to fill)
+    let still = import(&mut s, "a.png", "image", None);
+    let long = import(&mut s, "b.mp4", "video", Some(10.0));
+    let short = import(&mut s, "c.mp4", "video", Some(1.0));
+    let r = s.execute("template.fill", &json!({"media": [still, long]})).unwrap();
+    assert_eq!((r["filled"].clone(), r["empty"].as_u64()), (json!([1, 2]), Some(2)));
+    let after = s.project().clip(&clips[1]).unwrap().1.clone();
+    assert_eq!(after.content, ClipContent::media(long.clone(), Tick::ZERO));
+    // the place, the length and everything set on the slot stay
+    assert_eq!(
+        (after.start, after.duration, &after.transition, &after.fx, after.slot),
+        (before.start, before.duration, &before.transition, &before.fx, Some(2))
+    );
+    let r = s.execute("template.fill", &json!({"media": [short, null, long]})).unwrap();
+    assert_eq!((r["filled"].clone(), r["empty"].as_u64(), r["left"].clone()), (json!([3]), Some(1), json!([long])));
+    match &s.project().clip(&clips[2]).unwrap().1.content {
+        ClipContent::Media { media, speed, .. } => assert_eq!((media, *speed), (&short, 0.25)),
+        other => panic!("{other:?}"),
+    }
+    // asked not to slow, a short file is refused and nothing changes
+    let e = s.execute("template.fill", &json!({"media": [short], "fit": "refuse"})).unwrap_err().to_string();
+    assert!(e.contains("shorter"), "{e}");
+    assert!(crate::is_empty_slot(s.project().clip(&clips[3]).unwrap().1));
+
+    // from a slot on, what is there is replaced
+    let r = s.execute("template.fill", &json!({"media": [long], "from": 1})).unwrap();
+    assert_eq!(r["slots"][0]["media"], json!(long));
+    s.execute("render.compile", &json!({})).unwrap();
+
+    // what fills the frame goes on filling it: a wide picture in the tall canvas's empty slot is
+    // scaled to cover it, and a picture of the canvas's shape after it is back at 1
+    let sized = |s: &mut Session, name: &str, size: [u32; 2]| {
+        let params =
+            json!({"path": format!("/nowhere/{name}"), "kind": "image", "size": size, "sha256": "ef".repeat(32)});
+        s.execute("media.import", &params).unwrap()["media"]["id"].as_str().unwrap().to_string()
+    };
+    assert_eq!((s.project().canvas.width, s.project().canvas.height), (1080, 1920));
+    let (wide, tall) = (sized(&mut s, "wide.png", [1920, 1080]), sized(&mut s, "tall.png", [1080, 1920]));
+    let scale = |s: &Session| s.project().clip(&clips[3]).unwrap().1.transform.scale;
+    s.execute("template.fill", &json!({"media": [wide]})).unwrap();
+    assert!((scale(&s) - 3.1605).abs() < 0.001, "{}", scale(&s));
+    s.execute("template.fill", &json!({"media": [tall], "from": 4})).unwrap();
+    assert!((scale(&s) - 1.0).abs() < 0.001, "{}", scale(&s));
+    // a size the person set is theirs: it is not touched
+    s.execute("clip.set", &json!({"clip": clips[3], "scale": 0.5})).unwrap();
+    s.execute("template.fill", &json!({"media": [wide], "from": 4})).unwrap();
+    assert_eq!(scale(&s), 0.5);
+
+    // a second template gets a timeline of its own, filled as it is built
+    let r = s.execute("template.apply", &json!({"template": "beat", "media": [still, long], "name": "卡点"})).unwrap();
+    assert_eq!(s.project().timeline_list().len(), 2);
+    assert_eq!((r["empty"].as_u64(), r["slots"][1]["media"].clone()), (Some(8), json!(long)));
+    assert!(s.project().timeline_list().iter().any(|t| t.current && t.name == "卡点"));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.project().timeline_list().len(), 1);
+}
+
+#[test]
+fn any_picture_clip_is_replaced_or_made_a_slot() {
+    let mut s = Session::default();
+    let video = video_track(&s);
+    let a = add_video(&mut s, 6.0);
+    let b = add_red(&mut s, 6.0, 2.0);
+    let audio = s.project().tracks.iter().find(|t| t.kind == reelforge_model::TrackKind::Audio).unwrap().id.clone();
+    let song = import(&mut s, "song.wav", "audio", Some(30.0));
+    let music = s.execute("clip.add", &json!({"track": audio, "media": song, "duration": {"seconds": 8}})).unwrap();
+    let music = music["clip"].as_str().unwrap().to_string();
+    let title = s.execute("clip.add", &json!({"track": s.project().tracks[1].id, "text": "hi"})).unwrap();
+    let title = title["clip"].as_str().unwrap().to_string();
+
+    // a video at half speed with an animation: another video takes its place and runs the same way
+    s.execute("clip.setSpeed", &json!({"clip": a, "speed": 2.0})).unwrap();
+    s.execute("clip.setAnimation", &json!({"clip": a, "slot": "in", "kind": "fade"})).unwrap();
+    let before = s.project().clip(&a).unwrap().1.clone();
+    let other = import(&mut s, "other.mp4", "video", Some(20.0));
+    let r = s.execute("clip.replace", &json!({"clip": a, "media": other, "sourceIn": {"seconds": 5}})).unwrap();
+    assert_eq!(r["speed"], 2.0);
+    let after = s.project().clip(&a).unwrap().1.clone();
+    assert_eq!((after.start, after.duration, &after.anim), (before.start, before.duration, &before.anim));
+    assert_eq!(source_at(&s, &a, 1.0), Tick::from_seconds(7.0));
+    // one that ends too soon is refused, unless it may be slowed down
+    let brief = import(&mut s, "brief.mp4", "video", Some(1.5));
+    let e = s.execute("clip.replace", &json!({"clip": a, "media": brief})).unwrap_err().to_string();
+    assert!(e.contains("shorter") && e.contains("slow"), "{e}");
+    s.execute("clip.replace", &json!({"clip": a, "media": brief, "fit": "slow"})).unwrap();
+    assert_eq!(source_at(&s, &a, before.duration.seconds()), Tick::from_seconds(1.5));
+    // a colour takes a picture; a sound takes a sound; nothing else is replaced
+    let still = import(&mut s, "p.png", "image", None);
+    s.execute("clip.replace", &json!({"clip": b, "media": still})).unwrap();
+    s.execute("clip.replace", &json!({"clip": music, "media": song, "sourceIn": {"seconds": 10}})).unwrap();
+    for (clip, media) in [(&music, &still), (&b, &song), (&title, &still)] {
+        assert!(s.execute("clip.replace", &json!({"clip": clip, "media": media})).is_err(), "{clip} {media}");
+    }
+
+    // pictures become slots in the order they play; a sound or a title cannot
+    let r = s.execute("template.mark", &json!({"clips": [b, a]})).unwrap();
+    assert_eq!(r["clips"], json!([{"clip": a, "slot": 1}, {"clip": b, "slot": 2}]));
+    assert!(s.execute("template.mark", &json!({"clips": [music]})).is_err());
+    assert!(s.execute("template.mark", &json!({"clips": [title]})).is_err());
+    let r = s.execute("template.slots", &json!({})).unwrap();
+    assert_eq!(
+        (r["slots"].as_array().unwrap().len(), r["empty"].as_u64(), r["texts"][0]["text"].clone()),
+        (2, Some(0), json!("hi"))
+    );
+    // the same edit with other files
+    s.execute("template.fill", &json!({"media": [other, other], "from": 1})).unwrap();
+    assert_eq!(source_at(&s, &a, 0.0), Tick::ZERO);
+    // two clips with one number take the same file; null makes them ordinary again
+    s.execute("template.mark", &json!({"clips": [b], "slot": 1})).unwrap();
+    s.execute("template.fill", &json!({"media": [still], "from": 1})).unwrap();
+    for clip in [&a, &b] {
+        assert_eq!(s.project().clip(clip).unwrap().1.content, ClipContent::media(still.clone(), Tick::ZERO));
+    }
+    s.execute("template.mark", &json!({"clips": [a, b], "slot": null})).unwrap();
+    assert!(s.execute("template.fill", &json!({"media": [still]})).is_err());
+    let _ = video;
+}

@@ -732,6 +732,60 @@ static REGISTRY: &[CommandSpec] = &[
         run: clip_set_transition,
     },
     CommandSpec {
+        id: "clip.replace",
+        label: "Replace",
+        params: r#"{"clip": id, "media": id, "sourceIn"?: time, "fit"?: "refuse"|"slow"}"#,
+        doc: "Makes a clip show (or play) another file of the project, in the same place for the same length, with everything set on it: effects, animations, keyframes, transition, colour, crop, speed. A picture or a colour on a video track takes a video or an image; a sound takes a sound. A video plays from `sourceIn` (its start by default); one too short for the clip is refused, or with `fit: \"slow\"` slowed down to fill it. What filled the frame goes on filling it: in place of a colour, or of a picture scaled to cover the canvas, a picture of another shape is scaled to cover it.",
+        edits: true,
+        enabled: always,
+        run: crate::remix::clip_replace,
+    },
+    CommandSpec {
+        id: "template.list",
+        label: "Templates",
+        params: "{}",
+        doc: "Lists the built-in timeline templates (剪同款): for each its id, names, what it is for, how many pictures it takes (`slots`), its length in seconds and its music.",
+        edits: false,
+        enabled: always,
+        run: crate::remix::template_list,
+    },
+    CommandSpec {
+        id: "template.apply",
+        label: "Use Template",
+        params: r#"{"template": id, "media"?: [id | null], "texts"?: [string | null], "name"?: string}"#,
+        doc: "Builds a built-in template (template.list): music from the sound library, titles, transitions and effects, and a colour where each picture goes, a slot. It is built on the timeline being edited when that is empty, else on a new timeline called `name` (the template's name by default). `media` fills the slots in order as template.fill does; `texts` are the titles' words in order (null keeps a title's own). One undo step. Returns the slots as template.slots does, with `timeline` and the slots' `clips`.",
+        edits: true,
+        enabled: always,
+        run: crate::remix::template_apply,
+    },
+    CommandSpec {
+        id: "template.slots",
+        label: "Template Slots",
+        params: "{}",
+        doc: "The template slots of the timeline being edited, by number: for each its `clips`, where it starts, the longest it shows, whether it is `filled` and with which `media`; how many are `empty`; and the timeline's titles (`texts`, with clip ids for clip.set).",
+        edits: false,
+        enabled: always,
+        run: crate::remix::template_slots,
+    },
+    CommandSpec {
+        id: "template.fill",
+        label: "Fill Template",
+        params: r#"{"media": [id | null], "from"?: slot, "fit"?: "slow"|"refuse"}"#,
+        doc: "Puts files of the project into the timeline's template slots, in order: into the empty slots, or, with `from`, into every slot from that number on, replacing what is there (null skips a slot). Each slot's clips keep their place, length and everything set on them (clip.replace). A video shorter than its slot is slowed down to fill it unless `fit` is \"refuse\". Returns the slots as template.slots does, the numbers `filled`, and the files `left` over when there were more than slots.",
+        edits: true,
+        enabled: always,
+        run: crate::remix::template_fill,
+    },
+    CommandSpec {
+        id: "template.mark",
+        label: "Template Slot",
+        params: r#"{"clips": id | [id], "slot"?: number | null}"#,
+        doc: "Makes picture clips on video tracks template slots, so the timeline can be used again with other files (template.fill): each gets the next free number, in the order they play, or all get `slot` (clips with one number take the same file). null makes them ordinary clips again. What a clip shows does not change.",
+        edits: true,
+        enabled: always,
+        run: crate::remix::template_mark,
+    },
+    CommandSpec {
         id: "edit.undo",
         label: "Undo",
         params: "{}",
@@ -918,6 +972,7 @@ fn sound_add(s: &mut Session, v: &Value) -> CmdResult {
             fx: vec![],
             voice: Default::default(),
             group: None,
+            slot: None,
         };
         proj.track_mut(&track).expect("found above").clips.push(c);
         Ok(json!({ "media": media, "track": track, "clip": clip, "start": start, "duration": duration }))
@@ -1553,6 +1608,7 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
             fx,
             voice: Default::default(),
             group: None,
+            slot: None,
         };
         proj.track_mut(&track_id).expect("found above").clips.push(clip);
         Ok(json!({ "clip": id, "start": start, "duration": duration }))
@@ -3137,34 +3193,49 @@ fn edit_batch(s: &mut Session, v: &Value) -> CmdResult {
         .ok_or_else(|| EngineError::Params("`steps` must be a list".into()))?
         .clone();
     let label = v.get("label").and_then(Value::as_str).unwrap_or("Batch").to_string();
+    let results = one_step(s, &label, |s| {
+        let mut results = Vec::new();
+        for (i, step) in steps.iter().enumerate() {
+            let id = step.get("id").and_then(Value::as_str).unwrap_or_default();
+            let params = step.get("params").cloned().unwrap_or(Value::Null);
+            let r = if id == "edit.undo" || id == "edit.redo" || id == "edit.batch" {
+                Err(EngineError::Params(format!("{id} cannot run inside a batch")))
+            } else {
+                s.execute(id, &params)
+            };
+            results.push(r.map_err(|e| EngineError::Refused(format!("step {i} ({id}) failed, nothing applied: {e}")))?);
+        }
+        Ok(results)
+    })?;
+    Ok(json!({ "results": results }))
+}
+
+/// Runs `f`, which may run several commands, as one undo step called `label`; if it fails,
+/// nothing it did applies.
+pub(crate) fn one_step<T>(
+    s: &mut Session,
+    label: &str,
+    f: impl FnOnce(&mut Session) -> Result<T, EngineError>,
+) -> Result<T, EngineError> {
     let saved: (std::sync::Arc<Project>, usize, Vec<_>, u64) =
         (s.project.clone(), s.undo.len(), s.redo.clone(), s.revision);
-    let mut results = Vec::new();
-    for (i, step) in steps.iter().enumerate() {
-        let id = step.get("id").and_then(Value::as_str).unwrap_or_default();
-        let params = step.get("params").cloned().unwrap_or(Value::Null);
-        let r = if id == "edit.undo" || id == "edit.redo" || id == "edit.batch" {
-            Err(EngineError::Params(format!("{id} cannot run inside a batch")))
-        } else {
-            s.execute(id, &params)
-        };
-        match r {
-            Ok(v) => results.push(v),
-            Err(e) => {
-                s.project = saved.0;
+    match f(s) {
+        Ok(out) => {
+            if s.undo.len() > saved.1 {
+                let before = s.undo[saved.1].1.clone();
                 s.undo.truncate(saved.1);
-                s.redo = saved.2;
-                s.revision = saved.3;
-                return Err(EngineError::Refused(format!("step {i} ({id}) failed, nothing applied: {e}")));
+                s.undo.push((label.to_string(), before));
             }
+            Ok(out)
+        }
+        Err(e) => {
+            s.project = saved.0;
+            s.undo.truncate(saved.1);
+            s.redo = saved.2;
+            s.revision = saved.3;
+            Err(e)
         }
     }
-    if s.undo.len() > saved.1 {
-        let before = s.undo[saved.1].1.clone();
-        s.undo.truncate(saved.1);
-        s.undo.push((label, before));
-    }
-    Ok(json!({ "results": results }))
 }
 
 fn render_compile(s: &mut Session, v: &Value) -> CmdResult {

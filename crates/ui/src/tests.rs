@@ -365,6 +365,105 @@ fn an_unsaved_editor_keeps_drafts_to_open_start_copy_and_delete() {
 }
 
 #[test]
+fn a_template_starts_a_draft_whose_slots_take_the_pictures_added() {
+    use crate::assets::Item;
+    use crate::drafts::Ask;
+    use crate::i18n::Lang;
+    use reelforge_engine::slot_states;
+    use reelforge_model::ClipContent;
+    let mut store = std::collections::HashMap::<String, String>::new();
+    let mut app = EditorApp::demo().with_lang(Lang::Zh).with_drafts(&|_| None);
+    let png = |shade: u8| {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::RgbImage::from_pixel(32, 18, image::Rgb([shade, 60, 90]))
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        bytes.into_inner()
+    };
+    let filled = |app: &EditorApp| slot_states(&app.project()).iter().map(|(_, _, f)| *f).collect::<Vec<_>>();
+    let clip_of = |app: &EditorApp, n: u32| slot_states(&app.project())[n as usize - 1].1.clone();
+    let shows = |app: &EditorApp, clip: &str| match &app.project().clip(clip).unwrap().1.content {
+        ClipContent::Media { media, .. } => app.project().media[media].name.clone(),
+        _ => String::new(),
+    };
+
+    // a template from the drafts page is a new draft called what the template is called, with
+    // its slots empty and its titles in the interface's language
+    app.drafts_do(Ask::Template("showcase"), &mut store);
+    let drafts = app.drafts.as_ref().unwrap();
+    assert!(!drafts.home);
+    assert_eq!(drafts.current().unwrap().name, "新品展示");
+    assert_eq!(filled(&app), [false; 6]);
+    let p = app.project();
+    let titles: Vec<&str> = p
+        .tracks
+        .iter()
+        .flat_map(|t| &t.clips)
+        .filter_map(|c| match &c.content {
+            ClipContent::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(titles, ["新品上市", "现已发售"]);
+    assert_eq!(app.status, "新品展示：添加 6 段图片或视频即可填满");
+
+    // pictures dropped on the editor take the empty slots in order
+    app.import_bytes("a.png", png(40), true);
+    app.import_bytes("b.png", png(90), true);
+    assert_eq!(filled(&app), [true, true, false, false, false, false]);
+    assert_eq!((shows(&app, &clip_of(&app, 1)), shows(&app, &clip_of(&app, 2))), ("a.png".into(), "b.png".into()));
+    assert_eq!(app.selected, Some(clip_of(&app, 2)));
+    assert_eq!(app.status, "b.png 已填入空位 2");
+    let tracks = app.project().tracks.iter().map(|t| t.clips.len()).collect::<Vec<_>>();
+
+    // one dragged from the media onto a slot goes into that slot, filled or not
+    let a = app.project().media.values().find(|m| m.name == "a.png").unwrap().id.clone();
+    let (track, at) = {
+        let p = app.project();
+        let (t, c) = p.clip(&clip_of(&app, 5)).unwrap();
+        (p.tracks[t].id.clone(), c.start + Tick::from_seconds(0.5))
+    };
+    app.add_item(&Item::Media(a.clone()), at, Some(track.clone()));
+    assert_eq!(filled(&app), [true, true, false, false, true, false]);
+    let start_of_2 = app.project().clip(&clip_of(&app, 2)).unwrap().1.start;
+    app.add_item(&Item::Media(a), start_of_2, Some(track));
+    assert_eq!(shows(&app, &clip_of(&app, 2)), "a.png");
+    assert_eq!(app.project().tracks.iter().map(|t| t.clips.len()).collect::<Vec<_>>(), tracks, "no clip was added");
+
+    // Replace on a clip: the next picture picked takes its place
+    let first = clip_of(&app, 1);
+    app.selected = Some(first.clone());
+    app.into = Some(first.clone());
+    app.import_bytes("c.png", png(140), true);
+    assert_eq!(shows(&app, &first), "c.png");
+    assert_eq!((app.into.clone(), app.status.as_str()), (None, "已替换为 c.png"));
+    assert_eq!(filled(&app), [true, true, false, false, true, false]);
+
+    // a clip can stop being a slot; with no empty slot left, pictures go on the timeline as ever
+    app.selected = Some(clip_of(&app, 6));
+    app.mark_slots(false);
+    assert_eq!(slot_states(&app.project()).len(), 5);
+    for name in ["d.png", "e.png"] {
+        app.import_bytes(name, png(name.as_bytes()[0]), true);
+    }
+    assert_eq!(filled(&app), [true; 5]);
+    let before = app.project().tracks.iter().map(|t| t.clips.len()).sum::<usize>();
+    app.playhead = Tick::from_seconds(20.0);
+    app.import_bytes("f.png", png(200), true);
+    assert_eq!(app.project().tracks.iter().map(|t| t.clips.len()).sum::<usize>(), before + 1);
+
+    // in an editor on a project that is not empty, a template gets a timeline of its own
+    let mut app = EditorApp::demo().with_lang(Lang::En);
+    app.use_template("beat");
+    let p = app.project();
+    assert_eq!(p.timeline_list().len(), 2);
+    assert_eq!(p.timeline_list().iter().find(|t| t.current).unwrap().name, "Beat cuts");
+    assert_eq!(slot_states(&p).len(), 10);
+    app.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(app.project().timeline_list().len(), 1);
+}
+
+#[test]
 fn new_empties_the_project_and_undo_brings_it_back() {
     let mut app = EditorApp::demo();
     let before = app.project();

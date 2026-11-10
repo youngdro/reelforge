@@ -113,6 +113,10 @@ pub(crate) enum Action {
     File(Vec<String>, Option<String>),
     /// Something asked of the captions list.
     Captions(crate::captions::Ask),
+    /// Use this built-in timeline template.
+    Template(&'static str),
+    /// Pick files to put in the empty slots of the timeline's template.
+    Fill,
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -124,6 +128,7 @@ enum Tab {
     Stickers,
     Effects,
     Captions,
+    Templates,
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -259,12 +264,19 @@ impl AssetPanel {
             Tab::Text => text_tab(ui, s, looks, &mut action),
             Tab::Stickers => self.stickers_tab(ui, s, &mut action),
             Tab::Effects => effects_tab(ui, &mut self.query, s, &mut action),
+            Tab::Templates => templates_tab(ui, p, s, &mut action),
             Tab::Captions => {
                 action = self.captions.show(ui, p, lang, playhead, selected, playing).map(Action::Captions);
             }
         }
         drag_preview(ui.ctx(), p, s);
         action
+    }
+
+    /// Shows the timeline templates: one was just used, and its slots are counted there.
+    pub(crate) fn show_templates(&mut self) {
+        self.tab = Tab::Templates;
+        self.query.clear();
     }
 
     /// Whether the text tab is showing (and so needs the templates' pictures).
@@ -282,6 +294,7 @@ impl AssetPanel {
                 (Tab::Stickers, icon::STICKER, s.tab_stickers),
                 (Tab::Effects, icon::SPARKLE, s.tab_effects),
                 (Tab::Captions, icon::CAPTIONS, s.tab_captions),
+                (Tab::Templates, icon::FILM, s.tab_templates),
             ];
             // as wide as the panel lets them be
             let w = ((ui.available_width() - 2.0 * (tabs.len() - 1) as f32) / tabs.len() as f32).clamp(36.0, 54.0);
@@ -880,6 +893,53 @@ fn effects_tab(ui: &mut egui::Ui, query: &mut String, s: &Strings, action: &mut 
                 }
             }
             ui.add_space(10.0);
+        }
+    });
+}
+
+/// Timeline templates (剪同款): how far the slots of the timeline being edited are filled, with a
+/// way to pick files for them, then the built-in templates to use.
+fn templates_tab(ui: &mut egui::Ui, p: &Project, s: &Strings, action: &mut Option<Action>) {
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        let slots = reelforge_engine::slot_states(p);
+        if !slots.is_empty() {
+            let filled = slots.iter().filter(|(_, _, filled)| *filled).count();
+            ui.label(
+                egui::RichText::new(fill(s.remix_progress, &[&filled.to_string(), &slots.len().to_string()])).strong(),
+            );
+            ui.add_space(2.0);
+            // one piece of the bar for each slot
+            let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
+            let gap = 2.0;
+            let w = (bar.width() - gap * (slots.len() - 1) as f32) / slots.len() as f32;
+            for (i, (_, _, filled)) in slots.iter().enumerate() {
+                let piece = Rect::from_min_size(
+                    bar.left_top() + vec2((w + gap) * i as f32, 0.0),
+                    vec2(w.max(1.0), bar.height()),
+                );
+                ui.painter().rect_filled(piece, 2.0, if *filled { color::ACCENT } else { color::RAISED });
+            }
+            ui.add_space(6.0);
+            if filled < slots.len() {
+                if theme::primary(ui, icon::IMPORT, s.remix_pick, true).on_hover_text(s.remix_pick_tip).clicked() {
+                    *action = Some(Action::Fill);
+                }
+            } else {
+                ui.label(egui::RichText::new(format!("{}  {}", icon::DONE, s.remix_done)).small().color(color::WEAK));
+            }
+            ui.add_space(8.0);
+            let y = ui.cursor().top();
+            ui.painter().hline(ui.max_rect().x_range(), y, Stroke::new(1.0, color::LINE));
+            ui.add_space(8.0);
+        }
+        ui.label(egui::RichText::new(s.remix_tip).small().color(color::WEAK));
+        ui.add_space(8.0);
+        for (i, t) in reelforge_engine::timeline_templates().iter().enumerate() {
+            let w = ui.available_width();
+            if crate::remix::card(ui, i, t, s, w).clicked() {
+                *action = Some(Action::Template(t.id));
+            }
+            ui.add_space(8.0);
         }
     });
 }

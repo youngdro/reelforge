@@ -44,6 +44,10 @@ pub(crate) struct TimelineView {
     menu_detachable: bool,
     /// Whether the clip the menu opened on is a compound clip.
     menu_compound: bool,
+    /// Whether the clip the menu opened on is a picture a file can replace (a video, a still or a
+    /// colour on a video track), and whether it is a template slot.
+    menu_picture: bool,
+    menu_slot: bool,
     /// The open menu was opened on this track's header, or on this marker in the ruler.
     menu_track: Option<String>,
     menu_marker: Option<String>,
@@ -123,6 +127,11 @@ pub(crate) enum Action {
     Uncompound,
     /// Edit what is inside the selected compound clip.
     OpenCompound,
+    /// Pick a file to show in the selected clip's place.
+    Replace,
+    /// Make the selected picture clips slots of a template, or no longer slots.
+    Slot,
+    Unslot,
 }
 
 impl Default for TimelineView {
@@ -136,6 +145,8 @@ impl Default for TimelineView {
             menu_on_clip: false,
             menu_detachable: false,
             menu_compound: false,
+            menu_picture: false,
+            menu_slot: false,
             menu_track: None,
             menu_marker: None,
             menu_at: Tick::ZERO,
@@ -896,6 +907,8 @@ impl TimelineView {
             self.menu_on_clip = false;
             self.menu_detachable = false;
             self.menu_compound = false;
+            self.menu_picture = false;
+            self.menu_slot = false;
             self.menu_at = fps.snap(t_of(pos.x).max(Tick::ZERO));
             if !in_lanes(pos) {
                 self.menu_track =
@@ -916,6 +929,17 @@ impl TimelineView {
                     }
                     self.menu_detachable = detachable(p, &h.clip);
                     self.menu_compound = p.clip(&h.clip).is_some_and(|(_, c)| c.compound().is_some());
+                    self.menu_picture = p.clip(&h.clip).is_some_and(|(t, c)| {
+                        p.tracks[t].kind == TrackKind::Video
+                            && match &c.content {
+                                ClipContent::Media { media, .. } => {
+                                    p.media.get(media).is_none_or(|m| m.kind != MediaKind::Audio)
+                                }
+                                ClipContent::Solid { .. } => true,
+                                _ => false,
+                            }
+                    });
+                    self.menu_slot = p.clip(&h.clip).is_some_and(|(_, c)| c.slot.is_some());
                     true
                 }
                 None => false,
@@ -924,6 +948,7 @@ impl TimelineView {
         let on_clip = self.menu_on_clip;
         let can_detach = self.menu_detachable;
         let on_compound = self.menu_compound;
+        let (on_picture, on_slot) = (self.menu_picture, self.menu_slot);
         let grouped = selected.iter().any(|id| p.clip(id).is_some_and(|(_, c)| c.group.is_some()));
         let several = selected.len() > 1;
         let (menu_track, menu_marker, menu_at) = (self.menu_track.clone(), self.menu_marker.clone(), self.menu_at);
@@ -990,6 +1015,15 @@ impl TimelineView {
                     item(ui, words.uncompound, "Alt+Shift+G", Action::Uncompound, true);
                 }
                 item(ui, words.compound, "Alt+G", Action::Compound, true);
+                if on_picture {
+                    ui.separator();
+                    item(ui, words.replace_media, "", Action::Replace, !several);
+                    if on_slot {
+                        item(ui, words.slot_unmark, "", Action::Unslot, true);
+                    } else {
+                        item(ui, words.slot_mark, "", Action::Slot, true);
+                    }
+                }
                 ui.separator();
                 item(ui, words.delete, "Delete", Action::Delete, true);
                 item(ui, words.ripple_delete, "Shift+Delete", Action::RippleDelete, true);
@@ -1037,12 +1071,19 @@ fn paint_clip(
                 _ => icon::VIDEO,
             };
             let fill = if kind == TrackKind::Audio { color::AUDIO } else { color::VIDEO };
-            (glyph, m.map_or(media.as_str(), |m| m.name.as_str()).to_string(), fill)
+            let name = m.map_or(media.as_str(), |m| m.name.as_str());
+            // a filled slot of a template says which
+            let label = clip.slot.map_or_else(|| name.to_string(), |n| format!("{n} · {name}"));
+            (glyph, label, fill)
         }
         ClipContent::Text { text, .. } => (icon::TEXT, text.replace('\n', " "), color::TEXT_CLIP),
         ClipContent::Solid { color: c, .. } => {
             let swatch = Color32::from_rgb((c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8);
-            (icon::COLOUR, words.kind_colour.to_string(), swatch.lerp_to_gamma(color::VIDEO, 0.35))
+            match clip.slot {
+                // an empty slot of a template: a file goes here
+                Some(n) => (icon::ADD, crate::i18n::fill(words.slot_n, &[&n.to_string()]), swatch),
+                None => (icon::COLOUR, words.kind_colour.to_string(), swatch.lerp_to_gamma(color::VIDEO, 0.35)),
+            }
         }
         ClipContent::Compound { timeline, .. } => {
             // called what its timeline is called
@@ -1108,6 +1149,16 @@ fn paint_clip(
     let stroke =
         if selected { Stroke::new(2.0, color::ACCENT) } else { Stroke::new(1.0, Color32::from_black_alpha(90)) };
     painter.rect_stroke(r, radius, stroke, if selected { StrokeKind::Outside } else { StrokeKind::Inside });
+    if reelforge_engine::is_empty_slot(clip) && r.width() > 10.0 {
+        // an empty slot of a template is outlined in dashes: something goes here
+        let b = r.shrink(3.0);
+        let on = painter.with_clip_rect(r);
+        let ink = Stroke::new(1.0, Color32::from_white_alpha(if dim { 70 } else { 150 }));
+        let corners = [b.left_top(), b.right_top(), b.right_bottom(), b.left_bottom(), b.left_top()];
+        for pair in corners.windows(2) {
+            on.add(egui::Shape::dashed_line(&[pair[0], pair[1]], ink, 4.0, 3.0));
+        }
+    }
     if clip.group.is_some() && r.width() > 14.0 {
         // a grouped clip wears a tag in its top right corner
         let tag = Rect::from_min_size(r.right_top() + vec2(-13.0, 3.0), vec2(10.0, 5.0));

@@ -553,6 +553,7 @@ mod tests {
             fx: vec![],
             voice: Default::default(),
             group: None,
+            slot: None,
         }
     }
 

@@ -45,6 +45,13 @@ Opened without a project file (and in the browser without a server), the editor 
 as drafts on the device: the drafts page lists them with a picture of each, to open another, start a
 new one, or rename, copy or delete one. A narrow window (a phone held upright) shows the preview
 above and the timeline, the media or the inspector under it, one at a time.
+A template (剪同款) is an edit with slots where your pictures go: four are built in (`template.list`: beat
+cuts, a vlog opener, cinematic, a showcase), each with music, titles, transitions and effects.
+`template.apply` builds one, `template.fill` puts files in its slots in order (each keeps its length and
+everything set on it; a picture of another shape is scaled to cover the frame, a video too short is slowed
+to fill), and `clip.replace` swaps the file of any one clip. In the editor they are on the drafts page and
+in the Templates tab on the left: pick one, then drop your files in. Any timeline becomes a template by
+marking its picture clips as slots (`template.mark`, or a clip's menu).
 See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Video and audio codecs and containers are FilmCraft's clean-room, pure-Rust crates

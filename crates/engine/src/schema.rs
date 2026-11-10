@@ -191,7 +191,8 @@ pub fn input_schema(id: &str) -> Option<Value> {
     let clip = || ("clip", ident("Clip id, such as c4."));
     Some(match id {
         "commands.list" | "project.inspect" | "project.new" | "edit.undo" | "edit.redo" | "title.templates"
-        | "sound.library" | "timeline.list" | "fx.list" | "sticker.library" | "voice.list" => object(vec![], &[]),
+        | "sound.library" | "timeline.list" | "fx.list" | "sticker.library" | "voice.list" | "template.list"
+        | "template.slots" => object(vec![], &[]),
         "sound.add" => object(
             vec![
                 (
@@ -866,6 +867,93 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ),
             ],
             &["clip", "effect"],
+        ),
+        "clip.replace" => object(
+            vec![
+                clip(),
+                ("media", ident("The file that takes the clip's place: a media id, such as m2.")),
+                ("sourceIn", time("Where a video or a sound starts playing from; its start by default.")),
+                (
+                    "fit",
+                    json!({
+                        "enum": ["refuse", "slow"],
+                        "description": "What to do with a video shorter than the clip: refuse (the default), or slow it down to fill.",
+                    }),
+                ),
+            ],
+            &["clip", "media"],
+        ),
+        "template.apply" => object(
+            vec![
+                (
+                    "template",
+                    json!({"enum": crate::timeline_templates().iter().map(|t| t.id).collect::<Vec<_>>(), "description": "A built-in template (see template.list)."}),
+                ),
+                (
+                    "media",
+                    json!({
+                        "type": "array",
+                        "items": {"type": ["string", "null"]},
+                        "description": "Media ids for the slots, in order; null leaves a slot empty.",
+                    }),
+                ),
+                (
+                    "texts",
+                    json!({
+                        "type": "array",
+                        "items": {"type": ["string", "null"]},
+                        "description": "The titles' words, in order; null keeps a title's own.",
+                    }),
+                ),
+                ("name", ident("The new timeline's name, when the template gets a timeline of its own.")),
+            ],
+            &["template"],
+        ),
+        "template.fill" => object(
+            vec![
+                (
+                    "media",
+                    json!({
+                        "type": "array",
+                        "items": {"type": ["string", "null"]},
+                        "minItems": 1,
+                        "description": "Media ids for the slots, in order; null skips a slot.",
+                    }),
+                ),
+                (
+                    "from",
+                    json!({
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "The first slot to fill, replacing what is in it and those after; without it only empty slots are filled.",
+                    }),
+                ),
+                (
+                    "fit",
+                    json!({
+                        "enum": ["slow", "refuse"],
+                        "description": "What to do with a video shorter than its slot: slow it down to fill (the default), or refuse.",
+                    }),
+                ),
+            ],
+            &["media"],
+        ),
+        "template.mark" => object(
+            vec![
+                (
+                    "clips",
+                    json!({"description": "A clip id or a list of them: pictures on video tracks.", "oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}, "minItems": 1}]}),
+                ),
+                (
+                    "slot",
+                    json!({
+                        "type": ["integer", "null"],
+                        "minimum": 1,
+                        "description": "The slot's number for all of them; null makes them ordinary clips again. Without it each gets the next free number.",
+                    }),
+                ),
+            ],
+            &["clips"],
         ),
         "edit.batch" => object(
             vec![

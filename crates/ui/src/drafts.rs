@@ -102,6 +102,8 @@ pub(crate) enum Ask {
     Open(String),
     /// Start an empty one and edit it.
     New,
+    /// Start one from this built-in timeline template.
+    Template(&'static str),
     Rename(String, String),
     Duplicate(String),
     Delete(String),
@@ -347,6 +349,22 @@ impl Drafts {
             let room = ui.available_width();
             let columns = ((room + gap) / (CARD_MIN + gap)).floor().clamp(1.0, 6.0) as usize;
             let w = ((room - gap * (columns - 1) as f32) / columns as f32).floor().min(260.0);
+            // the built-in timeline templates: each starts a draft with its slots to fill
+            ui.label(egui::RichText::new(s.remix_start).strong().color(color::WEAK));
+            ui.add_space(6.0);
+            let templates: Vec<_> = reelforge_engine::timeline_templates().iter().enumerate().collect();
+            for row in templates.chunks(columns) {
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    for (i, t) in row {
+                        if crate::remix::card(ui, *i, t, s, w).clicked() {
+                            ask = Some(Ask::Template(t.id));
+                        }
+                    }
+                });
+                ui.add_space(gap);
+            }
+            ui.add_space(4.0);
             for row in all.chunks(columns) {
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = gap;

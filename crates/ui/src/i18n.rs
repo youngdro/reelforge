@@ -69,6 +69,13 @@ impl Lang {
         if name == reelforge_engine::CAPTIONS_TRACK_2 {
             return format!("{} 2", words[3]);
         }
+        // the tracks a timeline template makes
+        if name == "Stickers" {
+            return self.strings().tab_stickers.into();
+        }
+        if name == "Look" {
+            return self.strings().track_look.into();
+        }
         let Some((word, n)) = name.split_once(' ') else { return name.to_string() };
         if !n.chars().all(|c| c.is_ascii_digit()) {
             return name.to_string();
@@ -363,6 +370,28 @@ pub(crate) struct Strings {
     pub(crate) tab_audio: &'static str,
     pub(crate) tab_text: &'static str,
     pub(crate) tab_captions: &'static str,
+    pub(crate) tab_templates: &'static str,
+    /// The built-in timeline templates' names and what they are for, in the engine's order.
+    pub(crate) remix_names: [&'static str; 4],
+    pub(crate) remix_abouts: [&'static str; 4],
+    /// The words of each template's titles, in the order it shows them.
+    pub(crate) remix_texts: [[&'static str; 2]; 4],
+    /// The track a template puts its filter and effects on.
+    pub(crate) track_look: &'static str,
+    pub(crate) remix_tip: &'static str,
+    pub(crate) remix_info: &'static str,
+    pub(crate) remix_used: &'static str,
+    pub(crate) remix_progress: &'static str,
+    pub(crate) remix_pick: &'static str,
+    pub(crate) remix_pick_tip: &'static str,
+    pub(crate) remix_filled: &'static str,
+    pub(crate) remix_done: &'static str,
+    pub(crate) remix_start: &'static str,
+    pub(crate) slot_n: &'static str,
+    pub(crate) slot_mark: &'static str,
+    pub(crate) slot_unmark: &'static str,
+    pub(crate) replace_media: &'static str,
+    pub(crate) replaced: &'static str,
     pub(crate) cap_import: &'static str,
     pub(crate) cap_import_tip: &'static str,
     pub(crate) cap_second: &'static str,
@@ -543,6 +572,12 @@ static EN: Strings = Strings {
         ("project.setCanvas", "Canvas settings"),
         ("media.import", "Import"),
         ("media.set", "Media Name and Folder"),
+        ("clip.replace", "Replace"),
+        ("template.list", "Templates"),
+        ("template.apply", "Use Template"),
+        ("template.slots", "Template Slots"),
+        ("template.fill", "Fill Template"),
+        ("template.mark", "Template Slot"),
         ("media.remove", "Remove Media"),
         ("timeline.list", "Timelines"),
         ("capcut.import", "Import CapCut draft"),
@@ -979,6 +1014,35 @@ static EN: Strings = Strings {
     tab_audio: "Audio",
     tab_text: "Text",
     tab_captions: "Captions",
+    tab_templates: "Templates",
+    remix_names: ["Beat cuts", "Vlog opener", "Cinematic", "Showcase"],
+    remix_abouts: [
+        "Ten pictures cut on the beat, with a flash at every cut",
+        "Six slow pictures that dissolve over a lo-fi track, in warm colours",
+        "Four long pictures through black, graded like film, wide-set titles",
+        "Six quick pictures that push each other out, with a boxed title and stickers",
+    ],
+    remix_texts: [
+        ["MY DAY", "see you next time"],
+        ["VLOG", "a day in my life"],
+        ["A SHORT FILM", "THE END"],
+        ["NEW IN", "available now"],
+    ],
+    track_look: "Look",
+    remix_tip: "A template is an edit with empty slots. Use one, then add your pictures and videos: each takes the next slot.",
+    remix_info: "{} clips · {} s",
+    remix_used: "{}: add {} pictures or videos to fill it",
+    remix_progress: "{} of {} slots filled",
+    remix_pick: "Choose files",
+    remix_pick_tip: "Pick pictures or videos: they fill the empty slots in order. Files dropped on the editor do the same.",
+    remix_filled: "{} is in slot {}",
+    remix_done: "Every slot is filled",
+    remix_start: "Start from a template",
+    slot_n: "Slot {}",
+    slot_mark: "Make a template slot",
+    slot_unmark: "No longer a slot",
+    replace_media: "Replace…",
+    replaced: "Replaced with {}",
     cap_import: "Import",
     cap_import_tip: "Import captions from a SubRip (.srt) file",
     cap_second: "Second language",
@@ -1183,6 +1247,12 @@ static ZH: Strings = Strings {
         ("project.setCanvas", "画布设置"),
         ("media.import", "导入素材"),
         ("media.set", "素材名称和文件夹"),
+        ("clip.replace", "替换素材"),
+        ("template.list", "模板"),
+        ("template.apply", "使用模板"),
+        ("template.slots", "模板空位"),
+        ("template.fill", "填充模板"),
+        ("template.mark", "设为模板空位"),
         ("media.remove", "移除素材"),
         ("timeline.list", "时间线"),
         ("capcut.import", "导入剪映草稿"),
@@ -1598,6 +1668,30 @@ static ZH: Strings = Strings {
     tab_audio: "音频",
     tab_text: "文字",
     tab_captions: "字幕",
+    tab_templates: "模板",
+    remix_names: ["卡点快闪", "Vlog 开场", "电影感", "新品展示"],
+    remix_abouts: [
+        "十张画面踩着节拍切换，每次切换闪白",
+        "六张画面在低保真音乐里缓缓叠化，暖色调",
+        "四张长画面经黑场过渡，胶片色调，宽字距标题",
+        "六张画面互相推出，带底色标题和跳动的贴纸",
+    ],
+    remix_texts: [["我的一天", "下次见"], ["VLOG", "记录我的一天"], ["一部短片", "终"], ["新品上市", "现已发售"]],
+    track_look: "滤镜",
+    remix_tip: "模板是一份留好空位的剪辑。选一个，再添加你的图片和视频，它们会按顺序填进空位。",
+    remix_info: "{} 段 · {} 秒",
+    remix_used: "{}：添加 {} 段图片或视频即可填满",
+    remix_progress: "已填 {}/{} 个空位",
+    remix_pick: "选择素材",
+    remix_pick_tip: "选图片或视频，按顺序填进空位。把文件拖进编辑器也一样。",
+    remix_filled: "{} 已填入空位 {}",
+    remix_done: "空位已全部填满",
+    remix_start: "从模板开始",
+    slot_n: "空位 {}",
+    slot_mark: "设为模板空位",
+    slot_unmark: "取消模板空位",
+    replace_media: "替换素材…",
+    replaced: "已替换为 {}",
     cap_import: "导入",
     cap_import_tip: "从 SubRip（.srt）文件导入字幕",
     cap_second: "双语",
@@ -1825,6 +1919,8 @@ mod tests {
         assert_eq!(Lang::Zh.command("nope"), "");
         assert_eq!(Lang::Ja.track_name("Video 3"), "動画 3");
         assert_eq!(Lang::Ja.track_name("Captions"), "字幕");
+        assert_eq!(Lang::Zh.track_name("Stickers"), "贴纸");
+        assert_eq!(Lang::Zh.track_name("Look"), "滤镜");
     }
 
     /// Every language names the same commands, and the lists of names are as long as the things
@@ -1841,6 +1937,7 @@ mod tests {
         assert_eq!(reelforge_model::FxKind::ALL.len(), EN.fx_names.len());
         assert_eq!(reelforge_model::VoiceKind::ALL.len(), EN.voice_names.len());
         assert_eq!(reelforge_engine::title_templates().len(), EN.template_names.len());
+        assert_eq!(reelforge_engine::timeline_templates().len(), EN.remix_names.len());
     }
 
     /// Every template has as many `{}` in every language.
@@ -1850,6 +1947,12 @@ mod tests {
         let templates = |s: &Strings| {
             [
                 s.joining,
+                s.remix_info,
+                s.remix_used,
+                s.remix_progress,
+                s.remix_filled,
+                s.slot_n,
+                s.replaced,
                 s.joined,
                 s.unreachable,
                 s.no_copy,
