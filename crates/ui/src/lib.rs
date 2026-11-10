@@ -4728,8 +4728,12 @@ impl eframe::App for EditorApp {
                 |ui| self.sheet_tabs(ui),
             );
         }
-        let timeline = egui::Panel::bottom("timeline").resizable(true).show_separator_line(false).default_size(290.0);
-        let timeline = if narrow { timeline.size_range(140.0..=tallest) } else { timeline };
+        // the timeline leaves the preview some of the window too: its rows scroll when there are many
+        let timeline = egui::Panel::bottom("timeline")
+            .resizable(true)
+            .show_separator_line(false)
+            .default_size(290.0)
+            .size_range(140.0..=tallest);
         let out = timeline
             .frame(theme::island(0).outer_margin(egui::Margin { left: gap, right: gap, top: gap / 2, bottom: 0 }))
             .show_collapsible(ui, &mut timeline_on.clone(), |ui| {
