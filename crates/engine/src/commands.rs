@@ -804,6 +804,24 @@ static REGISTRY: &[CommandSpec] = &[
         run: crate::promo::promo_add,
     },
     CommandSpec {
+        id: "promo.get",
+        label: "Ready-Made Piece",
+        params: r#"{"clip": id}"#,
+        doc: "What a ready-made piece folded into one clip (promo.add with `compound: true`) was made as: its `piece` with its kind, words, lines, numbers, colours and place, or null for any other clip.",
+        edits: false,
+        enabled: always,
+        run: crate::promo::promo_get,
+    },
+    CommandSpec {
+        id: "promo.set",
+        label: "Rewrite Ready-Made Piece",
+        params: r#"{"clip": id, "text"?: string, "lines"?: [string], "value"?: number, "values"?: [number], "from"?: number, "color"?: [r,g,b,a], "color2"?: [r,g,b,a], "side"?: "right"|"left"|"up"|"down", "x"?, "y"?, "scale"?}"#,
+        doc: "Gives a ready-made piece folded into one clip (promo.add with `compound: true`) other words, lines, numbers, colours or another place: what is named changes, the rest stays as it was made, and the piece's inside is made again to fit (a button as wide as its new words, a bar as long as its new number). The clip itself keeps its place on the timeline, its length and everything set on it; changes made by hand inside the piece are lost. Every clip that plays the same piece changes with it.",
+        edits: true,
+        enabled: always,
+        run: crate::promo::promo_set,
+    },
+    CommandSpec {
         id: "brand.get",
         label: "Brand",
         params: "{}",
@@ -1500,7 +1518,8 @@ fn timeline_add(s: &mut Session, v: &Value) -> CmdResult {
             vec![]
         };
         let cover = proj.cover.filter(|_| copy);
-        proj.timelines.insert(at, Timeline { id: id.clone(), name, tracks, markers, cover, compound: false });
+        proj.timelines
+            .insert(at, Timeline { id: id.clone(), name, tracks, markers, cover, compound: false, made: None });
         proj.switch_timeline(&id);
         Ok(json!({ "timeline": id }))
     })

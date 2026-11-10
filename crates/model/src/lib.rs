@@ -31,7 +31,7 @@ pub mod transition;
 pub mod voice;
 
 pub use anim::{AnimKind, Animation, Animations, Ease, Key, Keys, Loop, LoopKind, Offset, Prop};
-pub use brand::Brand;
+pub use brand::{Brand, Made};
 pub use color::{Adjust, ColorGrade, Filter, FilterKind, LutUse};
 pub use export::{Codec, ExportSettings, Quality, Resolution};
 pub use fx::{Fx, FxChannel, FxGroup, FxKind, FxSample};
@@ -783,6 +783,13 @@ impl Project {
             }
             if t.id == self.timeline && !t.tracks.is_empty() {
                 return Err(ModelError::BadTimeline("the current timeline's tracks are the project's"));
+            }
+            if let Some(made) = &t.made {
+                let mut colours = made.color.iter().chain(&made.color2);
+                let sized = made.scale.is_finite() && made.scale > 0.0;
+                if !t.compound || colours.any(|c| !(0.0..=1.0).contains(c)) || !sized {
+                    return Err(ModelError::BadTimeline("a ready-made piece is a compound clip's, its colours 0 to 1"));
+                }
             }
         }
         if !self.timelines.is_empty() && !self.timelines.iter().any(|t| t.id == self.timeline) {

@@ -371,6 +371,10 @@ pub(crate) struct Strings {
     pub(crate) promo_names: [&'static str; 30],
     /// The lists the pieces are found in, as `reelforge_engine::Category::ALL` has them.
     pub(crate) promo_categories: [&'static str; 5],
+    /// The inspector, for a ready-made piece folded into one clip: its number, and what giving
+    /// it other words does.
+    pub(crate) piece_number: &'static str,
+    pub(crate) piece_tip: &'static str,
     /// Heading over the shapes, and over a shape's own values.
     pub(crate) sec_shapes: &'static str,
     /// In [`reelforge_model::ShapeKind::ALL`] order.
@@ -1102,6 +1106,8 @@ static EN: Strings = Strings {
         "Colour sweep",
     ],
     promo_categories: ["Prices & offers", "Product", "Headings & numbers", "Call to action", "Rhythm"],
+    piece_number: "Number",
+    piece_tip: "Change the words or the number and the piece is made again to fit. Double-click the clip to edit what is inside it.",
     sec_shapes: "Shapes",
     shape_names: ["Rectangle", "Ellipse", "Line", "Polygon", "Star", "Tag", "Arrow"],
     shape_width: "Width",
@@ -1843,6 +1849,8 @@ static ZH: Strings = Strings {
         "品牌色扫屏",
     ],
     promo_categories: ["价格优惠", "商品卖点", "标题数字", "行动引导", "节奏转场"],
+    piece_number: "数字",
+    piece_tip: "改文案或数字后，组件会按新内容重新排好。双击片段可以进去改里面的每个部件。",
     sec_shapes: "形状",
     shape_names: ["矩形", "椭圆", "线条", "多边形", "星形", "价签", "箭头"],
     shape_width: "宽度",

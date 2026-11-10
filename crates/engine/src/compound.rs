@@ -180,6 +180,7 @@ pub(crate) fn clip_compound(s: &mut Session, v: &Value) -> CmdResult {
             markers: vec![],
             cover: None,
             compound: true,
+            made: None,
         });
 
         // the clip goes where the lowest of them was, if there is room; else on a track above them

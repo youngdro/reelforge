@@ -7,15 +7,15 @@
 //! one clip on the timeline, its parts inside.
 
 use reelforge_model::{
-    Animation, Clip, ClipContent, ClipTransform, Counter, Ease, Fill, Key, Loop, MediaKind, Project, Prop, Shape,
-    ShapeKind, ShapeShadow, Stroke, Track, TrackKind,
+    Animation, Clip, ClipContent, ClipTransform, Counter, Ease, Fill, Key, Loop, Made, MediaKind, Project, Prop, Shape,
+    ShapeKind, ShapeShadow, Stroke, Timeline, Track, TrackKind,
 };
 use reelforge_time::Tick;
 use serde_json::{Value, json};
 
 use crate::commands::{fps, not_found};
 use crate::params::P;
-use crate::pieces::{self, Ask, PROMOS, Side};
+use crate::pieces::{self, Ask, PROMOS, Promo, Side};
 use crate::{CmdResult, EngineError, Session};
 
 fn wrong(name: &str, what: &str) -> EngineError {
@@ -289,149 +289,294 @@ fn numbers(v: &Value, name: &str, most: usize) -> Result<Option<Vec<f32>>, Engin
     list.iter().map(read).collect::<Result<Vec<_>, _>>().map(Some)
 }
 
+fn known(id: &str) -> Result<&'static Promo, EngineError> {
+    PROMOS
+        .iter()
+        .find(|x| x.id == id)
+        .ok_or_else(|| wrong("kind", &format!("one of {}", PROMOS.iter().map(|x| x.id).collect::<Vec<_>>().join(", "))))
+}
+
+/// What a command says of a piece, over what it was (`promo.set`) or over what the piece comes
+/// with and the brand gives (`promo.add`).
+fn told(v: &Value, fps: reelforge_time::FrameRate, was: Made) -> Result<Made, EngineError> {
+    let p = P::new(v, fps);
+    let promo = known(&was.kind)?;
+    let mut made = was;
+    if let Some(text) = p.opt_str("text")? {
+        made.text = text.to_string();
+    }
+    if v.get("lines").is_some() {
+        made.lines = p.strings("lines")?;
+    }
+    if made.lines.len() > 6 || made.lines.iter().any(|l| l.chars().count() > 200) {
+        return Err(wrong("lines", "at most 6 lines of at most 200 characters"));
+    }
+    // a piece that is all lines needs one
+    if made.lines.is_empty() && promo.text.is_empty() && !promo.lines.is_empty() {
+        return Err(wrong("lines", "at least one line"));
+    }
+    if let Some(value) = p.opt_f64("value")? {
+        made.value = Some(value as f32);
+    }
+    if made.value.is_some_and(|v| v.abs() >= 1e12) {
+        return Err(wrong("value", "a number"));
+    }
+    if let Some(values) = numbers(v, "values", 4)? {
+        made.values = values;
+    }
+    if let Some(from) = p.opt_f64("from")? {
+        made.from = from as f32;
+    }
+    made.color = p.opt_color("color")?.unwrap_or(made.color);
+    made.color2 = p.opt_color("color2")?.unwrap_or(made.color2);
+    if let Some(name) = p.opt_str("side")? {
+        Side::parse(name).ok_or_else(|| wrong("side", &format!("one of {}", Side::NAMES.join(", "))))?;
+        made.side = Some(name.to_string());
+    }
+    made.x = p.opt_f64("x")?.map_or(made.x, |x| x as f32);
+    made.y = p.opt_f64("y")?.map_or(made.y, |y| y as f32);
+    made.scale = p.opt_f64("scale")?.map_or(made.scale, |s| s as f32);
+    if !(made.scale > 0.0 && made.scale <= 20.0) {
+        return Err(wrong("scale", "above 0 and at most 20"));
+    }
+    Ok(made)
+}
+
+/// The clips of a piece as `made` has it, bottom first, each with the kind of track it goes on
+/// and when it starts after the piece does. Their ids are still to be given.
+fn clips_of(proj: &Project, made: &Made) -> Vec<(TrackKind, Tick, Clip)> {
+    let (x, y, scale, dur) = (made.x, made.y, made.scale, made.duration);
+    let (cw, ch) = (proj.canvas.width as f32, proj.canvas.height as f32);
+    // sizes are for a canvas whose shorter side is 1080; a larger or smaller one gets them in
+    // proportion
+    let fit = cw.min(ch) / 1080.0;
+    let k = fit * scale;
+    // media the piece was made with that has since gone is left out
+    let held = |id: &Option<String>, kind: MediaKind| {
+        id.clone().filter(|id| proj.media.get(id).is_some_and(|m| m.kind == kind))
+    };
+    let font = held(&made.font, MediaKind::Font);
+    let ask = Ask {
+        text: made.text.clone(),
+        lines: made.lines.clone(),
+        from: made.from,
+        value: made.value,
+        values: made.values.clone(),
+        accent: made.color,
+        second: made.color2,
+        side: made.side.as_deref().and_then(Side::parse),
+        dur,
+        canvas: [cw / fit, ch / fit],
+        place: [x, y],
+        scale,
+        logo: held(&made.logo, MediaKind::Image),
+    };
+    let parts = pieces::parts(&made.kind, &ask).expect("a known piece");
+    let mut out = vec![];
+    for mut part in parts {
+        // a part that comes in late still shows for a quarter of the piece
+        let wait = part.delay.min(Tick(dur.0 / 4 * 3));
+        let long = dur - wait;
+        let mut size = k;
+        match &mut part.content {
+            ClipContent::Text { style, size: letters, .. } => {
+                if style.font.is_none() {
+                    style.font = font.clone();
+                }
+                // a title that wraps does so at a share of the frame, whatever its clip's
+                // scale: the frame's size goes into its letters instead
+                if let Some(width) = part.boxed.or(part.wrapped) {
+                    pieces::boxed(style, width, ask.canvas[0], part.boxed.is_some());
+                    *letters *= fit;
+                    size = scale;
+                }
+            }
+            ClipContent::Media { .. } => size = part.fit.unwrap_or(1.0) * scale,
+            _ => {}
+        }
+        let mut clip = plain_clip(String::new(), wait, long, part.content);
+        clip.transform = ClipTransform {
+            x: x + part.at[0] * k / cw,
+            y: y + part.at[1] * k / ch,
+            scale: size,
+            rotation: part.rotation,
+        };
+        let enter = part.enter_for.unwrap_or(Tick::from_seconds(0.6)).min(Tick(long.0 / 2));
+        clip.anim.enter = part.enter.map(|kind| Animation { kind, duration: enter });
+        clip.anim.repeat = part.repeat.map(|kind| Loop { kind, period: kind.period() });
+        for (prop, keys) in part.keys {
+            let mut list: Vec<Key> = Vec::new();
+            for (share, value, ease) in keys {
+                let t = Tick(long.0 * share / 1000);
+                let v = match prop {
+                    Prop::X => clip.transform.x + value * k / cw,
+                    Prop::Y => clip.transform.y + value * k / ch,
+                    _ => value,
+                };
+                match list.last_mut() {
+                    Some(last) if last.t == t => *last = Key { t, v, ease },
+                    _ => list.push(Key { t, v, ease }),
+                }
+            }
+            clip.keys.insert(prop, list);
+        }
+        out.push((part.track, wait, clip));
+    }
+    out
+}
+
+/// The clips of a piece on tracks of their own, a track a clip, bottom first: the inside of a
+/// compound clip. Returns the clips' ids too.
+fn inside(proj: &mut Project, made: &Made) -> (Vec<Track>, Vec<String>) {
+    let group = proj.mint("g");
+    let mut tracks: Vec<Track> = vec![];
+    let mut ids = vec![];
+    for (kind, _, mut clip) in clips_of(proj, made) {
+        clip.id = proj.mint("c");
+        clip.group = Some(group.clone());
+        ids.push(clip.id.clone());
+        let n = tracks.iter().filter(|t| t.kind == kind).count() + 1;
+        let word = match kind {
+            TrackKind::Video => "Video",
+            TrackKind::Text => "Text",
+            TrackKind::Audio => "Audio",
+        };
+        tracks.push(Track {
+            id: proj.mint("t"),
+            kind,
+            name: format!("{word} {n}"),
+            hidden: false,
+            muted: false,
+            magnetic: false,
+            locked: false,
+            clips: vec![clip],
+        });
+    }
+    (tracks, ids)
+}
+
 /// `promo.add`.
 pub(crate) fn promo_add(s: &mut Session, v: &Value) -> CmdResult {
     let p = P::new(v, fps(s));
-    if p.opt_bool("compound")? != Some(true) {
-        return add(s, v);
-    }
-    // the piece as one clip: its parts made as ever, then folded into a timeline of their own
-    crate::commands::one_step(s, "Add Promo", |s| {
-        let made = add(s, v)?;
-        let clips: Vec<Value> = made["clips"].as_array().expect("clips").iter().map(|c| c["clip"].clone()).collect();
-        let name = PROMOS.iter().find(|x| Some(x.id) == v["kind"].as_str()).expect("a known piece").en;
-        let mut out = crate::compound::clip_compound(s, &json!({ "clips": clips, "name": name }))?;
-        out["parts"] = Value::Array(clips);
-        Ok(out)
-    })
-}
-
-fn add(s: &mut Session, v: &Value) -> CmdResult {
-    let p = P::new(v, fps(s));
-    let id = p.str("kind")?.to_string();
-    let Some(promo) = PROMOS.iter().find(|x| x.id == id) else {
-        return Err(wrong("kind", &format!("one of {}", PROMOS.iter().map(|x| x.id).collect::<Vec<_>>().join(", "))));
-    };
-    let start = p.opt_time("start")?;
+    let promo = known(p.str("kind")?)?;
+    let start = p.opt_time("start")?.unwrap_or(Tick::ZERO);
     let dur = p.opt_time("duration")?.unwrap_or(Tick::from_seconds(promo.millis as f64 / 1000.0));
     if dur <= Tick::ZERO {
         return Err(wrong("duration", "positive"));
     }
-    let text = p.opt_str("text")?.unwrap_or(promo.text).to_string();
-    let lines = match v.get("lines") {
-        None => promo.lines.iter().map(|l| l.to_string()).collect(),
-        Some(_) => p.strings("lines")?,
+    let folded = p.opt_bool("compound")? == Some(true);
+    // what the piece comes with and the brand gives, under what the command says
+    let brand = s.project.brand.clone();
+    let comes = Made {
+        kind: promo.id.to_string(),
+        text: promo.text.to_string(),
+        lines: promo.lines.iter().map(|l| l.to_string()).collect(),
+        value: promo.value,
+        values: promo.values.to_vec(),
+        from: promo.from,
+        color: brand.primary.unwrap_or(pieces::RED),
+        color2: brand.secondary.unwrap_or(pieces::YELLOW),
+        side: None,
+        x: promo.place[0],
+        y: promo.place[1],
+        scale: 1.0,
+        duration: dur,
+        font: brand.font,
+        logo: brand.logo,
     };
-    if lines.len() > 6 || lines.iter().any(|l| l.chars().count() > 200) {
-        return Err(wrong("lines", "at most 6 lines of at most 200 characters"));
-    }
-    // a piece that is all lines needs one
-    if lines.is_empty() && promo.text.is_empty() && !promo.lines.is_empty() {
-        return Err(wrong("lines", "at least one line"));
-    }
-    let value = p.opt_f64("value")?.map(|v| v as f32).or(promo.value);
-    if value.is_some_and(|v| v.abs() >= 1e12) {
-        return Err(wrong("value", "a number"));
-    }
-    let values = numbers(v, "values", 4)?.unwrap_or_else(|| promo.values.to_vec());
-    let from = p.opt_f64("from")?.map_or(promo.from, |f| f as f32);
-    let (accent, second) = (p.opt_color("color")?, p.opt_color("color2")?);
-    let side = match p.opt_str("side")? {
-        None => None,
-        Some(name) => {
-            Some(Side::parse(name).ok_or_else(|| wrong("side", &format!("one of {}", Side::NAMES.join(", "))))?)
-        }
-    };
-    let x = p.opt_f64("x")?.map_or(promo.place[0], |x| x as f32);
-    let y = p.opt_f64("y")?.map_or(promo.place[1], |y| y as f32);
-    let scale = p.opt_f64("scale")?.unwrap_or(1.0) as f32;
-    if !(scale > 0.0 && scale <= 20.0) {
-        return Err(wrong("scale", "above 0 and at most 20"));
-    }
+    let made = told(v, fps(s), comes)?;
     s.edit("Add Promo", |proj| {
-        let start = start.unwrap_or(Tick::ZERO);
-        let (cw, ch) = (proj.canvas.width as f32, proj.canvas.height as f32);
-        // sizes are for a canvas whose shorter side is 1080; a larger or smaller one gets them in
-        // proportion
-        let fit = cw.min(ch) / 1080.0;
-        let k = fit * scale;
-        let brand = proj.brand.clone();
-        let ask = Ask {
-            text: text.clone(),
-            lines: lines.clone(),
-            from,
-            value,
-            values: values.clone(),
-            accent: accent.or(brand.primary).unwrap_or(pieces::RED),
-            second: second.or(brand.secondary).unwrap_or(pieces::YELLOW),
-            side,
-            dur,
-            canvas: [cw / fit, ch / fit],
-            place: [x, y],
-            scale,
-            logo: brand.logo.clone(),
-        };
-        let parts = pieces::parts(&id, &ask).expect("a known piece");
+        if folded {
+            // one compound clip, the piece inside it on a timeline of its own
+            proj.name_first_timeline("Timeline 1");
+            let (tracks, parts) = inside(proj, &made);
+            let timeline = proj.mint("s");
+            proj.timelines.push(Timeline {
+                id: timeline.clone(),
+                name: promo.en.to_string(),
+                tracks,
+                markers: vec![],
+                cover: None,
+                compound: true,
+                made: Some(made.clone()),
+            });
+            let ti = free_track(proj, TrackKind::Video, 0, start, dur);
+            let id = proj.mint("c");
+            let content = ClipContent::Compound { timeline: timeline.clone(), source_in: Tick::ZERO };
+            proj.tracks[ti].clips.push(plain_clip(id.clone(), start, dur, content));
+            proj.tracks[ti].clips.sort_by_key(|c| c.start);
+            return Ok(json!({
+                "clip": id,
+                "timeline": timeline,
+                "track": proj.tracks[ti].id,
+                "start": start,
+                "duration": dur,
+                "parts": parts,
+            }));
+        }
         let group = proj.mint("g");
         let mut below = 0;
-        let mut made = vec![];
-        for mut part in parts {
-            // a part that comes in late still shows for a quarter of the piece
-            let wait = part.delay.min(Tick(dur.0 / 4 * 3));
-            let (at, long) = (start + wait, dur - wait);
-            let ti = free_track(proj, part.track, below, at, long);
+        let mut clips = vec![];
+        for (kind, wait, mut clip) in clips_of(proj, &made) {
+            clip.start = start + wait;
+            let ti = free_track(proj, kind, below, clip.start, clip.duration);
             below = ti + 1;
-            let cid = proj.mint("c");
-            let mut size = k;
-            match &mut part.content {
-                ClipContent::Text { style, size: letters, .. } => {
-                    if style.font.is_none() {
-                        style.font = brand.font.clone();
-                    }
-                    // a title that wraps does so at a share of the frame, whatever its clip's
-                    // scale: the frame's size goes into its letters instead
-                    if let Some(width) = part.boxed.or(part.wrapped) {
-                        pieces::boxed(style, width, ask.canvas[0], part.boxed.is_some());
-                        *letters *= fit;
-                        size = scale;
-                    }
-                }
-                ClipContent::Media { .. } => size = part.fit.unwrap_or(1.0) * scale,
-                _ => {}
-            }
-            let mut clip = plain_clip(cid.clone(), at, long, part.content);
-            clip.transform = ClipTransform {
-                x: x + part.at[0] * k / cw,
-                y: y + part.at[1] * k / ch,
-                scale: size,
-                rotation: part.rotation,
-            };
-            let enter = part.enter_for.unwrap_or(Tick::from_seconds(0.6)).min(Tick(long.0 / 2));
-            clip.anim.enter = part.enter.map(|kind| Animation { kind, duration: enter });
-            clip.anim.repeat = part.repeat.map(|kind| Loop { kind, period: kind.period() });
-            for (prop, keys) in part.keys {
-                let mut list: Vec<Key> = Vec::new();
-                for (share, value, ease) in keys {
-                    let t = Tick(long.0 * share / 1000);
-                    let v = match prop {
-                        Prop::X => clip.transform.x + value * k / cw,
-                        Prop::Y => clip.transform.y + value * k / ch,
-                        _ => value,
-                    };
-                    match list.last_mut() {
-                        Some(last) if last.t == t => *last = Key { t, v, ease },
-                        _ => list.push(Key { t, v, ease }),
-                    }
-                }
-                clip.keys.insert(prop, list);
-            }
+            clip.id = proj.mint("c");
             clip.group = Some(group.clone());
+            clips.push(json!({"clip": clip.id, "track": proj.tracks[ti].id}));
             proj.tracks[ti].clips.push(clip);
             proj.tracks[ti].clips.sort_by_key(|c| c.start);
-            made.push(json!({"clip": cid, "track": proj.tracks[ti].id}));
         }
-        Ok(json!({ "group": group, "clips": made, "start": start, "duration": dur }))
+        Ok(json!({ "group": group, "clips": clips, "start": start, "duration": dur }))
     })
+}
+
+/// The timeline `clip` plays, if it is a ready-made piece folded into a compound clip.
+pub fn made_of<'a>(proj: &'a Project, clip: &str) -> Option<(&'a str, &'a Made)> {
+    let (timeline, _) = proj.clip(clip)?.1.compound()?;
+    let made = proj.timelines.iter().find(|t| t.id == timeline)?.made.as_ref()?;
+    Some((timeline, made))
+}
+
+/// `promo.get`.
+pub(crate) fn promo_get(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?;
+    s.project.clip(id).ok_or_else(|| not_found("clip", id))?;
+    match made_of(&s.project, id) {
+        Some((timeline, made)) => Ok(json!({ "clip": id, "timeline": timeline, "piece": made })),
+        None => Ok(json!({ "clip": id, "piece": null })),
+    }
+}
+
+/// `promo.set`.
+pub(crate) fn promo_set(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let fps = fps(s);
+    s.edit("Rewrite Promo", |proj| {
+        proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        let Some((timeline, was)) = made_of(proj, &id).map(|(t, m)| (t.to_string(), m.clone())) else {
+            return Err(EngineError::Refused(format!(
+                "clip {id:?} is not a ready-made piece folded into one clip (promo.add with compound: true makes one); change its clips with the usual commands"
+            )));
+        };
+        let made = told(v, fps, was)?;
+        remake(proj, &timeline, made.clone());
+        Ok(json!({ "clip": id, "timeline": timeline, "piece": made }))
+    })
+}
+
+/// Makes the inside of the piece on `timeline` again, as `made` has it. What was changed inside
+/// it by hand is lost; the compound clips that play it stay as they are.
+pub(crate) fn remake(proj: &mut Project, timeline: &str, made: Made) {
+    let (tracks, _) = inside(proj, &made);
+    if let Some(slot) = proj.tracks_of_mut(timeline) {
+        *slot = tracks;
+    }
+    if let Some(t) = proj.timelines.iter_mut().find(|t| t.id == timeline) {
+        t.made = Some(made);
+    }
 }
 
 /// `brand.get`.
