@@ -74,8 +74,10 @@ fn preview_scale(long: f32, on_screen: f32, gpu: bool, playing: bool, full: bool
     ((scale * 32.0).ceil() / 32.0).min(1.0)
 }
 
-/// A preview gesture's placement so far (`x`, `y`, scale, rotation as bits), if one runs.
-type Moving = Option<[u32; 4]>;
+/// What the preview draws that the project does not have yet: a gesture's placement so far (`x`,
+/// `y`, scale, rotation as bits), a mask being dragged (centre, size, rotation), and whether the
+/// crop is lifted to show the whole picture (crop mode).
+type Moving = Option<[u32; 10]>;
 
 /// A compiled edit, shared.
 type Spec = Arc<reelforge_renderspec::RenderSpec>;
@@ -152,6 +154,8 @@ pub struct EditorApp {
     outlines: Vec<(String, reelforge_render::Outline)>,
     /// A drag on the preview in progress.
     gesture: Option<stage::Gesture>,
+    /// The clip whose crop is being set in the preview (crop mode).
+    cropping: Option<String>,
     gpu: Option<GpuPreview>,
     /// Whether the bundled Chinese face has been given to egui.
     fonts: bool,
@@ -352,6 +356,7 @@ impl EditorApp {
             quality_unsaved: false,
             outlines: Vec::new(),
             gesture: None,
+            cropping: None,
             gpu: None,
             fonts: false,
             timeline: timeline::TimelineView::default(),
@@ -1790,22 +1795,19 @@ impl EditorApp {
                 filter_strength: clip.color.filter.map_or(1.0, |f| f.strength),
                 lut: clip.color.lut.as_ref().map(|l| l.media.clone()),
                 lut_strength: clip.color.lut.as_ref().map_or(1.0, |l| l.strength),
-                adjust: clip.color.adjust.values(),
+                adjust: clip.adjust_at(local).values(),
             }),
-            look: picture.then(|| {
-                let c = clip.look.crop;
-                LookEdit {
-                    media: matches!(&clip.content, ClipContent::Media { media, .. }
+            look: picture.then(|| LookEdit {
+                media: matches!(&clip.content, ClipContent::Media { media, .. }
                         if p.media.get(media).is_some_and(|m| m.kind != MediaKind::Audio)),
-                    crop: [c.left, c.top, c.right, c.bottom].map(|x| x * 100.0),
-                    flip: [clip.look.flip_x, clip.look.flip_y],
-                    blend: clip.look.blend,
-                    mask: clip.look.mask,
-                    backdrop: (matches!(&clip.content, ClipContent::Media { media, .. }
+                crop: Prop::CROP.map(|p| clip.value_at(p, local) * 100.0),
+                flip: [clip.look.flip_x, clip.look.flip_y],
+                blend: clip.look.blend,
+                mask: clip.mask_at(local),
+                backdrop: (matches!(&clip.content, ClipContent::Media { media, .. }
                         if p.media.get(media).is_some_and(|m| m.kind != MediaKind::Audio))
-                        && p.clip(&id).is_some_and(|(ti, _)| p.tracks[ti].kind == TrackKind::Video))
-                    .then_some(clip.look.backdrop),
-                }
+                    && p.clip(&id).is_some_and(|(ti, _)| p.tracks[ti].kind == TrackKind::Video))
+                .then_some(clip.look.backdrop),
             }),
             title: match &clip.content {
                 ClipContent::Text { text, size, style, .. } => Some(Title {
@@ -2090,13 +2092,19 @@ impl EditorApp {
                         ui.end_row();
                         for (i, (name, lo, hi)) in Adjust::RANGES.into_iter().enumerate() {
                             ui.label(egui::RichText::new(s.adjust_names[i]).color(theme::color::WEAK));
-                            let r = ui.add_sized(
-                                [ui.available_width(), 22.0],
-                                egui::DragValue::new(&mut g.adjust[i]).speed(0.01).range(lo..=hi).max_decimals(2),
-                            );
-                            if changed(&r) {
-                                actions.push(("clip.setColor", json!({"clip": id, name: g.adjust[i]})));
-                            }
+                            ui.horizontal(|ui| {
+                                let r = ui.add_sized(
+                                    [ui.available_width() - 26.0, 22.0],
+                                    egui::DragValue::new(&mut g.adjust[i]).speed(0.01).range(lo..=hi).max_decimals(2),
+                                );
+                                if changed(&r) {
+                                    actions.push(("clip.setColor", json!({"clip": id, name: g.adjust[i], "at": at})));
+                                }
+                                let prop = Prop::ADJUST[i];
+                                if key_button(ui, mark_of(prop)) {
+                                    actions.push(toggle(prop, mark_of(prop)));
+                                }
+                            });
                             ui.end_row();
                         }
                     });
@@ -2148,15 +2156,34 @@ impl EditorApp {
                             ui.end_row();
                         }
                         if l.media {
+                            ui.label(egui::RichText::new(s.crop).color(theme::color::WEAK));
+                            let on = self.cropping.as_deref() == Some(id.as_str());
+                            if ui
+                                .add(egui::Button::new(format!("{}  {}", icon::CROP, s.crop_in_preview)).selected(on))
+                                .on_hover_text(s.crop_in_preview_tip)
+                                .clicked()
+                            {
+                                self.cropping = (!on).then(|| id.clone());
+                            }
+                            ui.end_row();
                             for (i, edge) in ["left", "top", "right", "bottom"].into_iter().enumerate() {
                                 ui.label(egui::RichText::new(s.crop_edges[i]).color(theme::color::WEAK));
-                                let r = ui.add_sized(
-                                    [ui.available_width(), 22.0],
-                                    egui::DragValue::new(&mut l.crop[i]).speed(0.2).range(0.0..=95.0).suffix(" %"),
-                                );
-                                if changed(&r) {
-                                    actions.push(("clip.setCrop", json!({"clip": id, edge: l.crop[i] / 100.0})));
-                                }
+                                ui.horizontal(|ui| {
+                                    let r = ui.add_sized(
+                                        [ui.available_width() - 26.0, 22.0],
+                                        egui::DragValue::new(&mut l.crop[i]).speed(0.2).range(0.0..=95.0).suffix(" %"),
+                                    );
+                                    if changed(&r) {
+                                        actions.push((
+                                            "clip.setCrop",
+                                            json!({"clip": id, edge: l.crop[i] / 100.0, "at": at}),
+                                        ));
+                                    }
+                                    let prop = Prop::CROP[i];
+                                    if key_button(ui, mark_of(prop)) {
+                                        actions.push(toggle(prop, mark_of(prop)));
+                                    }
+                                });
                                 ui.end_row();
                             }
                             ui.label(egui::RichText::new(s.flip).color(theme::color::WEAK));
@@ -2208,13 +2235,19 @@ impl EditorApp {
                             ];
                             for (i, (key, v, speed, range)) in rows.into_iter().enumerate() {
                                 ui.label(egui::RichText::new(s.mask_params[i]).color(theme::color::WEAK));
-                                let r = ui.add_sized(
-                                    [ui.available_width(), 22.0],
-                                    egui::DragValue::new(v).speed(speed).range(range).max_decimals(3),
-                                );
-                                if changed(&r) {
-                                    actions.push(("clip.setMask", json!({"clip": id, key: *v})));
-                                }
+                                ui.horizontal(|ui| {
+                                    let r = ui.add_sized(
+                                        [ui.available_width() - 26.0, 22.0],
+                                        egui::DragValue::new(v).speed(speed).range(range).max_decimals(3),
+                                    );
+                                    if changed(&r) {
+                                        actions.push(("clip.setMask", json!({"clip": id, key: *v, "at": at})));
+                                    }
+                                    let prop = Prop::MASK[i];
+                                    if key_button(ui, mark_of(prop)) {
+                                        actions.push(toggle(prop, mark_of(prop)));
+                                    }
+                                });
                                 ui.end_row();
                             }
                         }
@@ -2490,8 +2523,36 @@ impl EditorApp {
                 clip.keys.remove(&prop);
             }
         }
+        // a mask being dragged is drawn where it is dragged to
+        if let Some(g) = &self.gesture
+            && let Some(m) = g.mask()
+            && let Some(clip) = Arc::make_mut(&mut p).clip_mut(&g.clip)
+        {
+            clip.look.mask = Some(m);
+            clip.keys.retain(|prop, _| !Prop::MASK.contains(prop));
+        }
+        // crop mode shows the whole picture, with the crop as a box over it
+        if self.cropping.is_some() && self.cropping != self.selected {
+            self.cropping = None;
+        }
+        if let Some(id) = &self.cropping
+            && let Some(clip) = Arc::make_mut(&mut p).clip_mut(id)
+        {
+            clip.look.crop = Default::default();
+            clip.keys.retain(|prop, _| !Prop::CROP.contains(prop));
+        }
         let frame = p.canvas.fps.frame_at(self.playhead);
-        let moving = self.gesture.as_ref().map(|g| [g.now.x, g.now.y, g.now.scale, g.now.rotation].map(f32::to_bits));
+        let moving = (self.gesture.is_some() || self.cropping.is_some()).then(|| {
+            let t = self.gesture.as_ref().map_or([0.0; 4], |g| [g.now.x, g.now.y, g.now.scale, g.now.rotation]);
+            let m = self.gesture.as_ref().and_then(stage::Gesture::mask);
+            let m = m.map_or([0.0; 5], |m| [m.center[0], m.center[1], m.size[0], m.size[1], m.rotation]);
+            let mode = [self.cropping.is_some() as u32 + 2 * self.gesture.is_some() as u32];
+            let mut all = [0u32; 10];
+            for (slot, v) in all.iter_mut().zip(t.iter().chain(&m).map(|v| v.to_bits()).chain(mode)) {
+                *slot = v;
+            }
+            all
+        });
         let revision = self.session.revision();
         let long = p.canvas.width.max(p.canvas.height) as f32;
         // as many pixels as the frame covers on this screen
@@ -2619,6 +2680,23 @@ impl EditorApp {
         }
         let view = stage::View { frame: frame_rect, k: frame_rect.width() / p.canvas.width as f32 };
         let committed = self.project();
+        // the selected clip's mask, and in crop mode its crop, as the picture shows them (mirrored
+        // with it)
+        let chosen = self.selected.as_deref().and_then(|id| committed.clip(id)).map(|(_, c)| c);
+        let flips = chosen.map_or([false; 2], |c| [c.look.flip_x, c.look.flip_y]);
+        let shown = |[l, t, r, b]: [f32; 4]| {
+            let (l, r) = if flips[0] { (r, l) } else { (l, r) };
+            let (t, b) = if flips[1] { (b, t) } else { (t, b) };
+            [l, t, r, b]
+        };
+        let shaping = stage::Shaping {
+            mask: chosen.and_then(|c| c.mask_at(at - c.start)),
+            crop: chosen.filter(|_| self.cropping.is_some()).map(|c| shown(c.crop_at(at - c.start))),
+        };
+        if self.cropping.is_some() && ui.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Escape))
+        {
+            self.cropping = None;
+        }
         let out = stage::interact(
             ui,
             &response,
@@ -2626,6 +2704,7 @@ impl EditorApp {
             [p.canvas.width as f32, p.canvas.height as f32],
             &self.outlines,
             self.selected.as_deref(),
+            shaping,
             &mut self.gesture,
             // where the clip is now: its keyframed placement at the playhead
             |id| committed.clip(id).map(|(_, c)| placement_at(c, at)),
@@ -2643,6 +2722,43 @@ impl EditorApp {
             self.editing = Some((clip, text.clone()));
         }
         self.edit_words(ui, view);
+        if out.leave_crop {
+            self.cropping = None;
+        }
+        if let Some((clip, m)) = out.mask {
+            // only what the drag changed, at the playhead, so keyframes change only there
+            let was = shaping.mask.unwrap_or(m);
+            let mut params = json!({"clip": clip, "at": at});
+            for (key, now, before) in [
+                ("x", m.center[0], was.center[0]),
+                ("y", m.center[1], was.center[1]),
+                ("width", m.size[0], was.size[0]),
+                ("height", m.size[1], was.size[1]),
+                ("rotation", m.rotation, was.rotation),
+            ] {
+                if now != before {
+                    params[key] = json!(now);
+                }
+            }
+            let _ = self.execute("clip.setMask", params);
+        }
+        if let Some((clip, c)) = out.crop {
+            let was = shaping.crop.unwrap_or(c);
+            let mut params = json!({"clip": clip, "at": at});
+            // back from how the picture shows to its own edges
+            let names = [
+                if flips[0] { "right" } else { "left" },
+                if flips[1] { "bottom" } else { "top" },
+                if flips[0] { "left" } else { "right" },
+                if flips[1] { "top" } else { "bottom" },
+            ];
+            for (i, name) in names.into_iter().enumerate() {
+                if c[i] != was[i] {
+                    params[name] = json!((c[i] * 1000.0).round() / 1000.0);
+                }
+            }
+            let _ = self.execute("clip.setCrop", params);
+        }
         if let Some((clip, t)) = out.commit {
             // only what the gesture changed, at the playhead, so keyframes change only there
             let was = committed.clip(&clip).map(|(_, c)| placement_at(c, at)).unwrap_or_default();

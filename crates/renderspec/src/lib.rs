@@ -257,6 +257,70 @@ pub struct Layer {
     /// A shape that shows part of the layer, in the layer's own picture (feature `mask.shape/1`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape_mask: Option<ShapeMask>,
+    /// The crop over the layer's time, in place of `crop` (feature `crop/2`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crop_keys: Option<CropKeys>,
+    /// Where and how big `shape_mask` is over the layer's time, in place of its own centre, size,
+    /// rotation and feather (feature `mask.shape/2`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape_mask_keys: Option<ShapeMaskKeys>,
+}
+
+/// A crop that changes: each edge as in [`Crop`], keyed. A renderer keeps at least 1 % of the
+/// picture, shrinking a pair of opposite edges in proportion where their keys would cut more.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CropKeys {
+    /// From the left edge.
+    #[serde(default = "zero")]
+    pub left: Animated<f32>,
+    /// From the top edge.
+    #[serde(default = "zero")]
+    pub top: Animated<f32>,
+    /// From the right edge.
+    #[serde(default = "zero")]
+    pub right: Animated<f32>,
+    /// From the bottom edge.
+    #[serde(default = "zero")]
+    pub bottom: Animated<f32>,
+}
+
+impl CropKeys {
+    /// The crop at `t` from the layer's start.
+    pub fn sample(&self, t: Tick) -> Crop {
+        let [l, tp, r, b] = [&self.left, &self.top, &self.right, &self.bottom].map(|e| e.sample(t).clamp(0.0, 0.98));
+        let fit = |a: f32, b: f32| if a + b > 0.99 { (a * 0.99 / (a + b), b * 0.99 / (a + b)) } else { (a, b) };
+        let ((left, right), (top, bottom)) = (fit(l, r), fit(tp, b));
+        Crop { left, top, right, bottom }
+    }
+}
+
+/// A shape mask that moves: the values of [`ShapeMask`] that can, keyed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ShapeMaskKeys {
+    /// The centre.
+    pub center: Animated<[f32; 2]>,
+    /// Width and height.
+    pub size: Animated<[f32; 2]>,
+    /// Clockwise turn, degrees.
+    pub rotation: Animated<f32>,
+    /// Width of the soft edge.
+    pub feather: Animated<f32>,
+}
+
+impl ShapeMaskKeys {
+    /// `mask` as it is at `t` from the layer's start.
+    pub fn sample(&self, mask: ShapeMask, t: Tick) -> ShapeMask {
+        let size = self.size.sample(t);
+        ShapeMask {
+            center: self.center.sample(t),
+            size: [size[0].max(0.0), size[1].max(0.0)],
+            rotation: self.rotation.sample(t),
+            feather: self.feather.sample(t).max(0.0),
+            ..mask
+        }
+    }
 }
 
 /// Edges cut off a picture, as fractions of its width (`left`, `right`) and height (`top`,
@@ -959,6 +1023,12 @@ impl RenderSpec {
             }
             if layer.shape_mask.is_some() {
                 out.insert("mask.shape/1".to_string());
+            }
+            if layer.crop_keys.is_some() {
+                out.insert("crop/2".to_string());
+            }
+            if layer.shape_mask_keys.is_some() {
+                out.insert("mask.shape/2".to_string());
             }
             if layer.blend.is_v2() {
                 out.insert("blend/2".to_string());

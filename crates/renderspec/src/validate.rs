@@ -164,6 +164,26 @@ pub fn validate(spec: &RenderSpec) -> Result<(), ValidationError> {
                 return Err(bad(format!("{path}.shape_mask"), "needs finite values, a size and feather of 0 or more"));
             }
         }
+        if let Some(c) = &layer.crop_keys {
+            if !matches!(layer.content, LayerContent::Media { .. }) || layer.crop.is_some() {
+                return Err(bad(
+                    format!("{path}.crop_keys"),
+                    "only media layers are cropped, and by `crop` or `crop_keys`",
+                ));
+            }
+            for (name, edge) in [("left", &c.left), ("top", &c.top), ("right", &c.right), ("bottom", &c.bottom)] {
+                keys_ok(&format!("{path}.crop_keys.{name}"), edge, layer.dur)?;
+            }
+        }
+        if let Some(m) = &layer.shape_mask_keys {
+            if layer.shape_mask.is_none() {
+                return Err(bad(format!("{path}.shape_mask_keys"), "needs a `shape_mask` to move"));
+            }
+            keys_ok(&format!("{path}.shape_mask_keys.center"), &m.center, layer.dur)?;
+            keys_ok(&format!("{path}.shape_mask_keys.size"), &m.size, layer.dur)?;
+            keys_ok(&format!("{path}.shape_mask_keys.rotation"), &m.rotation, layer.dur)?;
+            keys_ok(&format!("{path}.shape_mask_keys.feather"), &m.feather, layer.dur)?;
+        }
         if let Some(mask) = &layer.mask {
             asset_of_kind(spec, &format!("{path}.mask"), mask, &[AssetKind::MaskSequence])?;
         }
@@ -299,6 +319,8 @@ mod tests {
             flip_x: false,
             flip_y: false,
             shape_mask: None,
+            crop_keys: None,
+            shape_mask_keys: None,
         });
         s
     }

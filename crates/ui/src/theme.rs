@@ -89,6 +89,7 @@ pub(crate) mod icon {
     pub const SAVE: &str = "\u{e20c}";
     pub const BRUSH: &str = "\u{e6f0}";
     pub const CLOCK: &str = "\u{e19a}";
+    pub const CROP: &str = "\u{e1d4}";
 }
 
 static ICONS: &[u8] = include_bytes!("../fonts/phosphor-icons.ttf");

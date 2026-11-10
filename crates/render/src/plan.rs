@@ -172,7 +172,7 @@ pub fn plan_frame(spec: &RenderSpec, t: Tick, scale: f32) -> FramePlan {
                 .map(|fx| (fx.id.clone(), fx.params.iter().map(|(k, v)| (k.clone(), v.sample(local))).collect()))
                 .collect(),
             lut: layer.fx.iter().find(|fx| fx.id == effects::LUT).and_then(|fx| fx.asset.clone()),
-            crop: match (&layer.content, layer.crop) {
+            crop: match (&layer.content, layer.crop_keys.as_ref().map(|k| k.sample(local)).or(layer.crop)) {
                 (LayerContent::Media { .. }, Some(c)) => [c.left, c.top, c.right, c.bottom],
                 _ => [0.0; 4],
             },
@@ -180,7 +180,7 @@ pub fn plan_frame(spec: &RenderSpec, t: Tick, scale: f32) -> FramePlan {
                 LayerContent::Media { .. } => [layer.flip_x, layer.flip_y],
                 _ => [false; 2],
             },
-            shape: layer.shape_mask,
+            shape: layer.shape_mask.map(|m| layer.shape_mask_keys.as_ref().map_or(m, |k| k.sample(m, local))),
         });
     }
     FramePlan { t, width, height, background: premultiply_srgb(o.background.0), layers }
@@ -216,5 +216,44 @@ mod tests {
         // The content's centre lands on the layer's centre.
         let (cx, cy) = (m[0] * 320.0 + m[1] * 180.0 + m[2], m[3] * 320.0 + m[4] * 180.0 + m[5]);
         assert!((cx - 100.0).abs() < 1e-3 && (cy - 200.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn keyed_crops_and_masks_are_planned_at_the_instant() {
+        use reelforge_renderspec::{CropKeys, Key, MaskShape, ShapeMaskKeys};
+        let mut spec = crate::tests::spec();
+        spec.layers[0].content = LayerContent::Media { asset: "a".into(), time: Default::default(), fit: Fit::Contain };
+        fn key<T>(t: f64, v: T) -> Key<T> {
+            Key { t: Tick::from_seconds(t), v, ease: Default::default() }
+        }
+        let l = &mut spec.layers[0];
+        l.crop_keys = Some(CropKeys {
+            left: Animated::Keys(vec![key(0.0, 0.0), key(1.0, 0.8)]),
+            top: Animated::Constant(0.1),
+            right: Animated::Constant(0.4),
+            bottom: Animated::Constant(0.0),
+        });
+        l.shape_mask = Some(ShapeMask {
+            shape: MaskShape::Circle,
+            center: [0.5, 0.5],
+            size: [0.5, 0.5],
+            rotation: 0.0,
+            feather: 0.0,
+            invert: true,
+        });
+        l.shape_mask_keys = Some(ShapeMaskKeys {
+            center: Animated::Keys(vec![key(0.0, [0.0, 0.5]), key(1.0, [1.0, 0.5])]),
+            size: Animated::Constant([0.2, 0.2]),
+            rotation: Animated::Constant(0.0),
+            feather: Animated::Constant(0.0),
+        });
+        let at = |t: f64| plan_frame(&spec, Tick::from_seconds(t), 1.0).layers.remove(0);
+        let half = at(0.5);
+        assert!((half.crop[0] - 0.4).abs() < 1e-6 && half.crop[1] == 0.1);
+        let m = half.shape.unwrap();
+        assert!((m.center[0] - 0.5).abs() < 1e-6 && m.size == [0.2, 0.2] && m.invert);
+        // keys that would cut everything leave 1 % of the picture, shared between the two edges
+        let end = at(0.999);
+        assert!(end.crop[0] + end.crop[2] <= 0.99 + 1e-6);
     }
 }

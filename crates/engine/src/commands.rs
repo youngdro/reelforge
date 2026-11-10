@@ -482,7 +482,7 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.setColor",
         label: "Colour",
-        params: r#"{"clip": id, "filter"?: "fresh"|"warm"|"cool"|"mono"|"vintage"|"film"|"vivid"|"dusk"|null, "filterStrength"?: 0-1, "lut"?: media id | null, "lutStrength"?: 0-1, "exposure"?: -3..3, "contrast"?, "saturation"?, "temperature"?, "tint"?, "highlights"?, "shadows"?: -1..1, "fade"?, "vignette"?: 0..1, "reset"?: bool}"#,
+        params: r#"{"clip": id, "filter"?: "fresh"|"warm"|"cool"|"mono"|"vintage"|"film"|"vivid"|"dusk"|null, "filterStrength"?: 0-1, "lut"?: media id | null, "lutStrength"?: 0-1, "exposure"?: -3..3, "contrast"?, "saturation"?, "temperature"?, "tint"?, "highlights"?, "shadows"?: -1..1, "fade"?, "vignette"?: 0..1, "reset"?: bool, "at"?: time}"#,
         doc: "Sets a picture clip's colour: a filter at a strength, a lookup table (a `lut` media, from a .cube file) at a strength, and adjustments, applied in that order. `reset` clears all three first.",
         edits: true,
         enabled: always,
@@ -491,7 +491,7 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.setCrop",
         label: "Crop",
-        params: r#"{"clip": id, "left"?: 0-1, "top"?: 0-1, "right"?: 0-1, "bottom"?: 0-1, "flipX"?: bool, "flipY"?: bool}"#,
+        params: r#"{"clip": id, "left"?: 0-1, "top"?: 0-1, "right"?: 0-1, "bottom"?: 0-1, "flipX"?: bool, "flipY"?: bool, "at"?: time}"#,
         doc: "Cuts edges off a video or picture clip (fractions of its width or height) and mirrors it. At least 1 % must stay.",
         edits: true,
         enabled: always,
@@ -518,7 +518,7 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.setMask",
         label: "Mask",
-        params: r#"{"clip": id, "shape"?: "linear"|"mirror"|"circle"|"rectangle"|null, "x"?: 0-1, "y"?: 0-1, "width"?, "height"?, "rotation"?: degrees, "feather"?, "invert"?: bool}"#,
+        params: r#"{"clip": id, "shape"?: "linear"|"mirror"|"circle"|"rectangle"|null, "x"?: 0-1, "y"?: 0-1, "width"?, "height"?, "rotation"?: degrees, "feather"?, "invert"?: bool, "at"?: time}"#,
         doc: "Shows only part of a picture clip: inside a shape placed on the picture (centre `x`, `y` as fractions of it; `width`, `height` and `feather` in units of its shorter side). A new shape starts in the middle; null removes the mask.",
         edits: true,
         enabled: always,
@@ -536,8 +536,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.setKey",
         label: "Add Keyframe",
-        params: r#"{"clip": id, "prop": "x"|"y"|"scale"|"rotation"|"opacity"|"volumeDb", "at": time, "value"?: number, "ease"?: "linear"|"hold"|"inOut"}"#,
-        doc: "Sets a keyframe at a timeline time; without `value`, keeps the value the property has there. Once a property has keyframes, its value follows them.",
+        params: r#"{"clip": id, "prop": "x"|"y"|"scale"|"rotation"|"opacity"|"volumeDb"|"cropLeft"|"cropTop"|"cropRight"|"cropBottom"|"maskX"|"maskY"|"maskWidth"|"maskHeight"|"maskRotation"|"maskFeather"|"exposure"|"contrast"|"saturation"|"temperature"|"tint"|"highlights"|"shadows"|"fade"|"vignette", "at": time, "value"?: number, "ease"?: "linear"|"hold"|"inOut"}"#,
+        doc: "Sets a keyframe at a timeline time; without `value`, keeps the value the property has there. Once a property has keyframes, its value follows them: placement, opacity and volume, the crop's edges, the mask's centre, size, turn and soft edge, and the colour adjustments can all move.",
         edits: true,
         enabled: always,
         run: clip_set_key,
@@ -1814,7 +1814,7 @@ fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
     let id = p.str("clip")?.to_string();
     let f = |name: &str| p.opt_f64(name).map(|o| o.map(|x| x as f32));
     let mut values = vec![];
-    for prop in Prop::ALL {
+    for prop in Prop::MOTION {
         if let Some(v) = f(prop.name())? {
             values.push((prop, v));
         }
@@ -1834,23 +1834,7 @@ fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
     s.edit("Clip Properties", |proj| {
         let clip = proj.clip_mut(&id).ok_or_else(|| not_found("clip", &id))?;
         for (prop, v) in values {
-            if !clip.keyed(prop) {
-                clip.set_base(prop, v);
-                continue;
-            }
-            // a keyframed property is set where the playhead is: that key changes or a new one is made
-            let Some(at) = at else {
-                return Err(EngineError::Params(format!(
-                    "`{}` has keyframes; pass `at` to set it at that time (clip.clearKeys drops them)",
-                    prop.name()
-                )));
-            };
-            let t = at - clip.start;
-            if clip.value_at(prop, t) != v {
-                let list = clip.keys.get_mut(&prop).expect("keyed");
-                let ease = list.iter().find(|k| k.t == t).map_or(Ease::Linear, |k| k.ease);
-                anim::insert(list, Key { t, v, ease });
-            }
+            set_at(clip, prop, v, at)?;
         }
         if let Some(f) = fade_in {
             clip.fade.fade_in = f;
@@ -1886,6 +1870,28 @@ fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
         }
         Ok(json!({ "clip": serde_json::to_value(&*clip).expect("serialises") }))
     })
+}
+
+/// Sets `prop` of `clip` to `v`: its constant value, or, where it has keyframes, its value at
+/// timeline time `at` (the key there changes, or a new one is made).
+fn set_at(clip: &mut Clip, prop: Prop, v: f32, at: Option<Tick>) -> Result<(), EngineError> {
+    if !clip.keyed(prop) {
+        clip.set_base(prop, v);
+        return Ok(());
+    }
+    let Some(at) = at else {
+        return Err(EngineError::Params(format!(
+            "`{}` has keyframes; pass `at` to set it at that time (clip.clearKeys drops them)",
+            prop.name()
+        )));
+    };
+    let t = at - clip.start;
+    if clip.value_at(prop, t) != v {
+        let list = clip.keys.get_mut(&prop).expect("keyed");
+        let ease = list.iter().find(|k| k.t == t).map_or(Ease::Linear, |k| k.ease);
+        anim::insert(list, Key { t, v, ease });
+    }
+    Ok(())
 }
 
 fn clip_add_effect(s: &mut Session, v: &Value) -> CmdResult {
@@ -1929,10 +1935,25 @@ fn clip_set_key(s: &mut Session, v: &Value) -> CmdResult {
         ),
         None => None,
     };
-    if value.is_some_and(|v| !v.is_finite() || (prop == Prop::Opacity && !(0.0..=1.0).contains(&v))) {
+    if value.is_some_and(|v| !v.is_finite() || prop.range().is_some_and(|(lo, hi)| !(lo..=hi).contains(&v))) {
         return Err(EngineError::Params("`value` is out of range".into()));
     }
     s.edit("Add Keyframe", |proj| {
+        if prop.plain() {
+            // what moves must be there: a picture to crop or colour, a mask to move
+            let (ti, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+            let media = matches!(clip.content, ClipContent::Media { .. });
+            let ok = if Prop::MASK.contains(&prop) {
+                clip.look.mask.is_some()
+            } else if Prop::CROP.contains(&prop) {
+                media && proj.tracks[ti].kind != TrackKind::Audio
+            } else {
+                proj.tracks[ti].kind != TrackKind::Audio
+            };
+            if !ok {
+                return Err(EngineError::Params(format!("this clip has no `{}` to key", prop.name())));
+            }
+        }
         let clip = proj.clip_mut(&id).ok_or_else(|| not_found("clip", &id))?;
         let t = at - clip.start;
         let v = value.unwrap_or_else(|| clip.value_at(prop, t));
@@ -2100,6 +2121,7 @@ fn clip_set_color(s: &mut Session, v: &Value) -> CmdResult {
         }
     };
     let (filter_strength, lut_strength) = (unit("filterStrength")?, unit("lutStrength")?);
+    let at = p.opt_time("at")?;
     let mut changes = Vec::new();
     for (name, lo, hi) in Adjust::RANGES {
         if let Some(x) = p.opt_f64(name)? {
@@ -2150,12 +2172,13 @@ fn clip_set_color(s: &mut Session, v: &Value) -> CmdResult {
                 c.lut.as_mut().ok_or_else(|| EngineError::Params("there is no lookup table to strengthen".into()))?;
             l.strength = st;
         }
-        let mut values = c.adjust.values();
+        if reset {
+            clip.keys.retain(|p, _| !Prop::ADJUST.contains(p));
+        }
         for (name, x) in &changes {
             let i = Adjust::RANGES.iter().position(|(n, ..)| n == name).expect("a known name");
-            values[i] = *x;
+            set_at(clip, Prop::ADJUST[i], *x, at)?;
         }
-        c.adjust = Adjust::from_values(values);
         Ok(json!({ "clip": id, "color": serde_json::to_value(&clip.color).expect("serialises") }))
     })
 }
@@ -2173,6 +2196,7 @@ fn clip_set_crop(s: &mut Session, v: &Value) -> CmdResult {
         }
     }
     let (flip_x, flip_y) = (p.opt_bool("flipX")?, p.opt_bool("flipY")?);
+    let at = p.opt_time("at")?;
     s.edit("Crop", |proj| {
         let (_, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
         let picture = match &clip.content {
@@ -2183,13 +2207,12 @@ fn clip_set_crop(s: &mut Session, v: &Value) -> CmdResult {
             return Err(EngineError::Params("only video and picture clips can be cropped or mirrored".into()));
         }
         let clip = proj.clip_mut(&id).expect("found above");
-        let look = &mut clip.look;
-        let c = &mut look.crop;
-        for (slot, x) in [&mut c.left, &mut c.top, &mut c.right, &mut c.bottom].into_iter().zip(edges) {
+        for (prop, x) in Prop::CROP.into_iter().zip(edges) {
             if let Some(x) = x {
-                *slot = x;
+                set_at(clip, prop, x, at)?;
             }
         }
+        let look = &mut clip.look;
         look.flip_x = flip_x.unwrap_or(look.flip_x);
         look.flip_y = flip_y.unwrap_or(look.flip_y);
         if let Some(why) = look.problem() {
@@ -2235,10 +2258,14 @@ fn clip_set_mask(s: &mut Session, v: &Value) -> CmdResult {
     let (x, y, w, h, rotation, feather) =
         (num("x")?, num("y")?, num("width")?, num("height")?, num("rotation")?, num("feather")?);
     let invert = p.opt_bool("invert")?;
+    let at = p.opt_time("at")?;
     s.edit("Mask", |proj| {
         let clip = picture_clip(proj, &id, "have a mask")?;
         match shape {
-            Some(None) => clip.look.mask = None,
+            Some(None) => {
+                clip.look.mask = None;
+                clip.keys.retain(|p, _| !Prop::MASK.contains(p));
+            }
             Some(Some(kind)) => match &mut clip.look.mask {
                 Some(m) => m.kind = kind,
                 None => clip.look.mask = Some(Mask::new(kind)),
@@ -2248,15 +2275,12 @@ fn clip_set_mask(s: &mut Session, v: &Value) -> CmdResult {
         let tweaks = [x, y, w, h, rotation, feather].iter().any(Option::is_some) || invert.is_some();
         match &mut clip.look.mask {
             Some(m) => {
-                let [cx, cy] = &mut m.center;
-                let [sw, sh] = &mut m.size;
-                let slots = [cx, cy, sw, sh, &mut m.rotation, &mut m.feather];
-                for (slot, v) in slots.into_iter().zip([x, y, w, h, rotation, feather]) {
+                m.invert = invert.unwrap_or(m.invert);
+                for (prop, v) in Prop::MASK.into_iter().zip([x, y, w, h, rotation, feather]) {
                     if let Some(v) = v {
-                        *slot = v;
+                        set_at(clip, prop, v, at)?;
                     }
                 }
-                m.invert = invert.unwrap_or(m.invert);
             }
             None if tweaks => return Err(EngineError::Params("the clip has no mask; give a `shape`".into())),
             None => {}

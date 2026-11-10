@@ -4,11 +4,16 @@
 //! sticks to; Shift turns in 15° steps. Alt-click takes the layer under the selected one at that
 //! point (and again, the one under that); a double-click on a title asks to edit its words.
 //!
+//! A selected clip's mask is drawn on it with handles of its own: the dot in its middle moves it,
+//! the dots on its edge size it, its knob turns it. In crop mode (asked for in the inspector) the
+//! whole picture shows with the crop as a box over it: its corners and edges are dragged, or the
+//! box itself is moved.
+//!
 //! While a gesture runs the preview is drawn from a copy of the project with the clip's new
 //! placement; letting go commits it as one `clip.set`, so it is one undo step.
 
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2, pos2, vec2};
-use reelforge_model::ClipTransform;
+use reelforge_model::{ClipTransform, Mask, MaskKind};
 use reelforge_render::Outline;
 
 use crate::theme::color;
@@ -28,6 +33,31 @@ enum Kind {
     Move,
     Scale,
     Rotate,
+    /// The mask: moved, its width or height dragged, turned.
+    MaskMove,
+    MaskWidth,
+    MaskHeight,
+    MaskTurn,
+    /// The crop's edges that follow the pointer (bits [`LEFT`], [`TOP`], [`RIGHT`], [`BOTTOM`]);
+    /// all four move the box.
+    Crop(u8),
+}
+
+const LEFT: u8 = 1;
+const TOP: u8 = 2;
+const RIGHT: u8 = 4;
+const BOTTOM: u8 = 8;
+/// The least of the picture a crop dragged in the preview keeps, each way.
+const CROP_MIN: f32 = 0.05;
+
+/// What of the selected clip, besides its placement, is shaped in the preview.
+#[derive(Copy, Clone, Default)]
+pub(crate) struct Shaping {
+    /// Its mask, where the playhead is.
+    pub mask: Option<Mask>,
+    /// In crop mode: what is cut off the picture as it is shown (left, top, right, bottom). The
+    /// outline is then the whole picture's.
+    pub crop: Option<[f32; 4]>,
 }
 
 /// A drag in progress on one clip.
@@ -45,6 +75,19 @@ pub(crate) struct Gesture {
     guides: [Option<f32>; 2],
     /// The clip's box when the gesture began (output pixels, upright bounds).
     bounds: Option<Rect>,
+    /// The picture's corners on screen when the gesture began.
+    quad: [Pos2; 4],
+    /// The mask when a mask gesture began, and so far.
+    mask: Option<(Mask, Mask)>,
+    /// The crop when a crop gesture began, and so far.
+    crop: Option<([f32; 4], [f32; 4])>,
+}
+
+impl Gesture {
+    /// The mask so far, while the mask is what is dragged.
+    pub(crate) fn mask(&self) -> Option<Mask> {
+        self.mask.map(|(_, now)| now)
+    }
 }
 
 /// What the person did in the preview this frame.
@@ -56,6 +99,12 @@ pub(crate) struct StageOutput {
     pub edit: Option<String>,
     /// A gesture ended: the clip's new placement.
     pub commit: Option<(String, ClipTransform)>,
+    /// A mask gesture ended: the clip's mask now.
+    pub mask: Option<(String, Mask)>,
+    /// A crop gesture ended: what is cut off the picture as shown (left, top, right, bottom).
+    pub crop: Option<(String, [f32; 4])>,
+    /// A click outside the picture in crop mode: leave it.
+    pub leave_crop: bool,
 }
 
 /// The preview on screen: where the frame is drawn and how big an output pixel is.
@@ -120,6 +169,106 @@ fn knob(q: &[Pos2; 4]) -> (Pos2, Pos2) {
     (top, top + up * KNOB)
 }
 
+/// The picture's own axes on screen: unit vectors along its width and height, their lengths in
+/// points, and the points one unit of a mask (the picture's shorter side) covers.
+struct Axes {
+    origin: Pos2,
+    ux: Vec2,
+    uy: Vec2,
+    w: f32,
+    h: f32,
+    unit: f32,
+}
+
+impl Axes {
+    fn of(q: &[Pos2; 4]) -> Axes {
+        let (ex, ey) = (q[1] - q[0], q[3] - q[0]);
+        let (w, h) = (ex.length().max(1e-3), ey.length().max(1e-3));
+        Axes { origin: q[0], ux: ex / w, uy: ey / h, w, h, unit: w.min(h) }
+    }
+
+    /// Where the point `uv` of the picture (fractions of its width and height) is on screen.
+    fn at(&self, uv: [f32; 2]) -> Pos2 {
+        self.origin + self.ux * (uv[0] * self.w) + self.uy * (uv[1] * self.h)
+    }
+
+    /// A screen vector as fractions of the picture's width and height.
+    fn uv(&self, d: Vec2) -> [f32; 2] {
+        [d.dot(self.ux) / self.w, d.dot(self.uy) / self.h]
+    }
+
+    /// A mask's own axes on screen (turned with it), one unit long.
+    fn mask_axes(&self, m: &Mask) -> (Vec2, Vec2) {
+        let (sin, cos) = m.rotation.to_radians().sin_cos();
+        ((self.ux * cos + self.uy * sin) * self.unit, (self.uy * cos - self.ux * sin) * self.unit)
+    }
+}
+
+/// A mask's handles on screen: its middle, the dot that sizes its width (shapes with one), the dot
+/// that sizes its height (shapes with one), and its turning knob.
+fn mask_handles(ax: &Axes, m: &Mask) -> (Pos2, Option<Pos2>, Option<Pos2>, Pos2) {
+    let c = ax.at(m.center);
+    let (mx, my) = ax.mask_axes(m);
+    let (hw, hh) = (m.size[0] * 0.5, m.size[1] * 0.5);
+    let wide = matches!(m.kind, MaskKind::Circle | MaskKind::Rectangle).then(|| c + mx * hw);
+    let high = (m.kind != MaskKind::Linear).then(|| c + my * hh);
+    let reach = if m.kind == MaskKind::Linear { 0.0 } else { hh };
+    let up = -my.normalized();
+    let up = if up.is_finite() { up } else { vec2(0.0, -1.0) };
+    (c, wide, high, c + up * (reach * ax.unit + KNOB))
+}
+
+/// The crop box's corners on screen (as the picture's: top-left first, clockwise).
+fn crop_quad(ax: &Axes, c: [f32; 4]) -> [Pos2; 4] {
+    let [l, t, r, b] = c;
+    [[l, t], [1.0 - r, t], [1.0 - r, 1.0 - b], [l, 1.0 - b]].map(|uv| ax.at(uv))
+}
+
+/// Which of the crop box's edges the pointer takes at `p`: a corner (two), the middle of an edge
+/// (one), or inside the box (all four: it moves).
+fn crop_take(q: &[Pos2; 4], p: Pos2) -> Option<u8> {
+    let corners = [LEFT | TOP, RIGHT | TOP, RIGHT | BOTTOM, LEFT | BOTTOM];
+    if let Some(i) = (0..4).find(|&i| q[i].distance(p) <= HANDLE_REACH) {
+        return Some(corners[i]);
+    }
+    let edges = [TOP, RIGHT, BOTTOM, LEFT];
+    for i in 0..4 {
+        let (a, b) = (q[i], q[(i + 1) % 4]);
+        let along = (b - a).normalized();
+        let t = (p - a).dot(along);
+        let off = ((p - a) - along * t).length();
+        if off <= HANDLE_REACH && t > 0.0 && t < (b - a).length() {
+            return Some(edges[i]);
+        }
+    }
+    inside(q, p).then_some(LEFT | TOP | RIGHT | BOTTOM)
+}
+
+/// `start` with the edges in `bits` moved by `d` (fractions of the picture), keeping
+/// [`CROP_MIN`] of it and staying on it; all four edges move the box without resizing it.
+fn crop_drag(start: [f32; 4], bits: u8, d: [f32; 2]) -> [f32; 4] {
+    let [l, t, r, b] = start;
+    if bits == LEFT | TOP | RIGHT | BOTTOM {
+        let dx = d[0].clamp(-l, r);
+        let dy = d[1].clamp(-t, b);
+        return [l + dx, t + dy, r - dx, b - dy];
+    }
+    let mut now = start;
+    if bits & LEFT != 0 {
+        now[0] = (l + d[0]).clamp(0.0, 1.0 - r - CROP_MIN);
+    }
+    if bits & RIGHT != 0 {
+        now[2] = (r - d[0]).clamp(0.0, 1.0 - l - CROP_MIN);
+    }
+    if bits & TOP != 0 {
+        now[1] = (t + d[1]).clamp(0.0, 1.0 - b - CROP_MIN);
+    }
+    if bits & BOTTOM != 0 {
+        now[3] = (b - d[1]).clamp(0.0, 1.0 - t - CROP_MIN);
+    }
+    now
+}
+
 /// Handles the pointer over the preview and draws the selection. `outlines` are the visible
 /// layers, bottom first; `transform` gives a clip's committed placement; `canvas` is the frame's
 /// size in output pixels.
@@ -131,6 +280,7 @@ pub(crate) fn interact(
     canvas: [f32; 2],
     outlines: &[(String, Outline)],
     selected: Option<&str>,
+    shaping: Shaping,
     gesture: &mut Option<Gesture>,
     transform: impl Fn(&str) -> Option<ClipTransform>,
 ) -> StageOutput {
@@ -143,6 +293,29 @@ pub(crate) fn interact(
     // what the pointer would take, for the cursor and for a drag that starts here
     let take = |p: Pos2| -> Option<(String, Kind, Pos2)> {
         if let Some((id, q)) = &selected_quad {
+            let ax = Axes::of(q);
+            if let Some(c) = shaping.crop {
+                // in crop mode only the crop is dragged
+                return crop_take(&crop_quad(&ax, c), p).map(|bits| (id.clone(), Kind::Crop(bits), centre(q)));
+            }
+            if let Some(m) = &shaping.mask {
+                let (mid, wide, high, turn) = mask_handles(&ax, m);
+                let near = |h: Pos2| h.distance(p) <= HANDLE_REACH;
+                let kind = if near(turn) {
+                    Some(Kind::MaskTurn)
+                } else if wide.is_some_and(near) {
+                    Some(Kind::MaskWidth)
+                } else if high.is_some_and(near) {
+                    Some(Kind::MaskHeight)
+                } else if near(mid) {
+                    Some(Kind::MaskMove)
+                } else {
+                    None
+                };
+                if let Some(kind) = kind {
+                    return Some((id.clone(), kind, mid));
+                }
+            }
             if knob(q).1.distance(p) <= HANDLE_REACH {
                 return Some((id.clone(), Kind::Rotate, centre(q)));
             }
@@ -152,6 +325,9 @@ pub(crate) fn interact(
             if inside(q, p) {
                 return Some((id.clone(), Kind::Move, centre(q)));
             }
+        }
+        if shaping.crop.is_some() {
+            return None;
         }
         let id = topmost(p)?;
         let q = view.quad(&outlines.iter().find(|(l, _)| *l == id)?.1);
@@ -163,14 +339,30 @@ pub(crate) fn interact(
         && response.hovered()
     {
         match take(p).map(|t| t.1) {
-            Some(Kind::Move) => ui.ctx().set_cursor_icon(egui::CursorIcon::Move),
+            Some(Kind::Move | Kind::MaskMove) => ui.ctx().set_cursor_icon(egui::CursorIcon::Move),
             Some(Kind::Scale) => ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe),
-            Some(Kind::Rotate) => ui.ctx().set_cursor_icon(egui::CursorIcon::Grab),
+            Some(Kind::Rotate | Kind::MaskTurn) => ui.ctx().set_cursor_icon(egui::CursorIcon::Grab),
+            Some(Kind::MaskWidth) => ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal),
+            Some(Kind::MaskHeight) => ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical),
+            Some(Kind::Crop(bits)) => ui.ctx().set_cursor_icon(match bits {
+                b if b == LEFT | TOP | RIGHT | BOTTOM => egui::CursorIcon::Move,
+                b if b == LEFT | TOP || b == RIGHT | BOTTOM => egui::CursorIcon::ResizeNwSe,
+                b if b == RIGHT | TOP || b == LEFT | BOTTOM => egui::CursorIcon::ResizeNeSw,
+                b if b & (LEFT | RIGHT) != 0 => egui::CursorIcon::ResizeHorizontal,
+                _ => egui::CursorIcon::ResizeVertical,
+            }),
             None => {}
         }
     }
 
-    if response.double_clicked()
+    if shaping.crop.is_some() {
+        if response.clicked()
+            && let Some(p) = pointer
+            && take(p).is_none()
+        {
+            out.leave_crop = true;
+        }
+    } else if response.double_clicked()
         && let Some(p) = pointer
         && let Some(id) = topmost(p)
     {
@@ -204,8 +396,26 @@ pub(crate) fn interact(
         if Some(clip.as_str()) != selected {
             out.select = Some(Some(clip.clone()));
         }
-        let bounds = outlines.iter().find(|(l, _)| *l == clip).map(|(_, o)| bounds(o));
-        *gesture = Some(Gesture { clip, kind, from: p, centre: c, start, now: start, guides: [None; 2], bounds });
+        let outline = outlines.iter().find(|(l, _)| *l == clip).map(|(_, o)| o);
+        let bounds = outline.map(bounds);
+        let quad = outline.map_or([p; 4], |o| view.quad(o));
+        let mask = shaping
+            .mask
+            .filter(|_| matches!(kind, Kind::MaskMove | Kind::MaskWidth | Kind::MaskHeight | Kind::MaskTurn));
+        let crop = shaping.crop.filter(|_| matches!(kind, Kind::Crop(_)));
+        *gesture = Some(Gesture {
+            clip,
+            kind,
+            from: p,
+            centre: c,
+            start,
+            now: start,
+            guides: [None; 2],
+            bounds,
+            quad,
+            mask: mask.map(|m| (m, m)),
+            crop: crop.map(|c| (c, c)),
+        });
     }
 
     if let Some(g) = gesture.as_mut()
@@ -252,29 +462,71 @@ pub(crate) fn interact(
                 }
                 g.now.rotation = (r + 180.0).rem_euclid(360.0) - 180.0;
             }
+            Kind::MaskMove | Kind::MaskWidth | Kind::MaskHeight | Kind::MaskTurn => {
+                let ax = Axes::of(&g.quad);
+                if let Some((was, now)) = &mut g.mask {
+                    *now = *was;
+                    let (mx, my) = ax.mask_axes(was);
+                    // how far along one of the mask's own axes the pointer is from its middle, in units
+                    let along = |axis: Vec2| ((p - g.centre).dot(axis) / (ax.unit * ax.unit)).abs();
+                    match g.kind {
+                        Kind::MaskMove => {
+                            let [du, dv] = ax.uv(p - g.from);
+                            now.center = [was.center[0] + du, was.center[1] + dv];
+                        }
+                        Kind::MaskWidth => now.size[0] = (along(mx) * 2.0).clamp(0.01, 4.0),
+                        Kind::MaskHeight => now.size[1] = (along(my) * 2.0).clamp(0.01, 4.0),
+                        _ => {
+                            let angle = |q: Pos2| (q.y - g.centre.y).atan2(q.x - g.centre.x).to_degrees();
+                            let mut r = was.rotation + angle(p) - angle(g.from);
+                            if shift {
+                                r = (r / 15.0).round() * 15.0;
+                            }
+                            now.rotation = (r + 180.0).rem_euclid(360.0) - 180.0;
+                        }
+                    }
+                }
+            }
+            Kind::Crop(bits) => {
+                let ax = Axes::of(&g.quad);
+                if let Some((was, now)) = &mut g.crop {
+                    *now = crop_drag(*was, bits, ax.uv(p - g.from));
+                }
+            }
         }
     }
 
-    if response.drag_stopped()
+    // letting go, or a drag the preview lost (the window let go of the pointer)
+    if (response.drag_stopped() || !response.dragged())
         && let Some(g) = gesture.take()
-        && g.now != g.start
     {
-        out.commit = Some((g.clip, g.now));
-    }
-    if !response.dragged() && !response.drag_stopped() {
-        // a drag the preview lost (the window let go of the pointer)
-        if let Some(g) = gesture.take()
-            && g.now != g.start
+        if g.now != g.start {
+            out.commit = Some((g.clip.clone(), g.now));
+        }
+        if let Some((was, now)) = g.mask
+            && was != now
         {
-            out.commit = Some((g.clip, g.now));
+            out.mask = Some((g.clip.clone(), now));
+        }
+        if let Some((was, now)) = g.crop
+            && was != now
+        {
+            out.crop = Some((g.clip, now));
         }
     }
-    paint(ui, view, outlines, selected, gesture.as_ref());
+    paint(ui, view, outlines, selected, shaping, gesture.as_ref());
     out
 }
 
 /// The selection box, its handles, and the centre lines a move sticks to.
-fn paint(ui: &egui::Ui, view: View, outlines: &[(String, Outline)], selected: Option<&str>, gesture: Option<&Gesture>) {
+fn paint(
+    ui: &egui::Ui,
+    view: View,
+    outlines: &[(String, Outline)],
+    selected: Option<&str>,
+    shaping: Shaping,
+    gesture: Option<&Gesture>,
+) {
     let painter = ui.painter_at(ui.clip_rect());
     if let Some(g) = gesture
         && g.kind == Kind::Move
@@ -296,6 +548,38 @@ fn paint(ui: &egui::Ui, view: View, outlines: &[(String, Outline)], selected: Op
     let Some((_, o)) = selected.and_then(|id| outlines.iter().find(|(l, _)| l == id)) else { return };
     let q = view.quad(o);
     let line = Stroke::new(1.5, color::ACCENT);
+    let ax = Axes::of(&q);
+    if let Some(c) = gesture.and_then(|g| g.crop.map(|(_, now)| now)).or(shaping.crop) {
+        // what the crop cuts off is dimmed; the box has thirds and handles on its corners and edges
+        let b = crop_quad(&ax, c);
+        let dim = Color32::from_black_alpha(150);
+        for i in 0..4 {
+            let j = (i + 1) % 4;
+            painter.add(egui::Shape::convex_polygon(vec![q[i], q[j], b[j], b[i]], dim, Stroke::NONE));
+        }
+        let thin = Stroke::new(1.0, Color32::from_white_alpha(70));
+        for k in [1.0 / 3.0, 2.0 / 3.0] {
+            painter.line_segment([b[0] + (b[1] - b[0]) * k, b[3] + (b[2] - b[3]) * k], thin);
+            painter.line_segment([b[0] + (b[3] - b[0]) * k, b[1] + (b[2] - b[1]) * k], thin);
+        }
+        let edge = Stroke::new(1.5, Color32::WHITE);
+        for i in 0..4 {
+            painter.line_segment([b[i], b[(i + 1) % 4]], edge);
+        }
+        for i in 0..4 {
+            let mid = b[i] + (b[(i + 1) % 4] - b[i]) * 0.5;
+            for h in [b[i], mid] {
+                painter.rect(
+                    Rect::from_center_size(h, vec2(9.0, 9.0)),
+                    2.0,
+                    Color32::WHITE,
+                    line,
+                    egui::StrokeKind::Middle,
+                );
+            }
+        }
+        return;
+    }
     for i in 0..4 {
         painter.line_segment([q[i], q[(i + 1) % 4]], line);
     }
@@ -305,6 +589,50 @@ fn paint(ui: &egui::Ui, view: View, outlines: &[(String, Outline)], selected: Op
     for c in q {
         let r = Rect::from_center_size(c, vec2(9.0, 9.0));
         painter.rect(r, 2.0, Color32::WHITE, line, egui::StrokeKind::Middle);
+    }
+    if let Some(m) = gesture.and_then(Gesture::mask).or(shaping.mask) {
+        paint_mask(&painter, &ax, &m);
+    }
+}
+
+/// A mask's shape over the picture, with its handles.
+fn paint_mask(painter: &egui::Painter, ax: &Axes, m: &Mask) {
+    let tint = color::WARN;
+    let line = Stroke::new(1.5, tint);
+    let (c, wide, high, turn) = mask_handles(ax, m);
+    let (mx, my) = ax.mask_axes(m);
+    let (hw, hh) = (m.size[0] * 0.5, m.size[1] * 0.5);
+    let far = (ax.w + ax.h) / ax.unit;
+    match m.kind {
+        MaskKind::Circle => {
+            let pts: Vec<Pos2> = (0..64)
+                .map(|i| {
+                    let a = i as f32 / 64.0 * std::f32::consts::TAU;
+                    c + mx * (hw * a.cos()) + my * (hh * a.sin())
+                })
+                .collect();
+            painter.add(egui::Shape::closed_line(pts, line));
+        }
+        MaskKind::Rectangle => {
+            let pts =
+                [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].map(|(a, b)| c + mx * (hw * a) + my * (hh * b));
+            painter.add(egui::Shape::closed_line(pts.to_vec(), line));
+        }
+        MaskKind::Mirror => {
+            for side in [-1.0, 1.0] {
+                painter.line_segment([c - mx * far + my * (hh * side), c + mx * far + my * (hh * side)], line);
+            }
+        }
+        MaskKind::Linear => {
+            painter.line_segment([c - mx * far, c + mx * far], line);
+        }
+    }
+    let top = if m.kind == MaskKind::Linear { c } else { c - my * hh };
+    painter.line_segment([top, turn], line);
+    painter.circle(turn, 5.0, color::STAGE, line);
+    painter.circle(c, 4.5, tint, Stroke::new(1.0, color::STAGE));
+    for h in [wide, high].into_iter().flatten() {
+        painter.circle(h, 4.5, Color32::WHITE, line);
     }
 }
 
@@ -336,5 +664,50 @@ mod tests {
         assert_eq!(stick([100.0, 150.0, 200.0], 20.0, &[540.0], 6.0), None);
         let o: Outline = [[10.0, 0.0], [20.0, 10.0], [10.0, 20.0], [0.0, 10.0]];
         assert_eq!(bounds(&o), Rect::from_min_max(pos2(0.0, 0.0), pos2(20.0, 20.0)));
+    }
+
+    #[test]
+    fn a_crop_box_is_dragged_by_its_edges_and_moved_whole() {
+        let start = [0.1, 0.2, 0.0, 0.0];
+        // the bottom-right corner comes in; the other two edges stay
+        let c = crop_drag(start, RIGHT | BOTTOM, [-0.25, -0.5]);
+        assert!((c[2] - 0.25).abs() < 1e-6 && (c[3] - 0.5).abs() < 1e-6 && c[0] == 0.1 && c[1] == 0.2);
+        // an edge stops where the least of the picture is left, and at the picture's own edge
+        assert!((crop_drag(start, LEFT, [2.0, 0.0])[0] - (1.0 - CROP_MIN)).abs() < 1e-6);
+        assert_eq!(crop_drag(start, LEFT, [-2.0, 0.0])[0], 0.0);
+        // the whole box moves without changing size, and stays on the picture
+        let m = crop_drag(start, LEFT | TOP | RIGHT | BOTTOM, [-0.5, -0.1]);
+        assert!((m[0] - 0.0).abs() < 1e-6 && (m[2] - 0.1).abs() < 1e-6 && (m[1] - 0.1).abs() < 1e-6);
+        assert!((m[0] + m[2] - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_crop_box_is_taken_by_corner_edge_or_middle() {
+        let q = [pos2(0.0, 0.0), pos2(100.0, 0.0), pos2(100.0, 50.0), pos2(0.0, 50.0)];
+        assert_eq!(crop_take(&q, pos2(98.0, 49.0)), Some(RIGHT | BOTTOM));
+        assert_eq!(crop_take(&q, pos2(50.0, 2.0)), Some(TOP));
+        assert_eq!(crop_take(&q, pos2(3.0, 25.0)), Some(LEFT));
+        assert_eq!(crop_take(&q, pos2(50.0, 25.0)), Some(LEFT | TOP | RIGHT | BOTTOM));
+        assert_eq!(crop_take(&q, pos2(150.0, 25.0)), None);
+    }
+
+    #[test]
+    fn a_masks_handles_sit_on_its_shape_and_turn_with_it() {
+        // a 200 by 100 picture: one unit is 100 points
+        let ax = Axes::of(&[pos2(0.0, 0.0), pos2(200.0, 0.0), pos2(200.0, 100.0), pos2(0.0, 100.0)]);
+        let mut m = Mask::new(MaskKind::Circle);
+        m.size = [1.0, 0.5];
+        let (mid, wide, high, turn) = mask_handles(&ax, &m);
+        assert_eq!(mid, pos2(100.0, 50.0));
+        assert_eq!(wide, Some(pos2(150.0, 50.0)));
+        assert_eq!(high, Some(pos2(100.0, 75.0)));
+        assert_eq!(turn, pos2(100.0, 25.0 - KNOB));
+        // a quarter turn clockwise: the width's handle points down
+        m.rotation = 90.0;
+        let (_, wide, ..) = mask_handles(&ax, &m);
+        assert!(wide.unwrap().distance(pos2(100.0, 100.0)) < 1e-3);
+        // a line has no size to drag
+        let (_, wide, high, _) = mask_handles(&ax, &Mask::new(MaskKind::Linear));
+        assert_eq!((wide, high), (None, None));
     }
 }

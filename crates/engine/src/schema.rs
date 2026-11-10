@@ -105,7 +105,7 @@ fn title_props() -> Vec<(&'static str, Value)> {
 fn prop_schema() -> (&'static str, Value) {
     (
         "prop",
-        json!({"enum": ["x", "y", "scale", "rotation", "opacity", "volumeDb"], "description": "The property that moves."}),
+        json!({"enum": reelforge_model::Prop::ALL.map(reelforge_model::Prop::name), "description": "The property that moves: placement, opacity and volume; the crop's edges; the mask's centre, size, turn and soft edge; the colour adjustments."}),
     )
 }
 
@@ -502,6 +502,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
                     json!({"type": "number", "minimum": 0, "maximum": 1, "description": "How strongly the table applies; 1 by default."}),
                 ),
                 ("reset", json!({"type": "boolean", "description": "Clear the filter, table and adjustments first."})),
+                ("at", time("Where a value with keyframes is set: the key there changes or one is added.")),
             ];
             for (name, lo, hi) in reelforge_model::Adjust::RANGES {
                 props.push((
@@ -521,6 +522,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
             }
             props.push(("flipX", json!({"type": "boolean", "description": "Mirrored left to right."})));
             props.push(("flipY", json!({"type": "boolean", "description": "Mirrored top to bottom."})));
+            props.push(("at", time("Where a value with keyframes is set: the key there changes or one is added.")));
             object(props, &["clip"])
         }
         "clip.setBackdrop" => object(
@@ -567,6 +569,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
                     json!({"type": "number", "minimum": 0, "description": "Soft edge, in units of the shorter side; 0 is hard."}),
                 ),
                 ("invert", json!({"type": "boolean", "description": "Show the outside instead."})),
+                ("at", time("Where a value with keyframes is set: the key there changes or one is added.")),
             ],
             &["clip"],
         ),
