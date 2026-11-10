@@ -441,6 +441,8 @@ pub(crate) fn replace(
     }
     let clip = proj.clip_mut(id).expect("found above");
     clip.content = ClipContent::Media { media: media.to_string(), source_in, speed, reversed: false, curve, silent };
+    // another camera shook another way
+    clip.steady = None;
     if grow != 1.0 {
         clip.transform.scale *= grow;
         for key in clip.keys.get_mut(&Prop::Scale).into_iter().flatten() {

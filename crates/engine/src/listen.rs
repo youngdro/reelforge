@@ -1,6 +1,6 @@
 //! Tools that listen or look before they edit: level a clip's loudness, mark a song's beats,
 //! lower music while a voice speaks, measure a clip's background noise, take the pauses out of
-//! someone speaking, find the colour of a green screen.
+//! someone speaking, find the colour of a green screen, follow a shaky camera to steady its shot.
 //!
 //! A session has no sound to listen to and no picture to look at, only a project; whoever holds
 //! the media does ([`plan`] takes it). Each tool reads the project, listens to the clips it is
@@ -12,7 +12,7 @@ use reelforge_compile::{CompileOptions, compile};
 use reelforge_media::Footage;
 use reelforge_media::analysis::{self, RATE};
 use reelforge_media::export::mix;
-use reelforge_model::{Clip, Denoise, Project, Prop, TrackKind};
+use reelforge_model::{Clip, ClipContent, Denoise, MediaKind, Project, Prop, Steady, TrackKind};
 use reelforge_renderspec::Animated;
 use reelforge_time::{TICKS_PER_SECOND, Tick};
 use serde_json::{Value, json};
@@ -30,7 +30,7 @@ pub struct Tool {
 }
 
 /// Every listening tool.
-pub const TOOLS: [Tool; 6] = [
+pub const TOOLS: [Tool; 7] = [
     Tool {
         name: "audio.normalize",
         title: "Level Loudness",
@@ -60,6 +60,11 @@ pub const TOOLS: [Tool; 6] = [
         name: "clip.pickChromaKey",
         title: "Key Out Backdrop",
         doc: "Looks at the frame a video or picture clip shows at `at` (its first frame by default), finds the one colour most of its border has (a green or blue screen) and keys it out (clip.setChromaKey holds the result, to adjust). Fails when the border has no such colour.",
+    },
+    Tool {
+        name: "clip.stabilize",
+        title: "Stabilize",
+        doc: "Steadies a shaky video clip (剪映's 防抖): watches every frame the clip shows, follows how the camera moved from each to the next (across, down and its roll), and holds the picture against it, taking out `amount` of the shake (0.5 by default: the tremble goes and the camera's own movement stays; 1 holds the picture nearly still; 0 turns it off). clip.setStabilize holds the measured path, so `amount` can be changed there without watching again. The picture is drawn a little larger (1.3 times at most) so its edges stay out of sight. A clip of up to five minutes of its file.",
     },
 ];
 
@@ -114,6 +119,13 @@ pub fn tool_schema(name: &str) -> Option<Value> {
                 "apply": {"type": "boolean", "description": "False only lists the pauses and cuts nothing; true by default."}
             }),
             &[],
+        ),
+        "clip.stabilize" => object(
+            json!({
+                "clip": clip,
+                "amount": input_schema("clip.setStabilize")?["properties"]["amount"].clone()
+            }),
+            &["clip"],
         ),
         "clip.pickChromaKey" => {
             let mut at = input_schema("clip.split")?["properties"]["at"].clone();
@@ -228,6 +240,7 @@ pub fn plan(name: &str, project: &Project, media: &Footage, params: &Value) -> R
         "audio.denoise" => denoise(project, media, params),
         "audio.cutPauses" => cut_pauses(project, media, params),
         "clip.pickChromaKey" => pick_chroma_key(project, media, params),
+        "clip.stabilize" => stabilize(project, media, params),
         other => Err(format!("unknown tool {other:?}")),
     }
 }
@@ -535,4 +548,61 @@ fn pick_chroma_key(project: &Project, media: &Footage, params: &Value) -> Result
         steps: vec![step("clip.setChromaKey", set)],
         found: json!({ "clip": id, "color": color, "share": (f64::from(share) * 100.0).round() / 100.0 }),
     })
+}
+
+fn stabilize(project: &Project, media: &Footage, params: &Value) -> Result<Plan, String> {
+    let id = clip_param(params)?;
+    let amount = number(params, "amount", Steady::AMOUNT, (0.0, 1.0))?;
+    let (track, clip) = clip_of(project, &id)?;
+    let file = match &clip.content {
+        ClipContent::Media { media, .. } if project.tracks[track].kind == TrackKind::Video => project.media.get(media),
+        _ => None,
+    };
+    let Some(file) = file.filter(|m| m.kind == MediaKind::Video) else {
+        return Err(format!("clip {id:?} is not a video: only a video's picture can be stabilized"));
+    };
+    if amount == 0.0 {
+        let steps = vec![step("clip.setStabilize", json!({ "clip": id, "amount": 0.0 }))];
+        return Ok(Plan { label: "Stabilize", steps, found: json!({ "clip": id, "amount": 0.0 }) });
+    }
+    let spec = compile(project, &CompileOptions { encode: false }).map_err(|e| e.to_string())?;
+    let offline = || format!("the file of clip {id:?} is offline or not ready yet");
+    let asset = spec.assets.get(&file.id).ok_or_else(offline)?;
+    // the stretch of its file the clip shows, whichever way and however fast it plays it
+    let ClipContent::Media { source_in, speed, .. } = &clip.content else { unreachable!("checked above") };
+    let span = clip.duration.scale(*speed);
+    if span > LIMIT {
+        return Err(format!(
+            "the clip shows {:.0} s of its file; at most {:.0} s can be watched at once: split it first",
+            span.seconds(),
+            LIMIT.seconds()
+        ));
+    }
+    let length = media.frame_length(asset).unwrap_or(Tick(TICKS_PER_SECOND / 30));
+    let frames = (span.0 / length.0.max(1) + 1).clamp(2, Steady::SAMPLES as i64);
+    let mut seen = Vec::with_capacity(frames as usize);
+    for i in 0..frames {
+        seen.push(media.gray(asset, *source_in + length * i)?.ok_or_else(offline)?);
+    }
+    let path = reelforge_media::steady::path(seen);
+    let round = |v: f32, to: f64| (f64::from(v) * to).round() / to;
+    let path: Vec<[f64; 3]> = path.iter().map(|p| [round(p[0], 1e5), round(p[1], 1e5), round(p[2], 1e3)]).collect();
+    // what steadying will do, for whoever asked: how far the picture is moved at most (percent of
+    // its size) and how much larger it is drawn
+    let steady =
+        Steady { amount, from: *source_in, step: length, path: path.iter().map(|p| p.map(|v| v as f32)).collect() };
+    let size = file.size.unwrap_or([16, 9]);
+    let fixed = steady.steadied(size[0] as f32 / size[1].max(1) as f32);
+    let moved = fixed.moves.iter().map(|m| m[0].abs().max(m[1].abs())).fold(0.0f32, f32::max);
+    let turned = fixed.moves.iter().map(|m| m[2].abs()).fold(0.0f32, f32::max);
+    let found = json!({
+        "clip": id,
+        "amount": amount,
+        "frames": frames,
+        "movedPercent": tenth(moved * 100.0),
+        "turnedDegrees": tenth(turned),
+        "zoom": round(fixed.zoom, 100.0),
+    });
+    let set = json!({ "clip": id, "amount": amount, "path": path, "from": source_in, "step": length });
+    Ok(Plan { label: "Stabilize", steps: vec![step("clip.setStabilize", set)], found })
 }

@@ -22,6 +22,7 @@ pub mod color;
 pub mod export;
 pub mod fx;
 pub mod look;
+pub mod steady;
 pub mod timeline;
 pub mod timing;
 pub mod transition;
@@ -32,6 +33,7 @@ pub use color::{Adjust, ColorGrade, Filter, FilterKind, LutUse};
 pub use export::{Codec, ExportSettings, Quality, Resolution};
 pub use fx::{Fx, FxChannel, FxGroup, FxKind, FxSample};
 pub use look::{BlendMode, ChromaKey, Crop, Look, Mask, MaskKind};
+pub use steady::{Steadied, Steady};
 pub use timeline::{Timeline, TimelineInfo};
 pub use timing::{CurvePoint, CurvePreset, Timing};
 pub use transition::{Transition, TransitionKind};
@@ -247,6 +249,10 @@ pub struct Clip {
     /// that is still a colour is empty. Clips with the same number take the same file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot: Option<u32>,
+    /// The picture held steady (a video's): the camera's path as measured, and how much of its
+    /// shake is taken out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steady: Option<Steady>,
 }
 
 fn yes() -> bool {
@@ -788,6 +794,20 @@ impl Project {
                 if clip.slot == Some(0) {
                     return motion("template slots count from 1");
                 }
+                if let Some(steady) = &clip.steady {
+                    if !(track.kind == TrackKind::Video && matches!(clip.content, ClipContent::Media { .. })) {
+                        return motion("only a video on a video track can be held steady");
+                    }
+                    if !(steady.amount > 0.0 && steady.amount <= 1.0) {
+                        return motion("how much a picture is steadied must be above 0 and at most 1");
+                    }
+                    if steady.step <= Tick::ZERO || steady.path.is_empty() || steady.path.len() > Steady::SAMPLES {
+                        return motion("a steadied picture's path needs samples (not too many) a positive time apart");
+                    }
+                    if steady.path.iter().flatten().any(|v| !v.is_finite()) {
+                        return motion("a steadied picture's path must be finite numbers");
+                    }
+                }
                 if clip.slot.is_some()
                     && !(track.kind == TrackKind::Video
                         && matches!(clip.content, ClipContent::Media { .. } | ClipContent::Solid { .. }))
@@ -950,6 +970,7 @@ mod tests {
             voice: Default::default(),
             group: None,
             slot: None,
+            steady: None,
         }
     }
 

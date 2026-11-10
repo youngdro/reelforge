@@ -202,6 +202,9 @@ pub struct EditorApp {
     sheet: Sheet,
     /// The clip the next picture or video picked takes the place of (Replace in a clip's menu).
     into: Option<String>,
+    /// A tool that takes a moment (it watches a clip's every frame), to run once this many more
+    /// frames have been drawn: by then the status bar says what is going on.
+    later: Option<(u8, &'static str, Value)>,
     /// The window, once it is known, for a remote's answers to wake it.
     window: Arc<std::sync::OnceLock<egui::Context>>,
 }
@@ -324,6 +327,8 @@ struct SpeedEdit {
     frozen: bool,
     /// Video, which can be frozen.
     video: bool,
+    /// How much of the camera's shake is taken out, in percent, when the picture is held steady.
+    steady: Option<f32>,
 }
 
 /// Whether a property has a keyframe at the playhead.
@@ -426,6 +431,7 @@ impl EditorApp {
             narrow: false,
             sheet: Sheet::default(),
             into: None,
+            later: None,
             window: Arc::default(),
         }
     }
@@ -610,6 +616,9 @@ impl EditorApp {
             }
             "audio.duck" => fill(s.duck_done, &[&found["spans"]]),
             "audio.denoise" if found.get("noiseDb").is_some() => fill(s.denoise_done, &[&found["noiseDb"]]),
+            "clip.stabilize" if found.get("frames").is_some() => {
+                fill(s.steady_done, &[&found["frames"], &found["zoom"]])
+            }
             _ => fill(s.done, &[&name]),
         };
     }
@@ -2644,6 +2653,7 @@ impl EditorApp {
                         frozen: *speed == 0.0,
                         video: p.media.get(media).is_some_and(|m| m.kind == MediaKind::Video)
                             && p.clip(&id).is_some_and(|(ti, _)| p.tracks[ti].kind == TrackKind::Video),
+                        steady: clip.steady.as_ref().map(|s| (s.amount * 100.0).round()),
                     })
                 }
                 ClipContent::Media { speed, .. } if *speed == 0.0 => Some(SpeedEdit {
@@ -2653,6 +2663,7 @@ impl EditorApp {
                     curve: None,
                     frozen: true,
                     video: false,
+                    steady: None,
                 }),
                 _ => None,
             },
@@ -3416,6 +3427,32 @@ impl EditorApp {
                             actions.push(("clip.freeze", json!({"clip": id, "at": at})));
                         }
                     });
+                    if sp.video {
+                        // a shaky shot held steady: measured once, then only how much is taken out
+                        ui.horizontal(|ui| {
+                            let mut on = sp.steady.is_some();
+                            if ui.checkbox(&mut on, s.steady).on_hover_text(s.steady_tip).changed() {
+                                actions.push(if on {
+                                    ("clip.stabilize", json!({"clip": id}))
+                                } else {
+                                    ("clip.setStabilize", json!({"clip": id, "amount": 0}))
+                                });
+                            }
+                            if let Some(amount) = &mut sp.steady {
+                                let r = ui.add(
+                                    egui::DragValue::new(amount)
+                                        .speed(1.0)
+                                        .range(5.0..=100.0)
+                                        .suffix(" %")
+                                        .max_decimals(0),
+                                );
+                                if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                                    actions.push(("clip.setStabilize", json!({"clip": id, "amount": *amount / 100.0})));
+                                }
+                                r.on_hover_text(s.steady_amount_tip);
+                            }
+                        });
+                    }
                 });
             }
             let titled = edit.title.is_some();
@@ -3580,6 +3617,11 @@ impl EditorApp {
                 self.key_out(&id);
             } else if cmd.starts_with("audio.") {
                 self.listen(cmd, &params);
+            } else if cmd == "clip.stabilize" {
+                // every frame is watched, which takes a moment: say so first
+                self.status = self.s().steady_watching.to_string();
+                self.later = Some((2, cmd, params));
+                ui.ctx().request_repaint();
             } else {
                 let _ = self.execute(cmd, params);
             }
@@ -4209,6 +4251,14 @@ impl eframe::App for EditorApp {
             }
         }
         self.narrow = ctx.content_rect().width() < NARROW_BELOW;
+        match self.later.take() {
+            Some((0, tool, params)) => self.listen(tool, &params),
+            Some((n, tool, params)) => {
+                self.later = Some((n - 1, tool, params));
+                ctx.request_repaint();
+            }
+            None => {}
+        }
         if self.into.is_some() && self.into != self.selected {
             // the clip waiting for a file to replace it was let go of
             self.into = None;
