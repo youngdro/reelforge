@@ -116,6 +116,13 @@ pub(crate) fn resolve(
             report.placeholders.extend(drawn.placeholders);
             Resolved::Picture(treated(layer, Arc::new(pic))?)
         }
+        PlannedSource::Shape(shape) => {
+            let k = plan.width as f32 / spec.output.width as f32;
+            match crate::shape::rasterize(layer, shape, k, [plan.width, plan.height]) {
+                Some(sp) => Resolved::Sprite(sp),
+                None => Resolved::Nothing,
+            }
+        }
         PlannedSource::Text(text) => {
             let k = plan.width as f32 / spec.output.width as f32;
             let family = match &text.font {

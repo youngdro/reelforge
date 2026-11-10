@@ -50,6 +50,20 @@ pub(crate) enum Item {
     Sticker(&'static str),
     /// A picture effect on an adjustment clip of its own; `None` is an empty adjustment clip.
     Effect(Option<FxKind>),
+    /// A drawn shape.
+    Shape(reelforge_model::ShapeKind),
+    /// A ready-made promotional piece (`promo.add`), by id.
+    Promo(&'static str),
+}
+
+/// A shape's shown name.
+fn shape_name(kind: reelforge_model::ShapeKind, s: &Strings) -> &'static str {
+    s.shape_names[reelforge_model::ShapeKind::ALL.iter().position(|k| *k == kind).unwrap_or(0)]
+}
+
+/// A promotional piece's shown name.
+fn promo_name(id: &str, s: &Strings) -> &'static str {
+    reelforge_engine::PROMOS.iter().position(|p| p.id == id).map_or("", |i| s.promo_names[i])
 }
 
 /// A picture effect's shown name.
@@ -70,7 +84,7 @@ impl Item {
             Item::Media(_) => TrackKind::Video,
             Item::Sound { .. } => TrackKind::Audio,
             Item::Title(_) => TrackKind::Text,
-            Item::Sticker(_) | Item::Effect(_) => TrackKind::Video,
+            Item::Sticker(_) | Item::Effect(_) | Item::Shape(_) | Item::Promo(_) => TrackKind::Video,
         }
     }
 
@@ -80,7 +94,7 @@ impl Item {
             Item::Media(id) => p.media.get(id).and_then(|m| m.duration).unwrap_or(STILL_PREVIEW),
             Item::Sound { length, .. } => *length,
             Item::Title(_) => TITLE_LENGTH,
-            Item::Sticker(_) | Item::Effect(_) => OVERLAY_LENGTH,
+            Item::Sticker(_) | Item::Effect(_) | Item::Shape(_) | Item::Promo(_) => OVERLAY_LENGTH,
         }
     }
 
@@ -94,6 +108,8 @@ impl Item {
             Item::Sticker(id) => sticker_name(id, s).to_string(),
             Item::Effect(None) => s.fx_adjustment.to_string(),
             Item::Effect(Some(k)) => fx_name(*k, s).to_string(),
+            Item::Shape(k) => shape_name(*k, s).to_string(),
+            Item::Promo(id) => promo_name(id, s).to_string(),
         }
     }
 }
@@ -825,9 +841,39 @@ impl AssetPanel {
                 .zip(s.sticker_names)
                 .filter(|(_, name)| finds(&query, name))
                 .collect();
-            if all.is_empty() {
+            // the promotional pieces and the shapes, as words to click or drag
+            let promos: Vec<(Item, &str)> = reelforge_engine::PROMOS
+                .iter()
+                .map(|p| (Item::Promo(p.id), promo_name(p.id, s)))
+                .filter(|(_, name)| finds(&query, name))
+                .collect();
+            let shapes: Vec<(Item, &str)> = reelforge_model::ShapeKind::ALL
+                .into_iter()
+                .map(|k| (Item::Shape(k), shape_name(k, s)))
+                .filter(|(_, name)| finds(&query, name))
+                .collect();
+            if all.is_empty() && promos.is_empty() && shapes.is_empty() {
                 nothing_matches(ui, s);
                 return;
+            }
+            for (heading, items) in [(s.sec_promo, promos), (s.sec_shapes, shapes)] {
+                if items.is_empty() {
+                    continue;
+                }
+                ui.label(egui::RichText::new(heading).small().color(color::WEAK));
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                    for (item, name) in items {
+                        let r = ui.add(egui::Button::new(name).sense(Sense::click_and_drag()));
+                        if r.drag_started() {
+                            egui::DragAndDrop::set_payload(ui.ctx(), item.clone());
+                        }
+                        if r.on_hover_text(s.item_tip).clicked() {
+                            *action = Some(Action::Add(item));
+                        }
+                    }
+                });
+                ui.add_space(8.0);
             }
             for row in all.chunks(columns) {
                 ui.horizontal(|ui| {
@@ -1171,7 +1217,7 @@ fn drag_preview(ctx: &egui::Context, p: &Project, s: &Strings) {
     ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("asset drag")));
     let glyph = match (&*item, item.track_kind(p)) {
-        (Item::Sticker(_), _) => icon::STICKER,
+        (Item::Sticker(_) | Item::Shape(_) | Item::Promo(_), _) => icon::STICKER,
         (Item::Effect(_), _) => icon::SPARKLE,
         (_, TrackKind::Audio) => icon::MUSIC,
         (_, TrackKind::Text) => icon::TEXT,
