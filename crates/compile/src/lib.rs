@@ -18,8 +18,8 @@ use reelforge_renderspec::{
     Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Between, Blend, Color, Comp, Crop, CropKeys,
     Ease, Effect, Fit, Key, Layer, LayerContent, MaskShape, NumberText, Output, OutputFormat, Paint, Probe, RenderSpec,
     ShapeContent, ShapeKind as SpecShape, ShapeMask, ShapeMaskKeys, ShapeShadow, ShapeStroke, SpeedKey, TextAlign,
-    TextBackground, TextContent, TextShadow, TextStroke, TimeMap, Transform, Trim, VideoCodec, VideoEncoding, effects,
-    validate,
+    TextBackground, TextContent, TextShadow, TextStroke, TimeMap, Transform, Trim, Turn, VideoCodec, VideoEncoding,
+    effects, validate,
 };
 use reelforge_time::Tick;
 use thiserror::Error;
@@ -222,6 +222,7 @@ fn lower_tracks(
         Ok(media_id.to_string())
     };
 
+    let carried = carriers(tracks);
     for (ti, track) in tracks.iter().enumerate() {
         let cuts = transitions(track);
         // the adjustment clips above this track
@@ -235,6 +236,7 @@ fn lower_tracks(
             if picture {
                 let mut shape = shape(clip, cuts[i], cuts.get(i + 1).copied().flatten());
                 shape.canvas = [c.width as f32, c.height as f32];
+                shape.carried = carried.contains_key(clip.id.as_str());
                 if let ClipContent::Media { media, .. } = &clip.content {
                     // a file whose size is not known is taken to fill the canvas
                     let size = project.media.get(media).and_then(|m| m.size).unwrap_or([c.width, c.height]);
@@ -402,6 +404,7 @@ fn lower_tracks(
                             position: motion::lower_position(&still, &frame, step),
                             scale: motion::lower(&still, Prop::Scale, &frame, step),
                             rotation: motion::lower(&still, Prop::Rotation, &frame, step),
+                            ..Transform::default()
                         },
                         opacity: motion::lower(clip, Prop::Opacity, &shape, step),
                         blend: Blend::Normal,
@@ -413,6 +416,7 @@ fn lower_tracks(
                         crop_keys: None,
                         shape_mask_keys: None,
                         fx,
+                        parent: None,
                     });
                 }
                 layers.push(Layer {
@@ -420,11 +424,8 @@ fn lower_tracks(
                     at: clip.start - shape.lead,
                     dur: shape.len,
                     content,
-                    transform: Transform {
-                        position: motion::lower_position(clip, &shape, step),
-                        scale: motion::lower(clip, Prop::Scale, &shape, step),
-                        rotation: motion::lower(clip, Prop::Rotation, &shape, step),
-                    },
+                    transform: placement(clip, &shape, step),
+                    parent: carried.get(clip.id.as_str()).map(|p| p.to_string()),
                     opacity: motion::lower(clip, Prop::Opacity, &shape, step),
                     blend: blend(clip.look.blend),
                     mask: None,
@@ -501,6 +502,7 @@ fn lower_tracks(
                         shape_mask: None,
                         crop_keys: None,
                         shape_mask_keys: None,
+                        parent: None,
                     });
                 }
             }
@@ -709,6 +711,62 @@ fn transitions(track: &Track) -> Vec<Option<(TransitionKind, Tick)>> {
         .collect()
 }
 
+/// Which clip carries which among the clips of `tracks` that are drawn, by id. A parent that is
+/// not one of them carries nothing, and neither does any clip of a ring or of a chain longer
+/// than the renderer follows.
+fn carriers(tracks: &[Track]) -> BTreeMap<&str, &str> {
+    let drawn: Vec<&Clip> = tracks
+        .iter()
+        .filter(|t| t.kind != TrackKind::Audio && !t.hidden)
+        .flat_map(|t| t.clips.iter().filter(|c| !c.is_adjustment()))
+        .collect();
+    let mut by: BTreeMap<&str, &str> = drawn
+        .iter()
+        .filter_map(|c| Some((c.id.as_str(), c.parent.as_deref()?)))
+        .filter(|(id, parent)| id != parent && drawn.iter().any(|c| c.id == *parent))
+        .collect();
+    loop {
+        // up each chain: it has to end, and soon enough
+        let endless: Vec<&str> = by
+            .keys()
+            .copied()
+            .filter(|id| {
+                let (mut up, mut steps) = (by.get(id), 0);
+                while let Some(p) = up {
+                    steps += 1;
+                    if p == id || steps > reelforge_renderspec::PARENTS {
+                        return true;
+                    }
+                    up = by.get(p);
+                }
+                false
+            })
+            .collect();
+        if endless.is_empty() {
+            return by;
+        }
+        for id in endless {
+            by.remove(id);
+        }
+    }
+}
+
+/// Where a clip's layer is and how it is turned, over its layer.
+fn placement(clip: &Clip, shape: &Shape, step: Tick) -> Transform {
+    let stretch = motion::lower_pair(clip, [Prop::ScaleX, Prop::ScaleY], shape, step);
+    let [x, y] = [Prop::RotationX, Prop::RotationY].map(|p| motion::lower(clip, p, shape, step));
+    let flat = Animated::Constant(0.0);
+    let (near, far) = ClipTransform::DISTANCES;
+    Transform {
+        position: motion::lower_position(clip, shape, step),
+        scale: motion::lower(clip, Prop::Scale, shape, step),
+        rotation: motion::lower(clip, Prop::Rotation, shape, step),
+        stretch: (stretch != Animated::Constant([1.0, 1.0])).then_some(stretch),
+        anchor: (clip.transform.anchor != [0.5, 0.5]).then_some(clip.transform.anchor),
+        turn: (x != flat || y != flat).then(|| Turn { x, y, distance: clip.transform.distance.clamp(near, far) }),
+    }
+}
+
 /// A clip's layer, given the transitions into it and out of it (with half their lengths).
 fn shape(clip: &Clip, into: Option<(TransitionKind, Tick)>, out: Option<(TransitionKind, Tick)>) -> Shape {
     let lead = into.map_or(Tick::ZERO, |(_, h)| h);
@@ -721,7 +779,15 @@ fn shape(clip: &Clip, into: Option<(TransitionKind, Tick)>, out: Option<(Transit
         let cut = lead + clip.duration;
         overlays.push(Overlay { from: cut - h, to: cut + h, kind, incoming: false });
     }
-    Shape { lead, len: lead + clip.duration + tail, overlays, frames: vec![], canvas: [1.0, 1.0], steady: None }
+    Shape {
+        lead,
+        len: lead + clip.duration + tail,
+        overlays,
+        frames: vec![],
+        canvas: [1.0, 1.0],
+        steady: None,
+        carried: false,
+    }
 }
 
 /// What a clip's changed voice does to its sound, in the order it is done: noise out first, then
@@ -770,6 +836,8 @@ mod tests {
             group: None,
             slot: None,
             steady: None,
+            parent: None,
+            path: None,
         }
     }
 
@@ -1137,5 +1205,89 @@ mod tests {
         let spec = compile(&p, &CompileOptions::default()).unwrap();
         let c13 = spec.layers.iter().find(|l| l.id == "c13").unwrap();
         assert_eq!((c13.at, c13.dur), (Tick::SECOND * 3, Tick::SECOND));
+    }
+
+    #[test]
+    fn clips_in_space_are_lowered_and_carried_ones_go_with_what_carries_them() {
+        use reelforge_model::{AnimKind, Animation, Ease as MEase, Fx, FxKind, MotionPath};
+        let solid = |id: &str| clip(id, Tick::ZERO, Tick::SECOND * 2, ClipContent::Solid { color: [1.0; 4] });
+        let mut p = Project::default();
+        let mut carrier = solid("c1");
+        carrier.transform.x = 0.25;
+        let mut carried = solid("c2");
+        carried.parent = Some("c1".into());
+        carried.transform = ClipTransform {
+            x: 0.1,
+            scale_x: 0.5,
+            rotation_y: 30.0,
+            anchor: [0.0, 0.5],
+            distance: 1.5,
+            ..ClipTransform::default()
+        };
+        carried.anim.enter = Some(Animation { kind: AnimKind::FlipX, duration: Tick::SECOND });
+        // a third rides the second, and sets out along a curve half a second in
+        let mut rider = solid("c3");
+        rider.parent = Some("c2".into());
+        rider.path = Some(MotionPath {
+            points: vec![[-0.2, 0.0], [0.0, -0.2], [0.2, 0.0]],
+            closed: false,
+            orient: true,
+            start: Tick(Tick::SECOND.0 / 2),
+            duration: Tick::SECOND,
+            ease: MEase::Linear,
+        });
+        let mut over = p.tracks[0].clone();
+        over.id = "t8".into();
+        let mut top = over.clone();
+        top.id = "t9".into();
+        p.tracks[0].clips = vec![carrier];
+        over.clips = vec![carried];
+        top.clips = vec![rider];
+        p.tracks.insert(1, over);
+        p.tracks.insert(2, top);
+        // an effect from above shakes the frame: what carries is shaken, what is carried goes along
+        let mut shake = clip("c4", Tick::ZERO, Tick::SECOND * 2, ClipContent::Adjustment);
+        shake.fx = vec![Fx::new(FxKind::ZoomOut)];
+        let mut above = p.tracks[0].clone();
+        above.id = "t10".into();
+        above.clips = vec![shake];
+        p.tracks.insert(3, above);
+        p.check().unwrap();
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        let layer = |id: &str| spec.layers.iter().find(|l| l.id == id).unwrap();
+        let (a, b, c) = (layer("c1"), layer("c2"), layer("c3"));
+        assert_eq!((&a.parent, b.parent.as_deref(), c.parent.as_deref()), (&None, Some("c1"), Some("c2")));
+        assert_eq!((&a.transform.stretch, &a.transform.anchor, &a.transform.turn), (&None, &None, &None));
+        assert!(matches!(a.transform.scale, Animated::Keys(_)));
+        // stretched and anchored as told, swung as told while it tips up into place
+        let t = &b.transform;
+        assert_eq!((&t.stretch, t.anchor), (&Some(Animated::Constant([0.5, 1.0])), Some([0.0, 0.5])));
+        let turn = t.turn.as_ref().unwrap();
+        assert_eq!((turn.distance, &turn.y), (1.5, &Animated::Constant(30.0)));
+        assert!((turn.x.sample(Tick::ZERO) + 90.0).abs() < 1e-3 && turn.x.sample(Tick::SECOND) == 0.0);
+        // the frame's zoom is not laid on it again
+        assert_eq!((&t.scale, &t.position), (&Animated::Constant(1.0), &Animated::Constant([0.1, 0.0])));
+        // the rider waits, travels frame by frame facing the way it goes, and stays
+        let at = |s: f64| c.transform.position.sample(Tick::from_seconds(s));
+        assert_eq!((at(0.0), at(0.5), at(1.5), at(2.0)), ([-0.2, 0.0], [-0.2, 0.0], [0.2, 0.0], [0.2, 0.0]));
+        assert!((at(1.0)[1] + 0.2).abs() < 2e-3 && at(1.0)[0].abs() < 2e-3, "{:?}", at(1.0));
+        let Animated::Keys(keys) = &c.transform.rotation else { panic!("turns") };
+        assert!(keys.len() > 30 && c.transform.rotation.sample(Tick::SECOND).abs() < 4.0);
+        let needs = &spec.engine.features;
+        for f in ["layer.parent/1", "transform.3d/1", "transform.stretch/1", "transform.anchor/1"] {
+            assert!(needs.contains(&f.to_string()), "{f}");
+        }
+
+        // a ring carries nothing; a parent that is hidden or gone is no parent
+        p.tracks[0].clips[0].parent = Some("c3".into());
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        assert!(spec.layers.iter().all(|l| l.parent.is_none()));
+        p.tracks[0].clips[0].parent = None;
+        p.tracks[1].hidden = true;
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        assert_eq!(
+            spec.layers.iter().map(|l| (l.id.as_str(), &l.parent)).collect::<Vec<_>>(),
+            [("c1", &None), ("c3", &None)]
+        );
     }
 }

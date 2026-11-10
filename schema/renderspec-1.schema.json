@@ -861,6 +861,13 @@
           "default": 1.0,
           "description": "Opacity, 0 to 1."
         },
+        "parent": {
+          "description": "The layer that carries this one, among the layers it is listed with (feature\n`layer.parent/1`). This layer is placed as it would be alone, and then moved, scaled and\nturned as the parent's transform moves the frame: its `position` is counted from the\nparent's (a layer at the centre sits on the parent's anchor), along the parent's own\nturned and scaled axes. A parent at the centre, at scale 1 and unturned changes nothing.\nThe parent's transform is taken at the same output instant on the parent's own clock,\nheld at its first value before the parent starts and at its last after it ends, so the\nparent need not be on screen; nothing else of the parent (its opacity, crop, effects) is\npassed on. A parent may have a parent, eight deep.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "shape_mask": {
           "anyOf": [
             {
@@ -1846,6 +1853,19 @@
       "additionalProperties": false,
       "description": "A layer's placement, about the frame's centre.",
       "properties": {
+        "anchor": {
+          "description": "The point of the layer's picture that sits at `position`, and that the layer is scaled and\nturned about: fractions of the picture as it shows (after any crop) from its top left.\nIts centre, `[0.5, 0.5]`, when absent (feature `transform.anchor/1`).",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "position": {
           "$ref": "#/$defs/Animated2",
           "default": [
@@ -1863,6 +1883,28 @@
           "$ref": "#/$defs/Animated",
           "default": 1.0,
           "description": "Uniform scale; 1 is the fitted size."
+        },
+        "stretch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Animated2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Width and height scaled apart, `[across, down]`, on top of `scale` (feature\n`transform.stretch/1`)."
+        },
+        "turn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Turn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The layer turned in space, seen in perspective (feature `transform.3d/1`)."
         }
       },
       "type": "object"
@@ -1880,6 +1922,29 @@
           "$ref": "#/$defs/Animated",
           "default": 0.0,
           "description": "Where the drawn part starts, 0 to 1."
+        }
+      },
+      "type": "object"
+    },
+    "Turn": {
+      "additionalProperties": false,
+      "description": "A layer turned out of the frame's plane about its anchor, after its `rotation` in the plane\nis undone and before it is done again: first about the horizontal axis, then the vertical.\nIt is seen from straight in front of where its anchor is, so a layer turned on its own closes\nlike a door or a lid evenly, wherever in the frame it is. A layer carried by another\n([`Layer::parent`]) that is turned is seen from where the outermost turned layer carrying it\nis, so the two stay one object. Past 90 degrees a layer shows its back, mirrored.",
+      "properties": {
+        "distance": {
+          "default": 2.0,
+          "description": "How far the eye is, in frame heights: nearer is a stronger perspective. Positive.",
+          "format": "float",
+          "type": "number"
+        },
+        "x": {
+          "$ref": "#/$defs/Animated",
+          "default": 0.0,
+          "description": "Degrees about the horizontal axis: positive tips the top edge away."
+        },
+        "y": {
+          "$ref": "#/$defs/Animated",
+          "default": 0.0,
+          "description": "Degrees about the vertical axis: positive swings the right edge away."
         }
       },
       "type": "object"

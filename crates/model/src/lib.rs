@@ -23,6 +23,7 @@ pub mod color;
 pub mod export;
 pub mod fx;
 pub mod look;
+pub mod path;
 pub mod shape;
 pub mod steady;
 pub mod timeline;
@@ -36,6 +37,7 @@ pub use color::{Adjust, ColorGrade, Filter, FilterKind, LutUse};
 pub use export::{Codec, ExportSettings, Quality, Resolution};
 pub use fx::{Fx, FxChannel, FxGroup, FxKind, FxSample};
 pub use look::{BlendMode, ChromaKey, Crop, Look, Mask, MaskKind};
+pub use path::MotionPath;
 pub use shape::{Counter, Fill, Shape, ShapeKind, ShapeShadow, Stroke};
 pub use steady::{Steadied, Steady};
 pub use timeline::{Timeline, TimelineInfo};
@@ -293,6 +295,14 @@ pub struct Clip {
     /// shake is taken out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steady: Option<Steady>,
+    /// The clip that carries this one (on any track of the same timeline): this clip's placement
+    /// is counted from that clip's anchor, along its axes as it is turned and scaled, so moving,
+    /// turning or scaling the parent takes this one along. Nothing else is passed on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// A path the clip travels along, in place of its `x` and `y`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<MotionPath>,
 }
 
 fn yes() -> bool {
@@ -618,8 +628,9 @@ pub struct Outline {
     pub width: f32,
 }
 
-/// A clip's placement: offset from the canvas centre as fractions of the canvas, scale and
-/// clockwise rotation in degrees.
+/// A clip's placement: where its anchor is, as an offset from the canvas centre in fractions of
+/// the canvas (from its parent's anchor, when it has one), its scale and clockwise rotation in
+/// degrees, and how it is stretched and turned in space about its anchor.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ClipTransform {
     /// Horizontal offset, fraction of the canvas width.
@@ -630,11 +641,80 @@ pub struct ClipTransform {
     pub scale: f32,
     /// Degrees clockwise.
     pub rotation: f32,
+    /// Its width alone, on top of the scale: 1 as it is, negative mirrored.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub scale_x: f32,
+    /// Its height alone, on top of the scale.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub scale_y: f32,
+    /// Degrees about the horizontal axis through its anchor: positive tips its top edge away.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rotation_x: f32,
+    /// Degrees about the vertical axis through its anchor: positive swings its right edge away.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rotation_y: f32,
+    /// The point of the picture (as it shows) that the placement places and that it is scaled
+    /// and turned about, as fractions of its width and height from its top left: its middle
+    /// unless told.
+    #[serde(default = "middle", skip_serializing_if = "is_middle")]
+    pub anchor: [f32; 2],
+    /// How far the eye is from a clip turned in space, in canvas heights: nearer is a stronger
+    /// perspective.
+    #[serde(default = "far", skip_serializing_if = "is_far")]
+    pub distance: f32,
+}
+
+impl ClipTransform {
+    /// How far the eye is unless told, in canvas heights.
+    pub const DISTANCE: f32 = 2.0;
+    /// The nearest and farthest the eye may be.
+    pub const DISTANCES: (f32, f32) = (0.2, 50.0);
+
+    /// Whether the clip is stretched, turned in space or placed by another point than its
+    /// middle: more than a move, an even scale and a turn in the plane.
+    pub fn in_space(&self) -> bool {
+        self.scale_x != 1.0
+            || self.scale_y != 1.0
+            || self.rotation_x != 0.0
+            || self.rotation_y != 0.0
+            || self.anchor != [0.5, 0.5]
+    }
+}
+
+fn is_one(v: &f32) -> bool {
+    *v == 1.0
+}
+
+fn middle() -> [f32; 2] {
+    [0.5, 0.5]
+}
+
+fn is_middle(v: &[f32; 2]) -> bool {
+    *v == [0.5, 0.5]
+}
+
+fn far() -> f32 {
+    ClipTransform::DISTANCE
+}
+
+fn is_far(v: &f32) -> bool {
+    *v == ClipTransform::DISTANCE
 }
 
 impl Default for ClipTransform {
     fn default() -> ClipTransform {
-        ClipTransform { x: 0.0, y: 0.0, scale: 1.0, rotation: 0.0 }
+        ClipTransform {
+            x: 0.0,
+            y: 0.0,
+            scale: 1.0,
+            rotation: 0.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            rotation_x: 0.0,
+            rotation_y: 0.0,
+            anchor: [0.5, 0.5],
+            distance: ClipTransform::DISTANCE,
+        }
     }
 }
 
@@ -1073,6 +1153,8 @@ mod tests {
             group: None,
             slot: None,
             steady: None,
+            parent: None,
+            path: None,
         }
     }
 

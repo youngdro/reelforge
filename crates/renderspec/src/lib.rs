@@ -322,6 +322,17 @@ pub struct Layer {
     /// rotation and feather (feature `mask.shape/2`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape_mask_keys: Option<ShapeMaskKeys>,
+    /// The layer that carries this one, among the layers it is listed with (feature
+    /// `layer.parent/1`). This layer is placed as it would be alone, and then moved, scaled and
+    /// turned as the parent's transform moves the frame: its `position` is counted from the
+    /// parent's (a layer at the centre sits on the parent's anchor), along the parent's own
+    /// turned and scaled axes. A parent at the centre, at scale 1 and unturned changes nothing.
+    /// The parent's transform is taken at the same output instant on the parent's own clock,
+    /// held at its first value before the parent starts and at its last after it ends, so the
+    /// parent need not be on screen; nothing else of the parent (its opacity, crop, effects) is
+    /// passed on. A parent may have a parent, eight deep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
 }
 
 /// A crop that changes: each edge as in [`Crop`], keyed. A renderer keeps at least 1 % of the
@@ -1170,7 +1181,56 @@ pub struct Transform {
     /// Clockwise rotation in degrees.
     #[serde(default = "zero")]
     pub rotation: Animated<f32>,
+    /// Width and height scaled apart, `[across, down]`, on top of `scale` (feature
+    /// `transform.stretch/1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stretch: Option<Animated<[f32; 2]>>,
+    /// The point of the layer's picture that sits at `position`, and that the layer is scaled and
+    /// turned about: fractions of the picture as it shows (after any crop) from its top left.
+    /// Its centre, `[0.5, 0.5]`, when absent (feature `transform.anchor/1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<[f32; 2]>,
+    /// The layer turned in space, seen in perspective (feature `transform.3d/1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<Turn>,
 }
+
+/// A layer turned out of the frame's plane about its anchor, after its `rotation` in the plane
+/// is undone and before it is done again: first about the horizontal axis, then the vertical.
+/// It is seen from straight in front of where its anchor is, so a layer turned on its own closes
+/// like a door or a lid evenly, wherever in the frame it is. A layer carried by another
+/// ([`Layer::parent`]) that is turned is seen from where the outermost turned layer carrying it
+/// is, so the two stay one object. Past 90 degrees a layer shows its back, mirrored.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Turn {
+    /// Degrees about the horizontal axis: positive tips the top edge away.
+    #[serde(default = "zero")]
+    pub x: Animated<f32>,
+    /// Degrees about the vertical axis: positive swings the right edge away.
+    #[serde(default = "zero")]
+    pub y: Animated<f32>,
+    /// How far the eye is, in frame heights: nearer is a stronger perspective. Positive.
+    #[serde(default = "eye")]
+    pub distance: f32,
+}
+
+fn eye() -> f32 {
+    Turn::DISTANCE
+}
+
+impl Turn {
+    /// How far the eye is unless told: two frame heights.
+    pub const DISTANCE: f32 = 2.0;
+
+    /// Held at `x` and `y` degrees, seen from the usual distance.
+    pub fn held(x: f32, y: f32) -> Turn {
+        Turn { x: Animated::Constant(x), y: Animated::Constant(y), distance: Turn::DISTANCE }
+    }
+}
+
+/// How many layers deep one may carry another ([`Layer::parent`]).
+pub const PARENTS: usize = 8;
 
 fn zero() -> Animated<f32> {
     Animated::Constant(0.0)
@@ -1182,7 +1242,7 @@ fn zero2() -> Animated<[f32; 2]> {
 
 impl Default for Transform {
     fn default() -> Transform {
-        Transform { position: zero2(), scale: one(), rotation: zero() }
+        Transform { position: zero2(), scale: one(), rotation: zero(), stretch: None, anchor: None, turn: None }
     }
 }
 
@@ -1573,6 +1633,18 @@ impl RenderSpec {
             }
             if layer.crop.is_some() {
                 out.insert("crop/1".to_string());
+            }
+            if layer.transform.stretch.is_some() {
+                out.insert("transform.stretch/1".to_string());
+            }
+            if layer.transform.anchor.is_some() {
+                out.insert("transform.anchor/1".to_string());
+            }
+            if layer.transform.turn.is_some() {
+                out.insert("transform.3d/1".to_string());
+            }
+            if layer.parent.is_some() {
+                out.insert("layer.parent/1".to_string());
             }
             if layer.flip_x || layer.flip_y {
                 out.insert("flip/1".to_string());

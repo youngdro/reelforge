@@ -92,6 +92,8 @@ fn plain(id: String, start: Tick, duration: Tick, content: ClipContent) -> Clip 
         group: None,
         slot: None,
         steady: None,
+        parent: None,
+        path: None,
     }
 }
 

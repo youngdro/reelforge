@@ -3661,6 +3661,7 @@ dependencies = [
  "reelforge-compile",
  "reelforge-media",
  "reelforge-model",
+ "reelforge-render",
  "reelforge-renderspec",
  "reelforge-time",
  "serde",

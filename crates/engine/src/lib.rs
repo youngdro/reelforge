@@ -24,6 +24,7 @@ mod promo;
 mod remix;
 mod schema;
 mod shared;
+pub mod space;
 mod storyboard;
 mod templates;
 mod voiceover;

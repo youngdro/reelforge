@@ -32,6 +32,7 @@ fn layer(id: &str, at: Tick, dur: Tick, content: LayerContent) -> Layer {
         shape_mask: None,
         crop_keys: None,
         shape_mask_keys: None,
+        parent: None,
     }
 }
 

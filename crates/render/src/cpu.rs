@@ -8,7 +8,7 @@ use std::sync::Arc;
 use reelforge_renderspec::{Blend, RenderSpec, effects};
 
 use crate::distort::Warp;
-use crate::plan::{FramePlan, PlannedLayer, PlannedSource, invert};
+use crate::plan::{FramePlan, Map, PlannedLayer, PlannedSource, bounds, invert, then};
 use crate::text::Sprite;
 use crate::{FrameReport, Image, Lut, MediaSource, Quality, RenderError};
 
@@ -118,7 +118,13 @@ pub(crate) fn resolve(
         }
         PlannedSource::Shape(shape) => {
             let k = plan.width as f32 / spec.output.width as f32;
-            match crate::shape::rasterize(layer, shape, k, [plan.width, plan.height]) {
+            let drawn = if layer.plain() {
+                crate::shape::rasterize(layer, shape, k, [plan.width, plan.height])
+            } else {
+                let size = [shape.size[0] * k * layer.scale, shape.size[1] * k * layer.scale];
+                flat_sprite(layer, size, |flat, canvas| crate::shape::rasterize(flat, shape, k, canvas))
+            };
+            match drawn {
                 Some(sp) => Resolved::Sprite(sp),
                 None => Resolved::Nothing,
             }
@@ -140,12 +146,68 @@ pub(crate) fn resolve(
                     }
                 }
             };
-            match crate::text::rasterize(layer, text, &family, k, [plan.width, plan.height]) {
+            let drawn = if layer.plain() {
+                crate::text::rasterize(layer, text, &family, k, [plan.width, plan.height])
+            } else {
+                let [w, h] = crate::text::block(text, &family);
+                let size = [w * k * layer.scale, h * k * layer.scale];
+                flat_sprite(layer, size, |flat, canvas| crate::text::rasterize(flat, text, &family, k, canvas))
+            };
+            match drawn {
                 Some(sp) => Resolved::Sprite(sp),
                 None => Resolved::Nothing,
             }
         }
     })
+}
+
+/// The text or shape of a layer that is stretched, turned in space or carried: it cannot be drawn
+/// straight onto the frame's pixels, so `draw` draws it flat and upright in the middle of a
+/// canvas, larger where the layer is seen larger, and the sprite's map places it like a picture.
+/// `size` is its box in target pixels at the layer's own scale: the anchor is a point of it.
+fn flat_sprite(
+    layer: &PlannedLayer,
+    size: [f32; 2],
+    draw: impl FnOnce(&PlannedLayer, [u32; 2]) -> Option<Sprite>,
+) -> Option<Sprite> {
+    // how much larger than drawn it may be seen: a turn brings its near edge closer
+    let mut seen = layer.stretch[0].abs().max(layer.stretch[1].abs());
+    for c in &layer.carried {
+        seen *= c.scale.abs() * c.stretch[0].abs().max(c.stretch[1].abs());
+    }
+    if layer.turn.is_some() || layer.carried.iter().any(|c| c.turn.is_some()) {
+        seen *= 1.5;
+    }
+    // in a few steps, so that a layer on the move is not drawn anew for every frame
+    let boost = [0.25, 0.5, 1.0, 1.5, 2.0, 3.0].into_iter().find(|b| *b >= seen).unwrap_or(4.0);
+    let room = boost.max(1.0);
+    let canvas = [(layer.frame[0] * room).ceil() as u32, (layer.frame[1] * room).ceil() as u32];
+    let middle = [canvas[0] as f32 / 2.0, canvas[1] as f32 / 2.0];
+    let flat = PlannedLayer {
+        center: middle,
+        scale: layer.scale * boost,
+        rotation: 0.0,
+        stretch: [1.0, 1.0],
+        anchor: [0.5, 0.5],
+        turn: None,
+        carried: Vec::new(),
+        ..layer.clone()
+    };
+    let mut sp = draw(&flat, canvas)?;
+    // a pixel of the sprite, counted from the layer's anchor in target pixels
+    let from = [
+        1.0 / boost,
+        0.0,
+        (sp.x as f32 - middle[0]) / boost + (0.5 - layer.anchor[0]) * size[0],
+        0.0,
+        1.0 / boost,
+        (sp.y as f32 - middle[1]) / boost + (0.5 - layer.anchor[1]) * size[1],
+        0.0,
+        0.0,
+        1.0,
+    ];
+    sp.map = Some(then(&layer.place(), &from));
+    Some(sp)
 }
 
 /// How many times smaller a draft may fetch the picture of `asset` for `layer`
@@ -224,7 +286,11 @@ pub fn composite(
             }
             Resolved::Picture(pic) => draw(&mut out, layer, &pic, target, false, lut),
             Resolved::Yuv(y) => draw(&mut out, layer, &y.to_image(), target, false, lut),
-            Resolved::Sprite(sp) => crate::text::draw_sprite(&mut out, layer, &sp, lut),
+            Resolved::Sprite(sp) => match sp.map {
+                // drawn flat, then placed like a picture
+                Some(m) => blit(&mut out, layer, &sp.image, m, None, lut),
+                None => crate::text::draw_sprite(&mut out, layer, &sp, lut),
+            },
             Resolved::Nothing => {}
         }
     }
@@ -252,24 +318,35 @@ fn draw_sized(out: &mut Image, layer: &PlannedLayer, pic: &Image, size: [f32; 2]
 }
 
 /// Draws `pic` mapped by `m`. `flat` is a 1-pixel picture stretched over a box of that size.
-fn blit(out: &mut Image, layer: &PlannedLayer, pic: &Image, m: [f32; 6], flat: Option<[f32; 2]>, lut: Option<&Lut>) {
+pub(crate) fn blit(
+    out: &mut Image,
+    layer: &PlannedLayer,
+    pic: &Image,
+    m: Map,
+    flat: Option<[f32; 2]>,
+    lut: Option<&Lut>,
+) {
     let Some(inv) = invert(m) else { return };
     let (pw, ph) = (pic.width as f32, pic.height as f32);
     let (cw, ch) = if flat.is_some() { (1.0, 1.0) } else { layer.visible(pw, ph) };
     // a mask is shaped on the picture as it is seen
     let [mw, mh] = flat.unwrap_or([cw, ch]);
     // Bounding box of the placed content.
-    let corners = [(0.0, 0.0), (cw, 0.0), (0.0, ch), (cw, ch)]
-        .map(|(x, y)| (m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5]));
-    let x0 = corners.iter().map(|c| c.0).fold(f32::INFINITY, f32::min).floor().max(0.0) as u32;
-    let x1 = corners.iter().map(|c| c.0).fold(f32::NEG_INFINITY, f32::max).ceil().min(out.width as f32) as u32;
-    let y0 = corners.iter().map(|c| c.1).fold(f32::INFINITY, f32::min).floor().max(0.0) as u32;
-    let y1 = corners.iter().map(|c| c.1).fold(f32::NEG_INFINITY, f32::max).ceil().min(out.height as f32) as u32;
+    let b = bounds(&m, cw, ch, [out.width as f32, out.height as f32]);
+    let x0 = b[0].floor().max(0.0) as u32;
+    let x1 = b[2].ceil().min(out.width as f32) as u32;
+    let y0 = b[1].floor().max(0.0) as u32;
+    let y1 = b[3].ceil().min(out.height as f32) as u32;
     let warp = if flat.is_some() { None } else { Warp::of(&layer.fx) };
     for y in y0..y1 {
         for x in x0..x1 {
             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            let (sx, sy) = (inv[0] * px + inv[1] * py + inv[2], inv[3] * px + inv[4] * py + inv[5]);
+            // how far from the eye, for a layer turned in space; 1 for any other
+            let q = inv[6] * px + inv[7] * py + inv[8];
+            if q <= 1e-6 {
+                continue;
+            }
+            let (sx, sy) = ((inv[0] * px + inv[1] * py + inv[2]) / q, (inv[3] * px + inv[4] * py + inv[5]) / q);
             if sx < 0.0 || sy < 0.0 || sx >= cw || sy >= ch {
                 continue;
             }

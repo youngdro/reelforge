@@ -21,7 +21,7 @@ use reelforge_renderspec::{Blend, Fit, MaskShape, RenderSpec, effects};
 use reelforge_time::Tick;
 
 use crate::cpu::{Resolved, resolve, resolve_lut};
-use crate::plan::{Affine, FramePlan, PlannedLayer, PlannedSource, invert, plan_frame};
+use crate::plan::{FramePlan, Map, PlannedLayer, PlannedSource, bounds, invert, plan_frame};
 use crate::{FrameReport, Image, Lut, MediaSource, Quality, RenderError, Yuv, unsupported_features};
 
 /// The working picture's format.
@@ -41,7 +41,7 @@ pub const FROST_ROOM: f32 = 0.125;
 /// Effects one layer can carry on the GPU (the uniform's array length).
 const MAX_FX: usize = 16;
 /// The `Layer` uniform's length in 32-bit words.
-const UNIFORM: usize = 48 + MAX_FX * 4;
+const UNIFORM: usize = 52 + MAX_FX * 4;
 
 /// Why the GPU could not be used.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -710,7 +710,9 @@ impl GpuCompositor {
                 Drawn::Resolved(Resolved::Sprite(sp)) => {
                     let (w, h) = (sp.image.width as f32, sp.image.height as f32);
                     let view = self.picture(&sp.image);
-                    ([1.0, 0.0, sp.x as f32, 0.0, 1.0, sp.y as f32], [w, h], [w, h], [w, h], 0, [0.0; 4], Some(view))
+                    // pixel on pixel, unless it was drawn flat to be placed like a picture
+                    let m = sp.map.unwrap_or([1.0, 0.0, sp.x as f32, 0.0, 1.0, sp.y as f32, 0.0, 0.0, 1.0]);
+                    (m, [w, h], [w, h], [w, h], 0, [0.0; 4], Some(view))
                 }
                 Drawn::Nested(n) => {
                     let inner = &self.nested[n];
@@ -1151,7 +1153,7 @@ struct Sizes {
 /// the visible part of the picture to target pixels.
 fn layer_uniform(
     layer: &PlannedLayer,
-    m: Affine,
+    m: Map,
     sizes: Sizes,
     mode: u32,
     color: [f32; 4],
@@ -1160,14 +1162,12 @@ fn layer_uniform(
 ) -> Option<[u32; UNIFORM]> {
     let size = sizes.visible;
     let inv = invert(m)?;
-    let corners = [(0.0, 0.0), (size[0], 0.0), (0.0, size[1]), (size[0], size[1])]
-        .map(|(x, y)| (m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5]));
-    let lo = |f: fn(f32, f32) -> f32, pick: fn(&(f32, f32)) -> f32, init| corners.iter().map(pick).fold(init, f);
+    let b = bounds(&m, size[0], size[1], target);
     // a pixel's margin all round: the shader discards what lies outside the picture
-    let x0 = (lo(f32::min, |c| c.0, f32::INFINITY).floor() - 1.0).max(0.0);
-    let y0 = (lo(f32::min, |c| c.1, f32::INFINITY).floor() - 1.0).max(0.0);
-    let x1 = (lo(f32::max, |c| c.0, f32::NEG_INFINITY).ceil() + 1.0).min(target[0]);
-    let y1 = (lo(f32::max, |c| c.1, f32::NEG_INFINITY).ceil() + 1.0).min(target[1]);
+    let x0 = (b[0].floor() - 1.0).max(0.0);
+    let y0 = (b[1].floor() - 1.0).max(0.0);
+    let x1 = (b[2].ceil() + 1.0).min(target[0]);
+    let y1 = (b[3].ceil() + 1.0).min(target[1]);
     if x1 <= x0 || y1 <= y0 {
         return None;
     }
@@ -1255,7 +1255,9 @@ fn layer_uniform(
             &[w.wave[0], w.wave[1], w.wave[2], w.mosaic, w.glitch[0], w.glitch[1], w.split[0], w.split[1]].map(f),
         );
     }
-    for (slot, v) in u[48..].iter_mut().zip(fx.as_flattened()) {
+    // how far from the eye a target pixel's point is: 1 everywhere for a layer not turned in space
+    u[48..52].copy_from_slice(&[inv[6], inv[7], inv[8], 0.0].map(f));
+    for (slot, v) in u[52..].iter_mut().zip(fx.as_flattened()) {
         *slot = f(*v);
     }
     Some(u)

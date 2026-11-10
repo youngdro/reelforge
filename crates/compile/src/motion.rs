@@ -32,6 +32,8 @@ fn moves(kind: reelforge_model::AnimKind, p: Prop) -> bool {
         Prop::Y => matches!(kind, SlideUp | SlideDown),
         Prop::Scale => matches!(kind, ZoomIn | ZoomOut | Pop | Spin),
         Prop::Rotation => matches!(kind, Spin),
+        Prop::RotationX => kind == FlipX,
+        Prop::RotationY => kind == FlipY,
         _ => false,
     }
 }
@@ -45,6 +47,8 @@ fn loops(kind: reelforge_model::LoopKind, p: Prop) -> bool {
         Prop::Y => matches!(kind, Float | Bounce | Shake),
         Prop::Scale => matches!(kind, Breathe | Heartbeat),
         Prop::Rotation => matches!(kind, Swing | Spin),
+        Prop::RotationX => kind == Tilt,
+        Prop::RotationY => matches!(kind, Flip | Tilt),
         _ => false,
     }
 }
@@ -209,6 +213,9 @@ pub struct Shape {
     pub canvas: [f32; 2],
     /// What holds the layer's picture steady, when it is steadied.
     pub steady: Option<Fix>,
+    /// Whether another clip carries it: effects from above then move what carries it, and it
+    /// goes along.
+    pub carried: bool,
 }
 
 /// A steadied clip's picture, moved against the camera's shake (`reelforge_model::Steady`).
@@ -263,6 +270,7 @@ impl Shape {
             frames: vec![],
             canvas: [1.0, 1.0],
             steady: None,
+            carried: false,
         }
     }
 
@@ -343,6 +351,8 @@ struct Curve<'a> {
     own: Vec<Fx>,
     /// Effects from above that move it.
     frames: Vec<Frame>,
+    /// The stretch of the layer over which the clip's path moves this property.
+    journey: Option<(Tick, Tick)>,
 }
 
 /// How an interval of a curve can be drawn exactly from its end values.
@@ -372,15 +382,35 @@ impl Curve<'_> {
             .iter()
             .copied()
             .filter(|f| match prop {
+                // what is carried is moved by what carries it
+                Prop::X | Prop::Y | Prop::Scale | Prop::Rotation if shape.carried => false,
                 Prop::X | Prop::Y => f.fx.kind.moves_any(),
                 p => f.fx.kind.moves(p),
             })
             .collect();
-        Curve { prop, clip, shape, keys, animated, overlays, fades, own, frames }
+        let journey = clip.path.as_ref().filter(|p| p.points.len() >= 2).and_then(|p| {
+            let moved = matches!(prop, Prop::X | Prop::Y) || (prop == Prop::Rotation && p.orient);
+            moved.then_some((shape.lead + p.start, shape.lead + p.start + p.duration))
+        });
+        Curve { prop, clip, shape, keys, animated, overlays, fades, own, frames, journey }
+    }
+
+    /// Property `p` at `t` as the clip's keys have it, or its path, before anything is laid over.
+    fn base(&self, p: Prop, t: Tick) -> f32 {
+        let at = t - self.shape.lead;
+        let own = self.clip.value_at(p, at);
+        let [w, h] = self.shape.canvas;
+        match (p, self.clip.on_path(at, w / h)) {
+            (Prop::X, Some((to, _))) => to[0],
+            (Prop::Y, Some((to, _))) => to[1],
+            (Prop::Rotation, Some((_, heading))) => own + heading,
+            _ => own,
+        }
     }
 
     fn still(&self) -> bool {
         self.keys.is_empty()
+            && self.journey.is_none()
             && !self.steady()
             && !self.animated
             && self.overlays.is_empty()
@@ -397,7 +427,7 @@ impl Curve<'_> {
 
     /// [`own_value`](Self::own_value) before the picture is steadied.
     fn shaky(&self, p: Prop, t: Tick) -> f32 {
-        let base = self.clip.value_at(p, t - self.shape.lead);
+        let base = self.base(p, t);
         let mut o = self.clip.anim.offset(t, self.shape.len);
         for ov in self.shape.overlays.iter().filter(|o| shifts(o.kind, o.incoming, p)) {
             o = o.and(ov.offset(t));
@@ -459,7 +489,7 @@ impl Curve<'_> {
         if !self.frames.is_empty() {
             return self.framed(t);
         }
-        let base = self.clip.value_at(self.prop, t - self.shape.lead);
+        let base = self.base(self.prop, t);
         let mut o = if self.animated { self.clip.anim.offset(t, self.shape.len) } else { Offset::REST };
         for ov in &self.overlays {
             o = o.and(ov.offset(t));
@@ -488,6 +518,8 @@ impl Curve<'_> {
             w.push((lead + self.clip.duration - fo, lead + self.clip.duration));
         }
         w.extend(self.frames.iter().map(|f| (f.from, f.to)));
+        // along a curve, frame by frame
+        w.extend(self.journey);
         if !self.own.is_empty() || (self.steady() && self.prop != Prop::Scale) {
             // an effect or a steadied picture moves all the while (steadied, its size alone does
             // not: it is as much larger from start to end)
@@ -715,6 +747,8 @@ mod tests {
             group: None,
             slot: None,
             steady: None,
+            parent: None,
+            path: None,
         }
     }
 

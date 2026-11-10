@@ -581,8 +581,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.set",
         label: "Clip Properties",
-        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "at"?: time, "fadeIn"?: time, "fadeOut"?: time, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "template"?: id}"#,
-        doc: "Sets a clip's placement, opacity, volume, sound fades or title. A property with keyframes is set at `at` (a timeline time), adding or changing the keyframe there.",
+        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "scaleX"?, "scaleY"?, "rotationX"?, "rotationY"?, "perspective"?, "anchorX"?, "anchorY"?, "keep"?: bool, "at"?: time, "fadeIn"?: time, "fadeOut"?: time, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "template"?: id}"#,
+        doc: "Sets a clip's placement, opacity, volume, sound fades or title. A property with keyframes is set at `at` (a timeline time), adding or changing the keyframe there. Beyond moving, scaling and turning it in the plane, a clip can be stretched (`scaleX`, `scaleY`: width and height apart, on top of `scale`; negative mirrors) and turned in space (`rotationX` tips its top edge away, `rotationY` swings its right edge away, in degrees; past 90 it shows its back), seen in perspective from `perspective` canvas heights away (2 unless told; nearer is stronger). It is placed, scaled and turned about its anchor: `anchorX` and `anchorY` are shares of its picture from the top left (0.5, 0.5 is its middle; 0, 0.5 the middle of its left edge, to swing it like a door; 0.5, 1 the middle of its bottom edge, to grow it from its base). Giving it another anchor leaves the picture where it lies and changes `x` and `y` to match, unless `keep` is false.",
         edits: true,
         enabled: always,
         run: clip_set,
@@ -743,8 +743,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.setKey",
         label: "Add Keyframe",
-        params: r#"{"clip": id, "prop": "x"|"y"|"scale"|"rotation"|"opacity"|"volumeDb"|"cropLeft"|"cropTop"|"cropRight"|"cropBottom"|"maskX"|"maskY"|"maskWidth"|"maskHeight"|"maskRotation"|"maskFeather"|"exposure"|"contrast"|"saturation"|"temperature"|"tint"|"highlights"|"shadows"|"fade"|"vignette", "at": time, "value"?: number, "ease"?: "linear"|"hold"|"inOut"|"in"|"out"|"overshoot"|"anticipate" | [x1, y1, x2, y2]}"#,
-        doc: "Sets a keyframe at a timeline time; without `value`, keeps the value the property has there. Once a property has keyframes, its value follows them: placement, opacity and volume, the crop's edges, the mask's centre, size, turn and soft edge, and the colour adjustments can all move. `ease` is how the value travels on to the next keyframe: a named curve, or one drawn by hand (see clip.setEase).",
+        params: r#"{"clip": id, "prop": "x"|"y"|"scale"|"rotation"|"opacity"|"volumeDb"|"cropLeft"|"cropTop"|"cropRight"|"cropBottom"|"maskX"|"maskY"|"maskWidth"|"maskHeight"|"maskRotation"|"maskFeather"|"exposure"|"contrast"|"saturation"|"temperature"|"tint"|"highlights"|"shadows"|"fade"|"vignette"|"drawStart"|"drawEnd"|"count"|"scaleX"|"scaleY"|"rotationX"|"rotationY", "at": time, "value"?: number, "ease"?: "linear"|"hold"|"inOut"|"in"|"out"|"overshoot"|"anticipate" | [x1, y1, x2, y2]}"#,
+        doc: "Sets a keyframe at a timeline time; without `value`, keeps the value the property has there. Once a property has keyframes, its value follows them: placement (stretch and turns in space too), opacity and volume, the crop's edges, the mask's centre, size, turn and soft edge, and the colour adjustments can all move. `ease` is how the value travels on to the next keyframe: a named curve, or one drawn by hand (see clip.setEase).",
         edits: true,
         enabled: always,
         run: clip_set_key,
@@ -757,6 +757,24 @@ static REGISTRY: &[CommandSpec] = &[
         edits: true,
         enabled: always,
         run: clip_set_ease,
+    },
+    CommandSpec {
+        id: "clip.setParent",
+        label: "Parent",
+        params: r#"{"clip": id, "parent": id | null, "keep"?: bool, "at"?: time}"#,
+        doc: "Has one clip carry another: the clip's `x` and `y` are then counted from its parent's anchor along the parent's axes, so moving, scaling, stretching or turning the parent (in the plane or in space, keyframed or animated) takes the clip along, as one object; nothing else is passed on (not opacity, not effects, not when it shows). A parent can be any picture, title or shape clip of the same timeline, on any track, up to 8 deep; null sets the clip free. The clip stays where it shows at `at` (its start by default): its `x`, `y`, `scale` and `rotation` are rewritten for its new parent, unless `keep` is false. To move several things as one without showing a parent, carry them by a shape clip with opacity 0.",
+        edits: true,
+        enabled: always,
+        run: crate::space::clip_set_parent,
+    },
+    CommandSpec {
+        id: "clip.setPath",
+        label: "Motion Path",
+        params: r#"{"clip": id, "points": [[x, y], ...] | null, "closed"?: bool, "orient"?: bool, "start"?: time, "duration"?: time, "ease"?: name | [x1, y1, x2, y2]}"#,
+        doc: "Sends a clip along a path: a smooth curve through `points` (2 to 64, each counted as `x` and `y` are), travelled at an even speed that `ease` shapes (inOut by default). While it has a path the clip's own `x` and `y` are not used. The journey sets off `start` after the clip's start (0 by default) and takes `duration` (the rest of the clip by default); before it the clip waits at the first point, after it it stays at the last. `closed` goes on round to the first point again; `orient` turns the clip to face the way it goes (added to its rotation; 0 is facing right). Leaving `points` out changes the other settings of the path it has; null removes the path.",
+        edits: true,
+        enabled: always,
+        run: crate::space::clip_set_path,
     },
     CommandSpec {
         id: "clip.removeKey",
@@ -779,8 +797,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.setAnimation",
         label: "Animation",
-        params: r#"{"clip": id, "slot": "in"|"out"|"loop", "kind": "fade"|"slideUp"|"slideDown"|"slideLeft"|"slideRight"|"zoomIn"|"zoomOut"|"pop"|"spin"|"typewriter"|"charFade"|"charRise"|"charDrop"|"charPop" | "breathe"|"heartbeat"|"swing"|"float"|"bounce"|"shake"|"spin"|"blink"|"wave"|"jump" | null, "duration"?: time}"#,
-        doc: "Puts an in or out animation on a picture or title clip, or one that repeats for as long as it is on screen (slot `loop`, with the kinds from `breathe` on); null removes it. In and out take 0.5 s unless `duration` is given; for a loop `duration` is one round (1 s or so by default, by kind). For titles only: `typewriter` types the words in or erases them, `charFade`, `charRise`, `charDrop` and `charPop` bring the characters in (or take them out) one after another, and the loops `wave` and `jump` move them one after another.",
+        params: r#"{"clip": id, "slot": "in"|"out"|"loop", "kind": "fade"|"slideUp"|"slideDown"|"slideLeft"|"slideRight"|"zoomIn"|"zoomOut"|"pop"|"spin"|"typewriter"|"charFade"|"charRise"|"charDrop"|"charPop"|"draw"|"flipY"|"flipX" | "breathe"|"heartbeat"|"swing"|"float"|"bounce"|"shake"|"spin"|"blink"|"wave"|"jump"|"flip"|"tilt" | null, "duration"?: time}"#,
+        doc: "Puts an in or out animation on a picture or title clip, or one that repeats for as long as it is on screen (slot `loop`, with the kinds from `breathe` on); null removes it. In and out take 0.5 s unless `duration` is given; for a loop `duration` is one round (1 s or so by default, by kind). For titles only: `typewriter` types the words in or erases them, `charFade`, `charRise`, `charDrop` and `charPop` bring the characters in (or take them out) one after another, and the loops `wave` and `jump` move them one after another. In space: `flipY` swings a clip in like a door and `flipX` tips it up like a lid, from edge on (about its anchor: set `anchorX` 0 for a door hinged on its left edge); the loop `flip` turns it round and round showing its back, and `tilt` rocks it from side to side like a card being shown.",
         edits: true,
         enabled: always,
         run: clip_set_animation,
@@ -1145,6 +1163,8 @@ fn sound_add(s: &mut Session, v: &Value) -> CmdResult {
             group: None,
             slot: None,
             steady: None,
+            parent: None,
+            path: None,
         };
         proj.track_mut(&track).expect("found above").clips.push(c);
         Ok(json!({ "media": media, "track": track, "clip": clip, "start": start, "duration": duration }))
@@ -1797,6 +1817,7 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
                 y: y.unwrap_or(0.0),
                 scale: scale.unwrap_or(if sticker.is_some() { 0.35 } else { 1.0 }),
                 rotation: rotation.unwrap_or(0.0),
+                ..ClipTransform::default()
             },
             opacity: opacity.unwrap_or(1.0),
             volume_db: volume_db.unwrap_or(0.0),
@@ -1813,6 +1834,8 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
             group: None,
             slot: None,
             steady: None,
+            parent: None,
+            path: None,
         };
         proj.track_mut(&track_id).expect("found above").clips.push(clip);
         Ok(json!({ "clip": id, "start": start, "duration": duration }))
@@ -2501,8 +2524,32 @@ fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
     if values.iter().any(|&(p, v)| p == Prop::Opacity && !(0.0..=1.0).contains(&v)) {
         return Err(EngineError::Params("`opacity` must be between 0 and 1".into()));
     }
+    if values.iter().any(|&(p, v)| Prop::SPACE.contains(&p) && !(v.is_finite() && v.abs() <= 36000.0)) {
+        return Err(EngineError::Params("`scaleX`, `scaleY`, `rotationX` and `rotationY` must be numbers".into()));
+    }
+    let anchor = [f("anchorX")?, f("anchorY")?];
+    if anchor.iter().flatten().any(|a| !(-4.0..=5.0).contains(a)) {
+        return Err(EngineError::Params(
+            "`anchorX` and `anchorY` are shares of the picture: 0 to 1 within it, -4 to 5 at most".into(),
+        ));
+    }
+    let perspective = f("perspective")?;
+    let (near, far) = ClipTransform::DISTANCES;
+    if perspective.is_some_and(|d| !(near..=far).contains(&d)) {
+        return Err(EngineError::Params(format!("`perspective` is {near} to {far} canvas heights")));
+    }
+    let keep = p.opt_bool("keep")?.unwrap_or(true);
     s.edit("Clip Properties", |proj| {
-        let clip = proj.clip_mut(&id).ok_or_else(|| not_found("clip", &id))?;
+        let (_, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        if anchor != [None, None] {
+            // the picture stays where it lies unless told otherwise: `x` and `y` change with it
+            let [ax, ay] = clip.transform.anchor;
+            crate::space::set_anchor(proj, &id, [anchor[0].unwrap_or(ax), anchor[1].unwrap_or(ay)], keep, at);
+        }
+        let clip = proj.clip_mut(&id).expect("found above");
+        if let Some(d) = perspective {
+            clip.transform.distance = d;
+        }
         for (prop, v) in values {
             set_at(clip, prop, v, at)?;
         }
@@ -2818,7 +2865,7 @@ fn prop(p: &P) -> Result<Prop, EngineError> {
 }
 
 /// The `ease` parameter: a curve by name, or drawn by hand as `[x1, y1, x2, y2]`.
-fn ease_of(p: &P) -> Result<Option<Ease>, EngineError> {
+pub(crate) fn ease_of(p: &P) -> Result<Option<Ease>, EngineError> {
     let Some(v) = p.opt("ease") else { return Ok(None) };
     let names = || Ease::NAMED.map(|(n, _)| n).join(", ");
     if let Some(name) = v.as_str() {

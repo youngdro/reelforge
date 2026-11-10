@@ -277,6 +277,8 @@ pub(crate) fn plain_clip(id: String, start: Tick, duration: Tick, content: ClipC
         group: None,
         slot: None,
         steady: None,
+        parent: None,
+        path: None,
     }
 }
 
@@ -405,6 +407,7 @@ fn clips_of(proj: &Project, made: &Made) -> Vec<(TrackKind, Tick, Clip)> {
             y: y + part.at[1] * k / ch,
             scale: size,
             rotation: part.rotation,
+            ..ClipTransform::default()
         };
         let enter = part.enter_for.unwrap_or(Tick::from_seconds(0.6)).min(Tick(long.0 / 2));
         clip.anim.enter = part.enter.map(|kind| Animation { kind, duration: enter });

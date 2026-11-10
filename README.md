@@ -89,6 +89,14 @@ Twenty decorations drawn for the editor come with it as Lottie animations (`deco
 sparkles, a tap ring, a bouncing arrow, an underline and a ring drawn by hand, falling coins, a flame…), free to use
 and needing no files. `decor.add` puts one over the picture in the brand's colours (or the ones given, or its own red
 and yellow); in the editor they are under Animated in the Stickers tab, each playing while the pointer is over it.
+A clip is placed in space as well as on the flat of the frame: it is stretched one way more than the other
+(`scaleX`, `scaleY`), tipped and swung like a card (`rotationX`, `rotationY`, seen from a distance of `perspective`
+frame heights), and placed, scaled and turned about any point of itself (`anchorX`, `anchorY`: a price that grows
+from its foot, a badge that swings open on its edge). All of them are keyframed like the rest, and the `flipX`,
+`flipY`, `flip` and `tilt` animations use them. One clip follows another (`clip.setParent`): a card's picture, title
+and price go wherever the card goes, turn as it turns and are seen in the same perspective. And a clip travels along
+a path instead of standing in one place (`clip.setPath`): a smooth curve through points, at an even speed, facing the
+way it goes if asked. In the editor they are under 3D & anchor in a clip's inspector.
 See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Video and audio codecs and containers are FilmCraft's clean-room, pure-Rust crates

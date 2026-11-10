@@ -3,7 +3,7 @@
 // opacity and blend, all in linear light with premultiplied alpha.
 
 struct Layer {
-    // inverse map target px -> content px: sx = a x + b y + c, sy = d x + e y + f
+    // inverse map target px -> content px: sx = (a x + b y + c) / q, sy = (d x + e y + f) / q
     inv0: vec4<f32>, // a, b, c, d
     inv1: vec4<f32>, // e, f, content width, content height
     bbox: vec4<f32>, // target px box to cover: x0, y0, x1, y1
@@ -31,6 +31,9 @@ struct Layer {
     warp0: vec4<f32>,
     // distortions: glitch amount, seed, split x, y
     warp1: vec4<f32>,
+    // the inverse map's third row: sx and sy are divided by g x + h y + i (0, 0, 1 for a layer
+    // that is not turned in space)
+    persp: vec4<f32>,
     // x: 1 brightness, 2 saturation (y: amount); 3 grade, over three slots (exposure, contrast,
     // saturation | temperature, tint, highlights, shadows | fade, vignette); 6 lookup table over
     // three slots (amount, size | domain min | domain max); 7 chroma key over two slots
@@ -379,8 +382,13 @@ fn mix1(s: f32, d: f32) -> f32 {
 
 @fragment
 fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let sx = L.inv0.x * pos.x + L.inv0.y * pos.y + L.inv0.z;
-    let sy = L.inv0.w * pos.x + L.inv1.x * pos.y + L.inv1.y;
+    // how far from the eye: 1 unless the layer is turned in space, 0 or less where it is not seen
+    let q = L.persp.x * pos.x + L.persp.y * pos.y + L.persp.z;
+    if q <= 1e-6 {
+        discard;
+    }
+    let sx = (L.inv0.x * pos.x + L.inv0.y * pos.y + L.inv0.z) / q;
+    let sy = (L.inv0.w * pos.x + L.inv1.x * pos.y + L.inv1.y) / q;
     if sx < 0.0 || sy < 0.0 || sx >= L.inv1.z || sy >= L.inv1.w {
         discard;
     }

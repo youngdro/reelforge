@@ -3296,3 +3296,196 @@ fn a_library_decoration_is_a_lottie_clip_over_the_picture_in_the_brand_s_colours
     s.execute("edit.undo", &json!({})).unwrap();
     assert!(s.project().clip(f["clip"].as_str().unwrap()).is_none());
 }
+
+fn add_shape(s: &mut Session, track: &str, size: [u32; 2]) -> String {
+    let add = json!({"track": track, "start": 0, "duration": {"seconds": 2}, "shape": {
+        "kind": "rectangle", "size": size, "fill": [1, 0, 0, 1]
+    }});
+    s.execute("clip.add", &add).unwrap()["clip"].as_str().unwrap().to_string()
+}
+
+/// Where the clip's layer lands at `t`, as the renderer places it.
+fn outline(s: &Session, clip: &str, t: f64) -> [[f32; 2]; 4] {
+    let spec = reelforge_compile::compile(&s.project(), &Default::default()).expect("compiles");
+    reelforge_renderspec::validate(&spec).expect("valid");
+    let all = reelforge_render::layer_outlines(&spec, Tick::from_seconds(t), &reelforge_render::NoMedia);
+    all.into_iter().find(|(id, _)| id == clip).expect("on screen").1
+}
+
+fn close(a: [[f32; 2]; 4], b: [[f32; 2]; 4]) -> bool {
+    a.iter().flatten().zip(b.iter().flatten()).all(|(a, b)| (a - b).abs() < 0.6)
+}
+
+#[test]
+fn a_clip_is_stretched_turned_in_space_and_keeps_its_place_under_another_anchor() {
+    let mut s = Session::default();
+    let v = video_track(&s);
+    let c = add_shape(&mut s, &v, [540, 192]);
+    let flat = outline(&s, &c, 0.0);
+    assert_eq!(flat[0], [270.0, 864.0]);
+
+    // half as wide, swung in space, seen from nearer
+    s.execute("clip.set", &json!({"clip": c, "scaleX": 0.5, "rotationY": 30, "perspective": 1.5})).unwrap();
+    let t = s.project().clip(&c).unwrap().1.transform;
+    assert_eq!((t.scale_x, t.scale_y, t.rotation_y, t.distance), (0.5, 1.0, 30.0, 1.5));
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let tr = &spec["layers"][0]["transform"];
+    assert_eq!((&tr["stretch"], &tr["turn"]), (&json!([0.5, 1.0]), &json!({"x": 0.0, "y": 30.0, "distance": 1.5})));
+    let needs: Vec<&str> = spec["engine"]["features"].as_array().unwrap().iter().filter_map(|f| f.as_str()).collect();
+    assert!(needs.contains(&"transform.3d/1") && needs.contains(&"transform.stretch/1"), "{needs:?}");
+    // its left edge, nearer, is taller than its right
+    let o = outline(&s, &c, 0.0);
+    assert!(o[3][1] - o[0][1] > o[2][1] - o[1][1] + 6.0 && o[1][0] - o[0][0] < 260.0, "{o:?}");
+    for bad in [json!({"perspective": 0}), json!({"anchorX": 9}), json!({"scaleX": "wide"})] {
+        let mut with = bad.clone();
+        with["clip"] = json!(c);
+        assert!(s.execute("clip.set", &with).is_err(), "{bad}");
+    }
+
+    // another anchor: the picture stays where it lies, x and y say where the anchor now is
+    s.execute("clip.set", &json!({"clip": c, "rotationY": 0})).unwrap();
+    let before = outline(&s, &c, 0.0);
+    s.execute("clip.set", &json!({"clip": c, "anchorX": 0, "anchorY": 1})).unwrap();
+    let t = s.project().clip(&c).unwrap().1.transform;
+    assert_eq!(t.anchor, [0.0, 1.0]);
+    assert!((t.x + 0.125).abs() < 1e-4 && (t.y - 0.05).abs() < 1e-4, "{t:?}");
+    assert!(close(outline(&s, &c, 0.0), before));
+    // turned about it: its bottom left corner is where it was
+    s.execute("clip.set", &json!({"clip": c, "rotation": 90})).unwrap();
+    let turned = outline(&s, &c, 0.0);
+    assert!((turned[3][0] - before[3][0]).abs() < 0.6 && (turned[3][1] - before[3][1]).abs() < 0.6, "{turned:?}");
+    // and so when it is turned already; told not to keep it, only the anchor changes
+    s.execute("clip.set", &json!({"clip": c, "anchorX": 0.5, "anchorY": 0.5})).unwrap();
+    assert!(close(outline(&s, &c, 0.0), turned));
+    let was = s.project().clip(&c).unwrap().1.transform;
+    s.execute("clip.set", &json!({"clip": c, "anchorX": 1, "keep": false})).unwrap();
+    let t = s.project().clip(&c).unwrap().1.transform;
+    assert_eq!((t.anchor, t.x, t.y), ([1.0, 0.5], was.x, was.y));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.project().clip(&c).unwrap().1.transform, was);
+
+    // a title is measured as it is laid out
+    let text = s.project().tracks.iter().find(|t| t.kind == TrackKind::Text).unwrap().id.clone();
+    let add = json!({"track": text, "text": "限时特价", "size": 96, "start": 0, "duration": {"seconds": 2}});
+    let title = s.execute("clip.add", &add).unwrap()["clip"].as_str().unwrap().to_string();
+    let before = outline(&s, &title, 0.0);
+    let y = s.project().clip(&title).unwrap().1.transform.y;
+    s.execute("clip.set", &json!({"clip": title, "anchorX": 0})).unwrap();
+    let t = s.project().clip(&title).unwrap().1.transform;
+    assert!(t.x < -0.1 && t.x > -0.3 && t.y == y, "{t:?}");
+    assert!(close(outline(&s, &title, 0.0), before));
+
+    // turns in space are keyed and animated like any other property
+    s.execute("clip.setKey", &json!({"clip": title, "prop": "rotationY", "at": 0, "value": -80})).unwrap();
+    s.execute("clip.setKey", &json!({"clip": title, "prop": "rotationY", "at": {"seconds": 1}, "value": 0})).unwrap();
+    s.execute("clip.setAnimation", &json!({"clip": c, "slot": "in", "kind": "flipX"})).unwrap();
+    s.execute("clip.setAnimation", &json!({"clip": c, "slot": "loop", "kind": "tilt"})).unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let layers = spec["layers"].as_array().unwrap();
+    let turn = |id: &str| layers.iter().find(|l| l["id"] == id).unwrap()["transform"]["turn"].clone();
+    assert_eq!((&turn(&title)["y"][0]["v"], &turn(&title)["y"][1]["v"]), (&json!(-80.0), &json!(0.0)));
+    // tipping up from edge on while it rocks from side to side
+    let lid = turn(&c);
+    assert!((lid["x"][0]["v"].as_f64().unwrap() + 82.0).abs() < 1e-3, "{}", lid["x"][0]);
+    assert!(lid["y"].as_array().unwrap().len() > 30 && lid["x"].as_array().unwrap().len() > 30);
+    // a door swung half open shows narrower than it lies
+    let o = outline(&s, &title, 0.5);
+    assert!(o[1][0] - o[0][0] < (before[1][0] - before[0][0]) * 0.9, "{o:?} {before:?}");
+}
+
+#[test]
+fn a_clip_carried_by_another_follows_it_and_keeps_its_place() {
+    let mut s = Session::default();
+    let v = video_track(&s);
+    let parent = add_shape(&mut s, &v, [400, 400]);
+    s.execute("clip.set", &json!({"clip": parent, "x": 0.2, "scale": 0.5, "rotation": 90})).unwrap();
+    let over = s.execute("track.add", &json!({"kind": "video"})).unwrap()["track"].as_str().unwrap().to_string();
+    let child = add_shape(&mut s, &over, [200, 100]);
+    s.execute("clip.set", &json!({"clip": child, "x": -0.1, "y": 0.1})).unwrap();
+    let before = outline(&s, &child, 0.0);
+
+    // carried: it stays where it shows, its placement now counted from its parent
+    let r = s.execute("clip.setParent", &json!({"clip": child, "parent": parent})).unwrap();
+    let t = s.project().clip(&child).unwrap().1.transform;
+    assert!((t.x - 384.0 / 1080.0).abs() < 1e-4 && (t.y - 648.0 / 1920.0).abs() < 1e-4, "{t:?}");
+    assert!((t.scale - 2.0).abs() < 1e-5 && (t.rotation + 90.0).abs() < 1e-4, "{t:?}");
+    assert_eq!((&r["parent"], r["scale"].as_f64().map(|v| v.round())), (&json!(parent), Some(2.0)));
+    assert!(close(outline(&s, &child, 0.0), before));
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let layer = spec["layers"].as_array().unwrap().iter().find(|l| l["id"] == json!(child)).unwrap();
+    assert_eq!(layer["parent"], json!(parent));
+    assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("layer.parent/1")));
+
+    // the parent moves, grows and turns: the child goes with it as one object
+    let centre = |o: [[f32; 2]; 4]| [(o[0][0] + o[2][0]) / 2.0, (o[0][1] + o[2][1]) / 2.0];
+    let (was, pivot) = (centre(before), centre(outline(&s, &parent, 0.0)));
+    s.execute("clip.set", &json!({"clip": parent, "x": 0.3, "scale": 1.0, "rotation": 180})).unwrap();
+    let (now, moved) = (centre(outline(&s, &child, 0.0)), centre(outline(&s, &parent, 0.0)));
+    // twice as far from the parent's middle, a quarter turn on
+    let (dx, dy) = (was[0] - pivot[0], was[1] - pivot[1]);
+    assert!((now[0] - (moved[0] - 2.0 * dy)).abs() < 0.6 && (now[1] - (moved[1] + 2.0 * dx)).abs() < 0.6, "{now:?}");
+
+    // a ring is refused, and so is what cannot carry
+    for (clip, of) in [(&parent, &child), (&child, &child)] {
+        assert!(s.execute("clip.setParent", &json!({"clip": clip, "parent": of})).is_err());
+    }
+    assert!(s.execute("clip.setParent", &json!({"clip": child, "parent": "c999"})).is_err());
+    // set free where it shows, then carried again without keeping its place
+    let carried = outline(&s, &child, 0.0);
+    s.execute("clip.setParent", &json!({"clip": child, "parent": null})).unwrap();
+    assert!(s.project().clip(&child).unwrap().1.parent.is_none());
+    assert!(close(outline(&s, &child, 0.0), carried));
+    let free = s.project().clip(&child).unwrap().1.transform;
+    s.execute("clip.setParent", &json!({"clip": child, "parent": parent, "keep": false})).unwrap();
+    assert_eq!(s.project().clip(&child).unwrap().1.transform, free);
+    assert!(!close(outline(&s, &child, 0.0), carried));
+
+    // its parent gone, it is drawn on its own
+    s.execute("clip.remove", &json!({"clips": [parent]})).unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert!(spec["layers"][0].get("parent").is_none(), "{}", spec["layers"][0]);
+}
+
+#[test]
+fn a_clip_travels_along_a_path_at_an_even_speed() {
+    let mut s = Session::default();
+    let v = video_track(&s);
+    let c = add_shape(&mut s, &v, [120, 60]);
+    let path = json!({"clip": c, "points": [[-0.3, 0.2], [0, -0.2], [0.3, 0.2]], "orient": true,
+        "duration": {"seconds": 1}, "ease": "linear"});
+    let r = s.execute("clip.setPath", &path).unwrap();
+    assert_eq!((&r["path"]["orient"], &r["path"]["points"][1][0]), (&json!(true), &json!(0.0)));
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let tr = &spec["layers"][0]["transform"];
+    // frame by frame while it travels, then it stays at the last point
+    let keys = tr["position"].as_array().unwrap();
+    assert_eq!(keys.len(), 32, "{keys:?}");
+    let at = |i: usize| [keys[i]["v"][0].as_f64().unwrap(), keys[i]["v"][1].as_f64().unwrap()];
+    let near = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() < 2e-3 && (a[1] - b[1]).abs() < 2e-3;
+    assert!(
+        near(at(0), [-0.3, 0.2]) && near(at(15), [0.0, -0.2]) && near(at(30), [0.3, 0.2]) && near(at(31), [0.3, 0.2])
+    );
+    // as far each frame, on the canvas (which is taller than it is wide)
+    let step = |i: usize| ((at(i + 1)[0] - at(i)[0]) * 1080.0).hypot((at(i + 1)[1] - at(i)[1]) * 1920.0);
+    assert!((step(3) / step(14) - 1.0).abs() < 0.03, "{} {}", step(3), step(14));
+    // facing the way it goes: up and to the right, level over the top, then down
+    let turn = |i: usize| tr["rotation"][i]["v"].as_f64().unwrap();
+    assert!(turn(1) < -45.0 && turn(15).abs() < 4.0 && turn(29) > 45.0, "{} {} {}", turn(1), turn(15), turn(29));
+
+    // its other settings change on their own; a path needs its points
+    let r = s.execute("clip.setPath", &json!({"clip": c, "closed": true, "start": {"seconds": 0.5}})).unwrap();
+    assert_eq!((&r["path"]["closed"], r["path"]["points"].as_array().map(Vec::len)), (&json!(true), Some(3)));
+    let p = s.project().clip(&c).unwrap().1.path.clone().unwrap();
+    assert_eq!((p.start, p.duration, p.orient), (Tick::from_seconds(0.5), Tick::SECOND, true));
+    for bad in [json!({"points": [[0, 0]]}), json!({"points": "round"}), json!({"duration": 0})] {
+        let mut with = bad.clone();
+        with["clip"] = json!(c);
+        assert!(s.execute("clip.setPath", &with).is_err(), "{bad}");
+    }
+    // taking the path away puts the clip back where its x and y say
+    s.execute("clip.setPath", &json!({"clip": c, "points": null})).unwrap();
+    assert!(s.project().clip(&c).unwrap().1.path.is_none());
+    assert!(s.execute("clip.setPath", &json!({"clip": c, "orient": true})).is_err());
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert!(spec["layers"][0]["transform"]["position"][0].is_number());
+}

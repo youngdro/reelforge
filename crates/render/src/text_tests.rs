@@ -37,6 +37,7 @@ fn spec_with(text: TextContent) -> RenderSpec {
         shape_mask: None,
         crop_keys: None,
         shape_mask_keys: None,
+        parent: None,
     });
     s
 }
@@ -499,4 +500,54 @@ fn spacing_out_of_range_is_refused() {
         t.leading = leading;
         assert!(reelforge_renderspec::validate(&spec_with(t)).is_err(), "{tracking} {leading}");
     }
+}
+
+#[test]
+fn a_title_stretched_turned_or_anchored_is_drawn_flat_and_placed() {
+    let s = spec_with(white("短视频 Hi", 64.0));
+    let plain = draw(&s, 1.0);
+    let b = ink_box(&plain);
+    // carried by a layer that has not moved: drawn the other way round, the same picture
+    let mut t = s.clone();
+    let mut still = t.layers[0].clone();
+    still.id = "still".into();
+    still.opacity = Animated::Constant(0.0);
+    t.layers.push(still);
+    t.layers[0].parent = Some("still".into());
+    let flat = draw(&t, 1.0);
+    let worst = plain.pixels.iter().zip(&flat.pixels).map(|(a, b)| (a[0] - b[0]).abs()).fold(0.0, f32::max);
+    assert!(worst < 0.004, "{worst}");
+    // lying flat for now, a title that can turn in space is drawn as any other
+    t.layers[0].parent = None;
+    t.layers[0].transform.turn = Some(Turn::held(0.0, 0.0));
+    assert_eq!(draw(&t, 1.0).pixels, plain.pixels);
+    // half as wide again, as tall as it was, about its middle
+    t.layers[0].transform.turn = None;
+    t.layers[0].transform.stretch = Some(Animated::Constant([1.5, 1.0]));
+    let wide = ink_box(&draw(&t, 1.0));
+    let (w, ww) = ((b[2] - b[0]) as f32, (wide[2] - wide[0]) as f32);
+    assert!(
+        (ww - w * 1.5).abs() <= 3.0 && wide[1].abs_diff(b[1]) <= 1 && wide[3].abs_diff(b[3]) <= 1,
+        "{b:?} {wide:?}"
+    );
+    assert!(((wide[0] + wide[2]) as f32 / 2.0 - W as f32 / 2.0).abs() < 4.0, "{wide:?}");
+    // its outline is still its ink
+    let [tl, _, br, _] = layer_outlines(&t, Tick::ZERO, &NoMedia)[0].1;
+    let wide = wide.map(|v| v as f32);
+    for (got, want) in [(tl[0], wide[0]), (tl[1], wide[1]), (br[0], wide[2]), (br[1], wide[3])] {
+        assert!((got - want).abs() <= 3.0, "outline {tl:?} {br:?} ink {wide:?}");
+    }
+    // anchored at its left edge: it starts where its middle was (and runs off the frame)
+    t.layers[0].transform.stretch = None;
+    t.layers[0].transform.anchor = Some([0.0, 0.5]);
+    let left = ink_box(&draw(&t, 1.0));
+    assert!(left[0].abs_diff(W / 2) <= 6 && left[2] > W - 20 && left[3] - left[1] == b[3] - b[1], "{left:?}");
+    // swung in space about that edge like a door: its far edge goes away, and it is narrower
+    t.layers[0].transform.turn = Some(Turn::held(0.0, 50.0));
+    let door = ink_box(&draw(&t, 1.0));
+    assert!(door[0].abs_diff(W / 2) <= 6 && door[2] - door[0] < (b[2] - b[0]) * 6 / 10, "{door:?} {b:?}");
+    // the other way its far edge comes nearer, and is taller
+    t.layers[0].transform.turn = Some(Turn::held(0.0, -50.0));
+    let door = ink_box(&draw(&t, 1.0));
+    assert!(door[0].abs_diff(W / 2) <= 6 && door[3] - door[1] > (b[3] - b[1]) * 13 / 10, "{door:?} {b:?}");
 }

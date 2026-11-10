@@ -108,6 +108,7 @@ fn layer(id: &str, content: LayerContent) -> Layer {
         shape_mask: None,
         crop_keys: None,
         shape_mask_keys: None,
+        parent: None,
     }
 }
 
@@ -609,6 +610,7 @@ fn compositions_match_however_they_are_placed() {
         position: Animated::Constant([0.1, 0.05]),
         scale: Animated::Constant(0.8),
         rotation: Animated::Constant(-15.0),
+        ..Transform::default()
     };
     c.crop = Some(Crop { left: 0.1, top: 0.0, right: 0.05, bottom: 0.2 });
     c.flip_x = true;
@@ -661,6 +663,47 @@ fn the_glow_is_the_frame_far_out_of_focus() {
     assert!(red(3) > red(12) + 10, "{row:?}");
     assert!((0..w as usize).all(|x| red(x) < 200 && row[x * 4 + 3] == 255), "{row:?}");
     assert!((1..w as usize).all(|x| red(x).abs_diff(red(x - 1)) < 60), "{row:?}");
+}
+
+#[test]
+fn layers_stretched_anchored_turned_in_space_and_carried_match_the_cpu() {
+    let mut s = base(96, 64);
+    let pic = picture(60, 40);
+    // a picture swung like a door about its left edge, squeezed, cropped and masked
+    let i = with_picture(&mut s, Fit::Contain);
+    let p = &mut s.layers[i];
+    p.transform = Transform {
+        position: Animated::Constant([-0.2, 0.05]),
+        scale: Animated::Constant(0.7),
+        rotation: Animated::Constant(12.0),
+        stretch: Some(Animated::Constant([1.0, 0.8])),
+        anchor: Some([0.0, 0.5]),
+        turn: Some(Turn::held(20.0, 48.0)),
+    };
+    p.crop = Some(Crop { left: 0.1, top: 0.0, right: 0.0, bottom: 0.1 });
+    p.flip_x = true;
+    p.fx = vec![fx_of(effects::GRADE, &[("contrast", 0.2)])];
+    // a title carried by it, tipped back on its own
+    let mut title = layer("t", LayerContent::Text(Box::new(TextContent::new("Ab".to_string(), 26.0, Color([1.0; 4])))));
+    title.parent = Some("pic".into());
+    title.transform.position = Animated::Constant([0.3, -0.2]);
+    title.transform.turn = Some(Turn { distance: 1.2, ..Turn::held(-35.0, 0.0) });
+    s.layers.push(title);
+    // a square carried by the title, stretched, blended by the shader
+    let mut square = layer("sq", LayerContent::Solid { color: Color([0.9, 0.5, 0.2, 0.8]) });
+    square.parent = Some("t".into());
+    square.blend = Blend::Multiply;
+    square.transform.scale = Animated::Constant(0.3);
+    square.transform.stretch = Some(Animated::Constant([1.6, 0.7]));
+    square.transform.position = Animated::Constant([0.1, 0.25]);
+    s.layers.push(square);
+    reelforge_renderspec::validate(&s).expect("valid");
+    let media = Pictures(pic);
+    same(&s, Tick::ZERO, 1.0, &media, Quality::Final);
+    same(&s, Tick::ZERO, 0.5, &media, Quality::Final);
+    // turned past edge on: its back, mirrored
+    s.layers[i].transform.turn = Some(Turn::held(0.0, 140.0));
+    same(&s, Tick::ZERO, 1.0, &media, Quality::Final);
 }
 
 #[test]

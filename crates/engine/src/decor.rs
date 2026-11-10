@@ -130,8 +130,13 @@ pub(crate) fn decor_add(s: &mut Session, v: &Value) -> CmdResult {
         let id = proj.mint("c");
         let mut clip =
             crate::promo::plain_clip(id.clone(), start, duration, ClipContent::media(media.clone(), Tick::ZERO));
-        clip.transform =
-            ClipTransform { x: x.unwrap_or(0.0), y: y.unwrap_or(0.0), scale, rotation: rotation.unwrap_or(0.0) };
+        clip.transform = ClipTransform {
+            x: x.unwrap_or(0.0),
+            y: y.unwrap_or(0.0),
+            scale,
+            rotation: rotation.unwrap_or(0.0),
+            ..ClipTransform::default()
+        };
         clip.opacity = opacity.unwrap_or(1.0);
         let track = proj.tracks[ti].id.clone();
         proj.tracks[ti].clips.push(clip);

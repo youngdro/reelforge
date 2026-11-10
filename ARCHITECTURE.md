@@ -117,6 +117,21 @@ In rough priority order for short videos:
    (`lottie`) has `reelforge-lottie` draw that very instant at the size the asset's `probe` gives
    (the animation's own, or larger so that its longer side is 1080), smaller for a draft, and from
    its start again past its end. It is see-through where it draws nothing and has no sound.
+   A layer's placement is a 3×3 map of the frame's plane (`plan::Map`). `transform.stretch/1`
+   scales its two sides apart, `transform.anchor/1` names the point of the picture that is placed
+   and that it scales and turns about, `transform.3d/1` (`turn`) tips it about its horizontal and
+   vertical through that point and looks at it from `distance` frame heights, and `layer.parent/1`
+   places it inside another layer (`parent`, at most `PARENTS` deep; `validate` refuses a ring):
+   the maps of the chain are multiplied, and the outermost turned layer is where the eye looks
+   from, so a card and what it carries share one perspective. The CPU compositor divides by the
+   map's third row for each pixel; the GPU one does the same in the fragment shader (`persp`).
+   Text and shapes that are not plainly placed are drawn flat, larger when they will be shown
+   larger, and laid through the map like a picture (`cpu::flat_sprite`, `Sprite.map`).
+   In the model these are `ClipTransform`'s `scale_x`, `scale_y`, `rotation_x`, `rotation_y`,
+   `anchor` and `distance`, `Clip.parent` and `Clip.path` (`MotionPath`: a Catmull-Rom curve through
+   points, walked by length so the speed is even, lowered to keys of position and rotation one per
+   frame of the journey). The compiler drops a parent that is missing, hidden or in a ring;
+   `reelforge_engine::space` keeps a clip where it shows when its anchor or parent changes.
 3. GPU, next steps: blurs on the GPU (the colour effects, `color.grade@1`, `color.lut@1` and
    `key.chroma@1` included, are per-pixel WGSL already, as are crops, mirrors, shape masks and the
    `blend/2` modes, which read the layers below from a copy; the distortions, `distort.wave@1`,
