@@ -134,7 +134,7 @@ enum Filter {
 impl Filter {
     fn admits(self, kind: MediaKind) -> bool {
         match self {
-            Filter::All => kind != MediaKind::Lut,
+            Filter::All => !matches!(kind, MediaKind::Lut | MediaKind::Font),
             Filter::Video => kind == MediaKind::Video,
             Filter::Image => kind == MediaKind::Image,
             Filter::Audio => kind == MediaKind::Audio,
@@ -317,7 +317,8 @@ impl AssetPanel {
         });
         ui.add_space(8.0);
         // in the order they were imported (ids are minted in order: m2 before m10)
-        let mut all: Vec<&Media> = p.media.values().filter(|m| m.kind != MediaKind::Lut).collect();
+        let mut all: Vec<&Media> =
+            p.media.values().filter(|m| !matches!(m.kind, MediaKind::Lut | MediaKind::Font)).collect();
         all.sort_by_key(|m| (m.id.trim_start_matches(|c: char| !c.is_ascii_digit()).parse::<u64>().ok(), &m.id));
         if all.is_empty() {
             empty(ui, s, action);

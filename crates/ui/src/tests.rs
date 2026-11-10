@@ -111,10 +111,23 @@ fn files_go_to_the_server_and_other_editors_fetch_them() {
     assert_eq!(std::fs::read(&m.uri).unwrap(), png);
     until("both agree", || remote.settled() && *app.session().project() == *hub.session().project());
 
-    // another editor joining later gets the file from the server
+    // a font goes the same way, called by its family
+    remote.upload("a.ttf", reelforge_render::text::NOTO_SANS_SC_REGULAR.to_vec(), false).unwrap();
+    let mut up = Vec::new();
+    until("the server has the font", || {
+        up.extend(remote.take_uploaded());
+        !up.is_empty()
+    });
+    assert_eq!((up[0].import["kind"].as_str(), up[0].import["name"].as_str()), (Some("font"), Some("Noto Sans SC")));
+    let font = app.execute("media.import", up[0].import.clone()).unwrap()["media"]["id"].as_str().unwrap().to_string();
+    until("the server has the font's media", || hub.session().project().media.contains_key(&font));
+    assert_eq!(hub.session().project().media[&font].kind, reelforge_model::MediaKind::Font);
+    until("both agree on the font", || remote.settled() && *app.session().project() == *hub.session().project());
+
+    // another editor joining later gets the files from the server
     let other = EditorApp::join(&base, Some("t".into()), "web");
     let r2 = other.remote().unwrap().clone();
-    until("the second editor has the footage", || r2.media_epoch() > 0);
+    until("the second editor has the footage", || r2.media_epoch() > 1);
     assert_eq!(*other.session().project(), *hub.session().project());
 }
 
@@ -404,4 +417,48 @@ fn the_editor_listens_with_the_media_it_holds_and_says_what_it_found() {
     app.listen("audio.denoise", &json!({"clip": clip, "amount": 0.4}));
     assert!(app.status.contains("dB"), "{}", app.status);
     assert_eq!(app.project().clip(&clip).unwrap().1.voice.denoise.as_ref().unwrap().amount, 0.4);
+}
+
+#[test]
+fn a_font_dropped_in_is_set_on_the_selected_title() {
+    use crate::i18n;
+    use reelforge_model::{ClipContent, MediaKind, TrackKind};
+    let mut app = EditorApp::new(Session::default());
+    app.lang = i18n::Lang::Zh;
+    let font_of = |app: &EditorApp, clip: &str| match &app.project().clip(clip).unwrap().1.content {
+        ClipContent::Text { style, .. } => style.font.clone(),
+        _ => unreachable!(),
+    };
+    let text = first_track(&app, TrackKind::Text);
+    let title =
+        app.execute("clip.add", json!({"track": text, "text": "标题"})).unwrap()["clip"].as_str().unwrap().to_string();
+
+    // nothing selected: the font waits in the project, called by its family and style
+    app.selected = None;
+    app.import_bytes("a.ttf", reelforge_render::text::NOTO_SANS_SC_REGULAR.to_vec(), true);
+    let p = app.project();
+    let regular = p.media.values().find(|m| m.kind == MediaKind::Font).expect("imported").clone();
+    assert_eq!(regular.name, "Noto Sans SC");
+    assert_eq!(app.status, "已导入字体 Noto Sans SC，选中标题后可在字体里选用");
+    assert_eq!(font_of(&app, &title), None);
+    assert!(p.tracks.iter().all(|t| t.clips.iter().all(|c| c.id == title)), "a font is not a clip");
+
+    // with a title selected, it is set in the font, in one step that undo takes back
+    app.selected = Some(title.clone());
+    let bold =
+        std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../render/fonts/NotoSansSC-Bold.subset.ttf")).unwrap();
+    app.import_bytes("b.otf", bold, false);
+    let p = app.project();
+    let bold = p.media.values().find(|m| m.name == "Noto Sans SC Bold").expect("imported");
+    assert_eq!(font_of(&app, &title), Some(bold.id.clone()));
+    assert_eq!(app.status, "标题已换用字体 Noto Sans SC Bold");
+    // the same file again is the same font: back on the title, not in the project twice
+    app.execute("clip.set", json!({"clip": title, "font": null})).unwrap();
+    app.import_bytes("again.ttf", reelforge_render::text::NOTO_SANS_SC_REGULAR.to_vec(), false);
+    assert_eq!(font_of(&app, &title), Some(regular.id.clone()));
+    assert_eq!(app.project().media.len(), 2);
+    // a file that is no font says so and adds nothing
+    app.import_bytes("c.ttf", b"nothing".to_vec(), false);
+    assert!(app.status.starts_with("c.ttf: "), "{}", app.status);
+    assert_eq!(app.project().media.len(), 2);
 }

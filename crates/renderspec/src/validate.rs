@@ -108,6 +108,12 @@ pub fn validate(spec: &RenderSpec) -> Result<(), ValidationError> {
                 {
                     return Err(bad(format!("{path}.content.width"), "must be positive"));
                 }
+                if !(text.tracking.is_finite() && (-0.5..=4.0).contains(&text.tracking)) {
+                    return Err(bad(format!("{path}.content.tracking"), "must be -0.5 to 4 ems"));
+                }
+                if !(text.leading.is_finite() && (-0.5..=4.0).contains(&text.leading)) {
+                    return Err(bad(format!("{path}.content.leading"), "must be -0.5 to 4 ems"));
+                }
                 if let Some(st) = &text.stroke {
                     color_ok(&format!("{path}.content.stroke.color"), st.color.0)?;
                     if !(st.width >= 0.0 && st.width <= text.size) {

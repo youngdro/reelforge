@@ -64,7 +64,7 @@ pub enum PlannedSource {
     /// A colour filling the frame, premultiplied linear.
     Solid([f32; 4]),
     /// Text, laid out and drawn by the compositor.
-    Text(TextContent),
+    Text(Box<TextContent>),
 }
 
 /// A 2-D affine map `[a, b, c, d, e, f]`: `x' = a x + b y + c`, `y' = d x + e y + f`.
@@ -153,7 +153,7 @@ pub fn plan_frame(spec: &RenderSpec, t: Tick, scale: f32) -> FramePlan {
                 if let Some(r) = &text.reveal {
                     text.reveal = Some(Animated::Constant(r.sample(local).clamp(0.0, 1.0)));
                 }
-                (PlannedSource::Text(text), Fit::Contain)
+                (PlannedSource::Text(Box::new(text)), Fit::Contain)
             }
         };
         let pos = layer.transform.position.sample(local);

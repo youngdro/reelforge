@@ -218,9 +218,11 @@ impl Remote {
             reelforge_renderspec::AssetKind::Video => "video",
             reelforge_renderspec::AssetKind::Image => "image",
             reelforge_renderspec::AssetKind::Lut => "lut",
+            reelforge_renderspec::AssetKind::Font => "font",
             _ => "audio",
         };
-        let mut import = json!({"name": name, "kind": kind, "sha256": sha});
+        // a font is called by its family's name
+        let mut import = json!({"name": probe.family.as_deref().unwrap_or(name), "kind": kind, "sha256": sha});
         if let Some(size) = probe.size {
             import["size"] = json!(size);
         }
@@ -438,7 +440,11 @@ impl Remote {
                 .values()
                 // library sounds and stickers are made here, not kept by the server
                 .filter(|m| !m.uri.starts_with(reelforge_media::library::SCHEME))
-                .filter_map(|m| Some((m.sha256.clone()?, m.name.clone())))
+                // a name tells what kind of file it is; a font is called by its family
+                .filter_map(|m| {
+                    let font = m.kind == reelforge_model::MediaKind::Font;
+                    Some((m.sha256.clone()?, if font { format!("{}.ttf", m.name) } else { m.name.clone() }))
+                })
                 .filter(|(sha, _)| s.have.insert(sha.clone()))
                 .collect()
         };

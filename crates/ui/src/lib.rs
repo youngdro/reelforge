@@ -320,6 +320,13 @@ struct Title {
     boxed: bool,
     shadow: bool,
     line_boxes: bool,
+    /// The font the title is set in (a media id); the built-in face when `None`.
+    font: Option<String>,
+    /// Space after each character and between lines, in hundredths of the size.
+    tracking: f32,
+    leading: f32,
+    italic: bool,
+    underline: bool,
 }
 
 impl EditorApp {
@@ -705,6 +712,11 @@ impl EditorApp {
             }
         };
         if let Some(m) = self.project().media.values().find(|m| m.sha256.as_deref() == Some(sha.as_str())) {
+            if m.kind == MediaKind::Font {
+                // a font the project has: the selected title is set in it
+                self.imported(&json!({ "media": m }), place);
+                return;
+            }
             // the project has it already (taken back after a reload): its pictures are back
             self.status = fill(self.s().relinked, &[&m.name]);
             return;
@@ -713,9 +725,13 @@ impl EditorApp {
             reelforge_renderspec::AssetKind::Video => "video",
             reelforge_renderspec::AssetKind::Image => "image",
             reelforge_renderspec::AssetKind::Lut => "lut",
+            reelforge_renderspec::AssetKind::Font => "font",
             _ => "audio",
         };
         let mut params = json!({ "path": name, "kind": kind, "sha256": sha });
+        if let Some(family) = &probe.family {
+            params["name"] = json!(family);
+        }
         if let Some(size) = probe.size {
             params["size"] = json!(size);
         }
@@ -840,12 +856,26 @@ impl EditorApp {
         }
     }
 
+    /// The selected clip, when it is a title.
+    fn selected_title(&self) -> Option<String> {
+        let id = self.selected.clone()?;
+        let p = self.project();
+        matches!(p.clip(&id)?.1.content, ClipContent::Text { .. }).then_some(id)
+    }
+
     /// After `media.import`: puts the file at the playhead when `place`, or says it is in the media.
     fn imported(&mut self, imported: &Value, place: bool) {
         let Ok(m) = serde_json::from_value::<reelforge_model::Media>(imported["media"].clone()) else { return };
         if imported["relinked"] == true {
             // it was offline on the timeline already
             self.status = fill(self.s().relinked, &[&m.name]);
+            return;
+        }
+        if m.kind == MediaKind::Font {
+            // a font is set on the selected title, or waits in a title's font list
+            let wear =
+                self.selected_title().is_some_and(|c| self.run("clip.set", &json!({"clip": c, "font": m.id})).is_ok());
+            self.status = fill(if wear { self.s().font_worn } else { self.s().font_imported }, &[&m.name]);
             return;
         }
         if m.kind == MediaKind::Lut {
@@ -870,6 +900,14 @@ impl EditorApp {
     /// Puts media `m` at `at`: on `track` if it has room there, else on the lowest track of its
     /// kind with room, else on a new track above the others. Selects the new clip.
     fn place(&mut self, m: &reelforge_model::Media, at: Tick, track: Option<String>) -> bool {
+        if m.kind == MediaKind::Font {
+            if let Some(c) = self.selected_title()
+                && self.execute("clip.set", json!({"clip": c, "font": m.id})).is_ok()
+            {
+                self.status = fill(self.s().font_worn, &[&m.name]);
+            }
+            return false;
+        }
         if m.kind == MediaKind::Lut {
             if let Some(c) = self.selected.clone()
                 && self.execute("clip.setColor", json!({"clip": c, "lut": m.id})).is_ok()
@@ -1891,6 +1929,11 @@ impl EditorApp {
                     boxed: style.background.is_some(),
                     shadow: style.shadow.is_some(),
                     line_boxes: style.background.is_some() && style.line_boxes,
+                    font: style.font.clone(),
+                    tracking: style.tracking * 100.0,
+                    leading: style.leading * 100.0,
+                    italic: style.italic,
+                    underline: style.underline,
                 }),
                 _ => None,
             },
@@ -1942,11 +1985,7 @@ impl EditorApp {
         let worn = match &clip.content {
             ClipContent::Text { color, style, .. } => reelforge_engine::title_templates()
                 .into_iter()
-                .find(|t| {
-                    t.color == *color
-                        && reelforge_model::TitleStyle { align: style.align, wrap: style.wrap, ..t.style.clone() }
-                            == *style
-                })
+                .find(|t| t.color == *color && style.wearing(&t.style) == *style)
                 .map(|t| t.id),
             _ => None,
         };
@@ -1962,6 +2001,8 @@ impl EditorApp {
         let mut commit = false;
         // commands the panel asks for beyond the values above
         let mut actions: Vec<(&'static str, Value)> = vec![];
+        // the title asks for a font file
+        let mut pick_font = false;
         // a value is committed when its drag ends or it is typed in
         let row = |ui: &mut egui::Ui,
                    name: &str,
@@ -2001,14 +2042,46 @@ impl EditorApp {
                     let r = ui.add(egui::TextEdit::multiline(&mut t.text).desired_rows(3).desired_width(f32::INFINITY));
                     commit |= r.lost_focus();
                     egui::Grid::new("title").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                        ui.label(egui::RichText::new(s.font).color(theme::color::WEAK));
+                        ui.horizontal(|ui| {
+                            let fonts: Vec<(&str, &str)> = p
+                                .media
+                                .values()
+                                .filter(|m| m.kind == MediaKind::Font)
+                                .map(|m| (m.id.as_str(), m.name.as_str()))
+                                .collect();
+                            let shown = t
+                                .font
+                                .as_deref()
+                                .and_then(|f| fonts.iter().find(|(id, _)| *id == f))
+                                .map_or(s.font_default, |(_, name)| *name);
+                            let was = t.font.clone();
+                            egui::ComboBox::from_id_salt("font")
+                                .selected_text(shown)
+                                .width(ui.available_width() - 40.0)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut t.font, None, s.font_default);
+                                    for (fid, name) in &fonts {
+                                        ui.selectable_value(&mut t.font, Some(fid.to_string()), *name);
+                                    }
+                                });
+                            commit |= t.font != was;
+                            pick_font |= ui.button(icon::ADD).on_hover_text(s.font_import).clicked();
+                        });
+                        ui.end_row();
                         commit |= row(ui, s.size, &mut t.size, 1.0, 8.0..=600.0, " px");
+                        let (lo, hi) = reelforge_model::TitleStyle::SPACING;
+                        commit |= row(ui, s.tracking, &mut t.tracking, 1.0, lo * 100.0..=hi * 100.0, " %");
+                        commit |= row(ui, s.leading, &mut t.leading, 1.0, lo * 100.0..=hi * 100.0, " %");
                     });
                     ui.horizontal(|ui| {
                         commit |= ui.toggle_value(&mut t.bold, s.bold).changed();
-                        commit |= ui.toggle_value(&mut t.outline, s.outline).changed();
-                        commit |= ui.toggle_value(&mut t.boxed, s.boxed).changed();
+                        commit |= ui.toggle_value(&mut t.italic, s.italic).changed();
+                        commit |= ui.toggle_value(&mut t.underline, s.underline).changed();
                     });
                     ui.horizontal(|ui| {
+                        commit |= ui.toggle_value(&mut t.outline, s.outline).changed();
+                        commit |= ui.toggle_value(&mut t.boxed, s.boxed).changed();
                         commit |= ui.toggle_value(&mut t.shadow, s.shadowed).changed();
                         if ui.toggle_value(&mut t.line_boxes, s.line_boxes).changed() {
                             // boxes per line need a box
@@ -2698,6 +2771,21 @@ impl EditorApp {
                 if was.is_some_and(|w| w.line_boxes != t.line_boxes) {
                     params["lineBoxes"] = json!(t.line_boxes);
                 }
+                if was.is_some_and(|w| w.font != t.font) {
+                    params["font"] = json!(t.font);
+                }
+                if was.is_some_and(|w| w.tracking != t.tracking) {
+                    params["tracking"] = json!(t.tracking / 100.0);
+                }
+                if was.is_some_and(|w| w.leading != t.leading) {
+                    params["leading"] = json!(t.leading / 100.0);
+                }
+                if was.is_some_and(|w| w.italic != t.italic) {
+                    params["italic"] = json!(t.italic);
+                }
+                if was.is_some_and(|w| w.underline != t.underline) {
+                    params["underline"] = json!(t.underline);
+                }
             }
             if self.execute("clip.set", params).is_err() {
                 self.inspector = Some(current);
@@ -2705,6 +2793,10 @@ impl EditorApp {
         }
         if let Some(t) = wear {
             let _ = self.execute("clip.set", json!({"clip": id, "template": t}));
+        }
+        if pick_font {
+            self.second_captions = false;
+            self.pick(ui.ctx(), FONTS);
         }
     }
 
@@ -3032,11 +3124,14 @@ fn placement_at(c: &reelforge_model::Clip, at: Tick) -> ClipTransform {
 
 /// Whether a file name is a SubRip caption file.
 /// A CapCut / 剪映 draft: `draft_content.json` or `draft_info.json`.
-/// What Import offers: video, pictures, sound, LUTs, captions and CapCut drafts.
+/// What Import offers: video, pictures, sound, LUTs, fonts, captions and CapCut drafts.
 const IMPORTABLE: &[&str] = &[
     "mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "webp", "gif", "mp3", "wav", "m4a", "aac", "flac", "ogg",
-    "opus", "cube", "srt", "json",
+    "opus", "cube", "ttf", "otf", "ttc", "srt", "json",
 ];
+
+/// What a title's font button offers.
+const FONTS: &[&str] = &["ttf", "otf", "ttc"];
 
 /// The inspector's list of a clip's picture effects: each with its strength and pace, one to
 /// remove it, and a menu to add another. Returns the command that makes the list what it now is.

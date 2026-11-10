@@ -203,8 +203,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "media.import",
         label: "Import Media",
-        params: r#"{"path": string, "kind"?: "video"|"image"|"audio"|"lut", "name"?: string, "duration"?: time, "size"?: [w, h], "sha256"?: hex}"#,
-        doc: "Adds a file to the project's media. When the file is reachable, hashes it and measures its kind, picture size and length (any value passed wins).",
+        params: r#"{"path": string, "kind"?: "video"|"image"|"audio"|"lut"|"font", "name"?: string, "duration"?: time, "size"?: [w, h], "sha256"?: hex}"#,
+        doc: "Adds a file to the project's media. When the file is reachable, hashes it and measures its kind, picture size and length (any value passed wins). A font (.ttf, .otf, .ttc) is named after its family and style, and is set on titles with clip.set `font`.",
         edits: true,
         enabled: always,
         run: media_import,
@@ -213,7 +213,7 @@ static REGISTRY: &[CommandSpec] = &[
         id: "media.remove",
         label: "Remove Media",
         params: r#"{"media": id}"#,
-        doc: "Takes a file out of the project's media. Refused while a clip on any timeline uses it (as its picture or sound, or as its LUT).",
+        doc: "Takes a file out of the project's media. Refused while a clip on any timeline uses it (as its picture or sound, as its LUT, or as a title's font).",
         edits: true,
         enabled: always,
         run: media_remove,
@@ -284,7 +284,7 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.add",
         label: "Add Clip",
-        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "name"?: string, "adjustment"?: bool, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "template"?: id}"#,
+        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "name"?: string, "adjustment"?: bool, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "template"?: id}"#,
         doc: "Places media, a library sticker, text, a colour or an adjustment clip on a track; starts at the track's end unless `start` is given. Titles default to bold white with a black outline, wrapping at 90 % of the canvas. A sticker (sticker.library) is an image a third of the frame wide; `name` is what the project's media calls it (its English name by default). An adjustment clip shows nothing: its effects (`fx`) and colour work on the tracks below it while it lasts.",
         edits: true,
         enabled: always,
@@ -473,7 +473,7 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.set",
         label: "Clip Properties",
-        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "at"?: time, "fadeIn"?: time, "fadeOut"?: time, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "template"?: id}"#,
+        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "at"?: time, "fadeIn"?: time, "fadeOut"?: time, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "template"?: id}"#,
         doc: "Sets a clip's placement, opacity, volume, sound fades or title. A property with keyframes is set at `at` (a timeline time), adding or changing the keyframe there.",
         edits: true,
         enabled: always,
@@ -931,6 +931,7 @@ fn kind_from_path(path: &str) -> Option<MediaKind> {
         "png" | "jpg" | "jpeg" | "webp" | "gif" => Some(MediaKind::Image),
         "mp3" | "wav" | "m4a" | "aac" | "flac" | "ogg" | "opus" => Some(MediaKind::Audio),
         "cube" => Some(MediaKind::Lut),
+        "ttf" | "otf" | "ttc" => Some(MediaKind::Font),
         _ => None,
     }
 }
@@ -941,7 +942,7 @@ fn media_import(s: &mut Session, v: &Value) -> CmdResult {
     let asked: Option<MediaKind> = match p.opt_str("kind")? {
         Some(k) => Some(
             serde_json::from_value(json!(k))
-                .map_err(|_| EngineError::Params("`kind` must be video, image, audio or lut".into()))?,
+                .map_err(|_| EngineError::Params("`kind` must be video, image, audio, lut or font".into()))?,
         ),
         None => None,
     };
@@ -959,17 +960,28 @@ fn media_import(s: &mut Session, v: &Value) -> CmdResult {
     let mut duration = p.opt_time("duration")?;
     #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
     let mut probed: Option<reelforge_media::Probe> = None;
+    // a font is called by its family's name unless it is given another
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+    let mut family: Option<String> = None;
     #[cfg(not(target_arch = "wasm32"))]
     {
         use sha2::{Digest, Sha256};
         let local = std::path::Path::new(path.strip_prefix("file://").unwrap_or(&path));
-        if sha256.is_none()
+        let wanted = asked.or(kind_from_path(&path));
+        if (sha256.is_none() || wanted == Some(MediaKind::Font))
             && let Ok(bytes) = std::fs::read(local)
         {
-            sha256 = Some(Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect());
+            let hash: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+            if wanted == Some(MediaKind::Font) {
+                family = Some(
+                    reelforge_media::font_name(&hash, &bytes)
+                        .map_err(|e| EngineError::Refused(format!("cannot read {path}: {e}")))?,
+                );
+            }
+            sha256 = sha256.or(Some(hash));
         }
-        // a lookup table is text, read when a frame needs it
-        if local.is_file() && asked.or(kind_from_path(&path)) != Some(MediaKind::Lut) {
+        // a lookup table is text, read when a frame needs it; a font was read just now
+        if local.is_file() && !matches!(wanted, Some(MediaKind::Lut | MediaKind::Font)) {
             probed = Some(
                 reelforge_media::probe_path(local)
                     .map_err(|e| EngineError::Refused(format!("cannot read {path}: {e}")))?,
@@ -1000,6 +1012,7 @@ fn media_import(s: &mut Session, v: &Value) -> CmdResult {
     let name = p
         .opt_str("name")?
         .map(str::to_string)
+        .or(family)
         .unwrap_or_else(|| path.rsplit(['/', '\\']).next().unwrap_or(&path).to_string());
     let base = |u: &str| u.rsplit(['/', '\\']).next().unwrap_or(u).to_ascii_lowercase();
     s.edit("Import Media", |proj| {
@@ -1016,6 +1029,13 @@ fn media_import(s: &mut Session, v: &Value) -> CmdResult {
             m.duration = duration.or(m.duration);
             m.size = size.or(m.size);
             return Ok(json!({ "media": serde_json::to_value(&*m).expect("serialises"), "relinked": true }));
+        }
+        // a font the project has is not added twice: titles pick it by name
+        if kind == MediaKind::Font
+            && sha256.is_some()
+            && let Some(m) = proj.media.values().find(|m| m.kind == kind && m.sha256 == sha256)
+        {
+            return Ok(json!({ "media": serde_json::to_value(m).expect("serialises") }));
         }
         let id = proj.mint("m");
         let m = Media { id: id.clone(), name, uri: path, sha256, kind, duration, size };
@@ -1034,6 +1054,7 @@ pub fn media_uses(proj: &Project, id: &str) -> usize {
         .flat_map(|t| &t.clips)
         .filter(|c| {
             matches!(&c.content, ClipContent::Media { media, .. } if media == id)
+                || matches!(&c.content, ClipContent::Text { style, .. } if style.font.as_deref() == Some(id))
                 || c.color.lut.as_ref().is_some_and(|l| l.media == id)
         })
         .count()
@@ -1809,7 +1830,12 @@ fn clip_set_speed(s: &mut Session, v: &Value) -> CmdResult {
     })
 }
 
-const STYLE_KEYS: [&str; 11] = [
+const STYLE_KEYS: [&str; 16] = [
+    "font",
+    "tracking",
+    "leading",
+    "italic",
+    "underline",
     "weight",
     "align",
     "wrap",
@@ -1828,7 +1854,7 @@ fn title_style(p: &P, base: TitleStyle) -> Result<TitleStyle, EngineError> {
     let mut st = base;
     if let Some(t) = template(p)? {
         // a template brings its look; where the lines wrap and how they line up stay
-        st = TitleStyle { align: st.align, wrap: st.wrap, ..t.style };
+        st = st.wearing(&t.style);
     }
     if let Some(w) = p.opt_u32("weight")? {
         st.weight = u16::try_from(w).map_err(|_| EngineError::Params("`weight` must be 100 to 900".into()))?;
@@ -1901,6 +1927,29 @@ fn title_style(p: &P, base: TitleStyle) -> Result<TitleStyle, EngineError> {
     }
     if let Some(b) = p.opt_bool("lineBoxes")? {
         st.line_boxes = b;
+    }
+    match p.v.get("font") {
+        Some(Value::Null) => st.font = None,
+        Some(v) => {
+            st.font =
+                Some(v.as_str().ok_or_else(|| EngineError::Params("`font` must be a media id or null".into()))?.into());
+        }
+        None => {}
+    }
+    let (lo, hi) = TitleStyle::SPACING;
+    for (name, value) in [("tracking", &mut st.tracking), ("leading", &mut st.leading)] {
+        if let Some(v) = p.opt_f64(name)? {
+            if !(f64::from(lo)..=f64::from(hi)).contains(&v) {
+                return Err(EngineError::Params(format!("`{name}` must be from {lo} to {hi} em")));
+            }
+            *value = v as f32;
+        }
+    }
+    if let Some(b) = p.opt_bool("italic")? {
+        st.italic = b;
+    }
+    if let Some(b) = p.opt_bool("underline")? {
+        st.underline = b;
     }
     Ok(st)
 }

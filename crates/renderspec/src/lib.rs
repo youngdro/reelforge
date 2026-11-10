@@ -607,6 +607,18 @@ pub struct TextContent {
     /// grows with what shows of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reveal: Option<Animated<f32>>,
+    /// With `text/4`: space added after every character, in ems (negative: closer together).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub tracking: f32,
+    /// With `text/4`: space added between lines, in ems (negative: closer together).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub leading: f32,
+    /// With `text/4`: slanted; the face's own italic when it has one, otherwise sheared.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub italic: bool,
+    /// With `text/4`: a line under each line of text, outlined and shadowed with the glyphs.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub underline: bool,
 }
 
 fn regular() -> u16 {
@@ -630,6 +642,10 @@ impl TextContent {
             outer: None,
             shadow: None,
             reveal: None,
+            tracking: 0.0,
+            leading: 0.0,
+            italic: false,
+            underline: false,
         }
     }
 }
@@ -703,6 +719,11 @@ impl TextContent {
     /// Whether it uses anything beyond `text/2`.
     pub fn needs_v3(&self) -> bool {
         self.reveal.is_some() || self.background.as_ref().is_some_and(|b| b.lines)
+    }
+
+    /// Whether it uses anything beyond `text/3`.
+    pub fn needs_v4(&self) -> bool {
+        self.tracking != 0.0 || self.leading != 0.0 || self.italic || self.underline
     }
 }
 
@@ -1063,6 +1084,9 @@ impl RenderSpec {
                 }
                 if t.needs_v3() {
                     out.insert("text/3".to_string());
+                }
+                if t.needs_v4() {
+                    out.insert("text/4".to_string());
                 }
             }
             if let LayerContent::Media { time, .. } = &layer.content {

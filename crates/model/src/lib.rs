@@ -133,6 +133,8 @@ pub enum MediaKind {
     Audio,
     /// A colour lookup table (`.cube`), used by clips' colour rather than placed.
     Lut,
+    /// A font file (TrueType or OpenType), set on titles rather than placed.
+    Font,
 }
 
 /// A track.
@@ -394,6 +396,21 @@ pub struct TitleStyle {
     /// The box goes behind each line, hugging it (as subtitles have it), not the whole title.
     #[serde(default, skip_serializing_if = "is_no")]
     pub line_boxes: bool,
+    /// The face it is set in: font media; absent, the built-in face.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
+    /// Space added after every character, in ems.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub tracking: f32,
+    /// Space added between lines, in ems.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub leading: f32,
+    /// Slanted.
+    #[serde(default, skip_serializing_if = "is_no")]
+    pub italic: bool,
+    /// Underlined.
+    #[serde(default, skip_serializing_if = "is_no")]
+    pub underline: bool,
 }
 
 fn is_zero(v: &f32) -> bool {
@@ -434,11 +451,34 @@ impl Default for TitleStyle {
             outer: None,
             shadow: None,
             line_boxes: false,
+            font: None,
+            tracking: 0.0,
+            leading: 0.0,
+            italic: false,
+            underline: false,
         }
     }
 }
 
 impl TitleStyle {
+    /// The furthest characters and lines can be moved together or apart, in ems.
+    pub const SPACING: (f32, f32) = (-0.5, 4.0);
+
+    /// This title wearing `look` (a template's): its colours, outlines, box and weight, while how
+    /// its lines wrap and line up, its face, its spacing, slant and underline stay its own.
+    pub fn wearing(&self, look: &TitleStyle) -> TitleStyle {
+        TitleStyle {
+            align: self.align,
+            wrap: self.wrap,
+            font: self.font.clone(),
+            tracking: self.tracking,
+            leading: self.leading,
+            italic: self.italic,
+            underline: self.underline,
+            ..look.clone()
+        }
+    }
+
     /// The style new titles get: bold white-on-anything, with a black outline, as subtitles are.
     pub fn subtitle() -> TitleStyle {
         TitleStyle { outline: Some(Outline { color: [0.0, 0.0, 0.0, 1.0], width: 0.08 }), ..TitleStyle::default() }
@@ -745,6 +785,15 @@ impl Project {
                         if style.outline.as_ref().is_some_and(|o| !(0.0..=0.5).contains(&o.width)) {
                             return bad("outline width must be 0 to 0.5 em");
                         }
+                        let (lo, hi) = TitleStyle::SPACING;
+                        if ![style.tracking, style.leading].iter().all(|v| v.is_finite() && (lo..=hi).contains(v)) {
+                            return bad("letter and line spacing must be -0.5 to 4 em");
+                        }
+                        if let Some(font) = &style.font
+                            && self.media.get(font).is_none_or(|m| m.kind != MediaKind::Font)
+                        {
+                            return Err(ModelError::UnknownMedia(clip.id.clone(), font.clone()));
+                        }
                         track.kind == TrackKind::Text
                     }
                 };
@@ -780,6 +829,31 @@ impl Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_title_wearing_a_look_keeps_its_face_and_spacing() {
+        let own = TitleStyle {
+            align: TitleAlign::Left,
+            wrap: 0.5,
+            font: Some("m1".into()),
+            tracking: 0.2,
+            leading: -0.1,
+            italic: true,
+            underline: true,
+            ..TitleStyle::subtitle()
+        };
+        let look =
+            TitleStyle { weight: 900, outline: None, gradient: Some([1.0, 0.0, 0.0, 1.0]), ..TitleStyle::default() };
+        let worn = own.wearing(&look);
+        assert_eq!((worn.weight, worn.outline.clone(), worn.gradient), (900, None, look.gradient));
+        assert_eq!(
+            (worn.align, worn.wrap, worn.font.as_deref(), worn.tracking, worn.leading, worn.italic, worn.underline),
+            (TitleAlign::Left, 0.5, Some("m1"), 0.2, -0.1, true, true)
+        );
+        // styles written before there were fonts and spacing read as the built-in face, unspaced
+        let old: TitleStyle = serde_json::from_str(r#"{"weight": 700, "align": "center", "wrap": 0.9}"#).unwrap();
+        assert_eq!((old.font, old.tracking, old.leading, old.italic, old.underline), (None, 0.0, 0.0, false, false));
+    }
 
     fn solid(id: &str, start: i64, dur: i64) -> Clip {
         Clip {

@@ -848,6 +848,15 @@
               ],
               "description": "With `text/2`: the fill fades from `color` at the block's top to this at its bottom."
             },
+            "italic": {
+              "description": "With `text/4`: slanted; the face's own italic when it has one, otherwise sheared.",
+              "type": "boolean"
+            },
+            "leading": {
+              "description": "With `text/4`: space added between lines, in ems (negative: closer together).",
+              "format": "float",
+              "type": "number"
+            },
             "outer": {
               "anyOf": [
                 {
@@ -901,9 +910,18 @@
               "description": "The words; `\\n` breaks a line.",
               "type": "string"
             },
+            "tracking": {
+              "description": "With `text/4`: space added after every character, in ems (negative: closer together).",
+              "format": "float",
+              "type": "number"
+            },
             "type": {
               "const": "text",
               "type": "string"
+            },
+            "underline": {
+              "description": "With `text/4`: a line under each line of text, outlined and shadowed with the glyphs.",
+              "type": "boolean"
             },
             "weight": {
               "default": 400,
