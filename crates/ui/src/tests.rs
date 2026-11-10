@@ -947,3 +947,35 @@ fn a_shaky_video_is_watched_and_held_steady() {
     app.listen("clip.stabilize", &json!({"clip": title}));
     assert!(app.status.starts_with("防抖: "), "{}", app.status);
 }
+
+#[test]
+fn clips_another_client_changed_are_lit_with_its_name_and_the_news_is_on_a_toast() {
+    let hub = Arc::new(Hub::new(Session::default()));
+    let mut app = EditorApp::shared(hub.session().clone());
+    let ctx = eframe::egui::Context::default();
+    let video = first_track(&app, reelforge_model::TrackKind::Video);
+    // the editor's own edit lights nothing
+    let own = app.execute("clip.add", json!({"track": video, "color": [0, 0, 1], "duration": {"seconds": 1}})).unwrap();
+    let own = own["clip"].as_str().unwrap().to_string();
+    app.notice(1.0);
+    assert!(app.timeline.touched.is_empty());
+
+    // an agent adds a clip, then changes the editor's: both are lit, each once, with who it was
+    let added = agent(&hub, "clip.add", json!({"track": video, "color": [1, 0, 0], "start": {"seconds": 2}}));
+    app.notice(2.0);
+    agent(&hub, "clip.set", json!({"clip": own, "opacity": 0.5}));
+    app.notice(3.0);
+    agent(&hub, "clip.set", json!({"clip": own, "opacity": 0.8}));
+    app.notice(4.0);
+    let lit: Vec<(&str, &str, f64)> =
+        app.timeline.touched.iter().map(|t| (t.clip.as_str(), t.by.as_str(), t.at)).collect();
+    assert_eq!(lit, [(added["clip"].as_str().unwrap(), "agent test", 2.0), (own.as_str(), "agent test", 4.0)]);
+
+    // the news is put on a toast once, and it leaves after a while
+    ctx.run_ui(Default::default(), |ui| app.toasts(ui.ctx())).textures_delta.clear();
+    let (text, warn, _) = app.toast.clone().expect("a toast");
+    assert!(text.contains("agent test") && !warn, "{text}");
+    app.toast = None;
+    ctx.run_ui(Default::default(), |ui| app.toasts(ui.ctx())).textures_delta.clear();
+    assert!(app.toast.is_none(), "the same news is not shown twice");
+}

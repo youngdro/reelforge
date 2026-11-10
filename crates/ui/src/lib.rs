@@ -104,6 +104,12 @@ pub struct EditorApp {
     session: Arc<SharedSession>,
     /// The last revision drawn, to notice changes other clients made.
     seen: u64,
+    /// The project as of `seen`, to tell which clips another client's edit changed.
+    seen_project: Arc<Project>,
+    /// What the status said when it was last put on a toast, and the toast: its words, whether
+    /// it warns, and when it appeared.
+    toasted: String,
+    toast: Option<(String, bool, f64)>,
     media: Arc<Footage>,
     /// Files dropped in the browser, read asynchronously: `(name, bytes)`.
     arrivals: Arc<Mutex<Vec<Arrival>>>,
@@ -214,6 +220,9 @@ pub struct EditorApp {
     /// The window, once it is known, for a remote's answers to wake it.
     window: Arc<std::sync::OnceLock<egui::Context>>,
 }
+
+/// More clips than this changed by one edit of another client are not lit: it was a whole project.
+const TOUCHED_AT_ONCE: usize = 12;
 
 /// The wgpu compositor on eframe's device, and the egui texture showing its frames.
 struct GpuPreview {
@@ -381,6 +390,9 @@ impl EditorApp {
         let media = Arc::new(Footage::new());
         EditorApp {
             seen: session.revision(),
+            seen_project: session.project(),
+            toasted: String::new(),
+            toast: None,
             session,
             ahead: ahead::Ahead::new(media.clone()),
             media,
@@ -2725,15 +2737,114 @@ impl EditorApp {
         });
     }
 
+    /// Takes in a change another client made since the last look: says so in the status, lights
+    /// the clips it made or changed, and lets go of a selection it removed. `at` is the time now.
+    fn notice(&mut self, at: f64) {
+        let change = self.session.last_change();
+        if change.revision != self.seen {
+            self.seen = change.revision;
+            let now = self.project();
+            let before = std::mem::replace(&mut self.seen_project, now);
+            if change.by != "editor" {
+                // the clips it made or changed light up on the timeline, with its name
+                let changed: Vec<&str> = (self.seen_project.tracks.iter().flat_map(|t| &t.clips))
+                    .filter(|clip| before.clip(&clip.id).is_none_or(|(_, was)| was != *clip))
+                    .map(|clip| clip.id.as_str())
+                    .collect();
+                // a whole project arriving is not an edit to point at
+                if changed.len() <= TOUCHED_AT_ONCE {
+                    for clip in changed {
+                        self.timeline.touched.retain(|t| t.clip != clip);
+                        self.timeline.touched.push(timeline::Touched { clip: clip.into(), by: change.by.clone(), at });
+                    }
+                }
+                let who = if change.by.starts_with("agent") {
+                    icon::AGENT
+                } else if change.by == "web" {
+                    icon::WEB
+                } else {
+                    icon::CONNECTED
+                };
+                let what = match self.lang.command(&change.command) {
+                    "" => change.command.as_str(),
+                    name => name,
+                };
+                self.status = format!("{who}  {} · {what}", change.by);
+                // a clip it removed may have been the selection
+                if let Some(sel) = &self.selected
+                    && !self.project().tracks.iter().any(|t| t.clips.iter().any(|c| &c.id == sel))
+                {
+                    self.selected = None;
+                    self.inspector = None;
+                }
+            }
+        }
+    }
+
+    /// Whether the status reports something that went wrong.
+    fn status_warns(&self) -> bool {
+        ["cannot", "no sound", "failed", "refused", "error", ": "].iter().any(|w| self.status.contains(w))
+            && !self.status.ends_with(self.s().done.trim_start_matches("{}"))
+    }
+
+    /// News in the status is also shown for a moment where the eyes are: on a pill over the top of
+    /// the preview.
+    fn toasts(&mut self, ctx: &egui::Context) {
+        const STAYS: f64 = 3.2;
+        let now = ctx.input(|i| i.time);
+        if self.status != self.toasted {
+            self.toasted = self.status.clone();
+            if !self.status.is_empty() && self.status != self.s().ready {
+                self.toast = Some((self.status.clone(), self.status_warns(), now));
+            }
+        }
+        let Some((text, warn, since)) = &self.toast else { return };
+        let age = now - since;
+        if age >= STAYS {
+            self.toast = None;
+            return;
+        }
+        // in quickly, out slowly
+        let shown = ((age / 0.16).min(1.0) * ((STAYS - age) / 0.5).min(1.0)) as f32;
+        let middle = self.lit.map_or(ctx.content_rect().center().x, |(_, frame)| frame.center().x);
+        let (glyph, tint) =
+            if *warn { (icon::WARNING, theme::color::WARN) } else { (icon::DONE, theme::color::ACCENT_2) };
+        egui::Area::new(egui::Id::unique("toast"))
+            .order(egui::Order::Tooltip)
+            .interactable(false)
+            .pivot(egui::Align2::CENTER_TOP)
+            .fixed_pos(egui::pos2(middle, 58.0 - 8.0 * (1.0 - shown)))
+            .show(ctx, |ui| {
+                ui.set_opacity(shown);
+                egui::Frame::new()
+                    .fill(theme::color::RAISED)
+                    .stroke(egui::Stroke::new(1.0, tint.gamma_multiply(0.45)))
+                    .corner_radius(egui::CornerRadius::same(16))
+                    .shadow(egui::Shadow {
+                        offset: [0, 8],
+                        blur: 24,
+                        spread: 0,
+                        color: egui::Color32::from_black_alpha(140),
+                    })
+                    .inner_margin(egui::Margin::symmetric(14, 7))
+                    .show(ui, |ui| {
+                        ui.set_max_width((ctx.content_rect().width() - 48.0).min(520.0));
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(glyph).color(tint));
+                            ui.add(egui::Label::new(egui::RichText::new(text).color(theme::color::TEXT)).truncate());
+                        });
+                    });
+            });
+        ctx.request_repaint();
+    }
+
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         let s = self.s();
         if self.status.is_empty() {
             self.status = s.ready.to_string();
         }
         ui.horizontal_centered(|ui| {
-            let warn =
-                ["cannot", "no sound", "failed", "refused", "error", ": "].iter().any(|w| self.status.contains(w))
-                    && !self.status.ends_with(s.done.trim_start_matches("{}"));
+            let warn = self.status_warns();
             let (glyph, tint) =
                 if warn { (icon::WARNING, theme::color::WARN) } else { (icon::DONE, theme::color::WEAK) };
             ui.label(egui::RichText::new(format!("{glyph}  {}", self.status)).small().color(tint));
@@ -4405,31 +4516,7 @@ impl eframe::App for EditorApp {
             });
             theme::install(&ctx, self.lang == Lang::Ja);
         }
-        let change = self.session.last_change();
-        if change.revision != self.seen {
-            self.seen = change.revision;
-            if change.by != "editor" {
-                let who = if change.by.starts_with("agent") {
-                    icon::AGENT
-                } else if change.by == "web" {
-                    icon::WEB
-                } else {
-                    icon::CONNECTED
-                };
-                let what = match self.lang.command(&change.command) {
-                    "" => change.command.as_str(),
-                    name => name,
-                };
-                self.status = format!("{who}  {} · {what}", change.by);
-                // a clip it removed may have been the selection
-                if let Some(sel) = &self.selected
-                    && !self.project().tracks.iter().any(|t| t.clips.iter().any(|c| &c.id == sel))
-                {
-                    self.selected = None;
-                    self.inspector = None;
-                }
-            }
-        }
+        self.notice(ctx.input(|i| i.time));
         if let Some(remote) = self.remote.clone() {
             if let Some(wait) = remote.tick(ui.input(|i| i.time)) {
                 ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait.max(0.05)));
@@ -4468,6 +4555,7 @@ impl eframe::App for EditorApp {
         self.timelines_window(&ctx);
         self.spoken_window(&ctx);
         self.keys_window(&ctx);
+        self.toasts(&ctx);
         if self.palette.open {
             let entries = self.palette_entries();
             if let Some(run) = self.palette.show(&ctx, self.s(), entries) {
