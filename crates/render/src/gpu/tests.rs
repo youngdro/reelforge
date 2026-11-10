@@ -634,3 +634,31 @@ fn compositions_match_however_they_are_placed() {
     s.layers[1].content = LayerContent::Comp { comp: "two".into(), from: Tick::ZERO };
     same(&s, Tick::ZERO, 1.0, &media, Quality::Final);
 }
+
+#[test]
+fn the_glow_is_the_frame_far_out_of_focus() {
+    let Some(mut g) = gpu() else { return };
+    // one colour all over: the glow is that colour
+    let mut s = base(64, 36);
+    s.layers.push(layer("all", LayerContent::Solid { color: Color([0.5, 0.25, 0.0, 1.0]) }));
+    g.render(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Final).expect("renders");
+    let (_, _, frame) = g.read_srgba8().expect("reads back");
+    let (w, h, glow) = g.read_rgba8(g.glow().expect("a frame was drawn")).expect("reads back");
+    assert_eq!((w, h), (super::GLOW, super::GLOW));
+    for px in glow.chunks(4) {
+        assert!(px.iter().zip(&frame[..4]).all(|(a, b)| a.abs_diff(*b) <= 1), "{px:?} of {:?}", &frame[..4]);
+    }
+    // a small white square on black at the left: the glow is brighter there, and nowhere a square
+    let mut s = base(64, 36);
+    let mut l = layer("spot", LayerContent::Solid { color: Color([1.0, 1.0, 1.0, 1.0]) });
+    l.transform.scale = Animated::Constant(0.2);
+    l.transform.position = Animated::Constant([-0.3, 0.0]);
+    s.layers.push(l);
+    g.render(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Final).expect("renders");
+    let (w, _, glow) = g.read_rgba8(g.glow().expect("a frame was drawn")).expect("reads back");
+    let row = &glow[(8 * w * 4) as usize..][..(w * 4) as usize];
+    let red = |x: usize| row[x * 4];
+    assert!(red(3) > red(12) + 10, "{row:?}");
+    assert!((0..w as usize).all(|x| red(x) < 200 && row[x * 4 + 3] == 255), "{row:?}");
+    assert!((1..w as usize).all(|x| red(x).abs_diff(red(x - 1)) < 60), "{row:?}");
+}

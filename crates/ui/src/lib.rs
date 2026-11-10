@@ -165,8 +165,10 @@ pub struct EditorApp {
     looping: bool,
     status: String,
     preview: Option<egui::TextureHandle>,
+    /// The frame far out of focus, when it is drawn without the GPU compositor (which has its own).
+    preview_glow: Option<egui::TextureHandle>,
     preview_key: Option<PreviewKey>,
-    /// The preview's texture and where it was drawn last: what lights the stage.
+    /// The picture far out of focus and where the picture was drawn last: what lights the stage.
     lit: Option<(egui::TextureId, egui::Rect)>,
     /// The RenderSpec the preview draws, and the revision and gesture it was compiled for: a
     /// playing preview compiles once, not every frame.
@@ -243,6 +245,9 @@ struct GpuPreview {
     device: eframe::wgpu::Device,
     /// The registered texture and the frame size it was registered at.
     texture: Option<(egui::TextureId, [u32; 2])>,
+    /// The compositor's glow (the frame far out of focus), registered once: it is one texture
+    /// for every frame.
+    glow: Option<egui::TextureId>,
 }
 
 impl GpuPreview {
@@ -266,6 +271,13 @@ impl GpuPreview {
             }
         };
         self.texture = Some((id, size));
+        if let Some(glow) = self.compositor.glow()
+            && self.glow.is_none()
+        {
+            let view = glow.create_view(&Default::default());
+            let filter = eframe::wgpu::FilterMode::Linear;
+            self.glow = Some(self.renderer.write().register_native_texture(&self.device, &view, filter));
+        }
     }
 }
 
@@ -446,6 +458,7 @@ impl EditorApp {
             looping: false,
             status: String::new(),
             preview: None,
+            preview_glow: None,
             preview_key: None,
             lit: None,
             preview_spec: None,
@@ -554,6 +567,7 @@ impl EditorApp {
                     renderer: rs.renderer.clone(),
                     device: rs.device.clone(),
                     texture: None,
+                    glow: None,
                 });
             }
         }
@@ -932,7 +946,7 @@ impl EditorApp {
         let now = drafts::now();
         let margin = if self.narrow { 14 } else { 28 };
         let ask = egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(theme::color::STAGE).inner_margin(egui::Margin::same(margin)))
+            .frame(egui::Frame::new().fill(theme::color::PANEL).inner_margin(egui::Margin::same(margin)))
             .show(ui, |ui| match frame.storage_mut() {
                 Some(storage) => drafts.show(ui, s, &drafts::Kept(storage), now),
                 None => drafts.show(ui, s, &self.spare, now),
@@ -2158,7 +2172,7 @@ impl EditorApp {
         let s = self.s();
         ui.horizontal_centered(|ui| {
             let narrow = self.narrow;
-            theme::brand(ui);
+            theme::brand(ui, !narrow);
             ui.add_space(6.0);
             if let Some(drafts) = &self.drafts {
                 // to the drafts page, and which draft this is
@@ -2236,78 +2250,91 @@ impl EditorApp {
         });
     }
 
-    /// Under the preview: where the playhead is, and play.
+    /// Under the preview: where the playhead is, and play. Three groups in one capsule: the time
+    /// at its start, how the preview shows at its end, and the play controls in its very middle.
     fn transport(&mut self, ui: &mut egui::Ui) {
         let p = self.project();
         let fps = p.canvas.fps;
         let s = self.s();
-        ui.horizontal_centered(|ui| {
+        let whole = ui.max_rect();
+        // a short capsule keeps the playhead's time, the steps by a frame, play, loop and the
+        // preview alone
+        let (roomy, wide) = (whole.width() >= 430.0, whole.width() >= 660.0);
+        let frame = fps.frame_at(self.playhead);
+        let group = |rect: egui::Rect, layout: egui::Layout| egui::UiBuilder::new().max_rect(rect).layout(layout);
+        ui.scope_builder(group(whole, egui::Layout::left_to_right(egui::Align::Center)), |ui| {
             ui.label(
                 egui::RichText::new(theme::timecode(self.playhead.seconds()))
                     .monospace()
                     .size(15.0)
                     .color(theme::color::TEXT),
             );
-            // a narrow bar keeps the playhead's time, the steps by a frame, play, loop and the
-            // preview alone
-            let narrow = self.narrow;
-            if !narrow {
+            if wide {
                 ui.label(
                     egui::RichText::new(format!("/ {}", theme::timecode(p.duration().seconds())))
                         .monospace()
                         .color(theme::color::WEAK),
                 );
             }
-            // the play controls, centred on the panel
-            let w = 4.0 * 34.0 + 3.0 * 6.0 + 12.0;
-            let room = ui.available_width();
-            ui.add_space(if narrow { 8.0 } else { ((room - w) / 2.0 - 120.0).max(8.0) });
-            let frame = fps.frame_at(self.playhead);
-            if !narrow && theme::tool(ui, icon::TO_START, "", s.to_start, true).clicked() {
-                self.seek(Tick::ZERO);
-            }
-            if theme::tool(ui, icon::FRAME_BACK, "", s.prev_frame, true).clicked() {
-                self.seek(fps.tick_of(frame - 1));
-            }
-            let glyph = if self.playing { icon::PAUSE } else { icon::PLAY };
-            if theme::aurora_button(ui, glyph, 18.0, egui::vec2(52.0, 32.0), true).on_hover_text(s.play_tip).clicked() {
-                self.set_playing(!self.playing);
-            }
-            if theme::tool(ui, icon::FRAME_ON, "", s.next_frame, true).clicked() {
-                self.seek(fps.tick_of(frame + 1));
-            }
-            if !narrow && theme::tool(ui, icon::TO_END, "", s.to_end, true).clicked() {
-                self.seek(p.duration());
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !narrow {
-                    ui.label(egui::RichText::new(fill(s.frame, &[&frame])).monospace().color(theme::color::WEAK));
-                    ui.add_space(8.0);
-                }
-                let looping = egui::Button::new(egui::RichText::new(icon::LOOP).size(14.0).color(if self.looping {
-                    theme::color::ACCENT
-                } else {
-                    theme::color::WEAK
-                }));
-                if ui.add(looping).on_hover_text(s.loop_tip).clicked() {
-                    self.looping = !self.looping;
-                }
-                let tip = if self.preview_only { s.preview_exit_tip } else { s.preview_only_tip };
-                if theme::tool(ui, icon::SCREEN, "", tip, true).clicked() {
-                    self.preview_only = !self.preview_only;
-                }
-                let label = if self.full_quality { s.quality_full } else { s.quality_smooth };
-                if !narrow
-                    && ui
-                        .add(egui::Button::new(egui::RichText::new(label).small()))
-                        .on_hover_text(s.quality_tip)
-                        .clicked()
-                {
-                    self.full_quality = !self.full_quality;
-                    self.quality_unsaved = true;
-                }
-            });
         });
+        ui.scope_builder(group(whole, egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+            if wide {
+                ui.label(egui::RichText::new(fill(s.frame, &[&frame])).monospace().color(theme::color::WEAK));
+                ui.add_space(4.0);
+            }
+            let looping = egui::Button::new(egui::RichText::new(icon::LOOP).size(14.0).color(if self.looping {
+                theme::color::ACCENT
+            } else {
+                theme::color::WEAK
+            }));
+            if ui.add(looping).on_hover_text(s.loop_tip).clicked() {
+                self.looping = !self.looping;
+            }
+            let tip = if self.preview_only { s.preview_exit_tip } else { s.preview_only_tip };
+            if theme::tool(ui, icon::SCREEN, "", tip, true).clicked() {
+                self.preview_only = !self.preview_only;
+            }
+            let label = if self.full_quality { s.quality_full } else { s.quality_smooth };
+            if roomy
+                && ui.add(egui::Button::new(egui::RichText::new(label).small())).on_hover_text(s.quality_tip).clicked()
+            {
+                self.full_quality = !self.full_quality;
+                self.quality_unsaved = true;
+            }
+        });
+        // the play controls are as wide as they were a frame ago, which centres them exactly
+        let id = egui::Id::unique("transport controls");
+        let guess = if roomy { 4.0 * 36.0 + 52.0 + 4.0 * 8.0 } else { 2.0 * 36.0 + 52.0 + 2.0 * 8.0 };
+        let w = ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(guess);
+        let middle = egui::Rect::from_center_size(whole.center(), egui::vec2(w, whole.height()));
+        let used = ui
+            .scope_builder(group(middle, egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+                if roomy && theme::tool(ui, icon::TO_START, "", s.to_start, true).clicked() {
+                    self.seek(Tick::ZERO);
+                }
+                if theme::tool(ui, icon::FRAME_BACK, "", s.prev_frame, true).clicked() {
+                    self.seek(fps.tick_of(frame - 1));
+                }
+                let glyph = if self.playing { icon::PAUSE } else { icon::PLAY };
+                if theme::accent_button(ui, glyph, 18.0, egui::vec2(52.0, 32.0), true)
+                    .on_hover_text(s.play_tip)
+                    .clicked()
+                {
+                    self.set_playing(!self.playing);
+                }
+                if theme::tool(ui, icon::FRAME_ON, "", s.next_frame, true).clicked() {
+                    self.seek(fps.tick_of(frame + 1));
+                }
+                if roomy && theme::tool(ui, icon::TO_END, "", s.to_end, true).clicked() {
+                    self.seek(p.duration());
+                }
+                ui.min_rect().width()
+            })
+            .inner;
+        if (used - w).abs() > 0.5 {
+            ui.data_mut(|d| d.insert_temp(id, used));
+            ui.ctx().request_repaint();
+        }
     }
 
     /// Above the timeline: edit tools, snapping, zoom.
@@ -2758,19 +2785,12 @@ impl EditorApp {
             (Sheet::Media, icon::IMAGE, s.tab_media),
             (Sheet::Adjust, icon::SLIDERS, s.sheet_adjust),
         ];
-        ui.horizontal_centered(|ui| {
-            let gap = 6.0;
-            ui.spacing_mut().item_spacing.x = gap;
-            let w = ((ui.available_width() - gap * 2.0) / 3.0).floor();
-            for (sheet, glyph, word) in tabs {
-                let on = self.sheet == sheet;
-                let tint = if on { theme::color::ACCENT } else { theme::color::TEXT };
-                let text = egui::RichText::new(format!("{glyph}  {word}")).size(14.0).color(tint);
-                if ui.add_sized([w, 28.0], egui::Button::new(text).selected(on)).clicked() {
-                    self.sheet = sheet;
-                }
-            }
-        });
+        let at = tabs.iter().position(|(sheet, ..)| *sheet == self.sheet).unwrap_or(0);
+        let words = tabs.map(|(_, glyph, word)| format!("{glyph}  {word}"));
+        ui.add_space(4.0);
+        if let Some(i) = theme::segmented(ui, &words.each_ref().map(String::as_str), at) {
+            self.sheet = tabs[i].0;
+        }
     }
 
     /// Takes in a change another client made since the last look: says so in the status, lights
@@ -3126,7 +3146,7 @@ impl EditorApp {
                    speed: f64,
                    range: std::ops::RangeInclusive<f32>,
                    suffix: &str| {
-            ui.label(egui::RichText::new(name).color(theme::color::WEAK));
+            theme::field_name(ui, name);
             let r = ui.add_sized(
                 [ui.available_width(), 24.0],
                 egui::DragValue::new(v).speed(speed).range(range).suffix(suffix),
@@ -3158,7 +3178,7 @@ impl EditorApp {
                     let r = ui.add(egui::TextEdit::multiline(&mut t.text).desired_rows(3).desired_width(f32::INFINITY));
                     commit |= r.lost_focus();
                     egui::Grid::new("title").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                        ui.label(egui::RichText::new(s.font).color(theme::color::WEAK));
+                        theme::field_name(ui, s.font);
                         ui.horizontal(|ui| {
                             let fonts: Vec<(&str, &str)> = p
                                 .media
@@ -3263,7 +3283,7 @@ impl EditorApp {
                             (s.shape_stroke, 0.0..=512.0),
                         ];
                         for ((name, range), v) in rows.into_iter().zip(v.iter_mut()) {
-                            ui.label(egui::RichText::new(name).color(theme::color::WEAK));
+                            theme::field_name(ui, name);
                             let r = ui.add_sized(
                                 [ui.available_width(), 24.0],
                                 egui::DragValue::new(v).speed(1.0).range(range).suffix(" px"),
@@ -3288,7 +3308,7 @@ impl EditorApp {
             }
             if !adjustment {
                 theme::section(ui, s.sec_transform, |ui| {
-                    egui::Grid::new("transform").num_columns(3).spacing([10.0, 6.0]).show(ui, |ui| {
+                    egui::Grid::new("transform").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
                         let rows = [
                             (Prop::X, s.pos_x, &mut edit.x, 0.005, -2.0..=2.0, ""),
                             (Prop::Y, s.pos_y, &mut edit.y, 0.005, -2.0..=2.0, ""),
@@ -3297,15 +3317,17 @@ impl EditorApp {
                             (Prop::Opacity, s.opacity, &mut edit.opacity, 0.01, 0.0..=1.0, ""),
                         ];
                         for (prop, name, v, speed, range, suffix) in rows {
-                            ui.label(egui::RichText::new(name).color(theme::color::WEAK));
-                            let r = ui.add_sized(
-                                [ui.available_width() - 26.0, 24.0],
-                                egui::DragValue::new(v).speed(speed).range(range).suffix(suffix),
-                            );
-                            commit |= r.drag_stopped() || (r.changed() && !r.dragged());
-                            if key_button(ui, mark_of(prop)) {
-                                actions.push(toggle(prop, mark_of(prop)));
-                            }
+                            theme::field_name(ui, name);
+                            ui.horizontal(|ui| {
+                                let r = ui.add_sized(
+                                    [ui.available_width() - 26.0, 24.0],
+                                    egui::DragValue::new(v).speed(speed).range(range).suffix(suffix),
+                                );
+                                commit |= r.drag_stopped() || (r.changed() && !r.dragged());
+                                if key_button(ui, mark_of(prop)) {
+                                    actions.push(toggle(prop, mark_of(prop)));
+                                }
+                            });
                             ui.end_row();
                         }
                     });
@@ -3323,7 +3345,7 @@ impl EditorApp {
                 let changed = |r: &egui::Response| r.drag_stopped() || (r.changed() && !r.dragged());
                 theme::section(ui, s.sec_grade, |ui| {
                     egui::Grid::new("grade").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                        ui.label(egui::RichText::new(s.filter).color(theme::color::WEAK));
+                        theme::field_name(ui, s.filter);
                         ui.horizontal(|ui| {
                             let name =
                                 |k: FilterKind| s.filters[FilterKind::ALL.iter().position(|x| *x == k).unwrap_or(0)];
@@ -3361,7 +3383,7 @@ impl EditorApp {
                         ui.end_row();
                         // an adjustment clip takes no lookup table
                         if !adjustment {
-                            ui.label(egui::RichText::new(s.lut).color(theme::color::WEAK));
+                            theme::field_name(ui, s.lut);
                             ui.horizontal(|ui| {
                                 let luts: Vec<(&str, &str)> = p
                                     .media
@@ -3409,7 +3431,7 @@ impl EditorApp {
                             ui.end_row();
                         }
                         for (i, (name, lo, hi)) in Adjust::RANGES.into_iter().enumerate() {
-                            ui.label(egui::RichText::new(s.adjust_names[i]).color(theme::color::WEAK));
+                            theme::field_name(ui, s.adjust_names[i]);
                             ui.horizontal(|ui| {
                                 let r = ui.add_sized(
                                     [ui.available_width() - 26.0, 22.0],
@@ -3438,7 +3460,7 @@ impl EditorApp {
                 let changed = |r: &egui::Response| r.drag_stopped() || (r.changed() && !r.dragged());
                 theme::section(ui, s.sec_look, |ui| {
                     egui::Grid::new("look").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                        ui.label(egui::RichText::new(s.blend).color(theme::color::WEAK));
+                        theme::field_name(ui, s.blend);
                         let name = |m: BlendMode| s.blends[BlendMode::ALL.iter().position(|x| *x == m).unwrap_or(0)];
                         let mut picked = l.blend;
                         egui::ComboBox::from_id_salt("blend").selected_text(name(l.blend)).width(120.0).show_ui(
@@ -3454,7 +3476,7 @@ impl EditorApp {
                         }
                         ui.end_row();
                         if let Some(backdrop) = &mut l.backdrop {
-                            ui.label(egui::RichText::new(s.canvas_blur).color(theme::color::WEAK));
+                            theme::field_name(ui, s.canvas_blur);
                             ui.horizontal(|ui| {
                                 let mut on = backdrop.is_some();
                                 if ui.checkbox(&mut on, "").on_hover_text(s.canvas_blur_tip).changed() {
@@ -3475,14 +3497,14 @@ impl EditorApp {
                             ui.end_row();
                         }
                         if l.chroma.is_some() {
-                            ui.label(egui::RichText::new(s.person).color(theme::color::WEAK));
+                            theme::field_name(ui, s.person);
                             if ui.checkbox(&mut l.person, "").on_hover_text(s.person_tip).changed() {
                                 actions.push(("clip.setPersonKey", json!({"clip": id, "on": l.person})));
                             }
                             ui.end_row();
                         }
                         if let Some(chroma) = &mut l.chroma {
-                            ui.label(egui::RichText::new(s.chroma).color(theme::color::WEAK));
+                            theme::field_name(ui, s.chroma);
                             ui.horizontal(|ui| {
                                 let mut on = chroma.is_some();
                                 if ui.checkbox(&mut on, "").on_hover_text(s.chroma_tip).changed() {
@@ -3511,7 +3533,7 @@ impl EditorApp {
                                     (s.chroma_names[2], "spill", &mut k.spill),
                                 ];
                                 for (label, name, value) in rows {
-                                    ui.label(egui::RichText::new(label).color(theme::color::WEAK));
+                                    theme::field_name(ui, label);
                                     let mut percent = *value * 100.0;
                                     let r = ui.add_sized(
                                         [ui.available_width(), 22.0],
@@ -3526,7 +3548,7 @@ impl EditorApp {
                             }
                         }
                         if l.media {
-                            ui.label(egui::RichText::new(s.crop).color(theme::color::WEAK));
+                            theme::field_name(ui, s.crop);
                             let on = self.cropping.as_deref() == Some(id.as_str());
                             if ui
                                 .add(egui::Button::new(format!("{}  {}", icon::CROP, s.crop_in_preview)).selected(on))
@@ -3537,7 +3559,7 @@ impl EditorApp {
                             }
                             ui.end_row();
                             for (i, edge) in ["left", "top", "right", "bottom"].into_iter().enumerate() {
-                                ui.label(egui::RichText::new(s.crop_edges[i]).color(theme::color::WEAK));
+                                theme::field_name(ui, s.crop_edges[i]);
                                 ui.horizontal(|ui| {
                                     let r = ui.add_sized(
                                         [ui.available_width() - 26.0, 22.0],
@@ -3556,7 +3578,7 @@ impl EditorApp {
                                 });
                                 ui.end_row();
                             }
-                            ui.label(egui::RichText::new(s.flip).color(theme::color::WEAK));
+                            theme::field_name(ui, s.flip);
                             ui.horizontal(|ui| {
                                 if ui.selectable_label(l.flip[0], s.flip_x).clicked() {
                                     actions.push(("clip.setCrop", json!({"clip": id, "flipX": !l.flip[0]})));
@@ -3567,7 +3589,7 @@ impl EditorApp {
                             });
                             ui.end_row();
                         }
-                        ui.label(egui::RichText::new(s.mask).color(theme::color::WEAK));
+                        theme::field_name(ui, s.mask);
                         ui.horizontal(|ui| {
                             let name = |k: MaskKind| s.masks[MaskKind::ALL.iter().position(|x| *x == k).unwrap_or(0)];
                             let kind = l.mask.map(|m| m.kind);
@@ -3604,7 +3626,7 @@ impl EditorApp {
                                 ("feather", &mut m.feather, 0.002, 0.0..=1.0),
                             ];
                             for (i, (key, v, speed, range)) in rows.into_iter().enumerate() {
-                                ui.label(egui::RichText::new(s.mask_params[i]).color(theme::color::WEAK));
+                                theme::field_name(ui, s.mask_params[i]);
                                 ui.horizontal(|ui| {
                                     let r = ui.add_sized(
                                         [ui.available_width() - 26.0, 22.0],
@@ -3627,31 +3649,32 @@ impl EditorApp {
             if let Some(v) = &mut edit.volume {
                 ui.add_space(6.0);
                 theme::section(ui, s.sec_sound, |ui| {
-                    egui::Grid::new("sound").num_columns(3).spacing([10.0, 6.0]).show(ui, |ui| {
-                        ui.label(egui::RichText::new(s.volume).color(theme::color::WEAK));
-                        let r = ui.add_sized(
-                            [ui.available_width() - 26.0, 24.0],
-                            egui::DragValue::new(v).speed(0.2).range(-60.0..=12.0).suffix(" dB"),
-                        );
-                        commit |= r.drag_stopped() || (r.changed() && !r.dragged());
-                        if key_button(ui, mark_of(Prop::VolumeDb)) {
-                            actions.push(toggle(Prop::VolumeDb, mark_of(Prop::VolumeDb)));
-                        }
+                    egui::Grid::new("sound").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                        theme::field_name(ui, s.volume);
+                        ui.horizontal(|ui| {
+                            let r = ui.add_sized(
+                                [ui.available_width() - 26.0, 24.0],
+                                egui::DragValue::new(v).speed(0.2).range(-60.0..=12.0).suffix(" dB"),
+                            );
+                            commit |= r.drag_stopped() || (r.changed() && !r.dragged());
+                            if key_button(ui, mark_of(Prop::VolumeDb)) {
+                                actions.push(toggle(Prop::VolumeDb, mark_of(Prop::VolumeDb)));
+                            }
+                        });
                         ui.end_row();
                         if let Some(f) = &mut edit.fades {
                             for (name, v) in [s.fade_in, s.fade_out].into_iter().zip(f.iter_mut()) {
-                                ui.label(egui::RichText::new(name).color(theme::color::WEAK));
+                                theme::field_name(ui, name);
                                 let r = ui.add_sized(
                                     [ui.available_width() - 26.0, 24.0],
                                     egui::DragValue::new(v).speed(0.02).range(0.0..=10.0).suffix(" s").max_decimals(2),
                                 );
                                 commit |= r.drag_stopped() || (r.changed() && !r.dragged());
-                                ui.label("");
                                 ui.end_row();
                             }
                         }
                         if let Some(voice) = &mut edit.voice {
-                            ui.label(egui::RichText::new(s.voice).color(theme::color::WEAK));
+                            theme::field_name(ui, s.voice);
                             let name = |k: Option<VoiceKind>| {
                                 k.and_then(|k| VoiceKind::ALL.iter().position(|x| *x == k))
                                     .map_or(s.voice_none, |i| s.voice_names[i])
@@ -3670,9 +3693,8 @@ impl EditorApp {
                                 actions
                                     .push(("clip.setVoice", json!({"clip": id, "voice": picked.map(VoiceKind::name)})));
                             }
-                            ui.label("");
                             ui.end_row();
-                            ui.label(egui::RichText::new(s.pitch).color(theme::color::WEAK));
+                            theme::field_name(ui, s.pitch);
                             let r = ui.add_sized(
                                 [ui.available_width() - 26.0, 24.0],
                                 egui::DragValue::new(&mut voice.pitch).speed(0.1).range(-12.0..=12.0).max_decimals(1),
@@ -3680,9 +3702,8 @@ impl EditorApp {
                             if r.drag_stopped() || (r.changed() && !r.dragged()) {
                                 actions.push(("clip.setVoice", json!({"clip": id, "pitch": voice.pitch})));
                             }
-                            ui.label("");
                             ui.end_row();
-                            ui.label(egui::RichText::new(s.denoise).color(theme::color::WEAK));
+                            theme::field_name(ui, s.denoise);
                             ui.horizontal(|ui| {
                                 let mut on = voice.denoise.is_some();
                                 if ui.checkbox(&mut on, "").on_hover_text(s.denoise_tip).changed() {
@@ -3706,7 +3727,6 @@ impl EditorApp {
                                     }
                                 }
                             });
-                            ui.label("");
                             ui.end_row();
                         }
                     });
@@ -3764,7 +3784,7 @@ impl EditorApp {
                         }
                     });
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(s.curve).color(theme::color::WEAK));
+                        theme::field_name(ui, s.curve);
                         let name = |c: Option<CurvePreset>| {
                             c.and_then(|c| CurvePreset::ALL.iter().position(|x| *x == c))
                                 .map_or(s.curve_custom, |i| s.curves[i])
@@ -3850,7 +3870,7 @@ impl EditorApp {
                             } else {
                                 (s.anim_out, &s.anim_out_kinds, "out")
                             };
-                            ui.label(egui::RichText::new(label).color(theme::color::WEAK));
+                            theme::field_name(ui, label);
                             let shown = slot.map_or(s.anim_none, |(k, _)| {
                                 names[AnimKind::ALL.iter().position(|x| *x == k).unwrap_or(0)]
                             });
@@ -3897,7 +3917,7 @@ impl EditorApp {
                             ui.end_row();
                         }
                         // the one that goes round and round in between
-                        ui.label(egui::RichText::new(s.anim_loop).color(theme::color::WEAK));
+                        theme::field_name(ui, s.anim_loop);
                         let name = |k: LoopKind| s.loop_kinds[LoopKind::ALL.iter().position(|x| *x == k).unwrap_or(0)];
                         let mut picked = looped.map(|(k, _)| k);
                         egui::ComboBox::from_id_salt("anim loop")
@@ -4247,6 +4267,14 @@ impl EditorApp {
                         )
                     }
                 };
+                let glow = theme::out_of_focus(&color);
+                match &mut self.preview_glow {
+                    Some(t) => t.set(glow, egui::TextureOptions::LINEAR),
+                    None => {
+                        self.preview_glow =
+                            Some(ui.ctx().load_texture("preview glow", glow, egui::TextureOptions::LINEAR));
+                    }
+                }
                 match &mut self.preview {
                     Some(t) => t.set(color, egui::TextureOptions::LINEAR),
                     None => self.preview = Some(ui.ctx().load_texture("preview", color, egui::TextureOptions::LINEAR)),
@@ -4275,7 +4303,12 @@ impl EditorApp {
         }
         let s = (area.width() / w).min(area.height() / h) * self.zoom;
         let frame_rect = egui::Rect::from_center_size(area.center() + self.pan, egui::vec2(w * s, h * s));
-        self.lit = Some((id, frame_rect));
+        // its light, for the stage around it
+        let glow = match &self.gpu {
+            Some(g) if g.texture.is_some() => g.glow,
+            _ => self.preview_glow.as_ref().map(egui::TextureHandle::id),
+        };
+        self.lit = glow.map(|glow| (glow, frame_rect));
         ui.painter_at(area).image(
             id,
             frame_rect,
@@ -4549,6 +4582,8 @@ const RECOVERY_KEY: &str = "reelforge.project";
 const RECOVERY_DELAY: f64 = 1.0;
 /// A window narrower than this many points shows one panel at a time under the preview (a phone
 /// held upright, a narrow browser window).
+/// How wide the capsule under the preview gets.
+const TRANSPORT_WIDEST: f32 = 780.0;
 const NARROW_BELOW: f32 = 860.0;
 
 /// What shows under the preview of a narrow window.
@@ -4714,7 +4749,7 @@ impl eframe::App for EditorApp {
             if narrow {
                 egui::Panel::bottom(format!("{id} sheet")).default_size(300.0).size_range(140.0..=tallest)
             } else if left {
-                egui::Panel::left(id.to_string()).default_size(width).size_range(220.0..=520.0)
+                egui::Panel::left(id.to_string()).default_size(width).size_range(280.0..=560.0)
             } else {
                 egui::Panel::right(id.to_string()).default_size(width)
             }
@@ -4746,7 +4781,7 @@ impl eframe::App for EditorApp {
             self.looks = Some(looks::previews(&ctx));
         }
         let looks = self.looks.clone().unwrap_or_default();
-        let asked = side("assets", true, 300.0)
+        let asked = side("library", true, 360.0)
             .frame(theme::island(10).outer_margin(if narrow {
                 egui::Margin { left: gap, right: gap, top: gap / 2, bottom: 0 }
             } else {
@@ -4764,11 +4799,24 @@ impl eframe::App for EditorApp {
             }))
             .show_collapsible(ui, &mut adjust_on.clone(), |ui| self.inspector(ui));
         let edge = if narrow { 8 } else { 16 };
-        egui::Panel::bottom("transport")
-            .exact_size(50.0)
-            .show_separator_line(false)
-            .frame(bar(theme::color::STAGE).inner_margin(egui::Margin::symmetric(edge, 8)))
-            .show(ui, |ui| self.transport(ui));
+        // the transport is a capsule of glass under the picture, no wider than it needs to be
+        egui::Panel::bottom("transport").exact_size(58.0).show_separator_line(false).frame(egui::Frame::new()).show(
+            ui,
+            |ui| {
+                let room = ui.max_rect();
+                let w = (room.width() - if narrow { 16.0 } else { 48.0 }).min(TRANSPORT_WIDEST);
+                let capsule = egui::Rect::from_center_size(room.center() - egui::vec2(0.0, 4.0), egui::vec2(w, 50.0));
+                ui.painter().rect(
+                    capsule,
+                    egui::CornerRadius::same(25),
+                    theme::color::GLASS,
+                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(34)),
+                    egui::StrokeKind::Inside,
+                );
+                let inner = capsule.shrink2(egui::vec2(18.0, 8.0));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| self.transport(ui));
+            },
+        );
         egui::CentralPanel::default()
             .frame(egui::Frame::new().inner_margin(egui::Margin::same(edge)))
             .show(ui, |ui| self.preview(ui));
