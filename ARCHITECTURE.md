@@ -77,11 +77,13 @@ In rough priority order for short videos:
    browser, usually in hardware, with an `av1C` built from the sequence header when the browser
    gives none), and export settings kept with the project (`ExportSettings`: size by the shorter
    side, frame rate, quality, codec, presets), lowered to `output.video` (`encode.size/1`).
-2. Text, next steps: per-line subtitle boxes, shadows, animated titles (typewriter, pop-in),
-   importing font files in the editor (specs already take `font` assets), and a smaller web build
-   (the two bundled CJK faces add 5 MB to the wasm). `text/1` itself is in place: FilmCraft's
-   pure-Rust text engine (harfrust shaping, UAX #14 line breaking, its own rasteriser) with a
-   bundled Noto Sans SC subset; system fonts are never consulted, so renders match everywhere.
+2. Text, next steps: per-character animation, and a smaller web build (the two bundled CJK faces
+   add 5 MB to the wasm). `text/1` itself is in place: FilmCraft's pure-Rust text engine (harfrust
+   shaping, UAX #14 line breaking, its own rasteriser) with a bundled Noto Sans SC subset; system
+   fonts are never consulted, so renders match everywhere. A font file is project media of kind
+   `font` (`media.import`; like a LUT it is used by clips, not placed), a title names one with
+   `font`, and it reaches the renderer as a `font` asset. `text/4` adds letter spacing, line
+   spacing (both in ems), italic (slanted when the family has no italic face) and underline.
 3. GPU, next steps: blurs and other effects that read neighbouring pixels on the GPU (the colour
    ones, `color.grade@1` and `color.lut@1` included, are per-pixel WGSL already, as are crops,
    mirrors, shape masks and the `blend/2` modes, which read the layers below from a copy; a blurred

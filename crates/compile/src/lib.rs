@@ -151,6 +151,7 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                         MediaKind::Image => AssetKind::Image,
                         MediaKind::Audio => AssetKind::Audio,
                         MediaKind::Lut => AssetKind::Lut,
+                        MediaKind::Font => AssetKind::Font,
                     },
                     sha256,
                     uri: m.uri.clone(),
@@ -238,6 +239,11 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                             blur: sh.blur,
                         }),
                         reveal: motion::reveal(clip, &shape),
+                        font: style.font.as_ref().map(|f| asset_for(f)).transpose()?,
+                        tracking: style.tracking,
+                        leading: style.leading,
+                        italic: style.italic,
+                        underline: style.underline,
                         ..TextContent::new(text.clone(), *size, Color(*color))
                     }),
                 };

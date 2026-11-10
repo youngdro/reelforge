@@ -48,6 +48,8 @@ pub struct Probe {
     pub fps: Option<FrameRate>,
     /// Whether there is sound.
     pub has_audio: bool,
+    /// What a font is called: its family, and its style when not the regular one.
+    pub family: Option<String>,
 }
 
 fn to_ft(t: Tick) -> filmcraft_time::Tick {
@@ -76,6 +78,7 @@ fn probe_source(src: &SharedSource) -> Result<Probe, String> {
             .map(|v| FrameRate { num: v.frame_rate.num as u32, den: v.frame_rate.den as u32 })
             .filter(|f| f.is_valid()),
         has_audio: !info.audio_streams.is_empty(),
+        family: None,
     })
 }
 
@@ -148,6 +151,18 @@ pub fn is_lut(name: &str) -> bool {
     name.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("cube"))
 }
 
+/// Whether a file name is a font (`.ttf`, `.otf`, `.ttc`).
+pub fn is_font(name: &str) -> bool {
+    name.rsplit('.').next().is_some_and(|e| ["ttf", "otf", "ttc"].iter().any(|f| e.eq_ignore_ascii_case(f)))
+}
+
+/// What to call a font file: its family, with its style when that is not the regular one
+/// (`sha256` is its content hash, under which the text engine keeps it); an error when it is not
+/// a font this renderer reads.
+pub fn font_name(sha256: &str, bytes: &[u8]) -> Result<String, String> {
+    reelforge_render::text::font_label(sha256, bytes)
+}
+
 fn key(asset: &Asset) -> String {
     if asset.sha256.is_empty() { asset.uri.clone() } else { asset.sha256.clone() }
 }
@@ -166,11 +181,30 @@ impl Footage {
     /// Hands over a file's bytes (the browser has no file system) and measures them. `name` gives
     /// the extension.
     pub fn insert_bytes(&self, sha256: &str, name: &str, bytes: Vec<u8>) -> Result<Probe, String> {
+        if is_font(name) {
+            let family = Some(font_name(sha256, &bytes)?);
+            self.insert_font(sha256, bytes);
+            return Ok(Probe {
+                kind: AssetKind::Font,
+                size: None,
+                duration: None,
+                fps: None,
+                has_audio: false,
+                family,
+            });
+        }
         if is_lut(name) {
             let lut = Lut::parse_cube(&String::from_utf8_lossy(&bytes))?;
             self.luts.lock().expect("luts lock").insert(sha256.to_string(), Arc::new(lut));
             self.bump();
-            return Ok(Probe { kind: AssetKind::Lut, size: None, duration: None, fps: None, has_audio: false });
+            return Ok(Probe {
+                kind: AssetKind::Lut,
+                size: None,
+                duration: None,
+                fps: None,
+                has_audio: false,
+                family: None,
+            });
         }
         let bytes: Arc<[u8]> = bytes.into();
         let src = filmcraft_codecs::open_bytes(name, bytes.clone()).map_err(|e| e.to_string())?;
@@ -189,6 +223,7 @@ impl Footage {
 
     /// Hands over a font file's bytes (TrueType or OpenType) for `font` assets with this hash.
     pub fn insert_font(&self, sha256: &str, bytes: Vec<u8>) {
+        self.bump();
         self.fonts.lock().expect("fonts lock").insert(sha256.to_string(), bytes.into());
     }
 

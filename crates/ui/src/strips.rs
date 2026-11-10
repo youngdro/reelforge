@@ -60,6 +60,7 @@ pub(crate) fn asset(m: &Media) -> Asset {
             MediaKind::Image => AssetKind::Image,
             MediaKind::Audio => AssetKind::Audio,
             MediaKind::Lut => AssetKind::Lut,
+            MediaKind::Font => AssetKind::Font,
         },
         sha256: m.sha256.clone().unwrap_or_default(),
         uri: m.uri.clone(),

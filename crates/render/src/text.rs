@@ -9,7 +9,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use filmcraft_text::fonts;
-use filmcraft_text::layout::{Align, ParagraphStyle, TextStyle};
+use filmcraft_text::layout::{Align, ParagraphStyle, StyleRun, TextStyle};
 use filmcraft_text::mask::{StrokeKind, blur, offset, stroke};
 use filmcraft_text::raster::{Mask, Path, Xform, compose, fill_into};
 use filmcraft_text::render::{device_bounds, draw};
@@ -38,17 +38,59 @@ fn bundled() {
 }
 
 /// Registers a `font` asset's bytes (once per content hash) and returns its family name.
-pub(crate) fn font_family(sha256: &str, bytes: &[u8]) -> Result<String, String> {
-    static FAMILIES: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
-    let families = FAMILIES.get_or_init(Mutex::default);
-    if let Some(f) = families.lock().expect("font lock").get(sha256) {
-        return Ok(f.clone());
+pub fn font_family(sha256: &str, bytes: &[u8]) -> Result<String, String> {
+    registered(sha256, bytes).map(|(family, _)| family)
+}
+
+/// What to call a `font` asset: its family, and its style when that is not the regular one
+/// ("Inter", "Inter Bold Italic"). Registers the bytes as [`font_family`] does.
+pub fn font_label(sha256: &str, bytes: &[u8]) -> Result<String, String> {
+    registered(sha256, bytes).map(|(family, style)| {
+        if style.is_empty() || style.eq_ignore_ascii_case("regular") { family } else { format!("{family} {style}") }
+    })
+}
+
+/// A font file's family and style, its faces added to the text engine the first time.
+fn registered(sha256: &str, bytes: &[u8]) -> Result<(String, String), String> {
+    static NAMES: OnceLock<Mutex<HashMap<String, (String, String)>>> = OnceLock::new();
+    let names = NAMES.get_or_init(Mutex::default);
+    // the bundled faces come first, whatever is drawn first
+    bundled();
+    if let Some(n) = names.lock().expect("font lock").get(sha256) {
+        return Ok(n.clone());
     }
     let faces = fonts::add_font_data(bytes.to_vec());
     let first = faces.first().ok_or("not a font file this renderer reads (TrueType or OpenType)")?;
-    let family = fonts::face(*first).info.family.clone();
-    families.lock().expect("font lock").insert(sha256.to_string(), family.clone());
-    Ok(family)
+    let info = &fonts::face(*first).info;
+    let name = (info.family.clone(), info.style.clone());
+    names.lock().expect("font lock").insert(sha256.to_string(), name.clone());
+    Ok(name)
+}
+
+/// The characters `style`'s family has no glyph for and the bundled face has (Chinese in a Latin
+/// font, mostly), as runs set in the bundled face at the same weight and slant. What neither has
+/// is left to the text engine's own search.
+fn missing(text: &str, style: &TextStyle) -> Vec<StyleRun> {
+    if style.family.eq_ignore_ascii_case(DEFAULT_FAMILY) {
+        return vec![];
+    }
+    let own = fonts::face(fonts::resolve(&style.family, &style.style).face);
+    let ours = fonts::face(fonts::resolve(DEFAULT_FAMILY, &style.style).face);
+    let mut runs: Vec<StyleRun> = vec![];
+    for (at, c) in text.char_indices() {
+        if c.is_whitespace() || c.is_control() || own.has_char(c) || !ours.has_char(c) {
+            continue;
+        }
+        let end = at + c.len_utf8();
+        match runs.last_mut() {
+            Some(r) if r.range.end == at => r.range.end = end,
+            _ => runs.push(StyleRun {
+                range: at..end,
+                style: TextStyle { family: DEFAULT_FAMILY.to_string(), ..style.clone() },
+            }),
+        }
+    }
+    runs
 }
 
 fn style_name(weight: u16) -> &'static str {
@@ -137,8 +179,15 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
     }
     let style = TextStyle {
         family: family.to_string(),
-        style: style_name(text.weight).to_string(),
+        // a family without an italic of that weight is sheared by the text engine
+        style: if text.italic {
+            format!("{} Italic", style_name(text.weight))
+        } else {
+            style_name(text.weight).to_string()
+        },
         size: text.size,
+        tracking: text.tracking * 1000.0,
+        underline: text.underline,
         ..TextStyle::default()
     };
     let para = ParagraphStyle {
@@ -148,9 +197,10 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
             TextAlign::Right => Align::Right,
         },
         width: text.width,
+        leading: text.leading * text.size,
         ..ParagraphStyle::default()
     };
-    let mut l = filmcraft_text::layout(&text.text, &style, &para);
+    let mut l = filmcraft_text::layout_rich(&text.text, &style, &missing(&text.text, &style), &para);
     let b = l.bounds;
     // a typewriter: the glyphs of the first characters only, where the whole text puts them
     let cut = shown_bytes(text);
@@ -160,6 +210,30 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
     if cut < text.text.len() {
         let mut part = (*l).clone();
         part.glyphs.retain(|g| g.cluster < cut);
+        // a line's underline goes as far as the line shows
+        let shown: Vec<(f32, f32, f32)> = part
+            .lines
+            .iter()
+            .map(|ln| {
+                let end = if cut >= ln.range.end {
+                    ln.x + ln.width
+                } else if cut <= ln.range.start {
+                    ln.x
+                } else {
+                    ln.carets.iter().filter(|(at, _)| *at <= cut).map(|(_, x)| *x).fold(ln.x, f32::max)
+                };
+                (ln.baseline - ln.ascent, ln.baseline + ln.descent, end)
+            })
+            .collect();
+        let runs = std::mem::take(&mut part.underline_runs);
+        let lines = std::mem::take(&mut part.underlines);
+        for (u, run) in lines.into_iter().zip(runs) {
+            let end = shown.iter().find(|(top, bottom, _)| u[1] >= *top && u[1] <= *bottom).map_or(u[2], |s| s.2);
+            if end > u[0] {
+                part.underlines.push([u[0], u[1], u[2].min(end), u[3]]);
+                part.underline_runs.push(run);
+            }
+        }
         l = Arc::new(part);
     }
     // the block's centre goes to the layer's centre, scaled and turned about it

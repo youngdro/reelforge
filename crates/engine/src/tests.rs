@@ -1371,3 +1371,82 @@ fn a_voice_is_changed_and_its_noise_taken_out() {
     assert_eq!(p.clip(&sound).unwrap().1.voice.kind, Some(reelforge_model::VoiceKind::Robot));
     assert!(s.execute("clip.setVoice", &json!({"clip": vc, "voice": "low"})).is_err());
 }
+
+#[test]
+fn a_title_is_set_in_an_imported_font_and_spaced() {
+    let mut s = Session::default();
+    let text = s.project().tracks.iter().find(|t| t.kind == TrackKind::Text).unwrap().id.clone();
+    // a font file is read where it is and called by its family
+    let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../render/fonts/NotoSansSC-Bold.subset.ttf");
+    let font = s.execute("media.import", &json!({"path": file})).unwrap();
+    assert_eq!(
+        (font["media"]["kind"].as_str(), font["media"]["name"].as_str()),
+        (Some("font"), Some("Noto Sans SC Bold"))
+    );
+    let font = font["media"]["id"].as_str().unwrap().to_string();
+    // the same file again is the same font
+    assert_eq!(s.execute("media.import", &json!({"path": file})).unwrap()["media"]["id"], json!(font));
+    assert_eq!(s.project().media.len(), 1);
+    assert!(s.execute("media.import", &json!({"path": "/nowhere/readme.txt", "kind": "font"})).is_ok(), "offline");
+    // a file that is no font is refused where it can be read
+    let not = std::env::temp_dir().join(format!("reelforge-not-a-font-{}.ttf", std::process::id()));
+    std::fs::write(&not, b"not a font").unwrap();
+    assert!(s.execute("media.import", &json!({"path": not.to_string_lossy()})).is_err());
+    let _ = std::fs::remove_file(&not);
+    // a font is not placed as a clip
+    assert!(s.execute("clip.add", &json!({"track": video_track(&s), "media": font})).is_err());
+
+    let c = s
+        .execute(
+            "clip.add",
+            &json!({"track": text, "text": "字体", "font": font, "tracking": 0.1, "leading": 0.25, "italic": true}),
+        )
+        .unwrap()["clip"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let style = |s: &Session| match &s.project().clip(&c).unwrap().1.content {
+        ClipContent::Text { style, .. } => style.clone(),
+        _ => unreachable!(),
+    };
+    let st = style(&s);
+    assert_eq!(
+        (st.font.as_deref(), st.tracking, st.leading, st.italic, st.underline),
+        (Some(font.as_str()), 0.1, 0.25, true, false)
+    );
+    // it reaches the renderer as a font asset and text/4
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let content = &spec["layers"][0]["content"];
+    assert_eq!(spec["assets"][content["font"].as_str().unwrap()]["kind"], json!("font"));
+    assert_eq!((content["italic"].as_bool(), content.get("underline")), (Some(true), None));
+    assert!((content["tracking"].as_f64().unwrap() - 0.1).abs() < 1e-6);
+    assert!((content["leading"].as_f64().unwrap() - 0.25).abs() < 1e-6);
+    assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("text/4")));
+
+    // a template changes the look and leaves the face, the spacing and the slant
+    s.execute("clip.set", &json!({"clip": c, "template": "candy", "underline": true})).unwrap();
+    let st = style(&s);
+    assert_eq!(st.gradient, crate::title_template("candy").unwrap().style.gradient);
+    assert_eq!((st.font.as_deref(), st.tracking, st.italic, st.underline), (Some(font.as_str()), 0.1, true, true));
+    // the project's media says a title uses it, and keeps it while one does
+    assert_eq!(crate::commands::media_uses(&s.project(), &font), 1);
+    assert!(s.execute("media.remove", &json!({"media": font})).is_err());
+
+    // out of range, not a font, and back to the built-in face
+    assert!(s.execute("clip.set", &json!({"clip": c, "tracking": 5})).is_err());
+    assert!(s.execute("clip.set", &json!({"clip": c, "leading": -1})).is_err());
+    assert!(s.execute("clip.set", &json!({"clip": c, "font": c})).is_err());
+    s.execute(
+        "clip.set",
+        &json!({"clip": c, "font": null, "tracking": 0, "leading": 0, "italic": false, "underline": false}),
+    )
+    .unwrap();
+    assert!(style(&s).font.is_none());
+    assert!(
+        !s.execute("render.compile", &json!({})).unwrap()["engine"]["features"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("text/4"))
+    );
+    s.execute("media.remove", &json!({"media": font})).unwrap();
+}

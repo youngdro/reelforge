@@ -195,6 +195,25 @@ fn a_font_asset_replaces_the_default_face() {
     let default = draw(&spec_with(white("Mono", 60.0)), 1.0);
     assert_ne!(ink_box(&with_font), ink_box(&default), "a different face sets different glyphs");
 
+    // what the font has no glyph for (it has no Chinese) is set in the bundled face, as it would
+    // be without the font, not as empty boxes
+    let set = |text: &str, font: bool| {
+        let mut s = s.clone();
+        let LayerContent::Text(t) = &mut s.layers[0].content else { unreachable!() };
+        t.text = text.into();
+        if !font {
+            t.font = None;
+        }
+        render_frame(&s, Tick::ZERO, 1.0, &mono, Quality::Final).expect("renders").0
+    };
+    let (mixed, plain) = (set("中文", true), set("中文", false));
+    let (m, p) = (ink_box(&mixed), ink_box(&plain));
+    assert_eq!((m[0], m[2]), (p[0], p[2]), "the same glyphs, side to side");
+    assert!((ink(&mixed) - ink(&plain)).abs() < ink(&plain) * 0.01, "{} {}", ink(&mixed), ink(&plain));
+    // and beside the font's own letters, which stay in the font
+    let both = ink_box(&set("Mo中文", true));
+    assert!(both[2] - both[0] > m[2] - m[0] + 40, "{both:?} {m:?}");
+
     // the font is not reachable: a draft says so and uses the default face, a final refuses
     let (_, report) = render_frame(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Draft).expect("draft");
     assert_eq!(report.placeholders.len(), 1);
@@ -317,4 +336,69 @@ fn line_boxes_hug_each_line() {
     let typing = draw(&spec_with(t), 1.0).to_srgba8();
     assert!(green_at(&typing, b[0] - 4, b[1] + 14), "the first line has begun");
     assert!(!green_at(&typing, b[2] - 4, b[1] + 14), "but not reached its end");
+}
+
+#[test]
+fn spacing_slant_and_underline_change_where_the_ink_lands() {
+    let plain = white("ABCDEF\nABCDEF", 40.0);
+    assert!(!spec_with(plain.clone()).required_features().contains("text/4"));
+    let base = ink_box(&draw(&spec_with(plain.clone()), 1.0));
+    let (bw, bh) = (base[2] - base[0], base[3] - base[1]);
+
+    // tracking: 0.25 em (10 px) more after each letter, the block still centred
+    let mut t = plain.clone();
+    t.tracking = 0.25;
+    let s = spec_with(t);
+    assert!(s.required_features().contains("text/4"));
+    let wide = ink_box(&draw(&s, 1.0));
+    let grew = (wide[2] - wide[0]) as i32 - bw as i32;
+    assert!((45..=65).contains(&grew), "five gaps of 10 px, got {grew}");
+    assert_eq!(wide[3] - wide[1], bh, "lines stay where they were");
+    // and negative tracking pulls them together
+    let mut t = plain.clone();
+    t.tracking = -0.05;
+    let tight = ink_box(&draw(&spec_with(t), 1.0));
+    assert!(tight[2] - tight[0] < bw);
+
+    // leading: half an em (20 px) more between the two lines
+    let mut t = plain.clone();
+    t.leading = 0.5;
+    let tall = ink_box(&draw(&spec_with(t), 1.0));
+    let grew = (tall[3] - tall[1]) as i32 - bh as i32;
+    assert!((18..=22).contains(&grew), "one gap of 20 px, got {grew}");
+    assert_eq!(tall[2] - tall[0], bw);
+
+    // italic: the bundled face has none, so the letters are slanted: the same height, wider ink
+    let one = white("HHHH", 60.0);
+    let upright = ink_box(&draw(&spec_with(one.clone()), 1.0));
+    let mut t = one.clone();
+    t.italic = true;
+    let slanted = ink_box(&draw(&spec_with(t), 1.0));
+    assert_eq!(slanted[3] - slanted[1], upright[3] - upright[1]);
+    assert!(slanted[2] - slanted[0] > upright[2] - upright[0] + 4, "{upright:?} {slanted:?}");
+
+    // underline: a rule below the letters, as wide as the line
+    let mut t = one.clone();
+    t.underline = true;
+    let ruled = draw(&spec_with(t.clone()), 1.0);
+    let r = ink_box(&ruled);
+    assert!(r[3] > upright[3] + 2, "{upright:?} {r:?}");
+    let row = r[3] - 2;
+    let inked = (0..W).filter(|x| ruled.pixels[(row * W + x) as usize][0] > 0.5).count() as u32;
+    assert!(inked + 6 >= upright[2] - upright[0], "{inked} of {}", upright[2] - upright[0]);
+    // typed in half way, the rule stops with the letters
+    t.reveal = Some(Animated::Constant(0.5));
+    let typing = draw(&spec_with(t), 1.0);
+    let inked = (0..W).filter(|x| typing.pixels[(row * W + x) as usize][0] > 0.5).count() as u32;
+    assert!(inked > 20 && inked < (upright[2] - upright[0]) * 2 / 3, "{inked}");
+}
+
+#[test]
+fn spacing_out_of_range_is_refused() {
+    for (tracking, leading) in [(-0.6, 0.0), (4.5, 0.0), (0.0, -1.0), (0.0, f32::NAN)] {
+        let mut t = white("A", 40.0);
+        t.tracking = tracking;
+        t.leading = leading;
+        assert!(reelforge_renderspec::validate(&spec_with(t)).is_err(), "{tracking} {leading}");
+    }
 }

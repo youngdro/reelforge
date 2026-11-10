@@ -96,6 +96,20 @@ fn title_props() -> Vec<(&'static str, Value)> {
             json!({"type": "boolean", "description": "The box goes behind each line, hugging it, as subtitles have it."}),
         ),
         (
+            "font",
+            json!({"type": ["string", "null"], "description": "The face the title is set in: font media (media.import a .ttf, .otf or .ttc); null is the built-in face."}),
+        ),
+        (
+            "tracking",
+            json!({"type": "number", "minimum": -0.5, "maximum": 4, "description": "Space added after every character, in em."}),
+        ),
+        (
+            "leading",
+            json!({"type": "number", "minimum": -0.5, "maximum": 4, "description": "Space added between lines, in em."}),
+        ),
+        ("italic", json!({"type": "boolean", "description": "Slanted."})),
+        ("underline", json!({"type": "boolean", "description": "Underlined."})),
+        (
             "template",
             json!({"type": "string", "description": "A title template id from title.templates (classic, variety, sticker, candy, fire, neon, retro, soft, boxed, label); other parameters given override it."}),
         ),
@@ -218,7 +232,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ),
                 (
                     "kind",
-                    json!({"enum": ["video", "image", "audio", "lut"], "description": "Measured from the file when it is reachable."}),
+                    json!({"enum": ["video", "image", "audio", "lut", "font"], "description": "Measured from the file when it is reachable."}),
                 ),
                 ("name", json!({"type": "string", "description": "Display name; the file name by default."})),
                 ("duration", time("Length, when the file cannot be measured.")),
