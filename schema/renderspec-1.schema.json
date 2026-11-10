@@ -1162,6 +1162,10 @@
           "$ref": "#/$defs/Tick",
           "description": "Length of the output."
         },
+        "format": {
+          "$ref": "#/$defs/OutputFormat",
+          "description": "The kind of file to write."
+        },
         "fps": {
           "$ref": "#/$defs/FrameRate",
           "description": "Frame rate."
@@ -1197,6 +1201,31 @@
         "duration"
       ],
       "type": "object"
+    },
+    "OutputFormat": {
+      "description": "The kind of file an output is written as.",
+      "oneOf": [
+        {
+          "const": "mp4",
+          "description": "The picture and the sound, in an MP4.",
+          "type": "string"
+        },
+        {
+          "const": "gif",
+          "description": "The picture alone as an animated GIF that plays round and round (feature `encode.gif/1`),\nat `video.size` when one is given; a frame lasts `1 ÷ fps`, to the hundredth of a second.",
+          "type": "string"
+        },
+        {
+          "const": "m4a",
+          "description": "The sound alone, encoded as `audio` says, in an M4A (feature `encode.audio/1`).",
+          "type": "string"
+        },
+        {
+          "const": "wav",
+          "description": "The sound alone as 16-bit PCM in a WAV, at `audio`'s sample rate (feature\n`encode.audio/1`).",
+          "type": "string"
+        }
+      ]
     },
     "Probe": {
       "additionalProperties": false,

@@ -21,8 +21,9 @@ pub const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05
 const INSTRUCTIONS: &str = "reelforge is a short-video editor. A project has tracks (video, text, audio) holding clips \
 on a timeline. Call project_inspect first to see track and clip ids, then edit with the clip_* and track_* tools; \
 times are {\"seconds\": s} (or {\"frame\": n}). Every edit is one undo step (edit_undo); edit_batch applies several \
-as one. Look at the result with render_frame, and write the video with render_export. Titles render Chinese and \
-Latin text with the bundled Noto Sans SC face.";
+as one. Look at the result with render_frame, and write the video with render_export (or a GIF or the sound \
+alone: its `format`; project_setCover picks the cover). Titles render Chinese and Latin text with the bundled Noto \
+Sans SC face.";
 
 fn tool(op: &crate::Op) -> Value {
     json!({

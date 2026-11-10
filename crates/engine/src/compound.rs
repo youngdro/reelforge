@@ -176,6 +176,7 @@ pub(crate) fn clip_compound(s: &mut Session, v: &Value) -> CmdResult {
             name: name.unwrap_or_else(|| format!("Compound {n}")),
             tracks: inner,
             markers: vec![],
+            cover: None,
             compound: true,
         });
 

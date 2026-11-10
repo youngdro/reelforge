@@ -9,7 +9,11 @@ Status: early. Video, still images and sound import (Import in the media panel o
 decode in pure Rust on the desktop and in the browser; solid colours, transforms, opacity, two colour
 effects and undo work; projects export to MP4 from the desktop editor and the CLI (H.264 + AAC) and from the
 browser (H.264, HEVC or AV1 through the browser's hardware encoder, WebCodecs), at a chosen
-resolution (720p to 4K), frame rate and quality, or one of four presets (`project.setExport`). A built-in
+resolution (720p to 4K), frame rate and quality, or one of four presets (`project.setExport`). The same
+settings choose another kind of file (`"format"`): an animated GIF (small and slow by its quality: 240, 360
+or 480 px at 10, 12.5 or 20 frames a second), or the sound alone as M4A or WAV. `project.setCover` picks a
+frame as the cover, saved as a JPEG beside an exported video (`cut.cover.jpg`), and the editor's export
+window also saves the frame under the playhead as a PNG. A built-in
 sound library (twelve effects and four music beds, synthesised by reelforge itself, so free to
 use) adds with `sound.add`, and voice-overs record from the microphone on the desktop and in the
 browser. A project can hold several timelines (cuts) that share its media: `timeline.add` (empty or a
@@ -89,6 +93,8 @@ cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setAnimation '{"clip": 
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setKey '{"clip": "c5", "prop": "scale", "at": {"seconds": 4}, "value": 1.3, "ease": "inOut"}' --save
 cargo run -q -r -p reelforge-cli -- export cut.reel.json -o cut.mp4      # a project, or a RenderSpec
 # frames are drawn on the GPU when there is one; --renderer cpu|gpu chooses
+cargo run -q -r -p reelforge-cli -- export cut.reel.json -o cut.gif --format gif   # or m4a, wav: the sound alone
+cargo run -q -p reelforge-cli -- exec cut.reel.json project.setCover '{"at": {"seconds": 2}}' --save   # cut.cover.jpg beside the next video
 ```
 
 ## Agents (MCP) and the HTTP API

@@ -87,6 +87,7 @@ fn base(w: u32, h: u32) -> RenderSpec {
         background: Color([0.1, 0.2, 0.6, 1.0]),
         video: None,
         audio: None,
+        format: Default::default(),
     })
 }
 

@@ -8,7 +8,7 @@ use filmcraft_isobmff::{
     Av1Config, AvcConfig, Brand, HevcConfig, Mp4Writer, SampleEntry, TrackConfig, WriteSample, WriterOptions,
 };
 use reelforge_render::{Quality, RenderError, render_frame, unsupported_features};
-use reelforge_renderspec::{AudioCodec, AudioEncoding, RenderSpec, VideoCodec, VideoEncoding, validate};
+use reelforge_renderspec::{AudioCodec, AudioEncoding, OutputFormat, RenderSpec, VideoCodec, VideoEncoding, validate};
 use reelforge_time::{FrameRate, TICKS_PER_SECOND, Tick};
 use thiserror::Error;
 
@@ -76,14 +76,16 @@ pub struct ExportStats {
     pub encoder: String,
 }
 
-const CHANNELS: usize = 2;
+pub(crate) const CHANNELS: usize = 2;
 
-fn mux_err(e: impl std::fmt::Display) -> ExportError {
+pub(crate) fn mux_err(e: impl std::fmt::Display) -> ExportError {
     ExportError::Write(e.to_string())
 }
 
-/// Renders `spec` and writes an MP4 to `out`. `progress` is called after every frame; returning
-/// `false` stops the export with [`ExportError::Cancelled`].
+/// Renders `spec` and writes the file its `output.format` asks for to `out`: an MP4 unless it
+/// says otherwise, or an animated GIF, or the sound alone ([`crate::formats`]). `progress` is
+/// called after every frame (every second of a sound file); returning `false` stops the export
+/// with [`ExportError::Cancelled`].
 ///
 /// Video is H.264 at the spec's quality (`crf`, default 20) or bitrate, at the spec's encoded
 /// size. Sound is written when the spec has audio clips: AAC-LC, stereo, at the spec's rate and
@@ -106,6 +108,11 @@ pub fn export_with<W: Read + Write + Seek>(
     progress: &mut dyn FnMut(Progress) -> bool,
 ) -> Result<(W, ExportStats), ExportError> {
     check(spec)?;
+    match spec.output.format {
+        OutputFormat::Mp4 => {}
+        OutputFormat::Gif => return crate::formats::export_gif(spec, media, out, progress),
+        OutputFormat::M4a | OutputFormat::Wav => return crate::formats::export_audio(spec, media, out, progress),
+    }
     let venc = video_encoding(spec);
     let encoder = open_encoder(spec)?;
     let mut drawer = Drawer::new(renderer)?;
@@ -123,7 +130,7 @@ pub fn export_with<W: Read + Write + Seek>(
 }
 
 /// Checks a spec can be exported: valid, and drawn by this renderer.
-fn check(spec: &RenderSpec) -> Result<(), ExportError> {
+pub(crate) fn check(spec: &RenderSpec) -> Result<(), ExportError> {
     validate(spec).map_err(|e| ExportError::Invalid(e.to_string()))?;
     let missing = unsupported_features(spec);
     if !missing.is_empty() {

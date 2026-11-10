@@ -36,6 +36,7 @@ mod round_trip {
             background: Color([0.0, 0.0, 0.0, 1.0]),
             video: Some(VideoEncoding { codec, crf: Some(20), bitrate_kbps: None, size: None }),
             audio: None,
+            format: Default::default(),
         });
         for (id, at, color) in [("red", Tick::ZERO, [1.0, 0.0, 0.0, 1.0]), ("blue", Tick::SECOND, [0.0, 0.0, 1.0, 1.0])]
         {

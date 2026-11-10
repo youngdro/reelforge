@@ -62,6 +62,8 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "distort.mosaic@1",
     "distort.split@1",
     "distort.wave@1",
+    "encode.audio/1",
+    "encode.gif/1",
     "encode.size/1",
     "flip/1",
     "key.chroma@1",
@@ -226,6 +228,7 @@ mod tests {
             background: Color([0.0, 0.0, 1.0, 1.0]),
             video: None,
             audio: None,
+            format: Default::default(),
         });
         s.layers.push(Layer {
             id: "half".into(),
