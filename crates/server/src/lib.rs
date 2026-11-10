@@ -85,6 +85,7 @@ const RENDER_FRAME: &str = "render.frame";
 const RENDER_EXPORT: &str = "render.export";
 const PROJECT_SAVE: &str = "project.save";
 const RENDER_JOBS: &str = "render.jobs";
+const CAPTIONS_TRANSCRIBE: &str = "captions.transcribe";
 
 /// Every operation: the engine's commands, then the service's own.
 pub fn ops() -> Vec<Op> {
@@ -147,6 +148,25 @@ pub fn ops() -> Vec<Op> {
         destructive: false,
     });
     out.push(Op {
+        name: CAPTIONS_TRANSCRIBE,
+        title: "Transcribe Captions",
+        doc: "Listens to the timeline's sound with the server's local Whisper model and places what is said as captions (captions.add), on a new Captions track unless `track` names one. Runs on the server's CPU; nothing leaves it. Takes about as long as the sound with a small model.".into(),
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "language": {"type": "string", "description": "What is spoken, as a code (zh, en, ja, …); told from the first 30 s by default."},
+                "prompt": {"type": "string", "description": "Words that set the style: names, punctuation, simplified or traditional characters. For Chinese a simplified-character prompt is used by default."},
+                "from": time.clone(),
+                "to": time.clone(),
+                "track": {"type": "string", "description": "A text track to put the captions on; a new Captions track by default."},
+                "template": {"type": "string", "description": "Title template id (title.templates); classic by default."}
+            },
+            "additionalProperties": false
+        }),
+        read_only: false,
+        destructive: false,
+    });
+    out.push(Op {
         name: PROJECT_SAVE,
         title: "Save Project",
         doc: "Writes the project file (edits already save themselves when the server has one); `path` saves a copy elsewhere.".into(),
@@ -191,6 +211,7 @@ pub struct Hub {
     file: Option<PathBuf>,
     /// Where files clients send are kept: `media/` beside the project file, or a temporary folder.
     media_dir: PathBuf,
+    speech: reelforge_speech::Recogniser,
 }
 
 impl Hub {
@@ -222,7 +243,14 @@ impl Hub {
             None => std::env::temp_dir().join("reelforge-media"),
         };
         let media_dir = std::path::absolute(&media_dir).unwrap_or(media_dir);
-        Ok(Hub { shared, footage: Arc::new(Footage::new()), jobs: Arc::default(), file, media_dir })
+        let speech = reelforge_speech::Recogniser::new(reelforge_speech::default_model_dir());
+        Ok(Hub { shared, footage: Arc::new(Footage::new()), jobs: Arc::default(), file, media_dir, speech })
+    }
+
+    /// Listens with the Whisper model in `dir` instead of the default one.
+    pub fn with_speech_model(mut self, dir: PathBuf) -> Hub {
+        self.speech = reelforge_speech::Recogniser::new(dir);
+        self
     }
 
     /// Keeps a file a client sent (a browser has no path the server can read) and says where it is,
@@ -293,6 +321,7 @@ impl Hub {
             RENDER_FRAME => self.frame(params),
             RENDER_EXPORT => self.export(params),
             RENDER_JOBS => self.jobs(params),
+            CAPTIONS_TRANSCRIBE => self.transcribe(params, by),
             PROJECT_SAVE => {
                 let path = match params.get("path").and_then(Value::as_str) {
                     Some(p) => self.resolve(p),
@@ -367,6 +396,37 @@ impl Hub {
                 "placeholders": placeholders,
             }),
         })
+    }
+
+    fn transcribe(&self, params: &Value, by: &str) -> Result<Output, CallError> {
+        self.speech.check().map_err(CallError::Failed)?;
+        let project = self.shared.project();
+        let fps = project.canvas.fps;
+        let time = |name: &str| {
+            params
+                .get(name)
+                .map(|v| parse_time(v, fps).map_err(|e| CallError::Failed(format!("`{name}`: {e}"))))
+                .transpose()
+        };
+        let text = |name: &str| params.get(name).and_then(Value::as_str).map(str::to_string);
+        let range = (time("from")?, time("to")?);
+        let options = reelforge_speech::Options { language: text("language"), prompt: text("prompt") };
+        let spec = reelforge_compile::compile(&project, &reelforge_compile::CompileOptions { encode: false })
+            .map_err(|e| CallError::Failed(e.to_string()))?;
+        let heard =
+            self.speech.transcribe(&spec, &self.footage, range, &options, &mut |_| true).map_err(CallError::Failed)?;
+        if heard.segments.is_empty() {
+            return Ok(Output::Json(json!({"language": heard.language, "count": 0, "clips": []})));
+        }
+        let add =
+            reelforge_speech::captions_params(&heard.segments, text("track").as_deref(), text("template").as_deref());
+        let placed = self.shared.execute("captions.add", &add, by)?;
+        Ok(Output::Json(json!({
+            "language": heard.language,
+            "count": heard.segments.len(),
+            "track": placed["track"],
+            "clips": placed["clips"],
+        })))
     }
 
     fn export(&self, params: &Value) -> Result<Output, CallError> {

@@ -4,9 +4,9 @@ use reelforge_compile::{CompileOptions, compile};
 use reelforge_model::timeline as model_timeline;
 use reelforge_model::{
     Adjust, AnimKind, Animation, BlendMode, ChromaKey, Clip, ClipContent, ClipEffect, ClipTransform, Codec, CurvePoint,
-    CurvePreset, Denoise, Ease, ExportSettings, Filter, FilterKind, Fx, FxGroup, FxKind, Key, Loop, LoopKind, LutUse,
-    Mask, MaskKind, Media, MediaKind, Outline, Project, Prop, Quality, Resolution, Shadow, Timeline, TitleStyle, Track,
-    TrackKind, Transition, TransitionKind, Voice, VoiceKind, anim, export, timing,
+    CurvePreset, Denoise, Ease, ExportSettings, Filter, FilterKind, Fx, FxGroup, FxKind, Inbetween, Key, Loop,
+    LoopKind, LutUse, Mask, MaskKind, Media, MediaKind, Outline, Project, Prop, Quality, Resolution, Shadow, Steady,
+    Timeline, TitleStyle, Track, TrackKind, Transition, TransitionKind, Voice, VoiceKind, anim, export, timing,
 };
 use reelforge_renderspec::AssetKind;
 use reelforge_time::{FrameRate, Tick};
@@ -73,6 +73,15 @@ static REGISTRY: &[CommandSpec] = &[
         edits: true,
         enabled: always,
         run: crate::capcut::capcut_import,
+    },
+    CommandSpec {
+        id: "captions.add",
+        label: "Add Captions",
+        params: r#"{"cues": [{"start": time, "end": time, "text": string}], "track"?: id, "template"?: id}"#,
+        doc: "Places timed lines (from speech recognition, a script, a translation) as captions, like captions.import does with SubRip.",
+        edits: true,
+        enabled: always,
+        run: crate::captions::captions_add,
     },
     CommandSpec {
         id: "captions.export",
@@ -527,8 +536,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.setSpeed",
         label: "Speed",
-        params: r#"{"clip": id, "speed"?: number, "keepPitch"?: bool}"#,
-        doc: "Changes a media clip's speed; its length changes to keep the same source span. Sound keeps its pitch unless `keepPitch` is false.",
+        params: r#"{"clip": id, "speed"?: number, "keepPitch"?: bool, "frames"?: "repeat"|"blend"|"flow"}"#,
+        doc: "Changes a media clip's speed; its length changes to keep the same source span. Sound keeps its pitch unless `keepPitch` is false. `frames` is what a video shows between two frames of its file, which a slowed clip has to: the frame before held (`repeat`), the two mixed (`blend`), or a frame made in between by following what moved (`flow`).",
         edits: true,
         enabled: always,
         run: clip_set_speed,
@@ -606,6 +615,15 @@ static REGISTRY: &[CommandSpec] = &[
         run: clip_set_chroma_key,
     },
     CommandSpec {
+        id: "clip.setPersonKey",
+        label: "Cut Out People",
+        params: r#"{"clip": id, "on"?: bool}"#,
+        doc: "Keeps only the people in a video or picture clip and makes the rest see-through (剪映's 智能抠像), so the tracks below show around them; no green screen is needed. A small model bundled with the editor looks at every picture as it is drawn, so nothing is uploaded and nothing has to be analysed first. It is made for a person facing the camera, as in a talking-head shot: outlines are soft, hair and fingers are rough, and in a picture with nobody in it it keeps whatever stands out. `on` false (true when left out) removes it.",
+        edits: true,
+        enabled: always,
+        run: clip_set_person_key,
+    },
+    CommandSpec {
         id: "clip.setBlend",
         label: "Blend Mode",
         params: r#"{"clip": id, "mode": "normal"|"add"|"multiply"|"screen"|"overlay"|"darken"|"lighten"|"softLight"|"hardLight"|"difference"|"colorDodge"|"colorBurn"}"#,
@@ -676,6 +694,15 @@ static REGISTRY: &[CommandSpec] = &[
         edits: true,
         enabled: always,
         run: clip_set_denoise,
+    },
+    CommandSpec {
+        id: "clip.setStabilize",
+        label: "Stabilize",
+        params: r#"{"clip": id, "amount": 0-1, "path"?: [[across, down, turn]], "from"?: time, "step"?: time}"#,
+        doc: "Holds a shaky video clip's picture steady (剪映's 防抖). `amount` says how much of the shake goes: a little keeps the camera's own movement and takes the tremble out, 1 holds the picture nearly still, 0 turns it off. `path` is the camera's path as measured: where the picture is at each sample against the first, as [across, down, turn] in fractions of its width and height and in degrees, the first at source instant `from`, one every `step`. clip.stabilize measures it from the file and calls this; without `path` the clip's own is kept, so `amount` alone changes how much is taken out. The path is smoothed, the picture is moved from where it was to where the smooth path has it, and it is drawn up to 1.3 times larger so that its edges stay out of sight.",
+        edits: true,
+        enabled: always,
+        run: clip_set_stabilize,
     },
     CommandSpec {
         id: "voice.list",
@@ -982,6 +1009,7 @@ fn sound_add(s: &mut Session, v: &Value) -> CmdResult {
             voice: Default::default(),
             group: None,
             slot: None,
+            steady: None,
         };
         proj.track_mut(&track).expect("found above").clips.push(c);
         Ok(json!({ "media": media, "track": track, "clip": clip, "start": start, "duration": duration }))
@@ -1630,6 +1658,7 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
             voice: Default::default(),
             group: None,
             slot: None,
+            steady: None,
         };
         proj.track_mut(&track_id).expect("found above").clips.push(clip);
         Ok(json!({ "clip": id, "start": start, "duration": duration }))
@@ -2109,17 +2138,33 @@ fn clip_set_speed(s: &mut Session, v: &Value) -> CmdResult {
     let id = p.str("clip")?.to_string();
     let new = p.opt_f64("speed")?;
     let keep = p.opt_bool("keepPitch")?;
-    if new.is_none() && keep.is_none() {
-        return Err(EngineError::Params("give `speed` or `keepPitch`".into()));
+    let between = match p.opt_str("frames")? {
+        None => None,
+        Some(name) => Some(Inbetween::parse(name).ok_or_else(|| {
+            EngineError::Params(format!("`frames` must be one of {}", Inbetween::ALL.map(Inbetween::name).join(", ")))
+        })?),
+    };
+    if new.is_none() && keep.is_none() && between.is_none() {
+        return Err(EngineError::Params("give `speed`, `keepPitch` or `frames`".into()));
     }
     if new.is_some_and(|n| !(n > 0.0 && n <= 100.0)) {
         return Err(EngineError::Params("`speed` must be above 0 and at most 100".into()));
     }
     s.edit("Speed", |proj| {
-        let clip = proj.clip_mut(&id).ok_or_else(|| not_found("clip", &id))?;
-        let ClipContent::Media { speed, .. } = &mut clip.content else {
+        let (_, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        let video = matches!(&clip.content, ClipContent::Media { media, .. }
+            if proj.media.get(media).is_some_and(|m| m.kind == MediaKind::Video));
+        if between.is_some() && !video {
+            return Err(EngineError::Params("only a video has frames to make pictures between".into()));
+        }
+        let clip = proj.clip_mut(&id).expect("found above");
+        let ClipContent::Media { speed, frames, .. } = &mut clip.content else {
             return Err(EngineError::Params("only media clips have a speed".into()));
         };
+        if let Some(between) = between {
+            *frames = between;
+        }
+        let frames = *frames;
         if new.is_some() && *speed == 0.0 {
             return Err(EngineError::Refused("a freeze frame has no speed; change its length instead".into()));
         }
@@ -2134,7 +2179,7 @@ fn clip_set_speed(s: &mut Session, v: &Value) -> CmdResult {
         if let Some(k) = keep {
             clip.keep_pitch = k;
         }
-        Ok(json!({ "clip": id, "duration": clip.duration, "keepPitch": clip.keep_pitch }))
+        Ok(json!({ "clip": id, "duration": clip.duration, "keepPitch": clip.keep_pitch, "frames": frames.name() }))
     })
 }
 
@@ -2532,6 +2577,66 @@ fn clip_set_denoise(s: &mut Session, v: &Value) -> CmdResult {
     })
 }
 
+fn clip_set_stabilize(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let amount = p.opt_f64("amount")?.ok_or_else(|| EngineError::Params("`amount` is required".into()))? as f32;
+    if !(0.0..=1.0).contains(&amount) {
+        return Err(EngineError::Params("`amount` must be from 0 to 1".into()));
+    }
+    let wrong = || EngineError::Params("`path` must be a list of [across, down, turn], each three numbers".into());
+    let path: Option<Vec<[f32; 3]>> = match p.opt("path") {
+        None => None,
+        Some(list) => Some(
+            list.as_array()
+                .ok_or_else(wrong)?
+                .iter()
+                .map(|at| {
+                    let at = at.as_array().filter(|a| a.len() == 3)?;
+                    let n = |i: usize| at[i].as_f64().filter(|x| x.is_finite()).map(|x| x as f32);
+                    Some([n(0)?, n(1)?, n(2)?])
+                })
+                .collect::<Option<_>>()
+                .ok_or_else(wrong)?,
+        ),
+    };
+    let (from, step) = (p.opt_time("from")?, p.opt_time("step")?);
+    s.edit("Stabilize", |proj| {
+        let (track, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        let video = proj.tracks[track].kind == TrackKind::Video
+            && matches!(&clip.content, ClipContent::Media { media, .. }
+                if proj.media.get(media).is_some_and(|m| m.kind == MediaKind::Video));
+        if !video {
+            return Err(EngineError::Params("only a video clip on a video track can be stabilized".into()));
+        }
+        let clip = proj.clip_mut(&id).expect("found above");
+        if amount == 0.0 {
+            clip.steady = None;
+            return Ok(json!({ "clip": id, "amount": 0.0 }));
+        }
+        let steady = match path {
+            Some(path) => {
+                let step = step.ok_or_else(|| {
+                    EngineError::Params("`step` is required with `path`: the time between samples".into())
+                })?;
+                Steady { amount, from: from.unwrap_or(Tick::ZERO), step, path }
+            }
+            None => Steady {
+                amount,
+                ..clip.steady.take().ok_or_else(|| {
+                    EngineError::Params(
+                        "the camera's path has not been measured for this clip: pass `path`, or use clip.stabilize"
+                            .into(),
+                    )
+                })?
+            },
+        };
+        let samples = steady.path.len();
+        clip.steady = Some(steady);
+        Ok(json!({ "clip": id, "amount": amount, "samples": samples }))
+    })
+}
+
 fn voice_list(_: &mut Session, _: &Value) -> CmdResult {
     let list: Vec<Value> = VoiceKind::ALL.iter().map(|k| json!({ "id": k.name(), "semitones": k.pitch() })).collect();
     Ok(json!({ "voices": list }))
@@ -2919,6 +3024,20 @@ fn clip_set_crop(s: &mut Session, v: &Value) -> CmdResult {
             return Err(EngineError::Params(why.into()));
         }
         Ok(json!({ "clip": id, "look": serde_json::to_value(&clip.look).expect("serialises") }))
+    })
+}
+
+fn clip_set_person_key(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let on = p.opt_bool("on")?.unwrap_or(true);
+    s.edit("Cut Out People", |proj| {
+        let (ti, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        if proj.tracks[ti].kind != TrackKind::Video || !matches!(clip.content, ClipContent::Media { .. }) {
+            return Err(EngineError::Params("only video and picture clips can have their people cut out".into()));
+        }
+        proj.clip_mut(&id).expect("found above").look.person = on;
+        Ok(json!({ "clip": id, "person": on }))
     })
 }
 

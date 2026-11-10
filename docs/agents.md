@@ -111,14 +111,14 @@ render_export {"path": "out.mp4"}
 | --- | --- |
 | Cutting and arranging | `clip_add`, `clip_split`, `clip_trim`, `clip_move`, `clip_remove` (`ripple`), `clip_roll`, `clip_slip`, `clip_shift`, `clip_copy` / `clip_paste` / `clip_duplicate`, `timeline_cut`, `track_add` / `track_set` / `track_move`, `marker_*` |
 | Placement and keyframes | `clip_set` (x, y, scale, rotation, opacity, volume; at `at` once keyframed), `clip_setKey`, `clip_setEase` (named curves or a cubic Bézier), `clip_removeKey`, `clip_clearKeys` |
-| Speed | `clip_setSpeed`, `clip_setSpeedCurve` (`curve`: a preset or points), `clip_setReverse`, `clip_freeze` |
+| Speed and smoothness | `clip_setSpeed` (`frames`: repeat, blend or flow for frames in between), `clip_setSpeedCurve` (`curve`: a preset or points), `clip_setReverse`, `clip_freeze`, `clip_stabilize` (measures the camera's path) and `clip_setStabilize` |
 | Crop, mask, blend | `clip_setCrop`, `clip_setMask`, `clip_setBlend`, `clip_setBackdrop` (canvas blur); crop and mask edges are keyframable (`cropLeft`…, `maskX`…) |
 | Colour | `clip_setColor` (filters, LUT media, adjustments; adjustments are keyframable) |
-| Green screen | `clip_pickChromaKey` (finds the backdrop colour and keys it), `clip_setChromaKey` |
+| Green screen and cutout | `clip_pickChromaKey` (finds the backdrop colour and keys it), `clip_setChromaKey`, `clip_setPersonKey` (cuts a person out without a green screen) |
 | Effects and stickers | `fx_list`, `clip_setFx` (including the distortions), `clip_add` with `fx` or `adjustment: true` (an effect layer over the tracks below), `sticker_library`, `clip_add` with `sticker` |
 | Titles and fonts | `clip_add` / `clip_set` with `text` and style (`font` is an imported font's media id, `tracking`, `leading`, `italic`, `underline`…), `title_templates` and `template` |
 | Animations | `clip_setAnimation` (`in`, `out`, and `loop` for one that repeats; the `char*` kinds animate each character), `clip_setTransition` |
-| Captions | `captions_import` / `captions_export` (SubRip; `line: 2` for a second language), `captions_list`, `captions_split`, `captions_merge`, `captions_replace`, `captions_restyle`, `captions_shift` |
+| Captions | `captions_transcribe` (local Whisper on the server), `captions_add`, `captions_import` / `captions_export` (SubRip; `line: 2` for a second language), `captions_list`, `captions_split`, `captions_merge`, `captions_replace`, `captions_restyle`, `captions_shift` |
 | Talking-head cleanup | `audio_cutPauses`, `captions_fillers`, `captions_cutFillers` |
 | Sound | `sound_library` / `sound_add`, `clip_setVoice` / `voice_list`, `clip_setDenoise`, `audio_denoise`, `audio_normalize`, `audio_beats` (a marker on each beat), `audio_duck`, `clip_detachAudio` |
 | Groups and compound clips | `clip_group`, `clip_ungroup`, `clip_compound`, `clip_uncompound`, `timeline_list` / `timeline_switch` |

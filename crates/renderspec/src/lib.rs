@@ -493,6 +493,11 @@ pub enum LayerContent {
         /// How the picture is fitted to the frame before the transform applies.
         #[serde(default)]
         fit: Fit,
+        /// What shows when an output instant falls between two frames of a video: what a clip
+        /// slowed down, or a file of fewer frames a second than the output, is made smooth with.
+        /// A still ignores it.
+        #[serde(default, skip_serializing_if = "Between::is_nearest")]
+        between: Between,
     },
     /// A flat colour filling the frame.
     Solid {
@@ -609,6 +614,38 @@ impl TimeMap {
         ]
         .into_iter()
         .flatten()
+    }
+}
+
+/// What a video layer shows at an instant between two of its file's frames.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Between {
+    /// The frame of that instant, held until the next.
+    #[default]
+    Nearest,
+    /// The two frames mixed, by how far along from the one to the other the instant is (feature
+    /// `frames.blend/1`).
+    Blend,
+    /// A frame made in between (feature `frames.flow/1`): what moved from the one frame to the
+    /// other is followed, and drawn as far along its way as the instant is. Where nothing can
+    /// be followed, the two are mixed as for `blend`.
+    Flow,
+}
+
+impl Between {
+    /// Whether frames are shown as they are.
+    pub fn is_nearest(&self) -> bool {
+        *self == Between::Nearest
+    }
+
+    /// The feature id a renderer needs for it, if any.
+    pub fn feature(self) -> Option<&'static str> {
+        match self {
+            Between::Nearest => None,
+            Between::Blend => Some("frames.blend/1"),
+            Between::Flow => Some("frames.flow/1"),
+        }
     }
 }
 
@@ -1071,6 +1108,9 @@ pub struct Effect {
 ///   up to `tolerance` (0 to 1, default 0.3) it is gone, from there over `softness` (0 to 1,
 ///   default 0.1) it comes back, and `spill` (0 to 1, default 0.5) takes the key's tint off what
 ///   stays near it: that much of its chroma towards the key, its lightness kept.
+/// - `key.person@1`: keeps the people in a media or composition layer's picture and makes the
+///   rest see-through, as found by a segmentation model looking at the picture (it has no
+///   parameters). It is done to the picture before it is placed and before any other effect.
 /// - The `distort.*` effects change where a layer's picture is read, in this order whatever
 ///   their order in the list, each once per layer. Positions are fractions of the layer's visible
 ///   picture and are held at its edges.
@@ -1083,6 +1123,8 @@ pub struct Effect {
 pub mod effects {
     /// A colour made see-through.
     pub const CHROMA_KEY: &str = "key.chroma@1";
+    /// Everything but the people made see-through.
+    pub const PERSON_KEY: &str = "key.person@1";
     /// Rows sliding along a sine.
     pub const WAVE: &str = "distort.wave@1";
     /// Bands sliding sideways.
@@ -1315,8 +1357,9 @@ impl RenderSpec {
                     out.insert("text/5".to_string());
                 }
             }
-            if let LayerContent::Media { time, .. } = &layer.content {
+            if let LayerContent::Media { time, between, .. } = &layer.content {
                 out.extend(time.features().map(str::to_string));
+                out.extend(between.feature().map(str::to_string));
             }
             if layer.crop.is_some() {
                 out.insert("crop/1".to_string());

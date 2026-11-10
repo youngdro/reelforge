@@ -31,7 +31,10 @@ Noto Sans SC subset covering GB 2312), and ten title templates (花字) apply a 
 the two handles of the graph in the inspector's Keyframes panel. A green (or any one-colour) screen is keyed out with `clip.setChromaKey`, and
 `clip.pickChromaKey` finds the backdrop's colour in the frame by itself; picture effects (`fx.list`) include
 glitch, colour split, mosaic and wave next to the shakes, zooms and blurs. SubRip captions come in by dropping a
-`.srt` on the editor or `captions.import`, and go out with `captions.export`. Someone speaking is tightened up in one step (剪口播): `audio.cutPauses` hears the pauses,
+`.srt` on the editor or `captions.import`, and go out with `captions.export`. **Auto captions** hear
+the timeline with a local Whisper model (pure Rust on candle, CPU; nothing leaves the machine): the
+editor's Auto captions button, or `captions.transcribe` for agents on a server. Get a model with
+`reelforge-cli fetch-model --size small` (into `~/.reelforge/models/whisper`, or `REELFORGE_WHISPER`). Someone speaking is tightened up in one step (剪口播): `audio.cutPauses` hears the pauses,
 `captions.fillers` finds the captions that are only a filler word (嗯, 那个, um, …), and `timeline.cut` takes those stretches out of picture, sound and captions together, leaving the music as it is. Frames are composited on the GPU (wgpu) in the editor's preview and in exports,
 with the CPU compositor as the reference and the fallback. Agents edit through an MCP server (stdio
 or HTTP), and the same operations are an HTTP API and `reelforge-cli call`. People in a browser or on
@@ -52,11 +55,24 @@ everything set on it; a picture of another shape is scaled to cover the frame, a
 to fill), and `clip.replace` swaps the file of any one clip. In the editor they are on the drafts page and
 in the Templates tab on the left: pick one, then drop your files in. Any timeline becomes a template by
 marking its picture clips as slots (`template.mark`, or a clip's menu).
+A shaky shot is held steady (防抖): `clip.stabilize` watches the frames a video clip shows, follows how the
+camera moved from each to the next, and keeps that path with the clip; the picture is then moved and
+turned against the shake and drawn just large enough that its edges stay out of sight. How much goes
+(`clip.setStabilize`, or the Stabilize box by a clip's speed) is changed without watching again: a little
+takes the tremble out and leaves a pan a pan, all of it holds the picture nearly still.
+A slowed clip has instants to show that its file has no frame for (补帧): `"frames"` on `clip.setSpeed`
+(Smoothing, by the clip's speed) holds the frame before (`repeat`), mixes the two around it (`blend`, 帧融合),
+or makes a frame in between by following what moved from the one to the other (`flow`, 光流).
+The people in a video or picture are cut out without a green screen (智能抠像): `clip.setPersonKey`, or the Cut out
+people box in a clip's look, keeps them and makes the rest see-through, so the tracks below show around them. A small
+segmentation model bundled with the editor (`reelforge-matte`) looks at each picture as it is drawn, in pure Rust on
+the machine or in the browser; it is made for a person facing the camera, and its outlines are soft.
 See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Video and audio codecs and containers are FilmCraft's clean-room, pure-Rust crates
 (`filmcraft-codecs`, `filmcraft-h264enc`, `filmcraft-aac`, `filmcraft-isobmff`; MIT OR Apache-2.0):
-no FFmpeg and no C libraries.
+no FFmpeg and no C libraries. The model that cuts people out is MediaPipe's selfie segmentation (Apache-2.0),
+bundled as published; see [crates/matte/models](crates/matte/models/README.md).
 
 ## License
 

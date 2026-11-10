@@ -59,9 +59,24 @@ pub(crate) struct TimelineView {
     /// are cut from: every track that is not locked, or the ones named.
     pub(crate) cuts: Vec<(Tick, Tick)>,
     pub(crate) cut_tracks: Option<Vec<String>>,
+    /// Clips someone else just changed: lit for a moment, with who it was.
+    pub(crate) touched: Vec<Touched>,
+    /// Where the snap guide is, and when it got there: it flashes as it catches.
+    snapped: Option<(Tick, f64)>,
 }
 
 /// The heights a row cycles through.
+/// A clip another client changed.
+pub(crate) struct Touched {
+    pub clip: String,
+    pub by: String,
+    /// The time (egui's) it happened at.
+    pub at: f64,
+}
+
+/// How long a touched clip stays lit, in seconds.
+pub(crate) const TOUCH_GLOW: f64 = 2.6;
+
 pub(crate) const ROW_HEIGHTS: [f32; 3] = [40.0, ROW, 76.0];
 
 #[derive(Clone)]
@@ -153,6 +168,8 @@ impl Default for TimelineView {
             row: ROW,
             cuts: Vec::new(),
             cut_tracks: None,
+            touched: Vec::new(),
+            snapped: None,
         }
     }
 }
@@ -261,11 +278,8 @@ impl TimelineView {
         let t_of = move |x: f32| Tick::from_seconds(offset + ((x - lanes.left()) / pps) as f64);
         let seconds_of = move |x: f32| offset + ((x - lanes.left()) / pps) as f64;
 
-        painter.rect_filled(rect, 0.0, color::ROW);
-
         // Ruler.
         let ruler = Rect::from_min_max(lanes.min, egui::pos2(lanes.right(), lanes.top() + RULER));
-        painter.rect_filled(Rect::from_min_max(rect.min, egui::pos2(rect.right(), ruler.bottom())), 0.0, color::PANEL);
         let step = [1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0]
             .into_iter()
             .find(|s| s * pps as f64 >= 70.0)
@@ -292,11 +306,6 @@ impl TimelineView {
             }
             s += minor;
         }
-        painter.line_segment(
-            [rect.left_top() + vec2(0.0, RULER), egui::pos2(rect.right(), ruler.bottom())],
-            Stroke::new(1.0, color::LINE),
-        );
-
         // The range that loops, and the markers.
         if let Some((a, b)) = range {
             let r = Rect::from_min_max(egui::pos2(x_of(a), ruler.top()), egui::pos2(x_of(b), ruler.bottom()));
@@ -510,11 +519,19 @@ impl TimelineView {
         };
 
         // Rows.
+        let now_time = ui.input(|i| i.time);
+        self.touched.retain(|t| now_time - t.at < TOUCH_GLOW);
+        if !self.touched.is_empty() {
+            ui.ctx().request_repaint();
+        }
+        let mut chosen_at: Option<(Rect, TrackKind)> = None;
         for (row, (index, track)) in order.iter().map(|&i| (i, &p.tracks[i])).enumerate() {
             let top = rect.top() + RULER + row as f32 * row_h;
             let row_rect = Rect::from_min_size(egui::pos2(lanes.left(), top), vec2(lanes.width(), row_h));
-            painter.rect_filled(row_rect, 0.0, if row % 2 == 0 { color::ROW } else { color::ROW_ALT });
-            painter.line_segment([row_rect.left_bottom(), row_rect.right_bottom()], Stroke::new(1.0, color::LINE));
+            // each track is a trough in the panel
+            let trough = Rect::from_min_max(row_rect.min + vec2(0.0, 2.0), row_rect.max - vec2(6.0, 2.0));
+            let shade = if row % 2 == 0 { color::ROW } else { color::ROW_ALT };
+            painter.rect_filled(trough, CornerRadius::same(9), shade);
 
             let lane = painter.with_clip_rect(row_rect.intersect(lanes));
             let dim = track.hidden || track.muted;
@@ -543,6 +560,9 @@ impl TimelineView {
                     egui::pos2(x_of(a), top + 5.0),
                     egui::pos2(x_of(b).max(x_of(a) + 3.0), top + row_h - 5.0),
                 );
+                if selected.first() == Some(&clip.id) && self.drag.is_none() && !track.locked {
+                    chosen_at = Some((r, track.kind));
+                }
                 // a moved clip carries its source along; a trimmed one keeps it in place
                 let mut start = if b - a == clip.duration { a } else { clip.start };
                 if let Some((s, by)) = &slip
@@ -569,6 +589,10 @@ impl TimelineView {
                     &mut self.strips,
                     &seconds_of,
                 );
+                if let Some(touch) = self.touched.iter().find(|t| t.clip == clip.id) {
+                    let left = (1.0 - (now_time - touch.at) / TOUCH_GLOW).clamp(0.0, 1.0) as f32;
+                    paint_touch(&lane, r, &touch.by, left);
+                }
             }
             // transitions on the cuts they play on
             if track.kind == TrackKind::Video && ghost.is_none() && cut.is_none() {
@@ -614,9 +638,6 @@ impl TimelineView {
 
             // Header.
             let head = Rect::from_min_size(egui::pos2(rect.left(), top), vec2(HEADER, row_h));
-            painter.rect_filled(head, 0.0, color::PANEL);
-            painter.line_segment([head.right_top(), head.right_bottom()], Stroke::new(1.0, color::LINE));
-            painter.line_segment([head.left_bottom(), head.right_bottom()], Stroke::new(1.0, color::LINE));
             let (glyph, tint) = match track.kind {
                 TrackKind::Video => (icon::FILM, color::VIDEO),
                 TrackKind::Text => (icon::TEXT, color::TEXT_CLIP),
@@ -697,9 +718,6 @@ impl TimelineView {
             }
         }
         // the corner above the headers
-        let corner = Rect::from_min_size(rect.min, vec2(HEADER, RULER));
-        painter.rect_filled(corner, 0.0, color::PANEL);
-        painter.line_segment([corner.right_top(), corner.right_bottom()], Stroke::new(1.0, color::LINE));
 
         // Held over a row of another kind: it goes on a track of its own kind, at this time.
         if let Some((start, None)) = landing {
@@ -716,12 +734,24 @@ impl TimelineView {
         }
 
         // Snap guide.
-        if let Some(t) = snapped_at {
+        let now = ui.input(|i| i.time);
+        self.snapped = snapped_at.map(|t| match self.snapped {
+            Some((was, since)) if was == t => (t, since),
+            _ => (t, now),
+        });
+        if let Some((t, since)) = self.snapped {
             let x = x_of(t);
-            painter.with_clip_rect(lanes).line_segment(
-                [egui::pos2(x, ruler.bottom()), egui::pos2(x, rect.bottom())],
-                Stroke::new(1.0, color::ACCENT),
-            );
+            let on_lanes = painter.with_clip_rect(lanes);
+            let line = [egui::pos2(x, ruler.bottom()), egui::pos2(x, rect.bottom())];
+            // it flashes wide as it catches, then settles
+            let fresh = (1.0 - (now - since) / 0.22).clamp(0.0, 1.0) as f32;
+            if fresh > 0.0 {
+                on_lanes
+                    .line_segment(line, Stroke::new(5.0 + 22.0 * fresh, color::ACCENT_2.gamma_multiply(0.22 * fresh)));
+                ui.ctx().request_repaint();
+            }
+            on_lanes.line_segment(line, Stroke::new(5.0, color::ACCENT_2.gamma_multiply(0.25)));
+            on_lanes.line_segment(line, Stroke::new(1.0, color::ACCENT_2));
         }
 
         // What is about to be cut out.
@@ -747,12 +777,68 @@ impl TimelineView {
         let x = x_of(playhead);
         if x >= lanes.left() - 1.0 && x <= lanes.right() + 1.0 {
             let on_lanes = painter.with_clip_rect(lanes);
-            on_lanes.line_segment(
-                [egui::pos2(x, ruler.top()), egui::pos2(x, rect.bottom())],
-                Stroke::new(1.5, color::PLAYHEAD),
-            );
-            let handle = Rect::from_center_size(egui::pos2(x, ruler.top() + 7.0), vec2(11.0, 14.0));
-            on_lanes.rect_filled(handle, CornerRadius::same(3), color::PLAYHEAD);
+            // a line of light, and where it is on a capsule at its head
+            let line = [egui::pos2(x, ruler.top() + 8.0), egui::pos2(x, rect.bottom())];
+            on_lanes.line_segment(line, Stroke::new(5.0, color::ACCENT.gamma_multiply(0.22)));
+            on_lanes.line_segment(line, Stroke::new(1.5, Color32::WHITE));
+            let at = crate::theme::timecode(playhead.seconds());
+            let galley = painter.layout_no_wrap(at, FontId::monospace(10.5), color::ON_ACCENT);
+            let size = galley.size() + vec2(12.0, 4.0);
+            // the capsule stays whole at the lanes' edges
+            let mid =
+                x.clamp(lanes.left() + size.x / 2.0, (lanes.right() - size.x / 2.0).max(lanes.left() + size.x / 2.0));
+            let handle = Rect::from_center_size(egui::pos2(mid, ruler.top() + 9.0), size);
+            crate::theme::glow(&on_lanes, handle, 9.0, color::aurora(0.4).gamma_multiply(0.45), 10);
+            crate::theme::aurora_rect(&on_lanes, handle, 9.0, 1.0);
+            on_lanes.galley(handle.center() - galley.size() / 2.0, galley, color::ON_ACCENT);
+        }
+
+        // The selected clip's tools, on a pill over it while the pointer is on either.
+        if let Some((r, kind)) = chosen_at
+            && !playing
+            && r.right() > lanes.left()
+            && r.left() < lanes.right()
+        {
+            let mut tools = vec![
+                (icon::SPLIT, words.split, Action::Split),
+                (icon::TO_START, words.trim_start, Action::TrimStart),
+                (icon::TO_END, words.trim_end, Action::TrimEnd),
+                (icon::ADD, words.duplicate, Action::Duplicate),
+            ];
+            if kind == TrackKind::Video && detachable(p, &selected[0]) {
+                tools.push((icon::DETACH, words.detach_audio, Action::DetachAudio));
+            }
+            tools.push((icon::DELETE, words.delete, Action::Delete));
+            let size = vec2(tools.len() as f32 * 30.0 + 8.0, 30.0);
+            let left = r.left().max(lanes.left() + 4.0).min(lanes.right() - size.x - 4.0);
+            let pill = Rect::from_min_size(egui::pos2(left, (r.top() - size.y - 3.0).max(rect.top())), size);
+            let near = Rect::from_min_max(pill.min, egui::pos2(r.right().max(pill.right()), r.bottom()));
+            let pointer = ui.input(|i| i.pointer.hover_pos());
+            let over = pointer.is_some_and(|at| near.contains(at) && (pill.contains(at) || r.contains(at)));
+            let shown = ui.ctx().animate_bool_with_time(response.id.with("clip tools"), over, 0.1);
+            if shown > 0.0 {
+                let rise = 4.0 * (1.0 - shown);
+                let pill = pill.translate(vec2(0.0, rise));
+                let ink = Color32::from_white_alpha((26.0 * shown) as u8);
+                crate::theme::glow(&painter, pill, 15.0, Color32::from_black_alpha((150.0 * shown) as u8), 16);
+                painter.rect(
+                    pill,
+                    CornerRadius::same(15),
+                    color::RAISED.gamma_multiply(shown),
+                    Stroke::new(1.0, ink),
+                    StrokeKind::Inside,
+                );
+                if shown > 0.6 {
+                    for (i, (glyph, tip, action)) in tools.into_iter().enumerate() {
+                        let at = Rect::from_min_size(pill.min + vec2(4.0 + i as f32 * 30.0, 1.0), vec2(30.0, 28.0));
+                        let tint = if action == Action::Delete { color::PLAYHEAD } else { color::TEXT };
+                        let button = egui::Button::new(egui::RichText::new(glyph).size(14.0).color(tint)).frame(false);
+                        if ui.put(at, button).on_hover_text(tip).clicked() {
+                            out.action = Some(action);
+                        }
+                    }
+                }
+            }
         }
 
         // Cursor.
@@ -1061,7 +1147,7 @@ fn paint_clip(
     seconds_of: &dyn Fn(f32) -> f64,
 ) {
     let Look { selected, dim, dragging } = look;
-    let radius = CornerRadius::same(5);
+    let radius = CornerRadius::same(7);
     let (glyph, label, mut fill) = match &clip.content {
         ClipContent::Media { media, .. } => {
             let m = p.media.get(media);
@@ -1107,7 +1193,12 @@ fn paint_clip(
     if dragging {
         fill = fill.gamma_multiply(0.8);
     }
-    painter.rect_filled(r, radius, fill);
+    if selected && !dragging {
+        // what is selected gives off light
+        crate::theme::glow(painter, r, 7.0, color::ACCENT.gamma_multiply(0.55), 12);
+    }
+    // lit from the left, like a strip of film held up
+    crate::theme::gradient_rect(painter, r, 7.0, fill, fill.lerp_to_gamma(color::PANEL, 0.45));
     let mut strip = false;
     if let ClipContent::Media { media, .. } = &clip.content
         && let Some(m) = p.media.get(media)
@@ -1147,7 +1238,7 @@ fn paint_clip(
         paint_motion(painter, r, clip, selected);
     }
     let stroke =
-        if selected { Stroke::new(2.0, color::ACCENT) } else { Stroke::new(1.0, Color32::from_black_alpha(90)) };
+        if selected { Stroke::new(2.0, Color32::WHITE) } else { Stroke::new(1.0, Color32::from_white_alpha(22)) };
     painter.rect_stroke(r, radius, stroke, if selected { StrokeKind::Outside } else { StrokeKind::Inside });
     if reelforge_engine::is_empty_slot(clip) && r.width() > 10.0 {
         // an empty slot of a template is outlined in dashes: something goes here
@@ -1196,6 +1287,28 @@ fn paint_clip(
             let align = if kind == TrackKind::Audio { Align2::LEFT_TOP } else { Align2::LEFT_CENTER };
             text.text(at, align, name, FontId::proportional(12.0), text_color);
         }
+    }
+}
+
+/// A clip someone else just changed: an outline of light that fades (`left` from 1 to 0), and who
+/// it was on a tag.
+fn paint_touch(painter: &egui::Painter, r: Rect, by: &str, left: f32) {
+    if left <= 0.0 {
+        return;
+    }
+    // it breathes twice as it fades
+    let pulse = 0.75 + 0.25 * (left * std::f32::consts::TAU * 2.0).cos();
+    let light = color::ACCENT_2.gamma_multiply(left.sqrt() * pulse);
+    crate::theme::glow(painter, r, 7.0, light.gamma_multiply(0.3), 14);
+    painter.rect_stroke(r, CornerRadius::same(7), Stroke::new(2.0, light), StrokeKind::Outside);
+    if r.width() > 40.0 {
+        let name = format!("{}  {by}", icon::AGENT);
+        let galley =
+            painter.layout_no_wrap(name, FontId::proportional(10.5), color::ON_ACCENT.gamma_multiply(left.sqrt()));
+        let tag =
+            Rect::from_min_size(r.right_top() - vec2(galley.size().x + 14.0, -3.0), galley.size() + vec2(10.0, 4.0));
+        painter.rect_filled(tag, CornerRadius::same(8), light);
+        painter.galley(tag.min + vec2(5.0, 2.0), galley, color::ON_ACCENT);
     }
 }
 

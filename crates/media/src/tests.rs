@@ -130,7 +130,12 @@ fn exported_mp4_probes_and_decodes_to_the_same_pictures() {
         "clip",
         Tick::ZERO,
         Tick::SECOND,
-        LayerContent::Media { asset: "v".into(), time: TimeMap::new(Tick::from_seconds(1.5), 1.0), fit: Fit::Contain },
+        LayerContent::Media {
+            asset: "v".into(),
+            time: TimeMap::new(Tick::from_seconds(1.5), 1.0),
+            fit: Fit::Contain,
+            between: Default::default(),
+        },
     ));
     let (img, report) = render_frame(&spec, Tick::ZERO, 1.0, &footage, Quality::Final).expect("render");
     assert!(report.placeholders.is_empty());
@@ -846,4 +851,112 @@ fn a_composition_plays_its_own_mix_under_the_clips_gain() {
     spec.audio[0].fx = vec![AudioEffect::Echo { delay: Tick(Tick::SECOND.0 / 4), decay: 0.5, repeats: 2 }];
     let echoed = export::mix(&spec, &footage, 48_000, 0, 96_000).expect("mix");
     assert!(rms(&echoed[0][74_000..84_000]) > 0.01, "the echo rings on after the tone");
+}
+
+#[test]
+fn a_picture_between_two_frames_of_a_video_is_mixed_or_made_from_them() {
+    // a picture with something to follow all over it slides 6 pixels a frame across a 96×64
+    // frame, for ten frames
+    let hash = |x: i64, y: i64| {
+        let n = (x as u32).wrapping_mul(0x9E37_79B1) ^ (y as u32).wrapping_mul(0x85EB_CA6B);
+        (n.wrapping_mul(0xC2B2_AE35) >> 24) as f32
+    };
+    let soft = |x: f32, y: f32| {
+        let (cx, cy) = (x / 7.0, y / 7.0);
+        let (x0, y0) = (cx.floor(), cy.floor());
+        let v = |dx: i64, dy: i64| hash(x0 as i64 + dx, y0 as i64 + dy);
+        let (tx, ty) = (cx - x0, cy - y0);
+        let (top, bottom) = (v(0, 0) + (v(1, 0) - v(0, 0)) * tx, v(0, 1) + (v(1, 1) - v(0, 1)) * tx);
+        (top + (bottom - top) * ty) as u8
+    };
+    let mut png = Vec::new();
+    image::RgbaImage::from_fn(192, 64, |x, y| {
+        let v = soft(x as f32, y as f32);
+        image::Rgba([v, 255 - v, v / 2 + 60, 255])
+    })
+    .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+    .unwrap();
+    let stills = Footage::new();
+    stills.insert_bytes(&sha(40), "scene.png", png).expect("a picture");
+    let length = FrameRate::FPS_30.frame_duration();
+    let mut spec = RenderSpec::new(Output {
+        width: 96,
+        height: 64,
+        fps: FrameRate::FPS_30,
+        duration: length * 10,
+        background: Color([0.0, 0.0, 0.0, 1.0]),
+        video: None,
+        audio: None,
+        format: Default::default(),
+    });
+    let still = Asset { kind: AssetKind::Image, sha256: sha(40), uri: "mem:scene.png".into(), of: None, probe: None };
+    spec.assets.insert("p".into(), still.clone());
+    let mut sliding = layer(
+        "p",
+        Tick::ZERO,
+        length * 10,
+        LayerContent::Media {
+            asset: "p".into(),
+            time: TimeMap::default(),
+            fit: Fit::Contain,
+            between: Between::Nearest,
+        },
+    );
+    // fitted it is half the frame's height: twice as large it fills it, and is two frames wide
+    sliding.transform.scale = Animated::Constant(2.0);
+    sliding.transform.position = Animated::Keys(vec![
+        Key { t: Tick::ZERO, v: [-0.28125, 0.0], ease: Ease::Linear },
+        Key { t: length * 9, v: [0.28125, 0.0], ease: Ease::Linear },
+    ]);
+    spec.layers.push(sliding);
+    let (path, _) = export_to_file(&spec, &stills, "sliding.mp4");
+    let video = Asset {
+        kind: AssetKind::Video,
+        sha256: sha(41),
+        uri: path.to_string_lossy().into_owned(),
+        of: None,
+        probe: None,
+    };
+    let footage = Footage::new();
+    assert_eq!(footage.frame_length(&video), Some(length));
+    let picture = |at: Tick| footage.picture("v", &video, at).unwrap().expect("online");
+    let made = |at: Tick, how: Between| footage.picture_between("v", &video, at, how, 1).unwrap().expect("online");
+    // how far two pictures are apart away from the edges, where what slides in was not in the other frame
+    let apart = |a: &Image, b: &dyn Fn(usize, usize) -> [f32; 4]| {
+        let mut sum = 0.0;
+        for y in 8..56 {
+            for x in 16..80 {
+                let (p, q) = (a.pixels[y * 96 + x], b(x, y));
+                sum += (p[0] - q[0]).abs() + (p[1] - q[1]).abs();
+            }
+        }
+        sum / (48.0 * 64.0)
+    };
+    let (third, fourth) = (picture(length * 3), picture(length * 4));
+    let (quarter, half) = (length * 3 + Tick(length.0 / 4), length * 3 + Tick(length.0 / 2));
+
+    // frames as they are: the frame of that instant
+    assert_eq!(*made(quarter, Between::Nearest), *picture(quarter));
+    // mixed: a quarter of the way from the one frame to the next
+    let mixed = made(quarter, Between::Blend);
+    let by_hand = |x: usize, y: usize| {
+        let (p, q) = (third.pixels[y * 96 + x], fourth.pixels[y * 96 + x]);
+        [0, 1, 2, 3].map(|i| p[i] + (q[i] - p[i]) * 0.25)
+    };
+    assert!(apart(&mixed, &by_hand) < 1e-4, "{}", apart(&mixed, &by_hand));
+    // made: halfway, everything is 3 pixels further along than in the frame before
+    let truth = |x: usize, y: usize| third.pixels[y * 96 + x - 3];
+    let (flowed, blended) = (apart(&made(half, Between::Flow), &truth), apart(&made(half, Between::Blend), &truth));
+    assert!(flowed < blended / 3.0, "{flowed} against {blended}");
+    // asked again it is the same picture, kept
+    assert!(Arc::ptr_eq(&made(half, Between::Flow), &made(half, Between::Flow)));
+    // on a frame, that frame; past the last one, which has nothing after it, the last
+    assert_eq!(*made(length * 3, Between::Flow), *third);
+    let end = length * 9 + Tick(length.0 / 3);
+    assert_eq!(*made(end, Between::Flow), *picture(end));
+    // smaller for a draft, when asked so; and a still has no frames to be between
+    let small = footage.picture_between("v", &video, half, Between::Flow, 2).unwrap().expect("online");
+    assert_eq!((small.width, small.height), (48, 32));
+    let still_made = stills.picture_between("p", &still, half, Between::Flow, 1).unwrap().expect("a picture");
+    assert!(Arc::ptr_eq(&still_made, &stills.picture("p", &still, half).unwrap().expect("a picture")));
 }

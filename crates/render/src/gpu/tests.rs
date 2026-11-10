@@ -136,7 +136,10 @@ fn with_picture(spec: &mut RenderSpec, fit: Fit) -> usize {
         "pic".into(),
         Asset { kind: AssetKind::Image, sha256: "1".repeat(64), uri: "file:///pic.png".into(), of: None, probe: None },
     );
-    spec.layers.push(layer("pic", LayerContent::Media { asset: "pic".into(), time: TimeMap::default(), fit }));
+    spec.layers.push(layer(
+        "pic",
+        LayerContent::Media { asset: "pic".into(), time: TimeMap::default(), fit, between: Default::default() },
+    ));
     spec.layers.len() - 1
 }
 
@@ -275,7 +278,15 @@ fn drafts_draw_the_same_slate_and_report() {
             probe: Some(Probe { width: Some(30), height: Some(20), duration: None }),
         },
     );
-    let mut l = layer("v", LayerContent::Media { asset: "v".into(), time: TimeMap::default(), fit: Fit::Contain });
+    let mut l = layer(
+        "v",
+        LayerContent::Media {
+            asset: "v".into(),
+            time: TimeMap::default(),
+            fit: Fit::Contain,
+            between: Default::default(),
+        },
+    );
     l.transform.rotation = Animated::Constant(10.0);
     s.layers.push(l);
     same(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Draft);
@@ -433,8 +444,15 @@ fn video_pictures_converted_on_the_gpu_match_the_cpu() {
                 probe: None,
             },
         );
-        s.layers
-            .push(layer("v", LayerContent::Media { asset: "v".into(), time: TimeMap::default(), fit: Fit::Stretch }));
+        s.layers.push(layer(
+            "v",
+            LayerContent::Media {
+                asset: "v".into(),
+                time: TimeMap::default(),
+                fit: Fit::Stretch,
+                between: Default::default(),
+            },
+        ));
         same(&s, Tick::ZERO, 1.0, &video, Quality::Final);
         // turned and smaller, over the background
         s.layers[0].transform.rotation = Animated::Constant(17.0);
@@ -498,6 +516,28 @@ fn a_keyed_colour_goes_the_same_way_on_both() {
         ];
         same(&s, Tick::ZERO, 1.0, &Pictures(pic.clone()), Quality::Final);
     }
+}
+
+#[test]
+fn people_are_cut_out_the_same_way_on_both() {
+    // a picture, with an effect after: both are handed the cut-out
+    let portrait = crate::tests::portrait();
+    let mut s = base(64, 48);
+    let i = with_picture(&mut s, Fit::Contain);
+    let key = fx_of(effects::PERSON_KEY, &[]);
+    s.layers[i].fx = vec![key.clone(), fx_of(effects::GRADE, &[("exposure", 0.3)])];
+    same(&s, Tick::ZERO, 1.0, &Pictures(portrait), Quality::Final);
+    // a video the GPU would convert itself: here it is converted before, to be looked at whole
+    let video = Video(yuv(64, 48, (1, 1), false));
+    s.layers[i].fx = vec![key.clone()];
+    same(&s, Tick::ZERO, 1.0, &video, Quality::Final);
+    // a composition: drawn on the CPU for both, as a blurred one is
+    let mut inner = Comp::default();
+    inner.layers.push(layer("in", LayerContent::Solid { color: Color([0.9, 0.5, 0.3, 1.0]) }));
+    s.comps.insert("k".into(), inner);
+    s.layers.push(layer("c", LayerContent::Comp { comp: "k".into(), from: Tick::ZERO }));
+    s.layers[i + 1].fx = vec![key];
+    same(&s, Tick::ZERO, 1.0, &video, Quality::Final);
 }
 
 #[test]

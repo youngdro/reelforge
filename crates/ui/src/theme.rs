@@ -4,39 +4,48 @@
 
 use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle, Visuals};
 
-/// The palette.
+/// The palette: ink-dark glass that takes its light from the picture, and one aurora (violet to
+/// cyan) for what is live: play, the playhead, the selection.
 pub(crate) mod color {
     use super::Color32;
 
     /// Behind everything; the preview's surroundings.
-    pub const STAGE: Color32 = Color32::from_rgb(0x0e, 0x0f, 0x12);
-    /// Panels.
-    pub const PANEL: Color32 = Color32::from_rgb(0x18, 0x19, 0x1e);
+    pub const STAGE: Color32 = Color32::from_rgb(0x07, 0x08, 0x0c);
+    /// Panels: islands on the stage.
+    pub const PANEL: Color32 = Color32::from_rgb(0x11, 0x12, 0x19);
     /// Raised areas on panels: headers, section frames, inputs.
-    pub const RAISED: Color32 = Color32::from_rgb(0x21, 0x22, 0x29);
+    pub const RAISED: Color32 = Color32::from_rgb(0x1a, 0x1c, 0x26);
     /// Hovered controls.
-    pub const HOVER: Color32 = Color32::from_rgb(0x2c, 0x2e, 0x37);
+    pub const HOVER: Color32 = Color32::from_rgb(0x27, 0x2a, 0x3a);
     /// Hairlines between areas.
-    pub const LINE: Color32 = Color32::from_rgb(0x2b, 0x2d, 0x35);
+    pub const LINE: Color32 = Color32::from_rgb(0x22, 0x24, 0x32);
     /// Timeline rows.
-    pub const ROW: Color32 = Color32::from_rgb(0x13, 0x14, 0x18);
-    pub const ROW_ALT: Color32 = Color32::from_rgb(0x16, 0x17, 0x1c);
-    pub const TEXT: Color32 = Color32::from_rgb(0xe4, 0xe5, 0xea);
-    pub const WEAK: Color32 = Color32::from_rgb(0x8a, 0x8d, 0x99);
-    /// Selection, the primary action, focus.
-    pub const ACCENT: Color32 = Color32::from_rgb(0x2b, 0xd4, 0xc4);
+    pub const ROW: Color32 = Color32::from_rgb(0x0c, 0x0d, 0x13);
+    pub const ROW_ALT: Color32 = Color32::from_rgb(0x0f, 0x10, 0x17);
+    pub const TEXT: Color32 = Color32::from_rgb(0xee, 0xef, 0xf6);
+    pub const WEAK: Color32 = Color32::from_rgb(0x86, 0x8a, 0xa3);
+    /// Selection, the primary action, focus: the aurora's violet end.
+    pub const ACCENT: Color32 = Color32::from_rgb(0x93, 0x82, 0xff);
+    /// The aurora's cyan end.
+    pub const ACCENT_2: Color32 = Color32::from_rgb(0x36, 0xe2, 0xd0);
     /// Text on the accent.
-    pub const ON_ACCENT: Color32 = Color32::from_rgb(0x06, 0x22, 0x20);
+    pub const ON_ACCENT: Color32 = Color32::from_rgb(0x0b, 0x09, 0x22);
+    /// What records, and what is about to be cut out.
     pub const PLAYHEAD: Color32 = Color32::from_rgb(0xff, 0x4f, 0x6d);
     pub const WARN: Color32 = Color32::from_rgb(0xf5, 0xb0, 0x41);
     /// Clips, by what they hold.
-    pub const VIDEO: Color32 = Color32::from_rgb(0x3b, 0x68, 0xc9);
-    pub const TEXT_CLIP: Color32 = Color32::from_rgb(0xb9, 0x78, 0x2e);
-    pub const AUDIO: Color32 = Color32::from_rgb(0x27, 0x95, 0x6c);
+    pub const VIDEO: Color32 = Color32::from_rgb(0x4b, 0x6b, 0xe8);
+    pub const TEXT_CLIP: Color32 = Color32::from_rgb(0xe0, 0x8a, 0x3c);
+    pub const AUDIO: Color32 = Color32::from_rgb(0x21, 0xb0, 0x8a);
     /// Adjustment clips: effects and colour for what is below.
-    pub const FX: Color32 = Color32::from_rgb(0x7c, 0x55, 0xc8);
+    pub const FX: Color32 = Color32::from_rgb(0xa0, 0x62, 0xe8);
     /// Compound clips.
-    pub const COMPOUND: Color32 = Color32::from_rgb(0x2f, 0x8a, 0xa8);
+    pub const COMPOUND: Color32 = Color32::from_rgb(0x2f, 0x9c, 0xc4);
+
+    /// A point along the aurora: 0 is violet, 1 cyan.
+    pub fn aurora(t: f32) -> Color32 {
+        ACCENT.lerp_to_gamma(ACCENT_2, t.clamp(0.0, 1.0))
+    }
 }
 
 /// Icon glyphs from the bundled Phosphor subset; usable in any text. Not every one is used on every
@@ -143,8 +152,8 @@ fn style(s: &mut egui::Style) {
     ]
     .into();
     s.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    s.spacing.button_padding = egui::vec2(9.0, 5.0);
-    s.spacing.interact_size.y = 26.0;
+    s.spacing.button_padding = egui::vec2(10.0, 5.0);
+    s.spacing.interact_size.y = 28.0;
     s.spacing.window_margin = egui::Margin::same(10);
 
     let v: &mut Visuals = &mut s.visuals;
@@ -159,10 +168,12 @@ fn style(s: &mut egui::Style) {
     v.hyperlink_color = ACCENT;
     v.selection.bg_fill = ACCENT.gamma_multiply(0.35);
     v.selection.stroke = Stroke::new(1.0, ACCENT);
-    v.window_corner_radius = CornerRadius::same(8);
-    v.menu_corner_radius = CornerRadius::same(6);
+    v.window_corner_radius = CornerRadius::same(14);
+    v.menu_corner_radius = CornerRadius::same(10);
+    v.window_shadow = egui::Shadow { offset: [0, 12], blur: 40, spread: 0, color: Color32::from_black_alpha(150) };
+    v.popup_shadow = egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(140) };
     let w = &mut v.widgets;
-    let radius = CornerRadius::same(6);
+    let radius = CornerRadius::same(8);
     w.noninteractive.bg_fill = PANEL;
     w.noninteractive.weak_bg_fill = PANEL;
     w.noninteractive.bg_stroke = Stroke::new(1.0, LINE);
@@ -190,22 +201,199 @@ pub(crate) fn tool(ui: &mut egui::Ui, icon: &str, word: &str, tip: &str, enabled
     ui.add_enabled(enabled, egui::Button::new(egui::RichText::new(text).size(14.0))).on_hover_text(tip)
 }
 
-/// The primary action: filled with the accent.
+/// The primary action: filled with the aurora.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn primary(ui: &mut egui::Ui, icon: &str, word: &str, enabled: bool) -> egui::Response {
-    ui.add_enabled(
-        enabled,
-        egui::Button::new(egui::RichText::new(format!("{icon}  {word}")).color(color::ON_ACCENT).strong())
-            .fill(color::ACCENT),
-    )
+    aurora_button(ui, &format!("{icon}  {word}"), 13.0, egui::vec2(0.0, 28.0), enabled)
 }
+
+/// A capsule filled with the aurora, for the one thing a bar is for (play, export). It glows, more
+/// under the pointer.
+pub(crate) fn aurora_button(
+    ui: &mut egui::Ui,
+    text: &str,
+    size: f32,
+    min: egui::Vec2,
+    enabled: bool,
+) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(text.to_string(), FontId::proportional(size), color::ON_ACCENT);
+    let want = (galley.size() + egui::vec2(28.0, 10.0)).max(min);
+    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, response) = ui.allocate_exact_size(want, sense);
+    if ui.is_rect_visible(rect) {
+        let lit = ui.ctx().animate_bool(response.id, enabled && response.hovered());
+        let radius = rect.height() / 2.0;
+        let painter = ui.painter();
+        if enabled {
+            glow(painter, rect, radius, color::aurora(0.4).gamma_multiply(0.22 + 0.3 * lit), 14 + (10.0 * lit) as u8);
+        }
+        aurora_rect(painter, rect, radius, if enabled { 1.0 } else { 0.3 });
+        if response.is_pointer_button_down_on() {
+            painter.rect_filled(rect, CornerRadius::same(radius as u8), Color32::from_black_alpha(50));
+        }
+        painter.galley(rect.center() - galley.size() / 2.0, galley, color::ON_ACCENT);
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Keys as they are printed on them.
+pub(crate) fn keycap(ui: &mut egui::Ui, keys: &str) -> egui::Response {
+    egui::Frame::new()
+        .fill(color::RAISED)
+        .stroke(Stroke::new(1.0, Color32::from_white_alpha(18)))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(7, 2))
+        .show(ui, |ui| ui.label(egui::RichText::new(keys).monospace().size(11.5).color(color::TEXT)))
+        .response
+}
+
+/// Keys and what they are for, as one thing to click.
+pub(crate) fn hint_chip(ui: &mut egui::Ui, keys: &str, word: &str) -> egui::Response {
+    let text = format!("{keys}   {word}");
+    let galley = ui.painter().layout_no_wrap(text, FontId::proportional(12.5), color::WEAK);
+    let (rect, response) = ui.allocate_exact_size(galley.size() + egui::vec2(24.0, 12.0), egui::Sense::click());
+    let lit = ui.ctx().animate_bool(response.id, response.hovered());
+    let painter = ui.painter();
+    painter.rect(
+        rect,
+        CornerRadius::same(rect.height() as u8 / 2),
+        color::RAISED.lerp_to_gamma(color::HOVER, lit),
+        Stroke::new(1.0, color::ACCENT.gamma_multiply(0.15 + 0.5 * lit)),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(rect.center() - galley.size() / 2.0, galley, color::TEXT);
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// The mark and the name, at the start of the top bar.
+pub(crate) fn brand(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
+    let painter = ui.painter();
+    glow(painter, rect, 7.0, color::aurora(0.4).gamma_multiply(0.3), 12);
+    aurora_rect(painter, rect, 7.0, 1.0);
+    // a play head, cut out of the light
+    let c = rect.center() + egui::vec2(0.8, 0.0);
+    let cut = vec![c + egui::vec2(-3.6, -5.0), c + egui::vec2(4.6, 0.0), c + egui::vec2(-3.6, 5.0)];
+    painter.add(egui::Shape::convex_polygon(cut, color::ON_ACCENT, Stroke::NONE));
+    ui.label(egui::RichText::new("reelforge").strong().size(15.0).color(color::TEXT));
+}
+
+/// The picture's light on the stage around it. There is no blurred copy of the frame to draw, so
+/// the light is laid down as layers of flat tiles, each tile one point of the picture, each layer
+/// shifted against the others: together they are the picture out of focus. `strength` is 1 for a
+/// picture that is the only light.
+pub(crate) fn ambient(painter: &egui::Painter, texture: egui::TextureId, frame: egui::Rect, strength: f32) {
+    const LAYERS: usize = 24;
+    /// Tiles across the lit area.
+    const TILES: usize = 9;
+    let reach = 0.55 * frame.width().max(frame.height());
+    let lit = frame.expand(reach).intersect(painter.clip_rect());
+    if lit.width() <= 0.0 || lit.height() <= 0.0 || reach <= 0.0 {
+        return;
+    }
+    let tile = (lit.width().max(lit.height()) / TILES as f32).max(8.0);
+    // light falls off with the distance from the picture's edge
+    let fall = |at: egui::Pos2| {
+        let d = frame.distance_to_pos(at) / reach;
+        (1.0 - d).clamp(0.0, 1.0).powi(2)
+    };
+    let alpha = strength * 0.6 / LAYERS as f32;
+    for layer in 0..LAYERS {
+        let shift = tile * egui::vec2((layer as f32 * 0.618).fract(), (layer as f32 * 0.382 + 0.5).fract());
+        let mut mesh = egui::Mesh::with_texture(texture);
+        let mut y = lit.top() - shift.y;
+        while y < lit.bottom() {
+            let mut x = lit.left() - shift.x;
+            while x < lit.right() {
+                let cell = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(tile, tile));
+                // the point of the picture this tile shows: the nearest part, pulled a little inwards
+                let from = (cell.center() - frame.center()) / (frame.size() + egui::vec2(reach, reach) * 2.0);
+                let uv = egui::pos2((0.5 + from.x * 1.5).clamp(0.04, 0.96), (0.5 + from.y * 1.5).clamp(0.04, 0.96));
+                let at = mesh.vertices.len() as u32;
+                for pos in [cell.left_top(), cell.right_top(), cell.right_bottom(), cell.left_bottom()] {
+                    let color = Color32::WHITE.gamma_multiply(alpha * fall(pos));
+                    mesh.vertices.push(egui::epaint::Vertex { pos, uv, color });
+                }
+                mesh.add_triangle(at, at + 1, at + 2);
+                mesh.add_triangle(at, at + 2, at + 3);
+                x += tile;
+            }
+            y += tile;
+        }
+        painter.add(egui::Shape::mesh(mesh));
+    }
+}
+
+/// A rounded rectangle filled along the aurora, left to right. A dimmed one (`alpha` under 1) is for
+/// what is live but not the first thing to look at.
+pub(crate) fn aurora_rect(painter: &egui::Painter, rect: egui::Rect, radius: f32, alpha: f32) {
+    gradient_rect(painter, rect, radius, color::ACCENT.gamma_multiply(alpha), color::ACCENT_2.gamma_multiply(alpha));
+}
+
+/// A rounded rectangle filled from `left` to `right`.
+pub(crate) fn gradient_rect(painter: &egui::Painter, rect: egui::Rect, radius: f32, left: Color32, right: Color32) {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    let r = radius.min(rect.width() / 2.0).min(rect.height() / 2.0);
+    let tint = |x: f32| left.lerp_to_gamma(right, ((x - rect.left()) / rect.width()).clamp(0.0, 1.0));
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(rect.center(), tint(rect.center().x));
+    // the corners, clockwise from the top left, each a quarter turn
+    const STEPS: usize = 6;
+    let corners = [
+        (rect.left_top() + egui::vec2(r, r), 2),
+        (rect.right_top() + egui::vec2(-r, r), 3),
+        (rect.right_bottom() + egui::vec2(-r, -r), 0),
+        (rect.left_bottom() + egui::vec2(r, -r), 1),
+    ];
+    for (centre, quarter) in corners {
+        for i in 0..=STEPS {
+            let a = (quarter as f32 + i as f32 / STEPS as f32) * std::f32::consts::FRAC_PI_2;
+            let at = centre + r * egui::vec2(a.cos(), a.sin());
+            mesh.colored_vertex(at, tint(at.x));
+        }
+    }
+    let n = mesh.vertices.len() as u32 - 1;
+    for i in 0..n {
+        mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+    // a mesh has hard edges: a hairline in the middle colour softens them
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(r as u8),
+        Stroke::new(1.0, left.lerp_to_gamma(right, 0.5).gamma_multiply(0.6)),
+        egui::StrokeKind::Inside,
+    );
+}
+
+/// Light around `rect`, as what is selected or live gives off.
+pub(crate) fn glow(painter: &egui::Painter, rect: egui::Rect, radius: f32, tint: Color32, blur: u8) {
+    let shadow = egui::Shadow { offset: [0, 0], blur, spread: 0, color: tint };
+    painter.add(shadow.as_shape(rect, CornerRadius::same(radius as u8)));
+}
+
+/// What a panel sits in: an island on the stage, with a rim that catches a little light.
+pub(crate) fn island(margin: i8) -> egui::Frame {
+    egui::Frame::new()
+        .fill(color::PANEL)
+        .stroke(Stroke::new(1.0, Color32::from_white_alpha(10)))
+        .corner_radius(CornerRadius::same(ISLAND_RADIUS))
+        .inner_margin(egui::Margin::same(margin))
+}
+
+/// How round an island's corners are.
+pub(crate) const ISLAND_RADIUS: u8 = 14;
+/// The gap between islands, and to the window's edge.
+pub(crate) const GAP: i8 = 6;
 
 /// A titled group on a panel.
 pub(crate) fn section<R>(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
         .fill(color::RAISED.gamma_multiply(0.6))
         .stroke(Stroke::new(1.0, color::LINE))
-        .corner_radius(CornerRadius::same(8))
+        .corner_radius(CornerRadius::same(10))
         .inner_margin(egui::Margin::same(10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());

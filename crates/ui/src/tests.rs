@@ -647,6 +647,39 @@ fn a_font_dropped_in_is_set_on_the_selected_title() {
 }
 
 #[test]
+fn a_person_is_cut_out_of_a_picture_and_the_frame_shows_around_them() {
+    use reelforge_model::{MediaKind, TrackKind};
+    let mut app = EditorApp::new(Session::default());
+    // a portrait in front of a studio backdrop, filling a green frame
+    app.execute("project.setCanvas", json!({"width": 256, "height": 256, "background": [0, 1, 0, 1]})).unwrap();
+    let portrait = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../matte/tests/astronaut.png")).unwrap();
+    app.import_bytes("portrait.png", portrait, false);
+    let media = app.project().media.values().find(|m| m.kind == MediaKind::Image).expect("imported").id.clone();
+    let track = first_track(&app, TrackKind::Video);
+    let clip =
+        app.execute("clip.add", json!({"track": track, "media": media})).unwrap()["clip"].as_str().unwrap().to_string();
+    let frame = |app: &EditorApp| {
+        let spec = reelforge_compile::compile(&app.project(), &Default::default()).unwrap();
+        reelforge_media::still(&spec, &app.media, Tick::ZERO, 1.0).unwrap()
+    };
+    let green = |p: [f32; 4]| p[1] > 0.98 && p[0] < 0.02 && p[2] < 0.02;
+    let (face, beside, suit) = ((128, 60), (20, 30), (110, 170));
+    let whole = frame(&app);
+    assert!(!green(whole.get(beside.0, beside.1)));
+
+    app.execute("clip.setPersonKey", json!({"clip": clip})).unwrap();
+    let cut = frame(&app);
+    // the person is as they were; beside the head the frame's own green shows
+    assert_eq!(cut.get(face.0, face.1), whole.get(face.0, face.1));
+    assert_eq!(cut.get(suit.0, suit.1), whole.get(suit.0, suit.1));
+    assert!(green(cut.get(beside.0, beside.1)), "{:?}", cut.get(beside.0, beside.1));
+    assert!(green(cut.get(235, 30)), "{:?}", cut.get(235, 30));
+    // and back
+    app.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(frame(&app).pixels, whole.pixels);
+}
+
+#[test]
 fn keying_finds_the_backdrop_or_says_it_guessed() {
     use reelforge_model::{ChromaKey, MediaKind, TrackKind};
     let mut app = EditorApp::new(Session::default());
@@ -832,4 +865,150 @@ fn trimming_speech_lists_pauses_and_fillers_and_cuts_the_ticked_ones() {
     app.spoken_find();
     let kinds: Vec<_> = app.spoken.found.iter().map(|f| f.kind).collect();
     assert_eq!(kinds, [Filler]);
+}
+
+#[test]
+fn the_palette_finds_actions_titles_and_markers_and_does_what_is_chosen() {
+    use crate::palette::Run;
+    let mut app = EditorApp::new(Session::default());
+    let ctx = eframe::egui::Context::default();
+    let text = first_track(&app, reelforge_model::TrackKind::Text);
+    let at = Tick::from_seconds(2.0);
+    let added = app.execute("clip.add", json!({"track": text, "text": "Hello there", "start": at})).unwrap();
+    let title = added["clip"].as_str().unwrap().to_string();
+    app.execute("marker.add", json!({"at": Tick::from_seconds(1.0), "note": "beat"})).unwrap();
+
+    let entries = app.palette_entries();
+    let find = |label: &str| entries.iter().find(|e| e.label.contains(label)).unwrap_or_else(|| panic!("{label}"));
+    assert_eq!(find("Hello there").run, Run::Clip(title.clone(), at));
+    assert_eq!(find("beat").run, Run::Seek(Tick::from_seconds(1.0)));
+    // nothing is selected yet: there is nothing to delete, and one clip is no group
+    assert!(!find("Duplicate").enabled);
+    assert!(find("Split").enabled);
+
+    // a title chosen is selected, with the playhead at its start
+    app.palette_run(Run::Clip(title.clone(), at), &ctx);
+    assert_eq!(app.selection(), vec![title.clone()]);
+    assert_eq!(app.playhead, at);
+    assert!(app.palette_entries().iter().any(|e| e.label.contains("Duplicate") && e.enabled));
+    // an edit chosen is the edit the key makes
+    app.palette_run(Run::Act(crate::timeline::Action::Delete), &ctx);
+    assert!(app.session().project().clip(&title).is_none());
+    app.palette_run(Run::Undo, &ctx);
+    assert!(app.session().project().clip(&title).is_some());
+    // a time past the end stops at the end
+    app.palette_run(Run::Seek(Tick::from_seconds(99.0)), &ctx);
+    assert_eq!(app.playhead, app.session().project().duration());
+    app.palette_run(Run::Lang(crate::i18n::Lang::Zh), &ctx);
+    assert!(app.palette_entries().iter().any(|e| e.label == "分割"));
+}
+
+#[test]
+fn a_shaky_video_is_watched_and_held_steady() {
+    use reelforge_media::export::{Renderer, export_with};
+    use reelforge_model::{MediaKind, TrackKind};
+    // a picture with something to follow everywhere in it, shaken a little each frame and
+    // exported: a second and a half of hand-held video whose shake is known
+    let (frames, shake) = (45usize, |i: usize| [0.015 * (i as f32 * 1.7).sin(), 0.012 * (i as f32 * 2.1).cos()]);
+    let mut png = Vec::new();
+    let hash =
+        |x: u32, y: u32| (x.wrapping_mul(0x9E37_79B1) ^ y.wrapping_mul(0x85EB_CA6B)).wrapping_mul(0xC2B2_AE35) >> 24;
+    let scene = image::RgbaImage::from_fn(480, 270, |x, y| {
+        let v = (hash(x / 13, y / 11) / 2 + hash(x / 37, y / 29) / 2) as u8;
+        image::Rgba([v, 255 - v / 2, (hash(x / 19, y / 17)) as u8, 255])
+    });
+    scene.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    let mut shot = EditorApp::new(Session::default());
+    shot.execute("project.setCanvas", json!({"width": 320, "height": 180})).unwrap();
+    shot.import_bytes("scene.png", png, false);
+    let scene = shot.project().media.values().find(|m| m.kind == MediaKind::Image).expect("imported").id.clone();
+    let track = first_track(&shot, TrackKind::Video);
+    let length = Tick(Tick::SECOND.0 / 30);
+    let on = json!({"track": track, "media": scene, "duration": {"ticks": (length * frames as i64).0}});
+    let held = shot.execute("clip.add", on).unwrap()["clip"].as_str().unwrap().to_string();
+    // larger than the frame, so that no edge comes into sight
+    shot.execute("clip.set", json!({"clip": held, "scale": 1.3})).unwrap();
+    let steps: Vec<Value> = (0..frames)
+        .flat_map(|i| {
+            let at = json!({"ticks": (length * i as i64).0});
+            [("x", shake(i)[0]), ("y", shake(i)[1])].map(|(prop, value)| {
+                json!({"id": "clip.setKey", "params": {"clip": held, "prop": prop, "at": at, "value": value, "ease": "hold"}})
+            })
+        })
+        .collect();
+    shot.execute("edit.batch", json!({"steps": steps})).unwrap();
+    let spec = reelforge_compile::compile(&shot.project(), &Default::default()).unwrap();
+    let (file, _) =
+        export_with(&spec, &shot.media, std::io::Cursor::new(Vec::new()), Renderer::Cpu, &mut |_| true).unwrap();
+
+    let mut app = EditorApp::new(Session::default());
+    app.lang = crate::i18n::Lang::Zh;
+    app.import_bytes("shaky.mp4", file.into_inner(), false);
+    let video = app.project().media.values().find(|m| m.kind == MediaKind::Video).expect("imported").id.clone();
+    let track = first_track(&app, TrackKind::Video);
+    let clip =
+        app.execute("clip.add", json!({"track": track, "media": video})).unwrap()["clip"].as_str().unwrap().to_string();
+    let steady = |app: &EditorApp| app.project().clip(&clip).unwrap().1.steady.clone();
+
+    // every frame the clip shows is watched; what is kept is where the picture was in each
+    app.listen("clip.stabilize", &json!({"clip": clip}));
+    assert!(app.status.starts_with("已分析 ") && app.status.contains("画面已稳住"), "{}", app.status);
+    let found = steady(&app).expect("steadied");
+    assert_eq!((found.amount, found.from, found.step), (0.5, Tick::ZERO, length));
+    assert!(found.path.len() >= frames, "{}", found.path.len());
+    for i in 1..frames {
+        let (was, x, y) = (found.path[i], shake(i)[0] - shake(0)[0], shake(i)[1] - shake(0)[1]);
+        assert!((was[0] - x).abs() < 0.004 && (was[1] - y).abs() < 0.004, "{i}: {was:?} against {x} {y}");
+        assert!(was[2].abs() < 0.3, "{i}: turned {}", was[2]);
+    }
+    // the exported layer is moved against it: where the picture ends up no longer jumps
+    let spec = reelforge_compile::compile(&app.project(), &Default::default()).unwrap();
+    let moved = &spec.layers[0].transform.position;
+    let jumps = |at: &dyn Fn(usize) -> f32| {
+        (2..frames - 2).map(|i| (at(i + 1) - 2.0 * at(i) + at(i - 1)).abs()).fold(0.0f32, f32::max)
+    };
+    let zoom = spec.layers[0].transform.scale.sample(Tick::ZERO);
+    let (before, after) =
+        (jumps(&|i| shake(i)[0]), jumps(&|i| shake(i)[0] + moved.sample(length * i as i64)[0] / zoom));
+    assert!(zoom > 1.0 && zoom < 1.2 && after < before / 4.0, "{zoom} {before} {after}");
+    // one step, which undo takes back; a title has no camera to follow, and it says so
+    app.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(steady(&app), None);
+    let text = first_track(&app, TrackKind::Text);
+    let title =
+        app.execute("clip.add", json!({"track": text, "text": "标题"})).unwrap()["clip"].as_str().unwrap().to_string();
+    app.listen("clip.stabilize", &json!({"clip": title}));
+    assert!(app.status.starts_with("防抖: "), "{}", app.status);
+}
+
+#[test]
+fn clips_another_client_changed_are_lit_with_its_name_and_the_news_is_on_a_toast() {
+    let hub = Arc::new(Hub::new(Session::default()));
+    let mut app = EditorApp::shared(hub.session().clone());
+    let ctx = eframe::egui::Context::default();
+    let video = first_track(&app, reelforge_model::TrackKind::Video);
+    // the editor's own edit lights nothing
+    let own = app.execute("clip.add", json!({"track": video, "color": [0, 0, 1], "duration": {"seconds": 1}})).unwrap();
+    let own = own["clip"].as_str().unwrap().to_string();
+    app.notice(1.0);
+    assert!(app.timeline.touched.is_empty());
+
+    // an agent adds a clip, then changes the editor's: both are lit, each once, with who it was
+    let added = agent(&hub, "clip.add", json!({"track": video, "color": [1, 0, 0], "start": {"seconds": 2}}));
+    app.notice(2.0);
+    agent(&hub, "clip.set", json!({"clip": own, "opacity": 0.5}));
+    app.notice(3.0);
+    agent(&hub, "clip.set", json!({"clip": own, "opacity": 0.8}));
+    app.notice(4.0);
+    let lit: Vec<(&str, &str, f64)> =
+        app.timeline.touched.iter().map(|t| (t.clip.as_str(), t.by.as_str(), t.at)).collect();
+    assert_eq!(lit, [(added["clip"].as_str().unwrap(), "agent test", 2.0), (own.as_str(), "agent test", 4.0)]);
+
+    // the news is put on a toast once, and it leaves after a while
+    ctx.run_ui(Default::default(), |ui| app.toasts(ui.ctx())).textures_delta.clear();
+    let (text, warn, _) = app.toast.clone().expect("a toast");
+    assert!(text.contains("agent test") && !warn, "{text}");
+    app.toast = None;
+    ctx.run_ui(Default::default(), |ui| app.toasts(ui.ctx())).textures_delta.clear();
+    assert!(app.toast.is_none(), "the same news is not shown twice");
 }
