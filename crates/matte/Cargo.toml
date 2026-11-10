@@ -1,6 +1,6 @@
 [package]
 name = "reelforge-matte"
-description = "Cuts a person out of a picture (智能抠像): a small segmentation model (MediaPipe's selfie segmentation, Apache-2.0, bundled) run by a pure-Rust reader and interpreter, and its answer fitted to the picture's own edges."
+description = "Cuts a person out of a picture (智能抠像): a small segmentation model (MediaPipe's selfie segmentation, Apache-2.0, bundled) run by a pure-Rust reader and interpreter, and its answer fitted to the picture's own edges. And a product off the plain backdrop of its photograph (商品抠图), with no model."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

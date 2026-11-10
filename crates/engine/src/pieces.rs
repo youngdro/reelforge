@@ -341,6 +341,19 @@ pub const PROMOS: &[Promo] = &[
         )
     },
     Promo {
+        lines: &["24 小时长效保温"],
+        millis: 4000,
+        pictured: true,
+        ..piece(
+            "productStage",
+            Product,
+            "Product stage",
+            "商品展台",
+            "保温杯 Pro",
+            "A product lifted off the backdrop of its photograph and stood in a pool of light, its shadow on the floor, its name under it. `media` is the photograph (an image or video of the project, taken against a plain backdrop: see clip.setCutout), `text` the name, `lines[0]` a line under the name; `color` is the light's.",
+        )
+    },
+    Promo {
         lines: &["到手价 ¥99"],
         millis: 4000,
         ..piece(
@@ -466,6 +479,8 @@ pub(crate) struct Part {
     pub carried: Option<usize>,
     /// Smeared along its way while it moves (motion blur).
     pub blur: bool,
+    /// A picture lifted off its plain backdrop and stood on the ground, its shadow under it.
+    pub stood: bool,
 }
 
 fn secs(s: f64) -> Tick {
@@ -489,7 +504,13 @@ impl Part {
             fit: None,
             carried: None,
             blur: false,
+            stood: false,
         }
+    }
+
+    fn stood(mut self) -> Part {
+        self.stood = true;
+        self
     }
 
     /// A picture of the project's media, `fit` of the frame it would fill.
@@ -1351,6 +1372,46 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
                     )
                 })
                 .collect()
+        }
+        "productStage" => {
+            // light behind the thing and on the floor under it, both wide and soft: it stands
+            // in them wherever its foot is in its photograph
+            let light = |size: [f32; 2], strength: f32| Shape {
+                fill: Some(Fill::Radial { from: faded(lighter(accent, 0.55), strength), to: faded(accent, 0.0) }),
+                ..Shape::new(ShapeKind::Ellipse, size, accent)
+            };
+            let mut v = vec![
+                Part::shape(light([1060.0, 1060.0], 0.5)).at(0.0, -110.0).enter(AnimKind::Fade).over(0.8),
+                Part::shape(light([900.0, 230.0], 0.7)).at(0.0, 250.0).enter(AnimKind::ZoomIn).over(0.8),
+            ];
+            match &ask.media {
+                Some(media) => {
+                    v.push(Part::picture(media, 0.6).at(0.0, -80.0).stood().enter(AnimKind::Pop).over(0.7).after(0.2));
+                }
+                None => v.push(
+                    Part::shape(Shape {
+                        fill: Some(Fill::Linear { from: lighter(accent, 0.6), to: lighter(accent, 0.25), angle: 90.0 }),
+                        shadow: shadow(),
+                        ..plate([300.0, 520.0], 60.0, accent)
+                    })
+                    .at(0.0, -40.0)
+                    .enter(AnimKind::Pop)
+                    .over(0.7)
+                    .after(0.2),
+                ),
+            }
+            v.push(
+                Part::text(text(), fit(&ask.text, 78.0, 920.0), WHITE)
+                    .at(0.0, 430.0)
+                    .enter(AnimKind::CharRise)
+                    .after(0.5),
+            );
+            if !line(0).is_empty() {
+                let words = line(0);
+                let size = fit(&words, 44.0, 920.0);
+                v.push(Part::text(words, size, faded(WHITE, 0.85)).at(0.0, 520.0).enter(AnimKind::Fade).after(0.8));
+            }
+            v
         }
         "productCard" => {
             // everything on the card is carried by it, so it swings in and rocks as one object

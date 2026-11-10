@@ -1099,7 +1099,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
                         nullable(ident("An image or video of the project the piece shows; null takes it off."))
                     } else {
                         ident(
-                            "An image or video of the project the piece shows, such as m2: the product on productCard.",
+                            "An image or video of the project the piece shows, such as m2: the product on productCard or productStage.",
                         )
                     },
                 ),
@@ -1269,6 +1269,62 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["clip"],
         ),
+        "clip.setCutout" => {
+            let unit = |doc: &str| json!({"type": "number", "minimum": 0, "maximum": 1, "description": doc});
+            object(
+                vec![
+                    clip(),
+                    ("on", json!({"type": "boolean", "description": "false removes the cut-out; true when left out."})),
+                    ("tolerance", unit("How far from the backdrop's colour still goes; 0.5 at first.")),
+                    (
+                        "holes",
+                        unit("How readily backdrop-coloured places the edges do not reach go; 0 never, 0.5 at first."),
+                    ),
+                ],
+                &["clip"],
+            )
+        }
+        "clip.setShadow" => {
+            let within = |low: f64, high: f64, doc: &str| json!({"type": "number", "minimum": low, "maximum": high, "description": doc});
+            object(
+                vec![
+                    clip(),
+                    ("on", json!({"type": "boolean", "description": "false removes the shadow; true when left out."})),
+                    (
+                        "kind",
+                        json!({"enum": reelforge_model::CastShadow::KINDS, "description": "A ready-made shadow to start from: drop (floating), ground (standing on a floor), long (a low sun), glow (a white light all round)."}),
+                    ),
+                    (
+                        "color",
+                        json!({"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1}, "minItems": 3, "maxItems": 4, "description": "Its colour as on screen: [r, g, b], each 0 to 1."}),
+                    ),
+                    ("opacity", within(0.0, 1.0, "How dark it is.")),
+                    (
+                        "x",
+                        within(
+                            -1.0,
+                            1.0,
+                            "How far right of the picture it lies, in shares of the picture's shorter side.",
+                        ),
+                    ),
+                    ("y", within(-1.0, 1.0, "How far below.")),
+                    ("blur", within(0.0, 0.5, "How soft it is, in shares of the picture's shorter side.")),
+                    (
+                        "flat",
+                        within(
+                            0.0,
+                            1.0,
+                            "How much of its height is pressed away towards the outline's lowest line: a shadow lying on the ground.",
+                        ),
+                    ),
+                    (
+                        "lean",
+                        within(-1.0, 1.0, "How far its top is pushed sideways, in shares of the outline's height."),
+                    ),
+                ],
+                &["clip"],
+            )
+        }
         "clip.setChromaKey" => {
             let unit = |doc: &str| json!({"type": "number", "minimum": 0, "maximum": 1, "description": doc});
             object(

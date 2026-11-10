@@ -36,7 +36,7 @@ pub use brand::{Brand, CopyField, CopyLine, Forms, Made, fields_in, is_field_nam
 pub use color::{Adjust, ColorGrade, Filter, FilterKind, LutUse};
 pub use export::{Codec, ExportSettings, Quality, Resolution};
 pub use fx::{Fx, FxChannel, FxGroup, FxKind, FxSample};
-pub use look::{BlendMode, ChromaKey, Crop, Look, Mask, MaskKind};
+pub use look::{BlendMode, CastShadow, ChromaKey, Crop, Cutout, Look, Mask, MaskKind};
 pub use path::MotionPath;
 pub use shape::{Counter, Fill, Shape, ShapeKind, ShapeShadow, Stroke};
 pub use steady::{Steadied, Steady};

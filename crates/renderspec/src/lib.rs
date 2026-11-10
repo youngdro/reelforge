@@ -1532,6 +1532,23 @@ pub struct Effect {
 /// - `key.person@1`: keeps the people in a media or composition layer's picture and makes the
 ///   rest see-through, as found by a segmentation model looking at the picture (it has no
 ///   parameters). It is done to the picture before it is placed and before any other effect.
+/// - `key.backdrop@1`: makes the plain backdrop of a media or composition layer's picture
+///   see-through and keeps what stands before it (a product on a studio sweep). The backdrop is
+///   the colour the picture's edges show, as a smooth surface fitted to them; what is that
+///   colour and reached from the edges goes. `tolerance` (0 to 1, default 0.5) is how far from
+///   the backdrop's colour still counts as backdrop, `holes` (0 to 1, default 0.5) how readily
+///   backdrop-coloured places the edges do not reach go as well (0: never). The backdrop's share
+///   is taken out of the colours along the outline. Like `key.person@1` it is done to the whole
+///   picture before it is placed, after that one and before any other effect.
+/// - `shadow.drop@1`: a shadow of a media or composition layer's picture as it shows (after its
+///   keys, crop and mask), drawn under the layer and moving with it. `r`, `g`, `b` are its
+///   colour, sRGB-encoded (default black), and `opacity` (0 to 1, default 0.5) how dark it is,
+///   times the layer's own. `x` and `y` (defaults 0.02 and 0.03) move it right and down the
+///   frame, and `blur` (default 0.03) is its softness as a standard deviation, all three in
+///   shares of the shorter side of the picture as it is placed. `flat` (0 to 1, default 0)
+///   lays it on the ground: the outline is pressed towards its lowest line until that much of
+///   its height is gone, and `lean` (-1 to 1, default 0) pushes its top sideways by that share
+///   of the outline's height.
 /// - The `distort.*` effects change where a layer's picture is read, in this order whatever
 ///   their order in the list, each once per layer. Positions are fractions of the layer's visible
 ///   picture and are held at its edges.
@@ -1546,6 +1563,10 @@ pub mod effects {
     pub const CHROMA_KEY: &str = "key.chroma@1";
     /// Everything but the people made see-through.
     pub const PERSON_KEY: &str = "key.person@1";
+    /// A plain backdrop made see-through.
+    pub const BACKDROP_KEY: &str = "key.backdrop@1";
+    /// A shadow under the layer.
+    pub const SHADOW: &str = "shadow.drop@1";
     /// Rows sliding along a sine.
     pub const WAVE: &str = "distort.wave@1";
     /// Bands sliding sideways.

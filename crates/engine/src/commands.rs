@@ -3,11 +3,11 @@
 use reelforge_compile::{CompileOptions, compile};
 use reelforge_model::timeline as model_timeline;
 use reelforge_model::{
-    Adjust, AnimKind, Animation, BlendMode, ChromaKey, Clip, ClipContent, ClipEffect, ClipTransform, Codec, CurvePoint,
-    CurvePreset, Denoise, Ease, ExportSettings, Filter, FilterKind, Fx, FxGroup, FxKind, Inbetween, Karaoke,
-    KaraokeMode, Key, Loop, LoopKind, LutUse, Mask, MaskKind, Media, MediaKind, Outline, Project, Prop, Quality,
-    Resolution, Shadow, Steady, Timeline, TitleStyle, Track, TrackKind, Transition, TransitionKind, Voice, VoiceKind,
-    anim, export, timing,
+    Adjust, AnimKind, Animation, BlendMode, CastShadow, ChromaKey, Clip, ClipContent, ClipEffect, ClipTransform, Codec,
+    CurvePoint, CurvePreset, Cutout, Denoise, Ease, ExportSettings, Filter, FilterKind, Fx, FxGroup, FxKind, Inbetween,
+    Karaoke, KaraokeMode, Key, Loop, LoopKind, LutUse, Mask, MaskKind, Media, MediaKind, Outline, Project, Prop,
+    Quality, Resolution, Shadow, Steady, Timeline, TitleStyle, Track, TrackKind, Transition, TransitionKind, Voice,
+    VoiceKind, anim, export, timing,
 };
 use reelforge_renderspec::AssetKind;
 use reelforge_time::{FrameRate, Tick};
@@ -634,6 +634,24 @@ static REGISTRY: &[CommandSpec] = &[
         run: clip_set_person_key,
     },
     CommandSpec {
+        id: "clip.setCutout",
+        label: "Cut Out From Backdrop",
+        params: r#"{"clip": id, "on"?: bool, "tolerance"?: 0-1, "holes"?: 0-1}"#,
+        doc: "Makes the plain backdrop of a video, picture or compound clip see-through and keeps what stands before it: a product photographed on a white table or a studio sweep is lifted off it, so the tracks below show around it. The backdrop is whatever colour the picture's edges show, white and grey included, and may be lit unevenly (lighter at the top, darker in the corners); what is that colour and reached from the edges goes, so a white label on the product stays. Along the outline the backdrop's share is taken out of the colours, so no pale rim is left. `tolerance` (0.5 at first) is how far from the backdrop's colour still goes: raise it when the backdrop's own shadows or creases stay, lower it when pale parts of the product go. `holes` (0.5 at first) is how readily backdrop-coloured places the edges do not reach go as well, such as the inside of a handle: 0 keeps them all. It is worked out from each picture as it is drawn; nothing is uploaded. It needs a backdrop of one colour all round the subject: a room, a street or a patterned cloth is not one (use clip.setPersonKey for a person, clip.setChromaKey for a green screen), and a product the colour of its backdrop cannot be told from it. `on` false (true when left out) removes it. Look at the result with render.frame; clip.setShadow puts a shadow under what is left.",
+        edits: true,
+        enabled: always,
+        run: clip_set_cutout,
+    },
+    CommandSpec {
+        id: "clip.setShadow",
+        label: "Shadow",
+        params: r#"{"clip": id, "on"?: bool, "kind"?: "drop"|"ground"|"long"|"glow", "color"?: [r, g, b], "opacity"?: 0-1, "x"?: -1..1, "y"?: -1..1, "blur"?: 0-0.5, "flat"?: 0-1, "lean"?: -1..1}"#,
+        doc: "Puts a shadow under a video, picture or compound clip: of its outline as it shows, so of a cut-out product (clip.setCutout), a person (clip.setPersonKey), a keyed green screen, a picture with see-through parts, or of the frame of a masked or plain picture. It moves, turns and fades with the clip. `kind` picks a ready-made one: `drop` (when nothing is said) floats the thing before what is behind it, `ground` stands it on a floor with a low soft pool under its foot, `long` is the shadow of a low sun falling to the right, `glow` a white light all round it. The rest change one thing each: `color` as on screen, `opacity` how dark, `x` and `y` how far right and below the picture it lies and `blur` how soft it is (shares of the picture's shorter side), `flat` how much of its height is pressed away towards the outline's lowest line (0 a shadow on a wall behind, towards 1 one lying on the ground), `lean` how far its top is pushed sideways (shares of the outline's height; negative to the left). Values given without `kind` change the shadow the clip has. `on` false removes it.",
+        edits: true,
+        enabled: always,
+        run: clip_set_shadow,
+    },
+    CommandSpec {
         id: "clip.setBlend",
         label: "Blend Mode",
         params: r#"{"clip": id, "mode": "normal"|"add"|"multiply"|"screen"|"overlay"|"darken"|"lighten"|"softLight"|"hardLight"|"difference"|"colorDodge"|"colorBurn"}"#,
@@ -853,7 +871,7 @@ static REGISTRY: &[CommandSpec] = &[
         id: "promo.add",
         label: "Add Ready-Made Piece",
         params: r#"{"kind": id, "start"?: time, "duration"?: time, "text"?: string, "lines"?: [string], "value"?: number, "values"?: [number], "from"?: number, "color"?: [r,g,b,a], "color2"?: [r,g,b,a], "side"?: "right"|"left"|"up"|"down", "media"?: id, "x"?, "y"?, "scale"?, "compound"?: bool}"#,
-        doc: "Adds a ready-made piece for a marketing video (promo.list has them all: price tags, coupons, spend-and-save tiers, flash-sale progress, feature callouts and checklists, spec tables, ratings, reviews, title bars, big numbers, buy buttons, store and end cards, a colour sweep, a product card that swings in, a card that flips to its other side, titles that spring, pop word by word or write themselves, and more) as grouped shape and title clips on free tracks above the others, each animated in. `text` replaces its words ({n} is its number), `lines` its further lines (the rows of a list, or the small print), `value` the number it counts to (a countdown counts down from it, a second a second), `values` the numbers of a piece that compares, `from` where counting starts; `color` is its main colour and `color2` the one beside it (the brand's, see brand.set, or red and yellow); `side` is the way it leans or points; `media` is an image or video of the project a piece shows (the product on productCard); `x`, `y` and `scale` place it. Each piece has its own place and length (3 s for most) unless told; it starts at 0 unless `start` says. `compound: true` folds it into one compound clip (the result is that clip, its `parts` inside; clip.uncompound takes it apart).",
+        doc: "Adds a ready-made piece for a marketing video (promo.list has them all: price tags, coupons, spend-and-save tiers, flash-sale progress, feature callouts and checklists, spec tables, ratings, reviews, title bars, big numbers, buy buttons, store and end cards, a colour sweep, a product card that swings in, a product stage, a card that flips to its other side, titles that spring, pop word by word or write themselves, and more) as grouped shape and title clips on free tracks above the others, each animated in. `text` replaces its words ({n} is its number), `lines` its further lines (the rows of a list, or the small print), `value` the number it counts to (a countdown counts down from it, a second a second), `values` the numbers of a piece that compares, `from` where counting starts; `color` is its main colour and `color2` the one beside it (the brand's, see brand.set, or red and yellow); `side` is the way it leans or points; `media` is an image or video of the project a piece shows (the product on productCard; productStage lifts it off its plain backdrop and stands it in a pool of light); `x`, `y` and `scale` place it. Each piece has its own place and length (3 s for most) unless told; it starts at 0 unless `start` says. `compound: true` folds it into one compound clip (the result is that clip, its `parts` inside; clip.uncompound takes it apart).",
         edits: true,
         enabled: always,
         run: crate::promo::promo_add,
@@ -3335,6 +3353,75 @@ fn clip_set_person_key(s: &mut Session, v: &Value) -> CmdResult {
         }
         proj.clip_mut(&id).expect("found above").look.person = on;
         Ok(json!({ "clip": id, "person": on }))
+    })
+}
+
+/// A video, picture or compound clip on a video track, or why `id` is not one that can have
+/// `what` done to it.
+fn pictured(proj: &Project, id: &str, what: &str) -> Result<(), EngineError> {
+    let (ti, clip) = proj.clip(id).ok_or_else(|| not_found("clip", id))?;
+    if proj.tracks[ti].kind != TrackKind::Video || !clip.is_picture() {
+        return Err(EngineError::Params(format!("only video, picture and compound clips can {what}")));
+    }
+    Ok(())
+}
+
+fn clip_set_cutout(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let on = p.opt_bool("on")?.unwrap_or(true);
+    let share = |name: &str| match p.opt_f64(name)? {
+        Some(x) if (0.0..=1.0).contains(&x) => Ok(Some(x as f32)),
+        Some(_) => Err(EngineError::Params(format!("`{name}` must be from 0 to 1"))),
+        None => Ok(None),
+    };
+    let (tolerance, holes) = (share("tolerance")?, share("holes")?);
+    s.edit("Cut Out From Backdrop", |proj| {
+        pictured(proj, &id, "be cut out from their backdrop")?;
+        let clip = proj.clip_mut(&id).expect("found above");
+        clip.look.cutout = on.then(|| {
+            let was = clip.look.cutout.unwrap_or_default();
+            Cutout { tolerance: tolerance.unwrap_or(was.tolerance), holes: holes.unwrap_or(was.holes) }
+        });
+        Ok(json!({ "clip": id, "cutout": serde_json::to_value(clip.look.cutout).expect("serialises") }))
+    })
+}
+
+fn clip_set_shadow(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let on = p.opt_bool("on")?.unwrap_or(true);
+    let kind =
+        match p.opt_str("kind")? {
+            None => None,
+            Some(name) => Some(CastShadow::kind(name).ok_or_else(|| {
+                EngineError::Params(format!("`kind` must be one of {}", CastShadow::KINDS.join(", ")))
+            })?),
+        };
+    let color = p.opt_color("color")?.map(|c| [c[0], c[1], c[2]]);
+    let within = |name: &str, low: f64, high: f64| match p.opt_f64(name)? {
+        Some(x) if (low..=high).contains(&x) => Ok(Some(x as f32)),
+        Some(_) => Err(EngineError::Params(format!("`{name}` must be from {low} to {high}"))),
+        None => Ok(None),
+    };
+    let (opacity, blur, flat) = (within("opacity", 0.0, 1.0)?, within("blur", 0.0, 0.5)?, within("flat", 0.0, 1.0)?);
+    let (x, y, lean) = (within("x", -1.0, 1.0)?, within("y", -1.0, 1.0)?, within("lean", -1.0, 1.0)?);
+    s.edit("Shadow", |proj| {
+        pictured(proj, &id, "cast a shadow")?;
+        let clip = proj.clip_mut(&id).expect("found above");
+        clip.look.shadow = on.then(|| {
+            let was = kind.or(clip.look.shadow).unwrap_or_default();
+            CastShadow {
+                color: color.unwrap_or(was.color),
+                opacity: opacity.unwrap_or(was.opacity),
+                x: x.unwrap_or(was.x),
+                y: y.unwrap_or(was.y),
+                blur: blur.unwrap_or(was.blur),
+                flat: flat.unwrap_or(was.flat),
+                lean: lean.unwrap_or(was.lean),
+            }
+        });
+        Ok(json!({ "clip": id, "shadow": serde_json::to_value(clip.look.shadow).expect("serialises") }))
     })
 }
 

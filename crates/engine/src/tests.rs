@@ -1749,6 +1749,100 @@ fn the_people_in_a_clip_are_cut_out_and_put_back() {
 }
 
 #[test]
+fn a_product_is_cut_out_from_its_backdrop_and_casts_a_shadow() {
+    let mut s = Session::default();
+    let v = video_track(&s);
+    let m = s
+        .execute(
+            "media.import",
+            &json!({"path": "/nowhere/flask.png", "kind": "image", "size": [1200, 1600], "sha256": "cd".repeat(32)}),
+        )
+        .unwrap()["media"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let c = s.execute("clip.add", &json!({"track": v, "media": m})).unwrap()["clip"].as_str().unwrap().to_string();
+    let look = |s: &Session| serde_json::to_value(&s.project().clip(&c).unwrap().1.look).unwrap();
+    let fx = |s: &mut Session| -> Vec<Value> {
+        s.execute("render.compile", &json!({})).unwrap()["layers"][0]["fx"].as_array().cloned().unwrap_or_default()
+    };
+
+    // cut out as most studio pictures need, when nothing else is said
+    let set = s.execute("clip.setCutout", &json!({"clip": c})).unwrap();
+    assert_eq!(set, json!({"clip": c, "cutout": {"tolerance": 0.5, "holes": 0.5}}));
+    // one thing changed: the other stays as it was
+    s.execute("clip.setCutout", &json!({"clip": c, "tolerance": 0.75})).unwrap();
+    s.execute("clip.setCutout", &json!({"clip": c, "holes": 0})).unwrap();
+    assert_eq!(look(&s)["cutout"], json!({"tolerance": 0.75, "holes": 0.0}));
+    let layer = fx(&mut s);
+    assert_eq!(layer[0]["id"], json!("key.backdrop@1"));
+    let near = |v: &Value, want: f64| (v.as_f64().unwrap() - want).abs() < 1e-6;
+    assert!(near(&layer[0]["params"]["tolerance"], 0.75) && near(&layer[0]["params"]["holes"], 0.0), "{layer:?}");
+
+    // a shadow: floating when nothing is said, a kind by name, then one thing at a time
+    let set = s.execute("clip.setShadow", &json!({"clip": c})).unwrap();
+    assert!(near(&set["shadow"]["opacity"], 0.45) && near(&set["shadow"]["flat"], 0.0), "{set}");
+    let set = s.execute("clip.setShadow", &json!({"clip": c, "kind": "ground", "opacity": 0.3})).unwrap();
+    assert!(near(&set["shadow"]["flat"], 0.86) && near(&set["shadow"]["opacity"], 0.3), "{set}");
+    let set =
+        s.execute("clip.setShadow", &json!({"clip": c, "color": [0.2, 0, 0.4], "lean": -0.25, "blur": 0.05})).unwrap();
+    let shadow = &set["shadow"];
+    assert!(near(&shadow["flat"], 0.86) && near(&shadow["opacity"], 0.3) && near(&shadow["lean"], -0.25), "{set}");
+    assert!(near(&shadow["color"][2], 0.4) && near(&shadow["blur"], 0.05), "{set}");
+    // the renderer is told after everything that changes the picture's outline or colours
+    let layer = fx(&mut s);
+    assert_eq!(layer.last().unwrap()["id"], json!("shadow.drop@1"));
+    assert!(near(&layer.last().unwrap()["params"]["lean"], -0.25));
+    let features = s.execute("render.compile", &json!({})).unwrap()["engine"]["features"].clone();
+    assert!(features.as_array().unwrap().contains(&json!("shadow.drop@1")));
+    assert!(features.as_array().unwrap().contains(&json!("key.backdrop@1")));
+    // both are the clip's: kept by its halves when it is split
+    let right = s.execute("clip.split", &json!({"clip": c, "at": {"seconds": 1}})).unwrap()["right"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let half = s.project().clip(&right).unwrap().1.look.clone();
+    assert!(half.cutout.is_some() && half.shadow.is_some_and(|s| s.lean == -0.25));
+    s.execute("edit.undo", &json!({})).unwrap();
+
+    // off, and undone
+    s.execute("clip.setShadow", &json!({"clip": c, "on": false})).unwrap();
+    s.execute("clip.setCutout", &json!({"clip": c, "on": false})).unwrap();
+    assert_eq!(look(&s), json!({}));
+    assert!(fx(&mut s).is_empty());
+    s.execute("edit.undo", &json!({})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(look(&s)["cutout"].is_object() && look(&s)["shadow"].is_object());
+
+    // a compound clip is a picture too; a colour or a title is not, and values keep to their ranges
+    let red = add_red(&mut s, 10.0, 2.0);
+    for command in ["clip.setCutout", "clip.setShadow"] {
+        assert!(s.execute(command, &json!({"clip": red})).is_err(), "{command}");
+        assert!(s.execute(command, &json!({"clip": "nothing"})).is_err(), "{command}");
+        assert!(s.execute(command, &json!({"clip": c, "on": "yes"})).is_err(), "{command}");
+    }
+    for bad in [json!({"tolerance": 1.5}), json!({"holes": -0.1}), json!({"softness": 0.2})] {
+        let mut params = bad.clone();
+        params["clip"] = json!(c);
+        assert!(s.execute("clip.setCutout", &params).is_err(), "{bad}");
+    }
+    for bad in [
+        json!({"kind": "sun"}),
+        json!({"opacity": 2}),
+        json!({"blur": 0.6}),
+        json!({"x": -2}),
+        json!({"color": "black"}),
+    ] {
+        let mut params = bad.clone();
+        params["clip"] = json!(c);
+        assert!(s.execute("clip.setShadow", &params).is_err(), "{bad}");
+    }
+    let folded = s.execute("clip.compound", &json!({"clips": [c]})).unwrap()["clip"].as_str().unwrap().to_string();
+    assert!(s.execute("clip.setShadow", &json!({"clip": folded, "kind": "glow"})).is_ok());
+    assert!(s.execute("clip.setCutout", &json!({"clip": folded})).is_ok());
+}
+
+#[test]
 fn a_colour_is_keyed_out_and_pictures_are_distorted() {
     let mut s = Session::default();
     let v = video_track(&s);
@@ -2544,7 +2638,7 @@ fn promo_pieces_are_grouped_clips_on_free_tracks_in_one_step() {
     let listed = s.execute("promo.list", &json!({})).unwrap();
     let kinds: Vec<String> =
         listed["promos"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap().to_string()).collect();
-    assert_eq!(kinds.len(), 36);
+    assert_eq!(kinds.len(), 37);
     // the first seven are a shape and a title each
     let kinds = &kinds[..7];
     let tracks = s.project().tracks.len();

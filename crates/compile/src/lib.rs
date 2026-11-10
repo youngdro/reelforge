@@ -477,6 +477,12 @@ fn lower_tracks(
                         if media && clip.look.person {
                             fx.push(Effect { id: effects::PERSON_KEY.into(), params: Default::default(), asset: None });
                         }
+                        if pictured && let Some(c) = clip.look.cutout {
+                            fx.push(constant_fx(
+                                effects::BACKDROP_KEY,
+                                &[("tolerance", c.tolerance), ("holes", c.holes)],
+                            ));
+                        }
                         fx.extend(clip.look.chroma.iter().filter(|_| media).map(chroma_fx));
                         fx.extend(color_fx(clip, &shape, step, &mut asset_for)?);
                         fx.extend(clip.effects.iter().map(|e| Effect {
@@ -486,6 +492,21 @@ fn lower_tracks(
                         }));
                         fx.extend(above_fx(clip, &shape, &covers, step));
                         fx.extend(distort_fx(clip, &shape, step));
+                        // its shadow, of the outline its keys, crop and mask leave
+                        if pictured && let Some(s) = clip.look.shadow.filter(|s| s.opacity > 0.0) {
+                            let values = [
+                                ("r", s.color[0]),
+                                ("g", s.color[1]),
+                                ("b", s.color[2]),
+                                ("opacity", s.opacity),
+                                ("x", s.x),
+                                ("y", s.y),
+                                ("blur", s.blur),
+                                ("flat", s.flat),
+                                ("lean", s.lean),
+                            ];
+                            fx.push(constant_fx(effects::SHADOW, &values));
+                        }
                         // out of focus: pictures only, and one blur a layer
                         if pictured
                             && !fx.iter().any(|e| e.id == effects::BLUR)
@@ -665,6 +686,15 @@ fn above_fx(clip: &Clip, shape: &Shape, covers: &[(Tick, Tick, &Clip)], step: Ti
         }
     }
     fx
+}
+
+/// An effect whose parameters do not change.
+fn constant_fx(id: &str, values: &[(&str, f32)]) -> Effect {
+    Effect {
+        id: id.into(),
+        params: values.iter().map(|(name, v)| (name.to_string(), Animated::Constant(*v))).collect(),
+        asset: None,
+    }
 }
 
 /// A clip's keyed colour as `key.chroma@1`.
@@ -1237,9 +1267,13 @@ mod tests {
         video.look.person = true;
         video.look.chroma = Some(reelforge_model::ChromaKey::new([0.1, 0.8, 0.2]));
         video.look.backdrop = Some(0.5);
-        // a colour has no people to cut out, whatever its look says
+        video.look.cutout = Some(reelforge_model::Cutout { tolerance: 0.7, holes: 0.0 });
+        video.look.shadow = reelforge_model::CastShadow::kind("ground");
+        // a colour has no people to cut out, whatever its look says, and casts no shadow
         let mut flat = clip("c21", Tick::SECOND * 2, Tick::SECOND, ClipContent::Solid { color: [1.0; 4] });
         flat.look.person = true;
+        flat.look.cutout = Some(reelforge_model::Cutout::default());
+        flat.look.shadow = Some(reelforge_model::CastShadow::default());
         p.tracks[0].clips = vec![video, flat];
         let spec = compile(&p, &CompileOptions::default()).unwrap();
         let fx = |id: &str| -> Vec<&str> {
@@ -1247,15 +1281,31 @@ mod tests {
         };
         // the people first, then the colour keyed out of what is left; the blurred copy behind
         // stays whole (the people are cut out of the clip, not out of the frame)
-        assert_eq!(fx("c20"), ["key.person@1", "key.chroma@1"]);
+        assert_eq!(fx("c20"), ["key.person@1", "key.backdrop@1", "key.chroma@1", "shadow.drop@1"]);
         assert_eq!(fx("c20~backdrop"), ["blur.gaussian@1"]);
+        let of = |id: &str| -> Vec<(String, f32)> {
+            let layer = spec.layers.iter().find(|l| l.id == "c20").unwrap();
+            let fx = layer.fx.iter().find(|e| e.id == id).unwrap();
+            fx.params.iter().map(|(k, v)| (k.clone(), v.sample(Tick::ZERO))).collect()
+        };
+        assert_eq!(of("key.backdrop@1"), [("holes".to_string(), 0.0), ("tolerance".to_string(), 0.7)]);
+        let shadow = of("shadow.drop@1");
+        assert_eq!(shadow.len(), 9);
+        assert!(shadow.contains(&("flat".to_string(), 0.86)) && shadow.contains(&("opacity".to_string(), 0.5)));
+        for needed in ["key.backdrop@1", "shadow.drop@1"] {
+            assert!(spec.engine.features.contains(&needed.to_string()), "{needed}");
+        }
         assert!(fx("c21").is_empty());
         assert!(spec.engine.features.contains(&"key.person@1".to_string()));
         assert!(spec.layers.iter().find(|l| l.id == "c20").unwrap().fx[0].params.is_empty());
         // off: nothing is asked of the renderer
         p.tracks[0].clips[0].look.person = false;
+        p.tracks[0].clips[0].look.cutout = None;
+        p.tracks[0].clips[0].look.shadow.as_mut().unwrap().opacity = 0.0;
         let spec = compile(&p, &CompileOptions::default()).unwrap();
-        assert!(!spec.engine.features.contains(&"key.person@1".to_string()));
+        for gone in ["key.person@1", "key.backdrop@1", "shadow.drop@1"] {
+            assert!(!spec.engine.features.contains(&gone.to_string()), "{gone}");
+        }
     }
 
     #[test]

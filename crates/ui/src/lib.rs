@@ -383,6 +383,10 @@ struct LookEdit {
     chroma: Option<Option<reelforge_model::ChromaKey>>,
     /// Whether its people are cut out (the same clips again).
     person: bool,
+    /// How it is cut out from its plain backdrop, if it is (videos, pictures, compound clips).
+    cutout: Option<reelforge_model::Cutout>,
+    /// The shadow under it, if it has one (the same clips).
+    shadow: Option<reelforge_model::CastShadow>,
 }
 
 /// A picture clip's colour, as the inspector edits it.
@@ -3193,6 +3197,8 @@ impl EditorApp {
                     && p.clip(&id).is_some_and(|(ti, _)| p.tracks[ti].kind == TrackKind::Video))
                 .then_some(clip.look.chroma),
                 person: clip.look.person,
+                cutout: clip.look.cutout,
+                shadow: clip.look.shadow,
             }),
             piece: reelforge_engine::made_of(&p, &id).and_then(|(_, made)| {
                 let (i, promo) = reelforge_engine::PROMOS.iter().enumerate().find(|(_, x)| x.id == made.kind)?;
@@ -3924,6 +3930,78 @@ impl EditorApp {
                             }
                         }
                         if l.media {
+                            // lifted off a plain backdrop, and the shadow under what is left
+                            theme::field_name(ui, s.cutout);
+                            let mut on = l.cutout.is_some();
+                            if ui.checkbox(&mut on, "").on_hover_text(s.cutout_tip).changed() {
+                                actions.push(("clip.setCutout", json!({"clip": id, "on": on})));
+                            }
+                            ui.end_row();
+                            if let Some(c) = &mut l.cutout {
+                                let rows = [
+                                    (s.cutout_names[0], "tolerance", &mut c.tolerance),
+                                    (s.cutout_names[1], "holes", &mut c.holes),
+                                ];
+                                for (label, name, value) in rows {
+                                    theme::field_name(ui, label);
+                                    let mut percent = *value * 100.0;
+                                    let r = ui.add_sized(
+                                        [ui.available_width(), 22.0],
+                                        egui::DragValue::new(&mut percent).speed(0.5).range(0.0..=100.0).suffix(" %"),
+                                    );
+                                    *value = percent / 100.0;
+                                    if changed(&r) {
+                                        actions.push(("clip.setCutout", json!({"clip": id, name: *value})));
+                                    }
+                                    ui.end_row();
+                                }
+                            }
+                            theme::field_name(ui, s.cast_shadow);
+                            ui.horizontal(|ui| {
+                                let mut on = l.shadow.is_some();
+                                if ui.checkbox(&mut on, "").on_hover_text(s.cast_shadow_tip).changed() {
+                                    actions.push(("clip.setShadow", json!({"clip": id, "on": on})));
+                                }
+                                if let Some(sh) = &mut l.shadow {
+                                    // the colour as on screen; it is sent once the picker is let go
+                                    let mut rgb = sh.color.map(|v| (v * 255.0).round() as u8);
+                                    if ui.color_edit_button_srgb(&mut rgb).changed() {
+                                        sh.color = rgb.map(|v| f32::from(v) / 255.0);
+                                    }
+                                    ui.menu_button(s.cast_shadow_kind, |ui| {
+                                        for (kind, name) in
+                                            reelforge_model::CastShadow::KINDS.iter().zip(s.cast_shadow_kinds)
+                                        {
+                                            if ui.button(name).clicked() {
+                                                actions.push(("clip.setShadow", json!({"clip": id, "kind": kind})));
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                }
+                            });
+                            ui.end_row();
+                            if let Some(sh) = &mut l.shadow {
+                                let rows = [
+                                    (s.cast_shadow_names[0], "opacity", &mut sh.opacity, 100.0),
+                                    (s.cast_shadow_names[1], "blur", &mut sh.blur, 10.0),
+                                ];
+                                for (label, name, value, most) in rows {
+                                    theme::field_name(ui, label);
+                                    let mut percent = *value * 100.0;
+                                    let r = ui.add_sized(
+                                        [ui.available_width(), 22.0],
+                                        egui::DragValue::new(&mut percent).speed(0.2).range(0.0..=most).suffix(" %"),
+                                    );
+                                    *value = percent / 100.0;
+                                    if changed(&r) {
+                                        actions.push(("clip.setShadow", json!({"clip": id, name: *value})));
+                                    }
+                                    ui.end_row();
+                                }
+                            }
+                        }
+                        if l.media {
                             theme::field_name(ui, s.crop);
                             let on = self.cropping.as_deref() == Some(id.as_str());
                             if ui
@@ -4441,6 +4519,14 @@ impl EditorApp {
             && !ui.ctx().egui_is_using_pointer()
         {
             let _ = self.execute("clip.setChromaKey", json!({"clip": id, "color": now}));
+        }
+        // and so is a shadow's
+        let cast = |i: &Inspector| i.look.as_ref().and_then(|l| l.shadow).map(|s| s.color);
+        if let (Some(now), Some(was)) = (self.inspector.as_ref().and_then(cast), cast(&current))
+            && now != was
+            && !ui.ctx().egui_is_using_pointer()
+        {
+            let _ = self.execute("clip.setShadow", json!({"clip": id, "color": now}));
         }
         if commit && self.inspector.as_ref() != Some(&current) {
             let e = self.inspector.clone().expect("set");

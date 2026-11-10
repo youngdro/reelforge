@@ -7,9 +7,15 @@
 //!
 //! The model's answer is coarse: a person's outline to within a few pixels of a small picture.
 //! [`person`] fits it to the picture's own edges before giving it back at the picture's size.
+//!
+//! A thing photographed against a plain backdrop needs no model: [`backdrop_linear`] finds the
+//! backdrop by the picture's edges and takes it away (see `backdrop`).
 
+mod backdrop;
 mod run;
 mod tflite;
+
+pub use backdrop::{Backdrop, Cut, backdrop_linear};
 
 use rayon::prelude::*;
 use std::sync::OnceLock;

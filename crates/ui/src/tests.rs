@@ -786,6 +786,60 @@ fn a_person_is_cut_out_of_a_picture_and_the_frame_shows_around_them() {
 }
 
 #[test]
+fn a_product_is_lifted_off_its_backdrop_and_stands_on_its_shadow() {
+    use reelforge_model::{MediaKind, TrackKind};
+    let mut app = EditorApp::new(Session::default());
+    // a red box photographed on a pale sweep, filling a green frame
+    app.execute("project.setCanvas", json!({"width": 160, "height": 120, "background": [0, 1, 0, 1]})).unwrap();
+    let mut png = Vec::new();
+    let photo = image::RgbaImage::from_fn(160, 120, |x, y| {
+        let pale = (236 - 30 * y / 120) as u8;
+        if (60..100).contains(&x) && (30..90).contains(&y) {
+            image::Rgba([200, 40, 30, 255])
+        } else {
+            image::Rgba([pale, pale, pale - 4, 255])
+        }
+    });
+    photo.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    app.import_bytes("box.png", png, false);
+    let media = app.project().media.values().find(|m| m.kind == MediaKind::Image).expect("imported").id.clone();
+    let track = first_track(&app, TrackKind::Video);
+    let clip =
+        app.execute("clip.add", json!({"track": track, "media": media})).unwrap()["clip"].as_str().unwrap().to_string();
+    let frame = |app: &EditorApp| {
+        let spec = reelforge_compile::compile(&app.project(), &Default::default()).unwrap();
+        reelforge_media::still(&spec, &app.media, Tick::ZERO, 1.0).unwrap()
+    };
+    let green = |p: [f32; 4]| p[1] > 0.98 && p[0] < 0.02 && p[2] < 0.02;
+    let whole = frame(&app);
+    assert!(!green(whole.get(20, 20)));
+
+    app.execute("clip.setCutout", json!({"clip": clip})).unwrap();
+    let cut = frame(&app);
+    // the box is as it was; all round it the frame's own green shows
+    assert_eq!(cut.get(80, 60), whole.get(80, 60));
+    for at in [(20, 20), (140, 100), (80, 10), (80, 110), (50, 60)] {
+        assert!(green(cut.get(at.0, at.1)), "{at:?} {:?}", cut.get(at.0, at.1));
+    }
+    // standing on the ground: a dark pool at its foot, none of it at its head
+    app.execute("clip.setShadow", json!({"clip": clip, "kind": "ground", "blur": 0.01, "opacity": 0.8})).unwrap();
+    let lit = frame(&app);
+    assert_eq!(lit.get(80, 60), whole.get(80, 60));
+    let foot = lit.get(80, 91);
+    assert!(foot[1] < 0.8 && foot[0] < 0.02, "{foot:?}");
+    assert!(green(lit.get(80, 25)) && green(lit.get(80, 100)), "{:?}", lit.get(80, 100));
+    // the inspector reads both back
+    app.selected = Some(clip.clone());
+    let p = app.project();
+    let look = p.clip(&clip).unwrap().1.look.clone();
+    assert!(look.cutout.is_some() && look.shadow.is_some_and(|s| s.flat > 0.8));
+    // and back
+    app.execute("edit.undo", json!({})).unwrap();
+    app.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(frame(&app).pixels, whole.pixels);
+}
+
+#[test]
 fn keying_finds_the_backdrop_or_says_it_guessed() {
     use reelforge_model::{ChromaKey, MediaKind, TrackKind};
     let mut app = EditorApp::new(Session::default());

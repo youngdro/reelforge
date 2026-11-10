@@ -88,6 +88,14 @@ The people in a video or picture are cut out without a green screen (智能抠�
 people box in a clip's look, keeps them and makes the rest see-through, so the tracks below show around them. A small
 segmentation model bundled with the editor (`reelforge-matte`) looks at each picture as it is drawn, in pure Rust on
 the machine or in the browser; it is made for a person facing the camera, and its outlines are soft.
+A product photographed on a plain backdrop is lifted off it (商品抠图): `clip.setCutout`, or the Cut out product box
+in a clip's look, makes the backdrop see-through and keeps what stands before it. The backdrop is the colour the
+picture's edges show (white and grey included, lit unevenly or not), so a white label on the product stays; the
+backdrop's own soft shadow goes with it, and no pale rim is left along the outline. No model is needed: it is worked
+out from each picture as it is drawn. It needs one colour all round the subject; a product the colour of its backdrop
+cannot be told from it. `clip.setShadow` (the Shadow box) puts a shadow under what is left, or under any picture: of
+its outline as it shows, floating (`drop`), standing on a floor (`ground`), cast by a low sun (`long`) or a light all
+round (`glow`). The ready-made piece `productStage` does both and stands the product in a pool of light.
 Lottie animations (Bodymovin `.json`, dotLottie `.lottie`) are imported like any other file and placed like a video:
 see-through where they draw nothing, going round again while their clip lasts, drawn in pure Rust (`reelforge-lottie`)
 on the machine or in the browser. Shapes, strokes, gradients, trim paths, repeaters, masks, mattes, precompositions,
@@ -173,7 +181,9 @@ cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t1", "m
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t2", "text": "第一句字幕", "size": 72, "start": {"seconds": 0.5}, "duration": {"seconds": 2}}' --save
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setAnimation '{"clip": "c6", "slot": "in", "kind": "pop"}' --save
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setAnimation '{"clip": "c6", "slot": "loop", "kind": "wave"}' --save   # its characters, round and round
-cargo run -q -p reelforge-cli -- exec cut.reel.json promo.add '{"kind": "priceTag", "value": 129.9, "y": -0.2}' --save   # a price tag whose price counts up (promo.list has the other 35: coupons, checklists, ratings, buy buttons, end cards, a product card that swings in with your picture on it…)
+cargo run -q -p reelforge-cli -- exec cut.reel.json promo.add '{"kind": "priceTag", "value": 129.9, "y": -0.2}' --save   # a price tag whose price counts up (promo.list has the other 36: coupons, checklists, ratings, buy buttons, end cards, a product card that swings in with your picture on it, a product lifted off its photograph and stood in a pool of light…)
+cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setCutout '{"clip": "c5"}' --save   # a product photo on a white or studio backdrop: the backdrop goes, the product stays
+cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setShadow '{"clip": "c5", "kind": "ground"}' --save   # and stands on its own shadow (drop, ground, long, glow)
 cargo run -q -p reelforge-cli -- exec cut.reel.json brand.set '{"primary": [0.05, 0.35, 0.95], "secondary": [1, 0.85, 0.3]}' --save   # ready-made pieces take the brand's colours from here on
 cargo run -q -p reelforge-cli -- exec cut.reel.json promo.add '{"kind": "checklist", "lines": ["持久保湿 12 小时", "敏感肌适用"], "compound": true}' --save   # a list, folded into one clip (→ c9)
 cargo run -q -p reelforge-cli -- exec cut.reel.json promo.set '{"clip": "c9", "lines": ["持久保湿 12 小时", "敏感肌适用", "无香精"]}' --save   # other words: the piece is made again to fit them
