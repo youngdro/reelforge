@@ -1,4 +1,4 @@
-use reelforge_model::{ClipContent, Fx, FxKind, MediaKind, Prop, TrackKind};
+use reelforge_model::{ClipContent, Fill, Fx, FxKind, MediaKind, Prop, TrackKind};
 use reelforge_time::Tick;
 use serde_json::json;
 
@@ -2545,9 +2545,11 @@ fn promo_pieces_are_grouped_clips_on_free_tracks_in_one_step() {
     let listed = s.execute("promo.list", &json!({})).unwrap();
     let kinds: Vec<String> =
         listed["promos"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap().to_string()).collect();
-    assert_eq!(kinds.len(), 7);
+    assert_eq!(kinds.len(), 30);
+    // the first seven are a shape and a title each
+    let kinds = &kinds[..7];
     let tracks = s.project().tracks.len();
-    for kind in &kinds {
+    for kind in kinds {
         let out = s.execute("promo.add", &json!({"kind": kind, "value": 59, "duration": {"seconds": 2}})).unwrap();
         let clips = out["clips"].as_array().unwrap();
         assert_eq!(clips.len(), 2, "{kind}");
@@ -2584,8 +2586,226 @@ fn promo_pieces_are_grouped_clips_on_free_tracks_in_one_step() {
     };
     let c = style.counter.unwrap();
     assert_eq!((c.from, c.to, c.clock), (90.0, 86.0, true));
-    assert!(s.execute("promo.add", &json!({"kind": "coupon"})).is_err());
+    assert!(s.execute("promo.add", &json!({"kind": "voucher"})).is_err());
     assert!(s.execute("promo.add", &json!({"kind": "banner", "scale": 0})).is_err());
+}
+
+#[test]
+fn every_ready_made_piece_is_built_as_listed_and_compiles_on_any_canvas() {
+    let listed = Session::default().execute("promo.list", &json!({})).unwrap();
+    let listed = listed["promos"].as_array().unwrap().clone();
+    let categories: std::collections::BTreeSet<&str> = listed.iter().map(|p| p["category"].as_str().unwrap()).collect();
+    assert_eq!(categories.into_iter().collect::<Vec<_>>(), ["action", "price", "product", "rhythm", "titles"]);
+    for canvas in [[1080, 1920], [1920, 1080], [720, 1280], [2160, 3840], [1080, 1080]] {
+        for piece in &listed {
+            let kind = piece["id"].as_str().unwrap();
+            let mut s = Session::default();
+            s.execute("project.setCanvas", &json!({"width": canvas[0], "height": canvas[1]})).unwrap();
+            let out = s.execute("promo.add", &json!({"kind": kind, "start": {"seconds": 1}})).unwrap();
+            let clips = out["clips"].as_array().unwrap();
+            assert_eq!(clips.len() as u64, piece["clips"].as_u64().unwrap(), "{kind}");
+            assert_eq!(out["duration"], piece["duration"], "{kind}");
+            assert!(!piece["about"].as_str().unwrap().is_empty(), "{kind}");
+            let p = s.project();
+            p.check().unwrap_or_else(|e| panic!("{kind} on {canvas:?}: {e}"));
+            let at: Vec<usize> = clips.iter().map(|c| p.clip(c["clip"].as_str().unwrap()).unwrap().0).collect();
+            assert!(at.windows(2).all(|w| w[0] < w[1]), "{kind}: {at:?}");
+            for c in clips {
+                let clip = p.clip(c["clip"].as_str().unwrap()).unwrap().1;
+                assert_eq!(clip.group.as_deref(), out["group"].as_str());
+                // each part moves, ends with the piece, and is where the piece's own place puts it
+                assert!(clip.anim.enter.is_some() || !clip.keys.is_empty(), "{kind}");
+                let long: Tick = serde_json::from_value(out["duration"].clone()).unwrap();
+                assert_eq!(clip.end(), Tick::from_seconds(1.0) + long, "{kind}");
+                assert!(clip.start >= Tick::from_seconds(1.0));
+            }
+            s.execute("render.compile", &json!({})).unwrap_or_else(|e| panic!("{kind} on {canvas:?}: {e:?}"));
+        }
+    }
+}
+
+#[test]
+fn ready_made_pieces_take_lines_numbers_sides_and_fold_into_one_clip() {
+    let mut s = Session::default();
+    let text_of = |s: &Session, clip: &Value| match &s.project().clip(clip.as_str().unwrap()).unwrap().1.content {
+        ClipContent::Text { text, .. } => text.clone(),
+        _ => String::new(),
+    };
+    // a list has a row a line, under its plate
+    let out = s.execute("promo.add", &json!({"kind": "checklist", "lines": ["轻", "快"]})).unwrap();
+    let clips = out["clips"].as_array().unwrap();
+    assert_eq!(clips.len(), 3);
+    assert_eq!((text_of(&s, &clips[1]["clip"]), text_of(&s, &clips[2]["clip"])), ("✓  轻".into(), "✓  快".into()));
+    // its rows come one after another, from the left of one box
+    let p = s.project();
+    let (a, b) =
+        (p.clip(clips[1]["clip"].as_str().unwrap()).unwrap().1, p.clip(clips[2]["clip"].as_str().unwrap()).unwrap().1);
+    assert!(a.start < b.start && a.end() == b.end());
+    let ClipContent::Text { style, .. } = &a.content else { panic!() };
+    assert_eq!((style.align, style.wrap), (reelforge_model::TitleAlign::Left, 730.0 / 1080.0));
+    assert!(s.execute("promo.add", &json!({"kind": "checklist", "lines": []})).is_err());
+    assert!(
+        s.execute("promo.add", &json!({"kind": "checklist", "lines": ["1", "2", "3", "4", "5", "6", "7"]})).is_err()
+    );
+    assert!(s.execute("promo.add", &json!({"kind": "checklist", "rows": ["1"]})).is_err());
+
+    // two prices: the bars are in proportion and the saving is counted up to
+    let out = s
+        .execute("promo.add", &json!({"kind": "priceCompare", "values": [500, 350], "lines": ["别家", "我们"]}))
+        .unwrap();
+    let clips = out["clips"].as_array().unwrap();
+    let p = s.project();
+    let ClipContent::Text { style, text, .. } =
+        &p.clip(clips.last().unwrap()["clip"].as_str().unwrap()).unwrap().1.content
+    else {
+        panic!()
+    };
+    assert_eq!((text.as_str(), style.counter.unwrap().to), ("立省 ¥{n}", 150.0));
+    let bar = |i: usize| match &p.clip(clips[i]["clip"].as_str().unwrap()).unwrap().1.content {
+        ClipContent::Shape { shape } => shape.size[0],
+        _ => panic!(),
+    };
+    assert_eq!((bar(1), bar(4)), (520.0, 364.0));
+    assert_eq!(text_of(&s, &clips[2]["clip"]), "¥500");
+    assert!(s.execute("promo.add", &json!({"kind": "priceCompare", "values": [1, 2, 3, 4, 5]})).is_err());
+    assert!(s.execute("promo.add", &json!({"kind": "priceCompare", "values": ["a"]})).is_err());
+
+    // a piece that points does so the way it is told; each has a place of its own unless given one
+    let out = s.execute("promo.add", &json!({"kind": "arrowHint", "side": "left"})).unwrap();
+    let arrow = s.project().clip(out["clips"][0]["clip"].as_str().unwrap()).unwrap().1.clone();
+    assert_eq!(arrow.transform.rotation, 180.0);
+    assert!((arrow.transform.y - 0.3).abs() < 1e-6);
+    // and nudges that way, round after round, from where it sits and back to it
+    let nudge = &arrow.keys[&Prop::X];
+    assert_eq!((nudge[0].v, nudge.last().unwrap().v), (arrow.transform.x, arrow.transform.x));
+    assert!(nudge.len() == 9 && nudge[1].v < arrow.transform.x);
+    assert!(s.execute("promo.add", &json!({"kind": "arrowHint", "side": "sideways"})).is_err());
+    // a label leans away from the middle of the frame, but not off its edge
+    let label_x = |s: &mut Session, params: Value| {
+        let out = s.execute("promo.add", &params).unwrap();
+        s.project().clip(out["clips"][3]["clip"].as_str().unwrap()).unwrap().1.transform.x
+    };
+    assert!(label_x(&mut s, json!({"kind": "callout", "x": 0.0, "text": "轻"})) > 0.0);
+    assert!(label_x(&mut s, json!({"kind": "callout", "x": -0.2, "text": "轻"})) < -0.2);
+    assert!(label_x(&mut s, json!({"kind": "callout", "x": -0.2, "text": "一段很长很长的卖点说明"})) > -0.2);
+    assert!(label_x(&mut s, json!({"kind": "callout", "x": 0.3, "text": "一段很长很长的卖点说明"})) < 0.3);
+    assert!(label_x(&mut s, json!({"kind": "callout", "x": -0.2, "side": "right", "text": "轻"})) > -0.2);
+    let out = s.execute("promo.add", &json!({"kind": "buyButton", "y": -0.2})).unwrap();
+    assert_eq!(s.project().clip(out["clips"][0]["clip"].as_str().unwrap()).unwrap().1.transform.y, -0.2);
+
+    // a sweep is three bands crossing the frame, covering it at its middle
+    let out = s.execute("promo.add", &json!({"kind": "colorSweep", "side": "down", "start": {"seconds": 5}})).unwrap();
+    assert_eq!(out["duration"], json!(Tick::from_seconds(0.9)));
+    let p = s.project();
+    for c in out["clips"].as_array().unwrap() {
+        let clip = p.clip(c["clip"].as_str().unwrap()).unwrap().1;
+        let keys = &clip.keys[&Prop::Y];
+        assert!((keys[0].v + 1.02).abs() < 1e-5 && (keys.last().unwrap().v - 1.02).abs() < 1e-5);
+        assert!(keys.windows(2).all(|w| w[0].t < w[1].t));
+        assert!(clip.value_at(Prop::Y, Tick(clip.duration.0 / 2)).abs() < 0.2);
+        let ClipContent::Shape { shape } = &clip.content else { panic!() };
+        assert_eq!(shape.size, [1084.0, 1924.0]);
+    }
+
+    // folded, a piece is one clip with its parts inside, made and unmade in one step
+    let mut s = Session::default();
+    let tracks = s.project().tracks.len();
+    let out = s.execute("promo.add", &json!({"kind": "specTable", "compound": true, "start": {"seconds": 2}})).unwrap();
+    let p = s.project();
+    let clip = p.clip(out["clip"].as_str().unwrap()).unwrap().1;
+    assert_eq!((clip.start, clip.duration), (Tick::from_seconds(2.0), Tick::from_seconds(3.0)));
+    let inner = p.tracks_of(clip.compound().unwrap().0).unwrap();
+    assert_eq!(inner.iter().map(|t| t.clips.len()).sum::<usize>(), 7);
+    assert_eq!(out["parts"].as_array().unwrap().len(), 7);
+    assert_eq!(p.timelines.iter().find(|t| t.compound).unwrap().name, "Spec table");
+    assert_eq!(p.tracks.iter().map(|t| t.clips.len()).sum::<usize>(), 1);
+    s.execute("render.compile", &json!({})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    let p = s.project();
+    assert_eq!((p.tracks.len(), p.tracks.iter().map(|t| t.clips.len()).sum::<usize>()), (tracks, 0));
+    assert!(p.timelines.iter().all(|t| !t.compound));
+    // one that cannot be made leaves nothing behind
+    assert!(s.execute("promo.add", &json!({"kind": "tiers", "compound": true, "lines": []})).is_err());
+    assert_eq!(s.project().tracks.len(), tracks);
+}
+
+#[test]
+fn the_brand_gives_new_pieces_their_colours_font_and_logo() {
+    let mut s = Session::default();
+    assert_eq!(s.execute("brand.get", &json!({})).unwrap(), json!({"brand": {}}));
+    let fill_of = |s: &Session, out: &Value| match &s
+        .project()
+        .clip(out["clips"][0]["clip"].as_str().unwrap())
+        .unwrap()
+        .1
+        .content
+    {
+        ClipContent::Shape { shape } => shape.fill.clone(),
+        _ => None,
+    };
+    let red = s.execute("promo.add", &json!({"kind": "banner"})).unwrap();
+    let blue = [0.0, 0.4, 1.0, 1.0];
+    let cream = [1.0, 0.95, 0.8, 1.0];
+    let out = s.execute("brand.set", &json!({"primary": [0.0, 0.4, 1.0], "secondary": cream})).unwrap();
+    assert_eq!(out["brand"]["primary"], json!(blue));
+    // pieces made from then on take after it; those made before keep their look; a colour said wins
+    let made = s.execute("promo.add", &json!({"kind": "banner"})).unwrap();
+    assert!(matches!(fill_of(&s, &made), Some(Fill::Linear { to, .. }) if to == blue));
+    assert!(matches!(fill_of(&s, &red), Some(Fill::Linear { to, .. }) if to != blue));
+    let green = s.execute("promo.add", &json!({"kind": "banner", "color": [0.0, 0.6, 0.2]})).unwrap();
+    assert!(matches!(fill_of(&s, &green), Some(Fill::Linear { to, .. }) if to == [0.0, 0.6, 0.2, 1.0]));
+    // words over a light colour are dark
+    let tiers = s.execute("promo.add", &json!({"kind": "tiers"})).unwrap();
+    let p = s.project();
+    let ClipContent::Text { color, .. } = &p.clip(tiers["clips"][5]["clip"].as_str().unwrap()).unwrap().1.content
+    else {
+        panic!()
+    };
+    assert!(color[0] < 0.2, "ink on cream");
+
+    // a font and a logo are media of the project, of the right kind
+    let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../render/fonts/NotoSansSC-Bold.subset.ttf");
+    let font = s.execute("media.import", &json!({"path": file})).unwrap()["media"]["id"].as_str().unwrap().to_string();
+    let v = video_track(&s);
+    let sticker = s.execute("clip.add", &json!({"track": v, "sticker": "heart"})).unwrap();
+    let logo = match &s.project().clip(sticker["clip"].as_str().unwrap()).unwrap().1.content {
+        ClipContent::Media { media, .. } => media.clone(),
+        _ => panic!(),
+    };
+    s.execute("clip.remove", &json!({"clips": sticker["clip"]})).unwrap();
+    assert!(s.execute("brand.set", &json!({"font": logo})).is_err());
+    assert!(s.execute("brand.set", &json!({"logo": font})).is_err());
+    assert!(s.execute("brand.set", &json!({"logo": "m99"})).is_err());
+    assert!(s.execute("brand.set", &json!({"primary": [2, 0, 0]})).is_err());
+    assert!(s.execute("brand.set", &json!({"colour": [1, 0, 0]})).is_err());
+    let out = s.execute("brand.set", &json!({"font": font, "logo": logo})).unwrap();
+    assert_eq!((out["brand"]["font"].as_str(), out["brand"]["primary"].clone()), (Some(font.as_str()), json!(blue)));
+    // an end card shows the logo over its words, which are set in the brand's font
+    let card = s.execute("promo.add", &json!({"kind": "endCard"})).unwrap();
+    let clips = card["clips"].as_array().unwrap();
+    assert_eq!(clips.len(), 4);
+    let p = s.project();
+    let mark = p.clip(clips[0]["clip"].as_str().unwrap()).unwrap().1;
+    assert!(matches!(&mark.content, ClipContent::Media { media, .. } if *media == logo));
+    assert!((mark.transform.scale - 0.3).abs() < 1e-6 && mark.transform.y < 0.0);
+    let ClipContent::Text { style, .. } = &p.clip(clips[2]["clip"].as_str().unwrap()).unwrap().1.content else {
+        panic!()
+    };
+    assert_eq!(style.font.as_deref(), Some(font.as_str()));
+    s.execute("render.compile", &json!({})).unwrap();
+    // it survives saving, and is one undo step; null clears a part of it
+    let again = Project::from_json(&s.project().to_json()).unwrap();
+    assert_eq!(again.brand, s.project().brand);
+    s.execute("brand.set", &json!({"secondary": null})).unwrap();
+    assert_eq!(s.project().brand.secondary, None);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.project().brand.secondary, Some(cream));
+    // media the brand holds can go only once nothing uses it, and the brand lets go of it then
+    assert!(s.execute("media.remove", &json!({"media": logo})).is_err());
+    s.execute("clip.remove", &json!({"clips": clips[0]["clip"]})).unwrap();
+    s.execute("media.remove", &json!({"media": logo})).unwrap();
+    assert_eq!(s.project().brand.logo, None);
+    s.project().check().unwrap();
 }
 
 #[test]

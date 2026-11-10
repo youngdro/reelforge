@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod anim;
+pub mod brand;
 pub mod color;
 pub mod export;
 pub mod fx;
@@ -30,6 +31,7 @@ pub mod transition;
 pub mod voice;
 
 pub use anim::{AnimKind, Animation, Animations, Ease, Key, Keys, Loop, LoopKind, Offset, Prop};
+pub use brand::Brand;
 pub use color::{Adjust, ColorGrade, Filter, FilterKind, LutUse};
 pub use export::{Codec, ExportSettings, Quality, Resolution};
 pub use fx::{Fx, FxChannel, FxGroup, FxKind, FxSample};
@@ -74,6 +76,9 @@ pub struct Project {
     /// beside an exported video. Past the end, the last frame stands in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover: Option<Tick>,
+    /// The colours, face and mark the ready-made pieces are made in.
+    #[serde(default, skip_serializing_if = "Brand::is_empty")]
+    pub brand: Brand,
 }
 
 /// A mark on a timeline: a place to come back to, and to snap to.
@@ -669,6 +674,9 @@ pub enum ModelError {
     /// The list of timelines does not hold together.
     #[error("timelines: {0}")]
     BadTimeline(&'static str),
+    /// The brand names a file that is not there, or a colour that is none.
+    #[error("brand: {0}")]
+    BadBrand(String),
 }
 
 impl Default for Project {
@@ -691,6 +699,7 @@ impl Project {
             timeline: String::new(),
             markers: Vec::new(),
             cover: None,
+            brand: Brand::default(),
         };
         p.tracks = timeline::empty_tracks(&mut p);
         p
@@ -961,6 +970,16 @@ impl Project {
         for t in &self.timelines {
             if self.timeline_reaches(&t.id, &t.id) {
                 return Err(ModelError::BadTimeline("a compound clip plays the timeline it is in"));
+            }
+        }
+        if let Some(why) = self.brand.problem() {
+            return Err(ModelError::BadBrand(why.into()));
+        }
+        for (id, kind) in [(&self.brand.font, MediaKind::Font), (&self.brand.logo, MediaKind::Image)] {
+            if let Some(id) = id
+                && self.media.get(id).is_none_or(|m| m.kind != kind)
+            {
+                return Err(ModelError::BadBrand(format!("{id:?} is not a file of the kind it must be")));
             }
         }
         Ok(())

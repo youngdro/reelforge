@@ -563,6 +563,35 @@ fn stickers_and_effects_land_over_the_picture() {
     assert_eq!(videos(&app)[1].len(), 2);
 }
 
+#[test]
+fn a_ready_made_piece_of_many_parts_lands_as_one_clip_and_every_piece_has_a_name() {
+    use crate::{assets, i18n};
+    let mut app = EditorApp::new(Session::default());
+    let clips = |app: &EditorApp| app.project().tracks.iter().map(|t| t.clips.len()).sum::<usize>();
+    // a small piece is its two clips, grouped, the first of them selected
+    app.add_item(&assets::Item::Promo("priceTag"), Tick::ZERO, None);
+    assert_eq!(clips(&app), 2);
+    let p = app.project();
+    assert!(p.clip(app.selected.as_deref().unwrap()).unwrap().1.group.is_some());
+    // a list would be a track a row: it comes folded into one compound clip, which is selected
+    app.add_item(&assets::Item::Promo("checklist"), Tick::from_seconds(4.0), None);
+    assert_eq!(clips(&app), 3);
+    let p = app.project();
+    let (_, folded) = p.clip(app.selected.as_deref().unwrap()).unwrap();
+    assert_eq!(folded.start, Tick::from_seconds(4.0));
+    assert_eq!(p.tracks_of(folded.compound().unwrap().0).unwrap().iter().map(|t| t.clips.len()).sum::<usize>(), 4);
+    // every piece and every list of them is named in every language
+    for lang in i18n::Lang::ALL {
+        let s = lang.strings();
+        assert_eq!(s.promo_names.len(), reelforge_engine::PROMOS.len());
+        assert_eq!(s.promo_categories.len(), reelforge_engine::Category::ALL.len());
+        assert!(s.promo_names.iter().chain(&s.promo_categories).all(|n| !n.is_empty()));
+        for piece in reelforge_engine::PROMOS {
+            assert!(!assets::Item::Promo(piece.id).label(&app.project(), s).is_empty(), "{}", piece.id);
+        }
+    }
+}
+
 /// The id of the `n`th video track from the bottom.
 fn videos_track(app: &EditorApp, n: usize) -> String {
     let p = app.project();
