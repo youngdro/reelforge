@@ -334,6 +334,73 @@ fn keyframes_move_a_clip_and_stay_put_on_the_timeline() {
 }
 
 #[test]
+fn a_keyframe_curve_is_named_or_drawn_and_followed_frame_by_frame() {
+    use reelforge_model::{Ease, Prop};
+    let mut s = Session::default();
+    let c = add_red(&mut s, 1.0, 4.0);
+    for (prop, to) in [("x", 0.5), ("scale", 2.0), ("opacity", 1.0)] {
+        s.execute("clip.setKey", &json!({"clip": c, "prop": prop, "at": {"seconds": 1}, "value": to / 2.0})).unwrap();
+        s.execute("clip.setKey", &json!({"clip": c, "prop": prop, "at": {"seconds": 3}, "value": to})).unwrap();
+    }
+    let at = |s: &Session, prop: Prop, secs: f64| {
+        let p = s.project();
+        let clip = p.clip(&c).unwrap().1;
+        clip.value_at(prop, Tick::from_seconds(secs) - clip.start)
+    };
+    assert!((at(&s, Prop::X, 2.0) - 0.375).abs() < 1e-6);
+
+    // one command shapes the way on from every key at that time, within half a frame
+    let r = s.execute("clip.setEase", &json!({"clip": c, "at": {"seconds": 1.01}, "ease": "in"})).unwrap();
+    assert_eq!(r["props"], json!(["x", "scale", "opacity"]));
+    assert_eq!(r["ease"], json!({"bezier": [0.42f32, 0.0f32, 1.0f32, 1.0f32]}));
+    assert!(at(&s, Prop::X, 1.5) < 0.29 && at(&s, Prop::Scale, 1.5) < 1.15, "slow away");
+    assert!((at(&s, Prop::X, 3.0) - 0.5).abs() < 1e-6);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!((at(&s, Prop::X, 2.0) - 0.375).abs() < 1e-6, "one step");
+
+    // or only some properties, by a curve drawn by hand
+    let drawn = json!([0.2, 1.8, 0.6, 1.0]);
+    let r = s
+        .execute("clip.setEase", &json!({"clip": c, "at": {"seconds": 1}, "ease": drawn, "props": ["x", "opacity"]}))
+        .unwrap();
+    assert_eq!(r["props"], json!(["x", "opacity"]));
+    let keys = s.project().clip(&c).unwrap().1.keys.clone();
+    assert_eq!(keys[&Prop::X][0].ease, Ease::Bezier([0.2, 1.8, 0.6, 1.0]));
+    assert_eq!(keys[&Prop::Scale][0].ease, Ease::Linear);
+    // it passes the next key and comes back; what cannot be more than whole stays whole
+    assert!(at(&s, Prop::X, 1.8) > 0.5);
+    assert_eq!(at(&s, Prop::Opacity, 1.8), 1.0);
+
+    // the renderer is handed the curve frame by frame, and nothing it does not know
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let layer = &spec["layers"][0];
+    let position = layer["transform"]["position"].as_array().unwrap();
+    assert!(position.len() > 50, "{}", position.len());
+    assert!(position.iter().any(|k| k["v"][0].as_f64().unwrap() > 0.5));
+    assert!(!spec.to_string().contains("bezier"));
+    let top = layer["opacity"].as_array().unwrap().iter().map(|k| k["v"].as_f64().unwrap()).fold(0.0, f64::max);
+    assert_eq!(top, 1.0);
+
+    // setKey takes the same curves, and keeps the one a key had
+    s.execute("clip.setKey", &json!({"clip": c, "prop": "scale", "at": {"seconds": 1}, "ease": "overshoot"})).unwrap();
+    s.execute("clip.setKey", &json!({"clip": c, "prop": "scale", "at": {"seconds": 1}, "value": 0.5})).unwrap();
+    assert_eq!(s.project().clip(&c).unwrap().1.keys[&Prop::Scale][0].ease, Ease::OVERSHOOT);
+
+    // what cannot be a curve is refused
+    for bad in [json!("spring"), json!([0.2, 0.0, 1.4, 1.0]), json!([0.2, 5.0, 0.6, 1.0]), json!([0.1, 0.2])] {
+        let e = s.execute("clip.setEase", &json!({"clip": c, "at": {"seconds": 1}, "ease": bad})).unwrap_err();
+        assert!(e.to_string().contains("`ease`"), "{e}");
+    }
+    assert!(s.execute("clip.setEase", &json!({"clip": c, "at": {"seconds": 2}, "ease": "in"})).is_err());
+    assert!(
+        s.execute("clip.setEase", &json!({"clip": c, "at": {"seconds": 1}, "ease": "in", "props": ["y"]})).is_err()
+    );
+    assert!(
+        s.execute("clip.setEase", &json!({"clip": c, "at": {"seconds": 1}, "ease": "in", "props": ["z"]})).is_err()
+    );
+}
+
+#[test]
 fn animations_are_set_kept_apart_by_a_split_and_compiled() {
     let mut s = Session::default();
     let c = add_red(&mut s, 0.0, 4.0);

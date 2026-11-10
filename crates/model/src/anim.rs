@@ -175,7 +175,7 @@ impl Prop {
 }
 
 /// How a value travels from one key to the next.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum Ease {
     /// Straight line.
@@ -185,15 +185,102 @@ pub enum Ease {
     Hold,
     /// Slow out of this key and into the next.
     InOut,
+    /// A curve drawn by hand: a cubic Bézier from (0, 0) to (1, 1) with the control points
+    /// `[x1, y1, x2, y2]`, as CSS writes `cubic-bezier`. Across is time (each `x` within 0 to 1),
+    /// up is how far the value has got, which may pass the next key and come back.
+    Bezier([f32; 4]),
 }
 
 impl Ease {
+    /// Slow away from this key, arriving at speed.
+    pub const IN: Ease = Ease::Bezier([0.42, 0.0, 1.0, 1.0]);
+    /// Leaving at speed, slow into the next key.
+    pub const OUT: Ease = Ease::Bezier([0.0, 0.0, 0.58, 1.0]);
+    /// Past the next key and back to it.
+    pub const OVERSHOOT: Ease = Ease::Bezier([0.34, 1.56, 0.64, 1.0]);
+    /// Back a little first, then on to the next key.
+    pub const ANTICIPATE: Ease = Ease::Bezier([0.36, 0.0, 0.66, -0.56]);
+
+    /// The curves with a name, by the name commands use.
+    pub const NAMED: [(&'static str, Ease); 7] = [
+        ("linear", Ease::Linear),
+        ("hold", Ease::Hold),
+        ("inOut", Ease::InOut),
+        ("in", Ease::IN),
+        ("out", Ease::OUT),
+        ("overshoot", Ease::OVERSHOOT),
+        ("anticipate", Ease::ANTICIPATE),
+    ];
+
+    /// How far up a hand-drawn curve may go, below the start and above the end.
+    pub const REACH: (f32, f32) = (-1.0, 2.0);
+
+    /// The curve called `name`.
+    pub fn named(name: &str) -> Option<Ease> {
+        Ease::NAMED.iter().find(|(n, _)| *n == name).map(|(_, e)| *e)
+    }
+
+    /// The name of this curve, when it has one.
+    pub fn name(self) -> Option<&'static str> {
+        Ease::NAMED.iter().find(|(_, e)| *e == self).map(|(n, _)| *n)
+    }
+
+    /// A hand-drawn curve through these control points, each pulled to where a curve can go.
+    pub fn bezier(points: [f32; 4]) -> Ease {
+        let [x1, y1, x2, y2] = points;
+        let (lo, hi) = Ease::REACH;
+        Ease::Bezier([x1.clamp(0.0, 1.0), y1.clamp(lo, hi), x2.clamp(0.0, 1.0), y2.clamp(lo, hi)])
+    }
+
+    /// This curve's control points `[x1, y1, x2, y2]`, as a curve editor draws them; a hold has
+    /// none.
+    pub fn points(self) -> Option<[f32; 4]> {
+        match self {
+            Ease::Linear => Some([1.0 / 3.0, 1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0]),
+            Ease::Hold => None,
+            // the smooth step is itself a cubic
+            Ease::InOut => Some([1.0 / 3.0, 0.0, 2.0 / 3.0, 1.0]),
+            Ease::Bezier(p) => Some(p),
+        }
+    }
+
+    /// Whether the curve is one a project can hold: finite, and going forward in time.
+    pub fn is_valid(self) -> bool {
+        match self {
+            Ease::Bezier([x1, y1, x2, y2]) => {
+                let (lo, hi) = Ease::REACH;
+                [x1, x2].iter().all(|x| (0.0..=1.0).contains(x)) && [y1, y2].iter().all(|y| (lo..=hi).contains(y))
+            }
+            _ => true,
+        }
+    }
+
     /// The eased fraction for a straight fraction `f` (0 to 1).
     pub fn apply(self, f: f32) -> f32 {
         match self {
             Ease::Linear => f,
             Ease::Hold => 0.0,
             Ease::InOut => f * f * (3.0 - 2.0 * f),
+            Ease::Bezier([x1, y1, x2, y2]) => {
+                let f = f.clamp(0.0, 1.0);
+                // one coordinate of the curve at parameter `u`
+                let at = |a: f32, b: f32, u: f32| {
+                    let v = 1.0 - u;
+                    3.0 * v * v * u * a + 3.0 * v * u * u * b + u * u * u
+                };
+                // `x` only goes forward (its control points lie within 0 to 1): halve to where
+                // it is `f`
+                let (mut lo, mut hi) = (0.0f32, 1.0f32);
+                for _ in 0..24 {
+                    let mid = (lo + hi) / 2.0;
+                    if at(x1, x2, mid) < f {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                at(y1, y2, (lo + hi) / 2.0)
+            }
         }
     }
 }
@@ -690,7 +777,13 @@ impl Clip {
 
     /// The keyframed (or constant) value of `p` at `t` from the clip's start, before animations.
     pub fn value_at(&self, p: Prop, t: Tick) -> f32 {
-        self.keys.get(&p).and_then(|k| sample(k, t)).unwrap_or_else(|| self.base(p))
+        let Some(v) = self.keys.get(&p).and_then(|k| sample(k, t)) else { return self.base(p) };
+        // a curve that passes its key stays within what the property can be
+        match p.range() {
+            Some((lo, hi)) => v.clamp(lo, hi),
+            None if p == Prop::Scale => v.max(0.0),
+            None => v,
+        }
     }
 
     /// Moves every key `by` (negative moves them earlier), as when the clip's start moves the other
@@ -732,6 +825,44 @@ mod tests {
         assert_eq!(sample(&keys, Tick(250)), Some(4.0));
         assert_eq!(sample(&keys, Tick(400)), Some(5.0));
         assert_eq!(sample(&[], Tick(0)), None);
+    }
+
+    #[test]
+    fn a_hand_drawn_curve_starts_and_ends_on_its_keys_and_may_pass_them() {
+        // the named curves are what they say
+        assert_eq!(Ease::named("inOut"), Some(Ease::InOut));
+        assert_eq!((Ease::named("in"), Ease::IN.name()), (Some(Ease::IN), Some("in")));
+        assert_eq!((Ease::named("spring"), Ease::Bezier([0.1, 0.2, 0.3, 0.4]).name()), (None, None));
+        for (_, e) in Ease::NAMED {
+            assert!(e.is_valid());
+            if e != Ease::Hold {
+                assert!(e.apply(0.0).abs() < 1e-4 && (e.apply(1.0) - 1.0).abs() < 1e-4, "{e:?}");
+            }
+        }
+        // slow away, fast in; and the other way round
+        assert!(Ease::IN.apply(0.25) < 0.15 && Ease::OUT.apply(0.25) > 0.35);
+        assert!((Ease::IN.apply(0.3) + Ease::OUT.apply(0.7) - 1.0).abs() < 1e-3, "mirror images");
+        // the smooth step and the straight line as curves an editor can draw
+        for e in [Ease::Linear, Ease::InOut] {
+            let drawn = Ease::Bezier(e.points().unwrap());
+            for f in [0.1, 0.35, 0.5, 0.8] {
+                assert!((drawn.apply(f) - e.apply(f)).abs() < 1e-3, "{e:?} at {f}");
+            }
+        }
+        assert_eq!(Ease::Hold.points(), None);
+        // past the key and back; before it and on
+        let top = (0..=20).map(|i| Ease::OVERSHOOT.apply(i as f32 / 20.0)).fold(0.0, f32::max);
+        let low = (0..=20).map(|i| Ease::ANTICIPATE.apply(i as f32 / 20.0)).fold(0.0, f32::min);
+        assert!(top > 1.05 && low < -0.05, "{top} {low}");
+        // out of reach is pulled in, and what a file says is checked
+        assert_eq!(Ease::bezier([-1.0, 9.0, 2.0, -9.0]), Ease::Bezier([0.0, 2.0, 1.0, -1.0]));
+        assert!(!Ease::Bezier([1.2, 0.0, 0.5, 1.0]).is_valid() && !Ease::Bezier([0.2, f32::NAN, 0.5, 1.0]).is_valid());
+        assert_eq!(serde_json::to_string(&Ease::IN).unwrap(), r#"{"bezier":[0.42,0.0,1.0,1.0]}"#);
+
+        // on a clip, a curve that passes its key stays within what the property can be
+        let keys =
+            vec![Key { t: Tick(0), v: 0.5, ease: Ease::OVERSHOOT }, Key { t: Tick(100), v: 1.0, ease: Ease::Linear }];
+        assert!(sample(&keys, Tick(70)).unwrap() > 1.0);
     }
 
     #[test]

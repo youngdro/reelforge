@@ -449,6 +449,8 @@ impl Curve<'_> {
             MEase::Hold => Fits::Only(Ease::Hold),
             MEase::InOut if t0 == a.t && t1 == b.t => Fits::Only(Ease::InOut),
             MEase::InOut => Fits::Sample,
+            // a curve drawn by hand is followed frame by frame
+            MEase::Bezier(_) => Fits::Sample,
         }
     }
 }

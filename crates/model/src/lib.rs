@@ -729,6 +729,9 @@ impl Project {
                     if list.windows(2).any(|w| w[1].t <= w[0].t) {
                         return motion("keyframes must be in time order, one per instant");
                     }
+                    if list.iter().any(|k| !k.ease.is_valid()) {
+                        return motion("a keyframe's curve must go forward in time and stay within reach");
+                    }
                 }
                 if [clip.anim.enter, clip.anim.exit].iter().flatten().any(|a| a.duration <= Tick::ZERO) {
                     return motion("an animation must have a positive length");
