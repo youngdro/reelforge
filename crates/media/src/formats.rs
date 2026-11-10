@@ -62,8 +62,12 @@ pub fn encode_still(img: &Image, format: StillFormat) -> Result<Vec<u8>, ExportE
         .map_err(|e| ExportError::Encode(e.to_string()))?,
         StillFormat::Jpeg => {
             // a JPEG has no transparency: over black
-            let rgb: Vec<u8> =
-                rgba.chunks_exact(4).flat_map(|p| [0, 1, 2].map(|c| (p[c] as u32 * p[3] as u32 / 255) as u8)).collect();
+            let rgb: Vec<u8> = rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|p| [0, 1, 2].map(|c| (p[c] as u32 * p[3] as u32 / 255) as u8))
+                .collect();
             image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 92)
                 .encode(&rgb, img.width, img.height, image::ExtendedColorType::Rgb8)
                 .map_err(|e| ExportError::Encode(e.to_string()))?;
