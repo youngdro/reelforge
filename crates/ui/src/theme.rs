@@ -82,6 +82,13 @@ pub(crate) mod icon {
     pub const DETACH: &str = "\u{e2e4}";
     pub const WAVEFORM: &str = "\u{e802}";
     pub const ROLL: &str = "\u{e0a0}";
+    pub const CAPTIONS: &str = "\u{e1a8}";
+    pub const SEARCH: &str = "\u{e30c}";
+    pub const MERGE: &str = "\u{ed3e}";
+    pub const TRANSLATE: &str = "\u{e4a2}";
+    pub const SAVE: &str = "\u{e20c}";
+    pub const BRUSH: &str = "\u{e6f0}";
+    pub const CLOCK: &str = "\u{e19a}";
 }
 
 static ICONS: &[u8] = include_bytes!("../fonts/phosphor-icons.ttf");

@@ -59,8 +59,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "captions.import",
         label: "Import Captions",
-        params: r#"{"srt": string, "track"?: id, "template"?: id}"#,
-        doc: "Places SubRip (.srt) captions as titles, low on the frame, on a new Captions track unless `track` names a text track; `template` sets their look (classic by default).",
+        params: r#"{"srt": string, "track"?: id, "template"?: id, "line"?: 1 | 2}"#,
+        doc: "Places SubRip (.srt) captions as titles, low on the frame, on a new Captions track unless `track` names a text track; `template` sets their look (classic by default). `line: 2` places a second language: smaller, under the first, on a track of its own.",
         edits: true,
         enabled: always,
         run: crate::captions::captions_import,
@@ -82,6 +82,60 @@ static REGISTRY: &[CommandSpec] = &[
         edits: false,
         enabled: always,
         run: crate::captions::captions_export,
+    },
+    CommandSpec {
+        id: "captions.list",
+        label: "List Captions",
+        params: r#"{"track"?: id}"#,
+        doc: "The titles on a text track (the Captions track by default) in time order: each one's clip, start, end and words.",
+        edits: false,
+        enabled: always,
+        run: crate::captions::captions_list,
+    },
+    CommandSpec {
+        id: "captions.split",
+        label: "Split Caption",
+        params: r#"{"clip": id, "at"?: u32, "time"?: time}"#,
+        doc: "Cuts a caption in two: its words after `at` characters (else where `time` falls, else in the middle) and its time at `time` (else in proportion to the words).",
+        edits: true,
+        enabled: always,
+        run: crate::captions::captions_split,
+    },
+    CommandSpec {
+        id: "captions.merge",
+        label: "Merge Captions",
+        params: r#"{"clips": [id]}"#,
+        doc: "Joins captions on one track, with no other clip between them, into the first: it lasts until the last one ends and says all their words in order.",
+        edits: true,
+        enabled: always,
+        run: crate::captions::captions_merge,
+    },
+    CommandSpec {
+        id: "captions.replace",
+        label: "Replace in Captions",
+        params: r#"{"find": string, "replace": string, "track"?: id}"#,
+        doc: "Replaces `find` with `replace` in every title on a text track (the Captions track by default); a caption left without words is removed. Replies with how many were replaced.",
+        edits: true,
+        enabled: always,
+        run: crate::captions::captions_replace,
+    },
+    CommandSpec {
+        id: "captions.restyle",
+        label: "Match Captions' Style",
+        params: r#"{"from": id, "track"?: id}"#,
+        doc: "Gives every other title on the track (the one `from` is on by default) the look of title `from`: size, colour, style, placement, opacity and in/out animations.",
+        edits: true,
+        enabled: always,
+        run: crate::captions::captions_restyle,
+    },
+    CommandSpec {
+        id: "captions.shift",
+        label: "Shift Captions",
+        params: r#"{"by": time, "track"?: id}"#,
+        doc: "Moves every clip on a text track (the Captions track by default) later by `by` (earlier when negative), to line captions up with the sound.",
+        edits: true,
+        enabled: always,
+        run: crate::captions::captions_shift,
     },
     CommandSpec {
         id: "title.templates",
@@ -1178,7 +1232,7 @@ fn clip_split(s: &mut Session, v: &Value) -> CmdResult {
 }
 
 /// Cuts clip `id` at timeline time `at`, strictly inside it; returns the right half's id.
-fn split(proj: &mut Project, id: &str, at: Tick) -> Result<String, EngineError> {
+pub(crate) fn split(proj: &mut Project, id: &str, at: Tick) -> Result<String, EngineError> {
     let (ti, clip) = proj.clip(id).ok_or_else(|| not_found("clip", id))?;
     if at <= clip.start || at >= clip.end() {
         return Err(EngineError::Params("`at` must be strictly inside the clip".into()));

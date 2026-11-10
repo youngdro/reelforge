@@ -29,8 +29,15 @@ export function reelforge_pick_files(accept, each) {
     document.body.appendChild(input);
     input.click();
 }
+export function reelforge_save_file(name, bytes, type) {
+    const url = URL.createObjectURL(new Blob([bytes], { type }));
+    const a = document.createElement("a");
+    a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
 "#)]
 extern "C" {
+    fn reelforge_save_file(name: &str, bytes: &[u8], mime: &str);
     #[wasm_bindgen(catch)]
     fn reelforge_pick_files(accept: &str, each: &Closure<dyn FnMut(String, Uint8Array, String)>)
     -> Result<(), JsValue>;
@@ -54,4 +61,9 @@ pub(crate) fn pick_files(
     // called for every file picked, whenever that is
     each.forget();
     picked
+}
+
+/// Hands `bytes` to the person as a download named `name`.
+pub(crate) fn save(name: &str, bytes: &[u8], mime: &str) {
+    reelforge_save_file(name, bytes, mime);
 }

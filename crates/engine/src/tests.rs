@@ -1091,3 +1091,75 @@ fn a_new_project_keeps_the_canvas_and_undoes_back() {
     s.execute("edit.undo", &json!({})).unwrap();
     assert_eq!(*s.project(), *before);
 }
+
+#[test]
+fn captions_are_edited_as_a_list() {
+    let mut s = Session::default();
+    let srt = "1\n00:00:00,000 --> 00:00:02,000\n大家好欢迎回来\n\n2\n00:00:02,000 --> 00:00:03,000\nhello\n\n3\n00:00:03,000 --> 00:00:04,000\nworld\n";
+    let r = s.execute("captions.import", &json!({"srt": srt})).unwrap();
+    let ids: Vec<String> = r["clips"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+    let words = |s: &mut Session| -> Vec<String> {
+        s.execute("captions.list", &json!({})).unwrap()["cues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["text"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // cut after three characters: the time is cut in proportion, on a frame
+    let cut = s.execute("captions.split", &json!({"clip": ids[0], "at": 3})).unwrap();
+    assert_eq!(words(&mut s), ["大家好", "欢迎回来", "hello", "world"]);
+    let p = s.project();
+    let left = p.clip(&ids[0]).unwrap().1;
+    assert_eq!(left.end(), p.canvas.fps.snap(Tick::from_seconds(6.0 / 7.0)));
+    assert_eq!(p.clip(cut["right"].as_str().unwrap()).unwrap().1.end(), Tick::from_seconds(2.0));
+    assert!(s.execute("captions.split", &json!({"clip": ids[1], "at": 5})).is_err(), "nothing on the right");
+
+    // Latin words join with a space, Chinese without; the merged caption spans them all
+    s.execute("captions.merge", &json!({"clips": [ids[2], ids[1]]})).unwrap();
+    s.execute("captions.merge", &json!({"clips": [ids[0], cut["right"]]})).unwrap();
+    assert_eq!(words(&mut s), ["大家好欢迎回来", "hello world"]);
+    let p = s.project();
+    assert_eq!(
+        (p.clip(&ids[1]).unwrap().1.start, p.clip(&ids[1]).unwrap().1.end()),
+        (Tick::from_seconds(2.0), Tick::from_seconds(4.0))
+    );
+    assert!(p.clip(&ids[2]).is_none());
+
+    // replacing counts every hit and is one undo step; nothing found is none
+    let r = s.execute("captions.replace", &json!({"find": "l", "replace": "L"})).unwrap();
+    assert_eq!((r["count"].as_u64(), r["clips"].as_array().unwrap().len()), (Some(3), 1));
+    assert_eq!(words(&mut s)[1], "heLLo worLd");
+    let rev = s.revision();
+    assert_eq!(s.execute("captions.replace", &json!({"find": "zzz", "replace": ""})).unwrap()["count"], 0);
+    assert_eq!(s.revision(), rev);
+
+    // one caption's look goes to the others
+    s.execute("clip.set", &json!({"clip": ids[1], "size": 90, "color": [1, 0, 0], "y": 0.1})).unwrap();
+    let r = s.execute("captions.restyle", &json!({"from": ids[1]})).unwrap();
+    assert_eq!(r["clips"], json!([ids[0]]));
+    let p = s.project();
+    let first = p.clip(&ids[0]).unwrap().1;
+    assert!((first.transform.y - 0.1).abs() < 1e-6);
+    assert!(
+        matches!(&first.content, ClipContent::Text { size, color, text, .. } if *size == 90.0 && color[1] == 0.0 && text == "大家好欢迎回来")
+    );
+
+    // all of them move together, never before the start
+    s.execute("captions.shift", &json!({"by": {"seconds": 0.5}})).unwrap();
+    assert_eq!(s.project().clip(&ids[0]).unwrap().1.start, Tick::from_seconds(0.5));
+    assert!(s.execute("captions.shift", &json!({"by": {"seconds": -1}})).is_err());
+
+    // a second language goes smaller, under the first, on its own track
+    let second = s
+        .execute("captions.import", &json!({"srt": "1\n00:00:00,500 --> 00:00:02,000\nHello everyone\n", "line": 2}))
+        .unwrap();
+    let p = s.project();
+    let t = p.track(second["track"].as_str().unwrap()).unwrap();
+    assert_eq!(t.name, crate::CAPTIONS_TRACK_2);
+    assert!(t.clips[0].transform.y > 0.32);
+    assert!(matches!(&t.clips[0].content, ClipContent::Text { size, .. } if *size < 60.0));
+    // the first language is still what exports by default
+    assert!(s.execute("captions.export", &json!({})).unwrap()["srt"].as_str().unwrap().contains("heLLo"));
+}

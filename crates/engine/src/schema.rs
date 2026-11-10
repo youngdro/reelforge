@@ -282,8 +282,53 @@ pub fn input_schema(id: &str) -> Option<Value> {
                     "template",
                     json!({"type": "string", "description": "Title template id (title.templates); classic by default."}),
                 ),
+                (
+                    "line",
+                    json!({"enum": [1, 2], "description": "2 places a second language: smaller, under the first, on its own track."}),
+                ),
             ],
             &["srt"],
+        ),
+        "captions.list" => object(vec![("track", ident("A text track; the Captions track by default."))], &[]),
+        "captions.split" => object(
+            vec![
+                ("clip", ident("The caption (a title clip).")),
+                (
+                    "at",
+                    json!({"type": "integer", "minimum": 1, "description": "How many characters stay in the first half."}),
+                ),
+                ("time", time("Where the time is cut; in proportion to the words by default.")),
+            ],
+            &["clip"],
+        ),
+        "captions.merge" => object(
+            vec![(
+                "clips",
+                json!({"type": "array", "items": {"type": "string"}, "minItems": 2, "description": "Captions on one track."}),
+            )],
+            &["clips"],
+        ),
+        "captions.replace" => object(
+            vec![
+                ("find", json!({"type": "string", "minLength": 1, "description": "The words to look for."})),
+                ("replace", json!({"type": "string", "description": "What goes in their place."})),
+                ("track", ident("A text track; the Captions track by default.")),
+            ],
+            &["find", "replace"],
+        ),
+        "captions.restyle" => object(
+            vec![
+                ("from", ident("The title whose look the others take.")),
+                ("track", ident("A text track; the one `from` is on by default.")),
+            ],
+            &["from"],
+        ),
+        "captions.shift" => object(
+            vec![
+                ("by", time("How much later (earlier when negative).")),
+                ("track", ident("A text track; the Captions track by default.")),
+            ],
+            &["by"],
         ),
         "captions.export" => object(vec![("track", ident("A text track; the Captions track by default."))], &[]),
         "clip.split" => object(vec![clip(), ("at", time("Timeline time inside the clip."))], &["clip", "at"]),
