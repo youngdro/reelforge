@@ -582,8 +582,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.set",
         label: "Clip Properties",
-        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "scaleX"?, "scaleY"?, "rotationX"?, "rotationY"?, "perspective"?, "anchorX"?, "anchorY"?, "keep"?: bool, "at"?: time, "fadeIn"?: time, "fadeOut"?: time, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "karaoke"?: {"color"?: [r,g,b,a], "mode"?: "sweep"|"word"|"line", "start"?: time, "duration"?: time | null} | null, "template"?: id}"#,
-        doc: "Sets a clip's placement, opacity, volume, sound fades or title. A property with keyframes is set at `at` (a timeline time), adding or changing the keyframe there. Beyond moving, scaling and turning it in the plane, a clip can be stretched (`scaleX`, `scaleY`: width and height apart, on top of `scale`; negative mirrors) and turned in space (`rotationX` tips its top edge away, `rotationY` swings its right edge away, in degrees; past 90 it shows its back), seen in perspective from `perspective` canvas heights away (2 unless told; nearer is stronger). It is placed, scaled and turned about its anchor: `anchorX` and `anchorY` are shares of its picture from the top left (0.5, 0.5 is its middle; 0, 0.5 the middle of its left edge, to swing it like a door; 0.5, 1 the middle of its bottom edge, to grow it from its base). Giving it another anchor leaves the picture where it lies and changes `x` and `y` to match, unless `keep` is false.",
+        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "scaleX"?, "scaleY"?, "rotationX"?, "rotationY"?, "perspective"?, "anchorX"?, "anchorY"?, "keep"?: bool, "motionBlur"?: bool | number, "at"?: time, "fadeIn"?: time, "fadeOut"?: time, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "karaoke"?: {"color"?: [r,g,b,a], "mode"?: "sweep"|"word"|"line", "start"?: time, "duration"?: time | null} | null, "template"?: id}"#,
+        doc: "Sets a clip's placement, opacity, volume, sound fades or title. A property with keyframes is set at `at` (a timeline time), adding or changing the keyframe there. Beyond moving, scaling and turning it in the plane, a clip can be stretched (`scaleX`, `scaleY`: width and height apart, on top of `scale`; negative mirrors) and turned in space (`rotationX` tips its top edge away, `rotationY` swings its right edge away, in degrees; past 90 it shows its back), seen in perspective from `perspective` canvas heights away (2 unless told; nearer is stronger). It is placed, scaled and turned about its anchor: `anchorX` and `anchorY` are shares of its picture from the top left (0.5, 0.5 is its middle; 0, 0.5 the middle of its left edge, to swing it like a door; 0.5, 1 the middle of its bottom edge, to grow it from its base). Giving it another anchor leaves the picture where it lies and changes `x` and `y` to match, unless `keep` is false. `motionBlur` smears the clip along its own movement, as a camera's open shutter does: true turns it on (the shutter open for half of each frame's time, a film camera's), a number says for how much of it (0.5 by default, up to 2; more is a longer smear), false or 0 turns it off. It blurs only while the clip moves, grows or turns (its keyframes, animations, transitions, path, and whatever carries it), and leaves it sharp at rest.",
         edits: true,
         enabled: always,
         run: clip_set,
@@ -2573,6 +2573,20 @@ fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
         return Err(EngineError::Params(format!("`perspective` is {near} to {far} canvas heights")));
     }
     let keep = p.opt_bool("keep")?.unwrap_or(true);
+    // true is the usual shutter, false none; a number is the shutter itself
+    let (usual, longest) = ClipTransform::SHUTTERS;
+    let motion_blur = match p.v.get("motionBlur") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(on)) => Some(if *on { usual } else { 0.0 }),
+        Some(v) => match v.as_f64().filter(|b| (0.0..=f64::from(longest)).contains(b)) {
+            Some(b) => Some(b as f32),
+            None => {
+                return Err(EngineError::Params(format!(
+                    "`motionBlur` is true, false or the share of a frame the shutter is open, 0 to {longest}"
+                )));
+            }
+        },
+    };
     s.edit("Clip Properties", |proj| {
         let (_, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
         if anchor != [None, None] {
@@ -2583,6 +2597,9 @@ fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
         let clip = proj.clip_mut(&id).expect("found above");
         if let Some(d) = perspective {
             clip.transform.distance = d;
+        }
+        if let Some(b) = motion_blur {
+            clip.transform.motion_blur = b;
         }
         for (prop, v) in values {
             set_at(clip, prop, v, at)?;

@@ -109,6 +109,7 @@ fn layer(id: &str, content: LayerContent) -> Layer {
         crop_keys: None,
         shape_mask_keys: None,
         parent: None,
+        motion_blur: None,
     }
 }
 
@@ -577,6 +578,65 @@ fn distortions_read_the_same_places_on_both() {
     l.fx = vec![fx_of(effects::SPLIT, &[("x", 0.03)]), fx_of(effects::GLITCH, &[("amount", 0.1), ("seed", 2.0)])];
     s.layers.push(l);
     same(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Final);
+}
+
+#[test]
+fn layers_smeared_along_their_way_match() {
+    let frame = FrameRate::FPS_30.frame_duration();
+    let moving = |from: [f32; 2], to: [f32; 2]| {
+        Animated::Keys(vec![
+            Key { t: Tick::ZERO, v: from, ease: Ease::Linear },
+            Key { t: frame * 3, v: to, ease: Ease::Linear },
+        ])
+    };
+    let pic = picture(50, 30);
+    let mut s = base(96, 72);
+    // a picture going across while it turns and grows, masked and graded
+    let i = with_picture(&mut s, Fit::Contain);
+    s.layers[i].transform.position = moving([-0.3, -0.1], [0.3, 0.1]);
+    s.layers[i].transform.rotation = Animated::Keys(vec![
+        Key { t: Tick::ZERO, v: -20.0, ease: Ease::Linear },
+        Key { t: frame * 3, v: 25.0, ease: Ease::Linear },
+    ]);
+    s.layers[i].transform.scale = Animated::Keys(vec![
+        Key { t: Tick::ZERO, v: 0.4, ease: Ease::Linear },
+        Key { t: frame * 3, v: 0.9, ease: Ease::Linear },
+    ]);
+    s.layers[i].fx = vec![fx_of(effects::GRADE, &[("exposure", 0.4), ("saturation", 0.3)])];
+    s.layers[i].motion_blur = Some(MotionBlur { shutter: 1.0 });
+    // a see-through colour falling, multiplied over it
+    let mut square = layer("sq", LayerContent::Solid { color: Color([0.9, 0.5, 0.2, 0.8]) });
+    square.blend = Blend::Multiply;
+    square.transform.scale = Animated::Constant(0.4);
+    square.transform.position = moving([0.1, -0.4], [0.1, 0.4]);
+    square.motion_blur = Some(MotionBlur { shutter: 0.5 });
+    s.layers.push(square);
+    // a title flying in, and a shape swung in space about its edge
+    let mut title = layer("t", LayerContent::Text(Box::new(TextContent::new("Go".to_string(), 30.0, Color([1.0; 4])))));
+    title.transform.position = moving([-0.6, 0.3], [0.2, 0.3]);
+    title.motion_blur = Some(MotionBlur { shutter: 1.0 });
+    s.layers.push(title);
+    let mut door = layer("door", LayerContent::Solid { color: Color([0.2, 0.8, 0.4, 1.0]) });
+    door.transform.scale = Animated::Constant(0.3);
+    door.transform.position = Animated::Constant([-0.25, -0.25]);
+    door.transform.anchor = Some([0.0, 0.5]);
+    door.transform.turn = Some(Turn {
+        y: Animated::Keys(vec![
+            Key { t: Tick::ZERO, v: -80.0, ease: Ease::Linear },
+            Key { t: frame * 3, v: 40.0, ease: Ease::Linear },
+        ]),
+        ..Turn::held(0.0, 0.0)
+    });
+    door.motion_blur = Some(MotionBlur { shutter: 1.0 });
+    s.layers.push(door);
+    reelforge_renderspec::validate(&s).expect("valid");
+    let media = Pictures(pic);
+    for f in [1, 2] {
+        same(&s, frame * f, 1.0, &media, Quality::Final);
+    }
+    same(&s, frame, 0.5, &media, Quality::Final);
+    // and at rest
+    same(&s, frame * 6, 1.0, &media, Quality::Final);
 }
 
 #[test]

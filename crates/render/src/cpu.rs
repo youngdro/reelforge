@@ -118,7 +118,7 @@ pub(crate) fn resolve(
         }
         PlannedSource::Shape(shape) => {
             let k = plan.width as f32 / spec.output.width as f32;
-            let drawn = if layer.plain() {
+            let drawn = if layer.plain() && layer.smear.is_empty() {
                 crate::shape::rasterize(layer, shape, k, [plan.width, plan.height])
             } else {
                 let size = [shape.size[0] * k * layer.scale, shape.size[1] * k * layer.scale];
@@ -146,7 +146,7 @@ pub(crate) fn resolve(
                     }
                 }
             };
-            let drawn = if layer.plain() {
+            let drawn = if layer.plain() && layer.smear.is_empty() {
                 crate::text::rasterize(layer, text, &family, k, [plan.width, plan.height])
             } else {
                 let [w, h] = crate::text::block(text, &family);
@@ -161,8 +161,8 @@ pub(crate) fn resolve(
     })
 }
 
-/// The text or shape of a layer that is stretched, turned in space or carried: it cannot be drawn
-/// straight onto the frame's pixels, so `draw` draws it flat and upright in the middle of a
+/// The text or shape of a layer that is stretched, turned in space, carried or smeared along its
+/// movement: it cannot be drawn straight onto the frame's pixels, so `draw` draws it flat and upright in the middle of a
 /// canvas, larger where the layer is seen larger, and the sprite's map places it like a picture.
 /// `size` is its box in target pixels at the layer's own scale: the anchor is a point of it.
 fn flat_sprite(
@@ -207,6 +207,7 @@ fn flat_sprite(
         1.0,
     ];
     sp.map = Some(then(&layer.place(), &from));
+    sp.smear = layer.smears_placed(&from);
     Some(sp)
 }
 
@@ -288,7 +289,7 @@ pub fn composite(
             Resolved::Yuv(y) => draw(&mut out, layer, &y.to_image(), target, false, lut),
             Resolved::Sprite(sp) => match sp.map {
                 // drawn flat, then placed like a picture
-                Some(m) => blit(&mut out, layer, &sp.image, m, None, lut),
+                Some(m) => blit(&mut out, layer, &sp.image, m, &sp.smear, None, lut),
                 None => crate::text::draw_sprite(&mut out, layer, &sp, lut),
             },
             Resolved::Nothing => {}
@@ -305,7 +306,7 @@ fn draw(out: &mut Image, layer: &PlannedLayer, pic: &Image, target: [f32; 2], fi
     }
     let (cw, ch) = layer.visible(pic.width as f32, pic.height as f32);
     let m = layer.matrix(cw, ch, target);
-    blit(out, layer, pic, m, None, lut);
+    blit(out, layer, pic, m, &layer.smears(cw, ch, target), None, lut);
 }
 
 /// Draws a flat picture as a box of `size` target pixels placed by the layer.
@@ -314,57 +315,91 @@ fn draw_sized(out: &mut Image, layer: &PlannedLayer, pic: &Image, size: [f32; 2]
     l.fit = reelforge_renderspec::Fit::Stretch;
     // A 1x1 picture stretched to `size`: matrix for a `size` box, then scale content down.
     let m = l.matrix(1.0, 1.0, size);
-    blit(out, &l, pic, m, Some(size), lut);
+    blit(out, &l, pic, m, &l.smears(1.0, 1.0, size), Some(size), lut);
 }
 
-/// Draws `pic` mapped by `m`. `flat` is a 1-pixel picture stretched over a box of that size.
+/// Draws `pic` mapped by `m`, or, for a layer smeared along its movement, the mean of it mapped
+/// by each of `smear`. `flat` is a 1-pixel picture stretched over a box of that size.
 pub(crate) fn blit(
     out: &mut Image,
     layer: &PlannedLayer,
     pic: &Image,
     m: Map,
+    smear: &[Map],
     flat: Option<[f32; 2]>,
     lut: Option<&Lut>,
 ) {
-    let Some(inv) = invert(m) else { return };
+    let maps = if smear.is_empty() { std::slice::from_ref(&m) } else { smear };
+    // an instant it is seen edge on shows nothing of it, and counts
+    let invs: Vec<Map> = maps.iter().filter_map(|m| invert(*m)).collect();
+    if invs.is_empty() {
+        return;
+    }
+    let share = 1.0 / maps.len() as f32;
     let (pw, ph) = (pic.width as f32, pic.height as f32);
     let (cw, ch) = if flat.is_some() { (1.0, 1.0) } else { layer.visible(pw, ph) };
     // a mask is shaped on the picture as it is seen
     let [mw, mh] = flat.unwrap_or([cw, ch]);
-    // Bounding box of the placed content.
-    let b = bounds(&m, cw, ch, [out.width as f32, out.height as f32]);
+    // Bounding box of the placed content, wherever it is placed.
+    let frame = [out.width as f32, out.height as f32];
+    let b = maps
+        .iter()
+        .map(|m| bounds(m, cw, ch, frame))
+        .fold([f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY], |b, at| {
+            [b[0].min(at[0]), b[1].min(at[1]), b[2].max(at[2]), b[3].max(at[3])]
+        });
     let x0 = b[0].floor().max(0.0) as u32;
     let x1 = b[2].ceil().min(out.width as f32) as u32;
     let y0 = b[1].floor().max(0.0) as u32;
     let y1 = b[3].ceil().min(out.height as f32) as u32;
     let warp = if flat.is_some() { None } else { Warp::of(&layer.fx) };
+    // what the layer shows at a target pixel through one map: `None` outside its picture
+    let shade = |inv: &Map, px: f32, py: f32| -> Option<[f32; 4]> {
+        // how far from the eye, for a layer turned in space; 1 for any other
+        let q = inv[6] * px + inv[7] * py + inv[8];
+        if q <= 1e-6 {
+            return None;
+        }
+        let (sx, sy) = ((inv[0] * px + inv[1] * py + inv[2]) / q, (inv[3] * px + inv[4] * py + inv[5]) / q);
+        if sx < 0.0 || sy < 0.0 || sx >= cw || sy >= ch {
+            return None;
+        }
+        let uv = [sx / cw, sy / ch];
+        let read = |sx: f32, sy: f32| {
+            let (px, py) = layer.in_picture(sx, sy, cw, ch, pw, ph);
+            pic.sample(px, py)
+        };
+        let mut s = match &warp {
+            _ if flat.is_some() => pic.pixels[0],
+            Some(w) => w.sample(uv, [cw, ch], read),
+            None => read(sx, sy),
+        };
+        apply_fx(&mut s, &layer.fx, uv, lut);
+        let k = layer.opacity * layer.shape.map_or(1.0, |m| m.coverage(uv, mw, mh));
+        Some(s.map(|c| c * k))
+    };
     for y in y0..y1 {
         for x in x0..x1 {
             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            // how far from the eye, for a layer turned in space; 1 for any other
-            let q = inv[6] * px + inv[7] * py + inv[8];
-            if q <= 1e-6 {
-                continue;
-            }
-            let (sx, sy) = ((inv[0] * px + inv[1] * py + inv[2]) / q, (inv[3] * px + inv[4] * py + inv[5]) / q);
-            if sx < 0.0 || sy < 0.0 || sx >= cw || sy >= ch {
-                continue;
-            }
-            let uv = [sx / cw, sy / ch];
-            let read = |sx: f32, sy: f32| {
-                let (px, py) = layer.in_picture(sx, sy, cw, ch, pw, ph);
-                pic.sample(px, py)
+            let s = if let [inv] = invs.as_slice()
+                && maps.len() == 1
+            {
+                let Some(s) = shade(inv, px, py) else { continue };
+                s
+            } else {
+                let mut sum = [0.0f32; 4];
+                let mut seen = false;
+                for inv in &invs {
+                    if let Some(s) = shade(inv, px, py) {
+                        sum = [sum[0] + s[0], sum[1] + s[1], sum[2] + s[2], sum[3] + s[3]];
+                        seen = true;
+                    }
+                }
+                if !seen {
+                    continue;
+                }
+                sum.map(|c| c * share)
             };
-            let mut s = match &warp {
-                _ if flat.is_some() => pic.pixels[0],
-                Some(w) => w.sample(uv, [cw, ch], read),
-                None => read(sx, sy),
-            };
-            apply_fx(&mut s, &layer.fx, uv, lut);
-            let k = layer.opacity * layer.shape.map_or(1.0, |m| m.coverage(uv, mw, mh));
-            for c in &mut s {
-                *c *= k;
-            }
             let i = (y * out.width + x) as usize;
             out.pixels[i] = blend(layer.blend, s, out.pixels[i]);
         }

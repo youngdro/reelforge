@@ -110,6 +110,9 @@ dissolve, dips, pushes, slides and zoom: a soft edge wipes the next clip in from
 space like a card with the next on its back (`flip`, `flipUp`); the next is turned in like a page (`pageTurn`); warm
 light drifts across as it fades in (`lightLeak`); the picture tears into bands with its colours apart and cuts
 (`glitch`); or the camera goes into one clip out of focus and comes back out of the other (`zoomBlur`).
+A clip can be seen through a shutter (`motionBlur` on `clip.set`, Motion blur under Transform in its inspector): it is
+smeared along its own way while it moves, grows or turns, by keyframes, animations, transitions, a path or whatever
+carries it, and is as sharp as ever where it rests.
 See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Video and audio codecs and containers are FilmCraft's clean-room, pure-Rust crates

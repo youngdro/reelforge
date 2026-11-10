@@ -308,6 +308,8 @@ struct Inspector {
     space: [f32; 4],
     /// The point it is placed and turned about, as shares of its picture.
     anchor: [f32; 2],
+    /// Motion blur: the share of a frame's time its shutter is open, 0 for none.
+    blur: f32,
     /// Colour and title clips, and shapes filled with one colour.
     color: Option<[f32; 4]>,
     /// Shapes: width, height, corner radius and outline width, in canvas pixels.
@@ -3077,6 +3079,7 @@ impl EditorApp {
             opacity: clip.value_at(Prop::Opacity, local),
             space: Prop::SPACE.map(|p| clip.value_at(p, local)),
             anchor: clip.transform.anchor,
+            blur: clip.transform.motion_blur,
             color: match &clip.content {
                 ClipContent::Text { color, .. } | ClipContent::Solid { color } => Some(*color),
                 // a shape's first colour: its fill's, or its outline's
@@ -3547,6 +3550,32 @@ impl EditorApp {
                             });
                             ui.end_row();
                         }
+                        // smeared along its way while it moves: a switch, and beside it how long
+                        // the shutter is open, as a share of a frame
+                        theme::field_name(ui, s.motion_blur).on_hover_text(s.motion_blur_tip);
+                        ui.horizontal(|ui| {
+                            let mut on = edit.blur > 0.0;
+                            if ui.checkbox(&mut on, "").on_hover_text(s.motion_blur_tip).changed() {
+                                edit.blur = if on { ClipTransform::SHUTTERS.0 } else { 0.0 };
+                                commit = true;
+                            }
+                            if on {
+                                let mut percent = edit.blur * 100.0;
+                                let r = ui.add_sized(
+                                    [ui.available_width() - 26.0, 24.0],
+                                    egui::DragValue::new(&mut percent)
+                                        .speed(1.0)
+                                        .range(5.0..=ClipTransform::SHUTTERS.1 * 100.0)
+                                        .fixed_decimals(0)
+                                        .suffix(" %"),
+                                );
+                                if r.changed() {
+                                    edit.blur = percent / 100.0;
+                                }
+                                commit |= r.drag_stopped() || (r.changed() && !r.dragged());
+                            }
+                        });
+                        ui.end_row();
                     });
                     // stretched, turned in space, placed by another point, carried: out of the way
                     // until one of them is wanted
@@ -4371,6 +4400,9 @@ impl EditorApp {
                 if now != was {
                     params[name] = json!(now);
                 }
+            }
+            if e.blur != current.blur {
+                params["motionBlur"] = json!(e.blur);
             }
             if let Some(c) = e.color
                 && e.color != current.color

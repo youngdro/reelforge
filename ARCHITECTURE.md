@@ -140,6 +140,16 @@ In rough priority order for short videos:
    points, walked by length so the speed is even, lowered to keys of position and rotation one per
    frame of the journey). The compiler drops a parent that is missing, hidden or in a ring;
    `reelforge_engine::space` keeps a clip where it shows when its anchor or parent changes.
+   `motion.blur/1` (`Layer.motion_blur`, a shutter open for a share of a frame's time) smears a
+   layer along its own movement. The plan places the layer at several instants of that time
+   (`PlannedLayer.smear`, as many as keep them a couple of pixels apart, `plan::SMEAR` at most,
+   and none when it does not move a pixel, so a layer at rest costs nothing and stays as sharp
+   as it was). Both compositors draw the layer through the map of each instant and take the
+   mean, before it is blended: `cpu::blit` loops over the maps, and the fragment shader does the
+   same over the `smear` rows of its uniform. Only the placement is taken at those instants, the
+   carriers' included; the picture, mask, crop, opacity and effects are the frame's own. A title
+   or shape that is smeared is drawn flat and placed by maps like one turned in space. In the
+   model it is `ClipTransform.motion_blur` (`clip.set` with `motionBlur`).
 3. GPU, next steps: blurs on the GPU (the colour effects, `color.grade@1`, `color.lut@1` and
    `key.chroma@1` included, are per-pixel WGSL already, as are crops, mirrors, shape masks and the
    `blend/2` modes, which read the layers below from a copy; the distortions, `distort.wave@1`,

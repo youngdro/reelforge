@@ -333,6 +333,26 @@ pub struct Layer {
     /// passed on. A parent may have a parent, eight deep.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+    /// The layer smeared along its own movement, as a camera with its shutter open sees it
+    /// (feature `motion.blur/1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion_blur: Option<MotionBlur>,
+}
+
+/// A layer seen through a shutter that stays open for part of each frame: where the layer is
+/// placed is taken at several instants of that time and what it shows at each is averaged, so
+/// that it is smeared along the way it moves, grows or turns, and is as sharp as ever while it
+/// stands still. Only its placement is taken at those instants (its `transform`, and those of the
+/// layers that carry it): its picture, opacity, crop, mask and effects are the frame's own. The
+/// time the shutter is open is centred on the frame's instant. A renderer takes as many instants
+/// as it sees fit (at least two where the layer moves a pixel or more), and may take fewer for a
+/// draft.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MotionBlur {
+    /// How long the shutter is open, as a share of the time from one frame to the next: 0.5 is a
+    /// film camera's half turn (180°), 1 the whole time. Above 0, at most 2.
+    pub shutter: f32,
 }
 
 /// A crop that changes: each edge as in [`Crop`], keyed. A renderer keeps at least 1 % of the
@@ -1788,6 +1808,9 @@ impl RenderSpec {
             }
             if layer.parent.is_some() {
                 out.insert("layer.parent/1".to_string());
+            }
+            if layer.motion_blur.is_some() {
+                out.insert("motion.blur/1".to_string());
             }
             if layer.flip_x || layer.flip_y {
                 out.insert("flip/1".to_string());

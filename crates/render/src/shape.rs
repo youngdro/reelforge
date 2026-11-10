@@ -375,7 +375,7 @@ fn draw(layer: &PlannedLayer, sh: &ShapeContent, k: f32, target: [u32; 2]) -> Op
             *px = over(stroke_c, l, *px);
         }
     }
-    Some(Sprite { x: x0, y: y0, image: Arc::new(image), map: None })
+    Some(Sprite { x: x0, y: y0, image: Arc::new(image), map: None, smear: Vec::new() })
 }
 
 #[cfg(test)]
@@ -456,6 +456,7 @@ mod tests {
             turn: None,
             carried: vec![],
             frame: [300.0, 200.0],
+            smear: Vec::new(),
         };
         let mut sh = shape(ShapeKind::Rectangle);
         sh.stroke = Some(ShapeStroke { color: Color([0.0, 0.0, 1.0, 1.0]), width: 10.0 });

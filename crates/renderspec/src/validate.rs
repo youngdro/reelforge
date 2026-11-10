@@ -296,6 +296,11 @@ fn layers_ok(spec: &RenderSpec, at: &str, layers: &[crate::Layer]) -> Result<(),
                 return Err(bad(format!("{path}.transform.turn.distance"), "must be 0.1 or more"));
             }
         }
+        if let Some(blur) = &layer.motion_blur
+            && !(blur.shutter > 0.0 && blur.shutter <= 2.0)
+        {
+            return Err(bad(format!("{path}.motion_blur.shutter"), "must be above 0 and at most 2"));
+        }
         if let Some(parent) = &layer.parent {
             // up the chain: every parent among these layers, none met twice, eight at most
             let (mut up, mut steps) = (Some(parent.as_str()), 0);
@@ -558,6 +563,7 @@ mod tests {
             crop_keys: None,
             shape_mask_keys: None,
             parent: None,
+            motion_blur: None,
         });
         s
     }
@@ -669,6 +675,23 @@ mod tests {
         let mut bad = s.clone();
         bad.layers[0].parent = Some("carried".into());
         refused(&bad, "layers[0].parent");
+    }
+
+    #[test]
+    fn a_shutter_is_open_for_some_of_a_frame_and_no_more_than_two() {
+        let mut s = base();
+        assert!(!s.to_json().contains("motion_blur") && !s.required_features().contains("motion.blur/1"));
+        s.layers[0].motion_blur = Some(crate::MotionBlur { shutter: 0.5 });
+        validate(&s).unwrap();
+        assert!(s.required_features().contains("motion.blur/1"));
+        assert_eq!(RenderSpec::from_json(&s.to_json()).unwrap(), s);
+        for shutter in [0.0, -0.5, 2.5, f32::NAN] {
+            s.layers[0].motion_blur = Some(crate::MotionBlur { shutter });
+            assert!(
+                matches!(validate(&s), Err(ValidationError::Invalid { path, .. }) if path == "layers[0].motion_blur.shutter"),
+                "{shutter}"
+            );
+        }
     }
 
     #[test]
