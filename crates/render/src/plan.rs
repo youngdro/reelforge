@@ -1,6 +1,6 @@
 //! What is on screen at an instant. Pure: no pixels, no IO.
 
-use reelforge_renderspec::{Animated, Blend, Fit, LayerContent, RenderSpec, ShapeMask, TextContent, effects};
+use reelforge_renderspec::{Animated, Between, Blend, Fit, LayerContent, RenderSpec, ShapeMask, TextContent, effects};
 use reelforge_time::Tick;
 
 use crate::image::premultiply_srgb;
@@ -60,6 +60,8 @@ pub enum PlannedSource {
         asset: String,
         /// The source instant.
         at: Tick,
+        /// What shows when that instant is between two frames of a video.
+        between: Between,
     },
     /// A colour filling the frame, premultiplied linear.
     Solid([f32; 4]),
@@ -179,8 +181,9 @@ fn plan_layers(
         }
         let local = t - layer.at;
         let (source, fit) = match &layer.content {
-            LayerContent::Media { asset, time, fit } => {
-                (PlannedSource::Media { asset: asset.clone(), at: time.source_at(local) }, *fit)
+            LayerContent::Media { asset, time, fit, between } => {
+                let at = time.source_at(local);
+                (PlannedSource::Media { asset: asset.clone(), at, between: *between }, *fit)
             }
             LayerContent::Solid { color } => (PlannedSource::Solid(premultiply_srgb(color.0)), Fit::Stretch),
             LayerContent::Text(text) => {
@@ -273,7 +276,12 @@ mod tests {
     fn keyed_crops_and_masks_are_planned_at_the_instant() {
         use reelforge_renderspec::{CropKeys, Key, MaskShape, ShapeMaskKeys};
         let mut spec = crate::tests::spec();
-        spec.layers[0].content = LayerContent::Media { asset: "a".into(), time: Default::default(), fit: Fit::Contain };
+        spec.layers[0].content = LayerContent::Media {
+            asset: "a".into(),
+            time: Default::default(),
+            fit: Fit::Contain,
+            between: Default::default(),
+        };
         fn key<T>(t: f64, v: T) -> Key<T> {
             Key { t: Tick::from_seconds(t), v, ease: Default::default() }
         }

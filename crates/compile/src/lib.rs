@@ -11,14 +11,14 @@
 use std::collections::BTreeMap;
 
 use reelforge_model::{
-    Adjust, BlendMode, Clip, ClipContent, ClipTransform, Codec, FxChannel, Mask, MaskKind, MediaKind, Project, Prop,
-    Timing, TitleAlign, Track, TrackKind, TransitionKind, export::Format,
+    Adjust, BlendMode, Clip, ClipContent, ClipTransform, Codec, FxChannel, Inbetween, Mask, MaskKind, MediaKind,
+    Project, Prop, Timing, TitleAlign, Track, TrackKind, TransitionKind, export::Format,
 };
 use reelforge_renderspec::{
-    Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Blend, Color, Comp, Crop, CropKeys, Ease, Effect,
-    Fit, Key, Layer, LayerContent, MaskShape, Output, OutputFormat, Probe, RenderSpec, ShapeMask, ShapeMaskKeys,
-    SpeedKey, TextAlign, TextBackground, TextContent, TextShadow, TextStroke, TimeMap, Transform, VideoCodec,
-    VideoEncoding, effects, validate,
+    Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Between, Blend, Color, Comp, Crop, CropKeys,
+    Ease, Effect, Fit, Key, Layer, LayerContent, MaskShape, Output, OutputFormat, Probe, RenderSpec, ShapeMask,
+    ShapeMaskKeys, SpeedKey, TextAlign, TextBackground, TextContent, TextShadow, TextStroke, TimeMap, Transform,
+    VideoCodec, VideoEncoding, effects, validate,
 };
 use reelforge_time::Tick;
 use thiserror::Error;
@@ -46,6 +46,14 @@ fn blend(m: BlendMode) -> Blend {
 }
 
 /// A clip's mask as RenderSpec spells it.
+fn between(frames: Inbetween) -> Between {
+    match frames {
+        Inbetween::Repeat => Between::Nearest,
+        Inbetween::Blend => Between::Blend,
+        Inbetween::Flow => Between::Flow,
+    }
+}
+
 fn shape_mask(m: Mask) -> ShapeMask {
     ShapeMask {
         shape: match m.kind {
@@ -253,10 +261,15 @@ fn lower_tracks(
                 let pictured = clip.is_picture();
                 let crop_keyed = Prop::CROP.iter().any(|p| clip.keyed(*p));
                 let content = match &clip.content {
-                    ClipContent::Media { media, .. } => LayerContent::Media {
+                    ClipContent::Media { media, frames, .. } => LayerContent::Media {
                         asset: asset_for(media)?,
                         time: time_map(&clip.timing().expect("a media clip"), shape.lead),
                         fit: Fit::Contain,
+                        // a still has no frames to be between
+                        between: match project.media.get(media).map(|m| m.kind) {
+                            Some(MediaKind::Video) => between(*frames),
+                            _ => Between::Nearest,
+                        },
                     },
                     ClipContent::Solid { color } => LayerContent::Solid { color: Color(*color) },
                     // its timeline's picture, from where the clip starts in it
@@ -305,7 +318,8 @@ fn lower_tracks(
                     })),
                 };
                 // a blurred copy filling the frame behind it
-                if let (Some(amount), LayerContent::Media { asset, time, .. }) = (clip.look.backdrop, &content) {
+                if let (Some(amount), LayerContent::Media { asset, time, between, .. }) = (clip.look.backdrop, &content)
+                {
                     let mut fx = color_fx(clip, &shape, step, &mut asset_for)?;
                     fx.extend(above_fx(clip, &shape, &covers, step));
                     fx.extend(distort_fx(clip, &shape, step));
@@ -331,7 +345,13 @@ fn lower_tracks(
                         id: format!("{}~backdrop", clip.id),
                         at: clip.start - shape.lead,
                         dur: shape.len,
-                        content: LayerContent::Media { asset: asset.clone(), time: time.clone(), fit: Fit::Cover },
+                        content: LayerContent::Media {
+                            asset: asset.clone(),
+                            time: time.clone(),
+                            fit: Fit::Cover,
+                            // out of focus, a mix is as good as a frame made in between
+                            between: if between.is_nearest() { Between::Nearest } else { Between::Blend },
+                        },
                         transform: Transform {
                             position: motion::lower_position(&still, &frame, step),
                             scale: motion::lower(&still, Prop::Scale, &frame, step),
@@ -899,6 +919,55 @@ mod tests {
         let spec = compile(&p, &CompileOptions::default()).unwrap();
         assert_eq!(spec.layers[0].transform.position, Animated::Constant([0.0, 0.0]));
         assert_eq!(spec.layers[0].transform.scale, Animated::Constant(1.0));
+    }
+
+    #[test]
+    fn a_slowed_video_asks_for_pictures_between_its_frames() {
+        use reelforge_model::Inbetween;
+        let mut p = Project::default();
+        for (id, kind) in [("m9", MediaKind::Video), ("m10", MediaKind::Image)] {
+            p.media.insert(
+                id.into(),
+                Media {
+                    id: id.into(),
+                    name: id.into(),
+                    uri: format!("file:///{id}"),
+                    sha256: Some(if kind == MediaKind::Video { "ab" } else { "cd" }.repeat(32)),
+                    kind,
+                    duration: (kind == MediaKind::Video).then_some(Tick::SECOND * 10),
+                    size: Some([1920, 1080]),
+                    folder: None,
+                },
+            );
+        }
+        let with = |frames: Inbetween, media: &str| {
+            let mut content = ClipContent::media(media, Tick::SECOND);
+            if let ClipContent::Media { frames: f, speed, .. } = &mut content {
+                (*f, *speed) = (frames, 0.25);
+            }
+            content
+        };
+        let mut video = clip("c20", Tick::ZERO, Tick::SECOND * 2, with(Inbetween::Flow, "m9"));
+        video.look.backdrop = Some(0.5);
+        p.tracks[0].clips = vec![video, clip("c21", Tick::SECOND * 2, Tick::SECOND, with(Inbetween::Blend, "m10"))];
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        let between = |id: &str| match &spec.layers.iter().find(|l| l.id == id).expect("a layer").content {
+            LayerContent::Media { between, .. } => *between,
+            _ => panic!("media"),
+        };
+        // the video's frames are made; behind it, out of focus, they are only mixed; a still has none
+        assert_eq!(between("c20"), Between::Flow);
+        assert_eq!(between("c20~backdrop"), Between::Blend);
+        assert_eq!(between("c21"), Between::Nearest);
+        let needs = &spec.engine.features;
+        assert!(needs.contains(&"frames.flow/1".to_string()) && needs.contains(&"frames.blend/1".to_string()));
+        // as the file has them: nothing is asked of the renderer
+        if let ClipContent::Media { frames, .. } = &mut p.tracks[0].clips[0].content {
+            *frames = Inbetween::Repeat;
+        }
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        assert!(!spec.engine.features.iter().any(|f| f.starts_with("frames.")));
+        assert!(!spec.to_json().contains("between"));
     }
 
     #[test]

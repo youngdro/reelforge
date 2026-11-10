@@ -476,7 +476,12 @@ mod tests {
         assert!(matches!(validate(&s), Err(ValidationError::Invalid { path, .. }) if path == "output.width"));
 
         let mut s = base();
-        s.layers[0].content = LayerContent::Media { asset: "nope".into(), time: TimeMap::default(), fit: Fit::Contain };
+        s.layers[0].content = LayerContent::Media {
+            asset: "nope".into(),
+            time: TimeMap::default(),
+            fit: Fit::Contain,
+            between: Default::default(),
+        };
         assert!(
             matches!(validate(&s), Err(ValidationError::Invalid { path, .. }) if path == "layers[0].content.asset")
         );
