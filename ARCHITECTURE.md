@@ -28,7 +28,7 @@ service ships them without the editor.
 | --- | --- | --- |
 | L0 | `reelforge-time` | `Tick`, `FrameRate`, `TimeRange` |
 | L1 | `reelforge-renderspec` | RenderSpec types, validation, JSON Schema (`schema/renderspec-1.schema.json`) |
-| L1 | `reelforge-model` | The project document: canvas, media, tracks (magnetic or not) of the timeline being edited and the other timelines parked beside it (`timeline`), clips, the groups they are in (selected and moved as one) and compound clips, which play another timeline of the project as one clip, and their colour (filters, LUTs, adjustments; `color`), their crop, mirror, blend mode, shape mask and chroma key (a green screen keyed out; `look`), keyframes (on placement, opacity and volume, and on the crop's edges, the mask and the colour adjustments) and in/out animations (`anim`), transitions (`transition`), picture effects on a clip and adjustment clips that lay their effects and colour on the tracks below (`fx`), speed curves, reverse and freeze frames (`timing`); invariants |
+| L1 | `reelforge-model` | The project document: canvas, media, tracks (magnetic or not) of the timeline being edited and the other timelines parked beside it (`timeline`), clips, the groups they are in (selected and moved as one) and compound clips, which play another timeline of the project as one clip, and their colour (filters, LUTs, adjustments; `color`), their crop, mirror, blend mode, shape mask and chroma key (a green screen keyed out; `look`), keyframes (on placement, opacity and volume, and on the crop's edges, the mask and the colour adjustments) and in, out and looping animations (`anim`), transitions (`transition`), picture effects on a clip and adjustment clips that lay their effects and colour on the tracks below (`fx`), speed curves, reverse and freeze frames (`timing`); invariants |
 | L2 | `reelforge-compile` | Project → RenderSpec: all editing meaning resolved here (keyframes, animations and transitions become RenderSpec keys and overlapping layers, `motion`; picture effects are sampled into those keys and into keyed `color.grade@1` and `blur.gaussian@1` parameters, so the renderer needs nothing new for them, except the distortions, which become keyed `distort.*@1` effects; a chroma key becomes `key.chroma@1`, first among a layer's effects; an adjustment clip becomes no layer of its own; and a timeline that compound clips play is lowered once into `comps`, each such clip becoming a layer that shows it and an audio clip that plays its mix) |
 | L2 | `reelforge-render` | Pure frame plan, CPU reference compositor, wgpu compositor (feature `gpu`; it converts video pictures from Y'CbCr in a shader, `yuv`); drafts ask for pictures only as big as they are drawn (`picture_shrunk`); `MediaSource` trait |
 | L3 | `reelforge-media` | Probing, video/audio decoding (`Footage`), MP4 export (`ExportWriter` over any `VideoEncoder`, AAC sound), the synthesised sound library (`library:` URIs) and the drawn sticker library (`library:sticker/` URIs, `stickers`); FilmCraft's pure-Rust codecs |
@@ -82,13 +82,19 @@ In rough priority order for short videos:
    browser, usually in hardware, with an `av1C` built from the sequence header when the browser
    gives none), and export settings kept with the project (`ExportSettings`: size by the shorter
    side, frame rate, quality, codec, presets), lowered to `output.video` (`encode.size/1`).
-2. Text, next steps: per-character animation, and a smaller web build (the two bundled CJK faces
+2. Text, next steps: a smaller web build (the two bundled CJK faces
    add 5 MB to the wasm). `text/1` itself is in place: FilmCraft's pure-Rust text engine (harfrust
    shaping, UAX #14 line breaking, its own rasteriser) with a bundled Noto Sans SC subset; system
    fonts are never consulted, so renders match everywhere. A font file is project media of kind
    `font` (`media.import`; like a LUT it is used by clips, not placed), a title names one with
    `font`, and it reaches the renderer as a `font` asset. `text/4` adds letter spacing, line
    spacing (both in ems), italic (slanted when the family has no italic face) and underline.
+   `text/5` moves the characters one after another (`chars`): each movement is a progress over
+   time, a step from one character to the next, a curve (`settle`, `spring`, `wave`, `hop`) and the
+   pose furthest from rest, so the renderer knows no preset. The compiler lowers the titles-only
+   animations to it (`charFade`, `charRise`, `charDrop`, `charPop` in and out, the loops `wave` and
+   `jump`); a loop of the whole clip (`breathe`, `swing`, `blink`…) is sampled into the layer's
+   ordinary keys like any other animation.
 3. GPU, next steps: blurs on the GPU (the colour effects, `color.grade@1`, `color.lut@1` and
    `key.chroma@1` included, are per-pixel WGSL already, as are crops, mirrors, shape masks and the
    `blend/2` modes, which read the layers below from a copy; the distortions, `distort.wave@1`,

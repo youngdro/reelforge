@@ -9,11 +9,11 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use filmcraft_text::fonts;
-use filmcraft_text::layout::{Align, ParagraphStyle, StyleRun, TextStyle};
+use filmcraft_text::layout::{Align, Glyph, Layout, ParagraphStyle, StyleRun, TextStyle};
 use filmcraft_text::mask::{StrokeKind, blur, offset, stroke};
 use filmcraft_text::raster::{Mask, Path, Xform, compose, fill_into};
 use filmcraft_text::render::{device_bounds, draw};
-use reelforge_renderspec::{TextAlign, TextContent};
+use reelforge_renderspec::{CharPose, TextAlign, TextContent};
 
 use crate::Image;
 use crate::cpu::{apply_fx, blend};
@@ -243,6 +243,13 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
         }
         l = Arc::new(part);
     }
+    // characters on the move are drawn one by one, each about its own centre
+    let mut movers = vec![];
+    if !text.chars.is_empty() {
+        let mut rest = (*l).clone();
+        movers = moved(text, &mut rest);
+        l = Arc::new(rest);
+    }
     // the block's centre goes to the layer's centre, scaled and turned about it
     let s = k * layer.scale;
     if s <= 0.0 {
@@ -286,6 +293,11 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
         vec![Path::round_rect(x0 - pad, b[1] - pad, x1 + pad, b[3] + pad, r).transformed(&m)]
     });
     let mut d = device_bounds(&l, &m);
+    for mv in &mut movers {
+        mv.to = compose(&m, &mv.to);
+        let at = device_bounds(&mv.one, &mv.to);
+        d = [d[0].min(at[0]), d[1].min(at[1]), d[2].max(at[2]), d[3].max(at[3])];
+    }
     let reach = shadow.map_or(0.0, |(dx, dy, sigma)| dx.abs().max(dy.abs()) as f32 + 3.0 * sigma);
     let grow = (stroke_px + outer_px + reach).ceil() + 2.0;
     d = [d[0] - grow, d[1] - grow, d[2] + grow, d[3] + grow];
@@ -304,15 +316,29 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
 
     let mut fill = Mask::new(r.w, r.h);
     draw(&l, &m, &mut fill, (r.x, r.y));
-    let outline = (stroke_px > 0.0).then(|| stroke(&fill, stroke_px, StrokeKind::Outer));
-    let outer = (outer_px > 0.0).then(|| stroke(&fill, stroke_px + outer_px, StrokeKind::Outer));
-    let shade = shadow.map(|(dx, dy, sigma)| {
-        let mut shape = fill.clone();
-        for m in [&outline, &outer].into_iter().flatten() {
-            shape.max_with(m);
+    // a character that shows whole is inked with the rest, so their outlines run together; one
+    // that shows in part is inked on its own and laid over
+    let mut faint: Vec<(Region, Coat, f32)> = vec![];
+    for mv in &movers {
+        if mv.opacity >= 1.0 {
+            draw(&mv.one, &mv.to, &mut fill, (r.x, r.y));
+            continue;
         }
-        blur(&offset(&shape, dx, dy), sigma)
-    });
+        let at = device_bounds(&mv.one, &mv.to);
+        let (ax, ay) = (((at[0] - grow).floor() as i32).max(r.x), ((at[1] - grow).floor() as i32).max(r.y));
+        let (bx, by) = (
+            ((at[2] + grow).ceil() as i32).min(r.x + r.w as i32),
+            ((at[3] + grow).ceil() as i32).min(r.y + r.h as i32),
+        );
+        if bx <= ax || by <= ay {
+            continue;
+        }
+        let sub = Region { x: ax, y: ay, w: (bx - ax) as usize, h: (by - ay) as usize };
+        let mut own = Mask::new(sub.w, sub.h);
+        draw(&mv.one, &mv.to, &mut own, (sub.x, sub.y));
+        faint.push((sub, Coat::of(own, stroke_px, outer_px, shadow), mv.opacity));
+    }
+    let coat = Coat::of(fill, stroke_px, outer_px, shadow);
     // each box filled on its own and joined, so where line boxes meet they do not cancel out
     let behind = (!backing.is_empty()).then(|| {
         let mut all = Mask::new(r.w, r.h);
@@ -346,29 +372,126 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
         let a = top[3] * cov;
         std::array::from_fn(|i| top[i] * cov + under[i] * (1.0 - a))
     };
+    // a coat's shadow, outlines and glyphs at its pixel `i`, target pixel `(x, y)`, laid over `px`
+    let ink = |coat: &Coat, i: usize, x: i32, y: i32, mut px: [f32; 4]| -> [f32; 4] {
+        if let (Some(mk), Some(c)) = (&coat.shade, shadow_c) {
+            px = over(c, mk.a[i].clamp(0.0, 1.0), px);
+        }
+        if let (Some(mk), Some(c)) = (&coat.outer, outer_c) {
+            px = over(c, mk.a[i].clamp(0.0, 1.0), px);
+        }
+        if let (Some(mk), Some(c)) = (&coat.outline, stroke_c) {
+            px = over(c, mk.a[i].clamp(0.0, 1.0), px);
+        }
+        let c = match &fade {
+            Some(f) if coat.fill.a[i] > 0.0 => f(x as f32 + 0.5, y as f32 + 0.5),
+            _ => fill_c,
+        };
+        over(c, coat.fill.a[i].clamp(0.0, 1.0), px)
+    };
     let mut image = Image::filled(r.w as u32, r.h as u32, [0.0; 4]);
     for (i, px) in image.pixels.iter_mut().enumerate() {
         if let (Some(mk), Some(c)) = (&behind, back_c) {
             *px = over(c, mk.a[i].clamp(0.0, 1.0), *px);
         }
-        if let (Some(mk), Some(c)) = (&shade, shadow_c) {
-            *px = over(c, mk.a[i].clamp(0.0, 1.0), *px);
-        }
-        if let (Some(mk), Some(c)) = (&outer, outer_c) {
-            *px = over(c, mk.a[i].clamp(0.0, 1.0), *px);
-        }
-        if let (Some(mk), Some(c)) = (&outline, stroke_c) {
-            *px = over(c, mk.a[i].clamp(0.0, 1.0), *px);
-        }
-        let c = match &fade {
-            Some(f) if fill.a[i] > 0.0 => {
-                f((r.x + (i % r.w) as i32) as f32 + 0.5, (r.y + (i / r.w) as i32) as f32 + 0.5)
+        *px = ink(&coat, i, r.x + (i % r.w) as i32, r.y + (i / r.w) as i32, *px);
+    }
+    for (sub, coat, opacity) in &faint {
+        for i in 0..sub.w * sub.h {
+            let (x, y) = (sub.x + (i % sub.w) as i32, sub.y + (i / sub.w) as i32);
+            let top = ink(coat, i, x, y, [0.0; 4]);
+            if top[3] > 0.0 {
+                let o = (y - r.y) as usize * r.w + (x - r.x) as usize;
+                image.pixels[o] = over(top, *opacity, image.pixels[o]);
             }
-            _ => fill_c,
-        };
-        *px = over(c, fill.a[i].clamp(0.0, 1.0), *px);
+        }
     }
     Some(Sprite { x: r.x, y: r.y, image: Arc::new(image) })
+}
+
+/// One coat of ink as coverage: the glyphs, their outlines and their shadow.
+struct Coat {
+    fill: Mask,
+    outline: Option<Mask>,
+    outer: Option<Mask>,
+    shade: Option<Mask>,
+}
+
+impl Coat {
+    /// The outlines (widths in target pixels) and the shadow (offset and softness) of `fill`.
+    fn of(fill: Mask, stroke_px: f32, outer_px: f32, shadow: Option<(i32, i32, f32)>) -> Coat {
+        let outline = (stroke_px > 0.0).then(|| stroke(&fill, stroke_px, StrokeKind::Outer));
+        let outer = (outer_px > 0.0).then(|| stroke(&fill, stroke_px + outer_px, StrokeKind::Outer));
+        let shade = shadow.map(|(dx, dy, sigma)| {
+            let mut shape = fill.clone();
+            for m in [&outline, &outer].into_iter().flatten() {
+                shape.max_with(m);
+            }
+            blur(&offset(&shape, dx, dy), sigma)
+        });
+        Coat { fill, outline, outer, shade }
+    }
+}
+
+/// A character somewhere else than the layout puts it.
+struct Mover {
+    /// Its glyphs, as a layout of their own.
+    one: Layout,
+    /// Takes them there: in the text's own space as [`moved`] returns it, then on the target.
+    to: Xform,
+    /// How much of it shows; above 0.
+    opacity: f32,
+}
+
+/// Takes the characters that `text.chars` moves out of `l`: those on their way are returned, those
+/// that do not show at all are dropped, and those at rest stay.
+fn moved(text: &TextContent, l: &mut Layout) -> Vec<Mover> {
+    // characters are counted without white space
+    let starts: Vec<usize> = text.text.char_indices().filter(|(_, c)| !c.is_whitespace()).map(|(i, _)| i).collect();
+    let n = starts.len();
+    let poses: Vec<CharPose> = (0..n)
+        .map(|i| {
+            text.chars
+                .iter()
+                .fold(CharPose::REST, |p, m| p.and(m.at(i, n, m.progress.sample(reelforge_time::Tick::ZERO))))
+        })
+        .collect();
+    let index = |g: &Glyph| starts.partition_point(|s| *s <= g.cluster).checked_sub(1);
+    let mut out: Vec<(usize, Mover)> = vec![];
+    for g in &l.glyphs {
+        let Some(i) = index(g) else { continue };
+        let pose = poses[i];
+        if pose == CharPose::REST || pose.opacity <= 0.0 {
+            continue;
+        }
+        if let Some((_, mv)) = out.iter_mut().find(|(at, _)| *at == i) {
+            mv.one.glyphs.push(*g);
+            continue;
+        }
+        // its centre: halfway to the next caret on its line, a little above the baseline
+        let line = l.lines.iter().find(|ln| ln.range.contains(&g.cluster));
+        let next = line.and_then(|ln| ln.carets.iter().filter(|(at, _)| *at > g.cluster).min_by_key(|(at, _)| *at));
+        let here = line.and_then(|ln| ln.carets.iter().find(|(at, _)| *at == g.cluster));
+        let (x0, x1) = match (here, next) {
+            (Some((_, a)), Some((_, b))) => (a.min(*b), a.max(*b)),
+            _ => (g.x, g.x + g.size * 0.6),
+        };
+        let (cx, cy) = ((x0 + x1) / 2.0, g.y - g.size * 0.36);
+        let (sin, cos) = pose.rotation.to_radians().sin_cos();
+        let (a, b) = (pose.scale * cos, pose.scale * sin);
+        let to: Xform = [
+            a,
+            b,
+            -b,
+            a,
+            cx + pose.offset[0] * g.size - (a * cx - b * cy),
+            cy + pose.offset[1] * g.size - (b * cx + a * cy),
+        ];
+        let one = Layout { glyphs: vec![*g], bounds: [x0, g.y - g.size, x1, g.y + g.size * 0.3], ..Layout::default() };
+        out.push((i, Mover { one, to, opacity: pose.opacity.min(1.0) }));
+    }
+    l.glyphs.retain(|g| index(g).is_none_or(|i| poses[i] == CharPose::REST));
+    out.into_iter().map(|(_, mv)| mv).collect()
 }
 
 /// How many bytes of `text` show: all of it, or the characters a `reveal` lets through.

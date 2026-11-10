@@ -85,6 +85,7 @@ cargo run -q -p reelforge-cli -- exec cut.reel.json media.import '{"path": "/pat
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t1", "media": "m4", "sourceIn": {"seconds": 1}, "duration": {"seconds": 4}}' --save
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t2", "text": "第一句字幕", "size": 72, "start": {"seconds": 0.5}, "duration": {"seconds": 2}}' --save
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setAnimation '{"clip": "c6", "slot": "in", "kind": "pop"}' --save
+cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setAnimation '{"clip": "c6", "slot": "loop", "kind": "wave"}' --save   # its characters, round and round
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setKey '{"clip": "c5", "prop": "scale", "at": {"seconds": 4}, "value": 1.3, "ease": "inOut"}' --save
 cargo run -q -r -p reelforge-cli -- export cut.reel.json -o cut.mp4      # a project, or a RenderSpec
 # frames are drawn on the GPU when there is one; --renderer cpu|gpu chooses

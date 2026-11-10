@@ -24,7 +24,7 @@ fn spec_with(text: TextContent) -> RenderSpec {
         id: "title".into(),
         at: Tick::ZERO,
         dur: Tick::SECOND,
-        content: LayerContent::Text(text),
+        content: LayerContent::Text(Box::new(text)),
         transform: Transform::default(),
         opacity: Animated::Constant(1.0),
         blend: Blend::Normal,
@@ -307,6 +307,103 @@ fn a_typewriter_shows_the_first_characters_where_the_whole_text_puts_them() {
     assert_eq!(at(Tick::ZERO), 0.0, "nothing typed yet");
     assert!(at(Tick::from_seconds(0.25)) > 0.0 && at(Tick::from_seconds(0.25)) < at(Tick::from_seconds(0.75)));
     assert_eq!(at(Tick::from_seconds(0.75)), ink(&whole));
+}
+
+#[test]
+fn characters_move_one_after_another_about_their_own_centres() {
+    let plain = white("ABCDEFGH", 60.0);
+    let whole = draw(&spec_with(plain.clone()), 1.0);
+    let w = ink_box(&whole);
+    let motion = |curve, pose, progress: f32| CharMotion {
+        progress: Animated::Constant(progress),
+        step: 1.0,
+        curve,
+        pose,
+        reverse: false,
+    };
+    let hidden = CharPose { opacity: 0.0, ..CharPose::REST };
+
+    // coming in up from below, each as the one before arrives: half way, the first four are in
+    // place, the fifth is about to start and nothing of the rest shows
+    let mut t = plain.clone();
+    t.chars = vec![motion(CharCurve::Settle, CharPose { offset: [0.0, 0.5], ..hidden }, 0.5)];
+    let s = spec_with(t.clone());
+    assert!(s.required_features().contains("text/5"));
+    assert!(validate(&s).is_ok());
+    let half = draw(&s, 1.0);
+    let h = ink_box(&half);
+    assert_eq!((h[0], h[1], h[3]), (w[0], w[1], w[3]), "what is in is where the whole text puts it");
+    assert!(h[2] < (w[0] + w[2]) / 2 + 10 && h[2] > w[0] + (w[2] - w[0]) / 3, "{w:?} {h:?}");
+    // a little further and the fifth shows in part, below its place
+    t.chars[0].progress = Animated::Constant(0.5 + 0.3 / 8.0);
+    let coming = draw(&spec_with(t.clone()), 1.0);
+    let c = ink_box(&coming);
+    assert!(c[2] > h[2] + 10 && c[3] > w[3] + 4, "{h:?} {c:?}");
+    assert!(ink(&coming) > ink(&half) && ink(&coming) < ink(&half) + ink(&whole) / 8.0 * 0.6);
+    // all the way in it is the plain text again, pixel for pixel
+    t.chars[0].progress = Animated::Constant(1.0);
+    assert_eq!(draw(&spec_with(t.clone()), 1.0).pixels, whole.pixels);
+    // and nothing shows before it starts
+    t.chars[0].progress = Animated::Constant(0.0);
+    assert_eq!(ink(&draw(&spec_with(t.clone()), 1.0)), 0.0);
+
+    // a wave lifts some and lowers others, and loses no ink
+    let mut t = plain.clone();
+    t.chars = vec![CharMotion {
+        step: 0.25,
+        ..motion(CharCurve::Wave, CharPose { offset: [0.0, -0.3], ..CharPose::REST }, 0.25)
+    }];
+    let wave = draw(&spec_with(t.clone()), 1.0);
+    let v = ink_box(&wave);
+    assert!(v[1] + 10 < w[1] && v[3] > w[3] + 10 && (v[0], v[2]) == (w[0], w[2]), "{w:?} {v:?}");
+    assert!((ink(&wave) - ink(&whole)).abs() < ink(&whole) * 0.02);
+    // a round later it is where it was
+    t.chars[0].progress = Animated::Constant(1.25);
+    assert_eq!(draw(&spec_with(t.clone()), 1.0).pixels, wave.pixels);
+
+    // popping, a character is smaller about its own centre: the ends pull in, the middle stays
+    let mut t = white("HH", 80.0);
+    let two = ink_box(&draw(&spec_with(t.clone()), 1.0));
+    t.chars =
+        vec![CharMotion { step: 0.0, ..motion(CharCurve::Settle, CharPose { scale: 0.0, ..CharPose::REST }, 0.2) }];
+    let small = ink_box(&draw(&spec_with(t.clone()), 1.0));
+    assert!(small[0] > two[0] + 4 && small[2] + 4 < two[2] && small[1] > two[1] + 4, "{two:?} {small:?}");
+    let mid = |b: [u32; 4]| (b[0] + b[2]) as i32 / 2;
+    assert!((mid(small) - mid(two)).abs() <= 2);
+
+    // an outlined character fading in keeps its outline around it, both fainter
+    let mut t = white("H", 100.0);
+    t.stroke = Some(TextStroke { color: Color([0.0, 1.0, 0.0, 1.0]), width: 6.0 });
+    let solid = draw(&spec_with(t.clone()), 1.0);
+    t.chars = vec![motion(CharCurve::Settle, hidden, 0.5)];
+    let faint = draw(&spec_with(t.clone()), 1.0);
+    let (green, blue) = (|img: &Image| img.pixels.iter().map(|p| p[1] - p[0]).sum::<f32>(), |p: &[f32; 4]| p[2]);
+    assert!(green(&faint) > green(&solid) * 0.3 && green(&faint) < green(&solid) * 0.7);
+    // in the stem the white fill lets half of the blue behind it through, and no green
+    let stem = solid.pixels.iter().position(|p| p[0] > 0.99 && p[1] > 0.99).expect("a white pixel");
+    let p = faint.pixels[stem];
+    assert!((p[0] - 0.5).abs() < 0.02 && (p[0] - p[1]).abs() < 1e-4 && blue(&p) > 0.99, "{p:?}");
+
+    // a motion with times is a value of each frame
+    let mut t = plain;
+    t.chars = vec![CharMotion {
+        progress: Animated::Keys(vec![
+            Key { t: Tick::ZERO, v: 0.0, ease: Ease::Linear },
+            Key { t: Tick::from_seconds(0.5), v: 1.0, ease: Ease::Linear },
+        ]),
+        ..motion(CharCurve::Spring, CharPose { scale: 0.0, ..hidden }, 0.0)
+    }];
+    let s = spec_with(t);
+    assert!(validate(&s).is_ok());
+    let at = |t: Tick| ink(&render_frame(&s, t, 1.0, &NoMedia, Quality::Final).unwrap().0);
+    assert_eq!(at(Tick::ZERO), 0.0);
+    assert!(at(Tick::from_seconds(0.25)) > 0.0 && at(Tick::from_seconds(0.25)) < ink(&whole));
+    assert_eq!(at(Tick::from_seconds(0.75)), ink(&whole));
+    // a pose that cannot be is refused
+    let mut bad = s.clone();
+    let LayerContent::Text(text) = &mut bad.layers[0].content else { panic!() };
+    text.chars[0].pose.opacity = 2.0;
+    assert!(validate(&bad).is_err());
 }
 
 #[test]

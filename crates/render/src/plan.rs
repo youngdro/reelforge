@@ -189,7 +189,11 @@ fn plan_layers(
                 if let Some(r) = &text.reveal {
                     text.reveal = Some(Animated::Constant(r.sample(local).clamp(0.0, 1.0)));
                 }
-                (PlannedSource::Text(Box::new(text)), Fit::Contain)
+                // and so is how far along its characters are
+                for m in &mut text.chars {
+                    m.progress = Animated::Constant(m.progress.sample(local));
+                }
+                (PlannedSource::Text(text), Fit::Contain)
             }
             LayerContent::Comp { comp, from } => {
                 let (Some(inner), true) = (spec.comps.get(comp), depth < DEPTH) else { continue };

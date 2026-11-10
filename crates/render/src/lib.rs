@@ -71,6 +71,7 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "text/2",
     "text/3",
     "text/4",
+    "text/5",
     "time.hold/1",
     "time.ramp/1",
     "time.reverse/1",

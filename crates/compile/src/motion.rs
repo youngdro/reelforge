@@ -18,20 +18,88 @@
 //! start; the clip's keys are shifted by the lead, and animations play over the whole layer.
 
 use reelforge_model::{Clip, Ease as MEase, Fades, Fx, FxChannel, FxSample, Key as MKey, Offset, Prop, TransitionKind};
-use reelforge_renderspec::{Animated, Ease, Key};
+use reelforge_renderspec::{Animated, CharCurve, CharMotion, CharPose, Ease, Key};
 use reelforge_time::Tick;
 
 /// Whether an animation preset changes `p`.
 fn moves(kind: reelforge_model::AnimKind, p: Prop) -> bool {
     use reelforge_model::AnimKind::*;
     match p {
-        Prop::Opacity => kind != Typewriter,
+        Prop::Opacity => !kind.titles_only(),
         Prop::X => matches!(kind, SlideLeft | SlideRight),
         Prop::Y => matches!(kind, SlideUp | SlideDown),
         Prop::Scale => matches!(kind, ZoomIn | ZoomOut | Pop | Spin),
         Prop::Rotation => matches!(kind, Spin),
         _ => false,
     }
+}
+
+/// Whether a looping animation changes `p`.
+fn loops(kind: reelforge_model::LoopKind, p: Prop) -> bool {
+    use reelforge_model::LoopKind::*;
+    match p {
+        Prop::Opacity => kind == Blink,
+        Prop::X => kind == Shake,
+        Prop::Y => matches!(kind, Float | Bounce | Shake),
+        Prop::Scale => matches!(kind, Breathe | Heartbeat),
+        Prop::Rotation => matches!(kind, Swing | Spin),
+        _ => false,
+    }
+}
+
+/// How a title's characters move one after another over its layer (`chars`): coming in, going
+/// out, and round and round in between. Empty when its animations move it only as a whole.
+pub fn chars(clip: &Clip, shape: &Shape) -> Vec<CharMotion> {
+    use reelforge_model::{AnimKind, LoopKind};
+    let key = |t: Tick, v: f32| Key { t, v, ease: Ease::Linear };
+    let len = shape.len;
+    let (a, b) = clip.anim.spans(len);
+    // where a character waits before it comes in, and goes as it leaves
+    let pose = |kind: AnimKind| -> Option<(CharCurve, CharPose)> {
+        let hidden = CharPose { opacity: 0.0, ..CharPose::REST };
+        match kind {
+            AnimKind::CharFade => Some((CharCurve::Settle, hidden)),
+            AnimKind::CharRise => Some((CharCurve::Settle, CharPose { offset: [0.0, 0.6], ..hidden })),
+            AnimKind::CharDrop => Some((CharCurve::Settle, CharPose { offset: [0.0, -0.6], ..hidden })),
+            AnimKind::CharPop => Some((CharCurve::Spring, CharPose { scale: 0.0, ..hidden })),
+            _ => None,
+        }
+    };
+    let mut out = vec![];
+    if let Some((curve, pose)) = clip.anim.enter.and_then(|x| pose(x.kind))
+        && a > Tick::ZERO
+    {
+        let mut keys = vec![key(Tick::ZERO, 0.0), key(a, 1.0)];
+        if a < len {
+            keys.push(key(len, 1.0));
+        }
+        out.push(CharMotion { progress: Animated::Keys(keys), step: 0.35, curve, pose, reverse: false });
+    }
+    if let Some((curve, pose)) = clip.anim.exit.and_then(|x| pose(x.kind))
+        && b > Tick::ZERO
+    {
+        let mut keys = vec![key(len - b, 1.0), key(len, 0.0)];
+        if b < len {
+            keys.insert(0, key(Tick::ZERO, 1.0));
+        }
+        // the first character goes first
+        out.push(CharMotion { progress: Animated::Keys(keys), step: 0.35, curve, pose, reverse: true });
+    }
+    if let Some(l) = clip.anim.repeat
+        && l.kind.titles_only()
+        && len > Tick::ZERO
+    {
+        let (curve, pose, step) = match l.kind {
+            LoopKind::Jump => (CharCurve::Hop, CharPose { offset: [0.0, -0.35], ..CharPose::REST }, 0.12),
+            _ => (CharCurve::Wave, CharPose { offset: [0.0, -0.18], ..CharPose::REST }, 0.15),
+        };
+        // so many rounds by the layer's end; each character is a little behind the one before,
+        // so it runs from the first to the last
+        let rounds = l.phase(len) as f32;
+        let progress = Animated::Keys(vec![key(Tick::ZERO, 0.0), key(len, rounds)]);
+        out.push(CharMotion { progress, step, curve, pose, reverse: false });
+    }
+    out
 }
 
 /// How much of a title shows over its layer (`reveal`), when it types in or erases itself out: 0
@@ -238,7 +306,8 @@ enum Fits {
 impl Curve<'_> {
     fn new<'a>(clip: &'a Clip, prop: Prop, shape: &'a Shape) -> Curve<'a> {
         let anim = clip.anim;
-        let animated = [anim.enter, anim.exit].iter().flatten().any(|a| moves(a.kind, prop));
+        let animated = [anim.enter, anim.exit].iter().flatten().any(|a| moves(a.kind, prop))
+            || anim.repeat.is_some_and(|l| loops(l.kind, prop));
         let keys =
             clip.keys.get(&prop).map_or(vec![], |k| k.iter().map(|k| MKey { t: k.t + shape.lead, ..*k }).collect());
         let overlays = shape.overlays.iter().copied().filter(|o| shifts(o.kind, o.incoming, prop)).collect();
@@ -343,6 +412,9 @@ impl Curve<'_> {
         }
         let len = self.shape.len;
         let anim = self.clip.anim;
+        if anim.repeat.is_some_and(|l| loops(l.kind, self.prop)) {
+            w.push((Tick::ZERO, len));
+        }
         let (a, b) = anim.spans(len);
         if let Some(x) = anim.enter
             && a > Tick::ZERO
@@ -543,6 +615,57 @@ mod tests {
         let at = lowered.sample(Tick(500));
         assert!((at[0] - model(500)[0]).abs() < 1e-6 && (at[1] - model(500)[1]).abs() < 1e-6);
         assert!(k.len() < 20, "only the exit is sampled: {}", k.len());
+    }
+
+    #[test]
+    fn a_loop_is_sampled_all_the_way_and_only_where_it_moves() {
+        use reelforge_model::{Loop, LoopKind};
+        let mut c = clip(1000);
+        c.anim.repeat = Some(Loop { kind: LoopKind::Swing, period: Tick(200) });
+        let turned = lower(&c, Prop::Rotation, &Shape::of(&c), Tick(10));
+        let Animated::Keys(k) = &turned else { panic!() };
+        assert_eq!(k.len(), 101);
+        assert!((turned.sample(Tick(50)) - 8.0).abs() < 1e-3 && (turned.sample(Tick(150)) + 8.0).abs() < 1e-3);
+        assert!(turned.sample(Tick(400)).abs() < 1e-3);
+        // a swing neither fades nor moves the clip
+        assert_eq!(lower(&c, Prop::Opacity, &Shape::of(&c), Tick(10)), Animated::Constant(0.8));
+        assert_eq!(lower_position(&c, &Shape::of(&c), Tick(10)), Animated::Constant([0.1, 0.0]));
+        assert!(chars(&c, &Shape::of(&c)).is_empty());
+    }
+
+    #[test]
+    fn characters_come_in_go_out_and_wave_in_between() {
+        use reelforge_model::{Loop, LoopKind};
+        let mut c = clip(1000);
+        c.anim.enter = Some(Animation { kind: AnimKind::CharRise, duration: Tick(300) });
+        c.anim.exit = Some(Animation { kind: AnimKind::CharPop, duration: Tick(200) });
+        c.anim.repeat = Some(Loop { kind: LoopKind::Wave, period: Tick(250) });
+        // the title itself stays where it is, whole
+        assert_eq!(lower(&c, Prop::Opacity, &Shape::of(&c), Tick(10)), Animated::Constant(0.8));
+        assert_eq!(lower(&c, Prop::Scale, &Shape::of(&c), Tick(10)), Animated::Constant(1.0));
+        let m = chars(&c, &Shape::of(&c));
+        assert_eq!(m.len(), 3);
+        let at = |i: usize, t: i64| m[i].progress.sample(Tick(t));
+        assert_eq!([at(0, 0), at(0, 150), at(0, 300), at(0, 900)], [0.0, 0.5, 1.0, 1.0]);
+        assert_eq!([at(1, 0), at(1, 800), at(1, 900), at(1, 1000)], [1.0, 1.0, 0.5, 0.0]);
+        assert_eq!([at(2, 0), at(2, 500), at(2, 1000)], [0.0, 2.0, 4.0]);
+        assert_eq!((m[0].curve, m[1].curve, m[2].curve), (CharCurve::Settle, CharCurve::Spring, CharCurve::Wave));
+        assert!(!m[0].reverse && m[1].reverse);
+        // of four characters coming in, the first is there before the last has started
+        let first = m[0].at(0, 4, 0.5);
+        assert_eq!((first.opacity, first.offset), (1.0, [0.0, 0.0]));
+        let last = m[0].at(3, 4, 0.5);
+        assert_eq!((last.opacity, last.offset), (0.0, [0.0, 0.6]));
+        assert_eq!(m[0].at(3, 4, 1.0), CharPose::REST);
+        // going out, the first leaves first
+        assert_eq!(m[1].at(3, 4, 0.6), CharPose::REST);
+        assert_eq!(m[1].at(0, 4, 0.0).opacity, 0.0);
+        assert!(m[1].at(0, 4, 0.4).scale < 1.0);
+        // the wave: a quarter of a round in the first character is at its top, the next on its way
+        let top = m[2].at(0, 4, 0.25);
+        assert!((top.offset[1] + 0.18).abs() < 1e-6 && top.opacity == 1.0);
+        let next = m[2].at(1, 4, 0.25).offset[1];
+        assert!(next < 0.0 && next > -0.18, "{next}");
     }
 
     #[test]

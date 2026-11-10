@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use reelforge_time::Tick;
 use thiserror::Error;
 
-use crate::{Animated, AssetKind, LayerContent, RenderSpec, SPEC_VERSION, TextContent, TimeMap};
+use crate::{Animated, AssetKind, LayerContent, RenderSpec, SPEC_VERSION, TimeMap};
 
 /// Why a spec was refused. The message names the field.
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -239,8 +239,25 @@ fn layers_ok(spec: &RenderSpec, at: &str, layers: &[crate::Layer]) -> Result<(),
             asset_of_kind(spec, &format!("{path}.mask"), mask, &[AssetKind::MaskSequence])?;
         }
         keys_ok(&format!("{path}.opacity"), &layer.opacity, layer.dur)?;
-        if let LayerContent::Text(TextContent { reveal: Some(r), .. }) = &layer.content {
-            keys_ok(&format!("{path}.content.reveal"), r, layer.dur)?;
+        if let LayerContent::Text(text) = &layer.content {
+            if let Some(r) = &text.reveal {
+                keys_ok(&format!("{path}.content.reveal"), r, layer.dur)?;
+            }
+            for (j, m) in text.chars.iter().enumerate() {
+                let at = format!("{path}.content.chars[{j}]");
+                keys_ok(&format!("{at}.progress"), &m.progress, layer.dur)?;
+                if !(m.step.is_finite() && m.step >= 0.0) {
+                    return Err(bad(format!("{at}.step"), "must be zero or more"));
+                }
+                let p = m.pose;
+                let finite = p.offset.iter().chain([&p.scale, &p.rotation, &p.opacity]).all(|v| v.is_finite());
+                if !finite || p.scale < 0.0 || !(0.0..=1.0).contains(&p.opacity) {
+                    return Err(bad(
+                        format!("{at}.pose"),
+                        "needs numbers, a scale of zero or more and an opacity of 0 to 1",
+                    ));
+                }
+            }
         }
         keys_ok(&format!("{path}.transform.position"), &layer.transform.position, layer.dur)?;
         keys_ok(&format!("{path}.transform.scale"), &layer.transform.scale, layer.dur)?;
@@ -481,7 +498,7 @@ mod tests {
         text.stroke = Some(TextStroke { color: Color([0.0, 0.0, 0.0, 1.0]), width: 6.0 });
         text.background =
             Some(TextBackground { color: Color([0.0, 0.0, 0.0, 0.5]), padding: 0.25, radius: 0.0, lines: false });
-        s.layers[0].content = LayerContent::Text(text.clone());
+        s.layers[0].content = LayerContent::Text(Box::new(text.clone()));
         assert_eq!(RenderSpec::from_json(&s.to_json()).unwrap(), s);
         // the optional styling has defaults, so a minimal text layer still reads
         let mut v = serde_json::to_value(&s).unwrap();
@@ -490,11 +507,14 @@ mod tests {
             c.as_object_mut().unwrap().remove(k);
         }
         let back = RenderSpec::from_json(&v.to_string()).unwrap();
-        assert_eq!(back.layers[0].content, LayerContent::Text(TextContent::new("你好 Hello", 96.0, text.color)));
+        assert_eq!(
+            back.layers[0].content,
+            LayerContent::Text(Box::new(TextContent::new("你好 Hello", 96.0, text.color)))
+        );
         text.weight = 950;
-        s.layers[0].content = LayerContent::Text(text);
+        s.layers[0].content = LayerContent::Text(Box::new(text));
         assert!(validate(&s).is_err());
-        s.layers[0].content = LayerContent::Text(TextContent::new("ok", 96.0, Color([1.0; 4])));
+        s.layers[0].content = LayerContent::Text(Box::new(TextContent::new("ok", 96.0, Color([1.0; 4]))));
         assert!(s.required_features().contains("text/1"));
     }
 

@@ -1075,6 +1075,85 @@ fn titles_type_themselves_in_and_box_each_line() {
 }
 
 #[test]
+fn clips_loop_and_titles_move_a_character_at_a_time() {
+    let mut s = Session::default();
+    let text = s.project().tracks.iter().find(|t| t.kind == TrackKind::Text).unwrap().id.clone();
+    let id = s.execute("clip.add", &json!({"track": text, "text": "逐字 动画", "duration": {"seconds": 2}})).unwrap()
+        ["clip"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let set = |s: &mut Session, clip: &str, slot: &str, kind: Value, secs: Option<f64>| {
+        let mut v = json!({"clip": clip, "slot": slot, "kind": kind});
+        if let Some(secs) = secs {
+            v["duration"] = json!({"seconds": secs});
+        }
+        s.execute("clip.setAnimation", &v)
+    };
+    set(&mut s, &id, "in", json!("charRise"), Some(1.0)).unwrap();
+    set(&mut s, &id, "out", json!("charPop"), None).unwrap();
+    let out = set(&mut s, &id, "loop", json!("wave"), None).unwrap();
+    assert_eq!(out["anim"]["loop"], json!({"kind": "wave", "period": Tick::SECOND}));
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("text/5")));
+    let chars = spec["layers"][0]["content"]["chars"].as_array().unwrap().clone();
+    assert_eq!(chars.len(), 3);
+    assert_eq!(
+        (&chars[0]["curve"], &chars[1]["curve"], &chars[2]["curve"]),
+        (&json!("settle"), &json!("spring"), &json!("wave"))
+    );
+    assert_eq!(chars[0]["pose"]["opacity"], json!(0.0));
+    assert_eq!(chars[1]["reverse"], json!(true));
+    // two rounds of the wave in two seconds
+    assert_eq!(chars[2]["progress"][1], json!({"t": Tick::from_seconds(2.0), "v": 2.0, "ease": "linear"}));
+    // the title as a whole stays put and whole
+    assert_eq!(spec["layers"][0]["opacity"], json!(1.0));
+    assert_eq!(spec["layers"][0]["transform"]["scale"], json!(1.0));
+
+    // a loop of the whole clip: its round is kept when it is set again, and starts over for another kind
+    set(&mut s, &id, "loop", json!("swing"), Some(0.5)).unwrap();
+    let out = set(&mut s, &id, "loop", json!("swing"), None).unwrap();
+    assert_eq!(out["anim"]["loop"]["period"], json!(Tick::from_seconds(0.5)));
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert_eq!(spec["layers"][0]["content"]["chars"].as_array().unwrap().len(), 2);
+    let turned = spec["layers"][0]["transform"]["rotation"].as_array().unwrap().clone();
+    assert!(turned.len() > 50, "sampled at every frame: {}", turned.len());
+    let far = turned.iter().map(|k| k["v"].as_f64().unwrap()).fold(0.0f64, |m, v| m.max(v.abs()));
+    assert!((far - 8.0).abs() < 0.2, "{far}");
+    let out = set(&mut s, &id, "loop", json!("breathe"), None).unwrap();
+    assert_eq!(out["anim"]["loop"]["period"], json!(Tick::from_seconds(2.0)));
+    // a split leaves the loop on both halves
+    let right = s.execute("clip.split", &json!({"clip": id, "at": {"seconds": 1}})).unwrap()["right"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let p = s.project();
+    let (l, r) = (p.clip(&id).unwrap().1, p.clip(&right).unwrap().1);
+    assert!(l.anim.repeat.is_some() && r.anim.repeat == l.anim.repeat);
+    assert!(l.anim.exit.is_none() && r.anim.enter.is_none());
+    let out = set(&mut s, &id, "loop", Value::Null, None).unwrap();
+    assert!(out["anim"].get("loop").is_none());
+    s.execute("edit.undo", &json!({})).unwrap();
+
+    // what is refused: a loop's kind in another slot and the other way round, a blur of a round,
+    // and characters on a picture
+    assert!(set(&mut s, &id, "in", json!("wave"), None).is_err());
+    assert!(set(&mut s, &id, "loop", json!("fade"), None).is_err());
+    assert!(set(&mut s, &id, "loop", json!("blink"), Some(0.01)).is_err());
+    let video = video_track(&s);
+    let pic = s.execute("clip.add", &json!({"track": video, "color": [1, 0, 0]})).unwrap()["clip"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for (slot, kind) in [("in", "charFade"), ("loop", "jump")] {
+        let err = set(&mut s, &pic, slot, json!(kind), None).unwrap_err();
+        assert!(err.to_string().contains("titles"), "{err}");
+    }
+    set(&mut s, &pic, "loop", json!("spin"), None).unwrap();
+    assert!(s.project().check().is_ok());
+}
+
+#[test]
 fn a_new_project_keeps_the_canvas_and_undoes_back() {
     let mut s = Session::default();
     let video = s.project().tracks[0].id.clone();
