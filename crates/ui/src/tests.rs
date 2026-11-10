@@ -277,3 +277,50 @@ fn new_empties_the_project_and_undo_brings_it_back() {
     app.execute("edit.undo", json!({})).unwrap();
     assert_eq!(*app.project(), *before);
 }
+
+#[test]
+fn the_captions_list_splits_and_joins_what_was_typed_in_one_step() {
+    use crate::captions::Ask;
+    let ctx = eframe::egui::Context::default();
+    let mut app = EditorApp::new(Session::default());
+    let srt = "1\n00:00:00,000 --> 00:00:02,000\n大家好欢迎\n\n2\n00:00:02,000 --> 00:00:03,000\n再见\n";
+    let r = app.execute("captions.import", json!({"srt": srt})).unwrap();
+    let (a, b) = (r["clips"][0].as_str().unwrap().to_string(), r["clips"][1].as_str().unwrap().to_string());
+    let words = |app: &EditorApp| -> Vec<String> {
+        let p = app.project();
+        let t = p.track(r["track"].as_str().unwrap()).unwrap();
+        t.clips
+            .iter()
+            .map(|c| match &c.content {
+                reelforge_model::ClipContent::Text { text, .. } => text.clone(),
+                _ => unreachable!(),
+            })
+            .collect()
+    };
+    let before = app.project();
+
+    // Enter after three characters of what was typed: the typing and the cut are one undo step
+    app.captions_ask(Ask::Split { clip: a.clone(), text: "大家好，欢迎回来".into(), at: 4 }, &ctx);
+    assert_eq!(words(&app), ["大家好，", "欢迎回来", "再见"]);
+    app.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*app.project(), *before);
+
+    // Backspace at the start of the second joins it, as typed, to the first, which is selected
+    app.captions_ask(
+        Ask::Merge { first: a.clone(), second: b.clone(), typed: Some((b.clone(), "，再会".into())) },
+        &ctx,
+    );
+    assert_eq!(words(&app), ["大家好欢迎，再会"]);
+    assert_eq!(app.selected.as_deref(), Some(a.as_str()));
+    app.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*app.project(), *before);
+
+    // clicking a row selects its caption and goes to it
+    app.captions_ask(Ask::Focus { clip: b.clone(), start: Tick::from_seconds(2.0) }, &ctx);
+    assert_eq!((app.selected.as_deref(), app.playhead), (Some(b.as_str()), Tick::from_seconds(2.0)));
+    app.captions_ask(
+        Ask::Replace { track: r["track"].as_str().unwrap().into(), find: "再见".into(), with: "拜拜".into() },
+        &ctx,
+    );
+    assert_eq!(words(&app)[1], "拜拜");
+}

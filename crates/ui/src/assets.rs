@@ -1,6 +1,7 @@
-//! The panel on the left: what can go on the timeline. Three tabs, as short-video editors have them:
+//! The panel on the left: what can go on the timeline. Four tabs, as short-video editors have them:
 //! the project's media (imported files, with a picture, their length, whether a clip uses them and
-//! whether they are offline), the built-in sound library, and titles (plain or wearing a template).
+//! whether they are offline), the built-in sound library, titles (plain or wearing a template), and
+//! the captions as a list to edit ([`crate::captions`]).
 //!
 //! Anything in the panel is dragged onto the timeline (an [`Item`] is the drag's payload; the
 //! timeline draws where it would land and reports the drop) or added at the playhead. Like the rest
@@ -83,6 +84,8 @@ pub(crate) enum Action {
     Add(Item),
     /// Take a file out of the project's media.
     Remove(String),
+    /// Something asked of the captions list.
+    Captions(crate::captions::Ask),
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -91,6 +94,7 @@ enum Tab {
     Media,
     Audio,
     Text,
+    Captions,
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -127,6 +131,7 @@ pub(crate) struct AssetPanel {
     seen: u64,
     /// The library sounds' lengths, measured the first time the sounds are shown.
     sound_lengths: HashMap<&'static str, Tick>,
+    captions: crate::captions::CaptionsTab,
 }
 
 /// A picture is made once per file (a relinked file gets a new one).
@@ -159,10 +164,13 @@ impl AssetPanel {
         ui: &mut egui::Ui,
         p: &Project,
         media: &Footage,
-        s: &Strings,
+        lang: crate::i18n::Lang,
         looks: &[(&'static str, egui::TextureHandle)],
         playing: bool,
+        playhead: Tick,
+        selected: &[String],
     ) -> Option<Action> {
+        let s = lang.strings();
         let mut action = None;
         self.tabs(ui, s);
         ui.add_space(6.0);
@@ -170,6 +178,9 @@ impl AssetPanel {
             Tab::Media => self.media_tab(ui, p, media, s, playing, &mut action),
             Tab::Audio => self.audio_tab(ui, s, &mut action),
             Tab::Text => text_tab(ui, s, looks, &mut action),
+            Tab::Captions => {
+                action = self.captions.show(ui, p, lang, playhead, selected, playing).map(Action::Captions);
+            }
         }
         drag_preview(ui.ctx(), p, s);
         action
@@ -187,9 +198,10 @@ impl AssetPanel {
                 (Tab::Media, icon::IMAGE, s.tab_media),
                 (Tab::Audio, icon::MUSIC, s.tab_audio),
                 (Tab::Text, icon::TEXT, s.tab_text),
+                (Tab::Captions, icon::CAPTIONS, s.tab_captions),
             ] {
                 let on = self.tab == tab;
-                let (rect, r) = ui.allocate_exact_size(vec2(62.0, 44.0), Sense::click());
+                let (rect, r) = ui.allocate_exact_size(vec2(54.0, 44.0), Sense::click());
                 if r.hovered() && !on {
                     ui.painter().rect_filled(rect, 6.0, color::HOVER);
                 }

@@ -22,6 +22,7 @@
 mod ahead;
 mod assets;
 mod audio;
+mod captions;
 mod export_job;
 pub mod i18n;
 mod looks;
@@ -100,6 +101,8 @@ pub struct EditorApp {
     export_open: bool,
     /// The panel on the left: media, sounds, titles.
     assets: assets::AssetPanel,
+    /// The SubRip file being picked is a second language's (asked from the captions list).
+    second_captions: bool,
     /// The timelines window is showing, and the name being typed for the current timeline.
     timelines_open: bool,
     timeline_name: String,
@@ -318,6 +321,7 @@ impl EditorApp {
             export: None,
             export_open: false,
             assets: assets::AssetPanel::default(),
+            second_captions: false,
             timelines_open: false,
             timeline_name: String::new(),
             recorder: None,
@@ -674,10 +678,89 @@ impl EditorApp {
         }
     }
 
-    /// Places SubRip captions on a captions track (a command, so a joined editor shares them).
+    /// Does what the captions list asked.
+    fn captions_ask(&mut self, ask: captions::Ask, ctx: &egui::Context) {
+        use captions::Ask;
+        let set = |clip: &str, text: &str| json!({"id": "clip.set", "params": {"clip": clip, "text": text}});
+        match ask {
+            Ask::Focus { clip, start } => {
+                self.select(timeline::Select::Only(clip));
+                if !self.playing {
+                    self.seek(start);
+                }
+            }
+            Ask::SetText { clip, text } => {
+                let _ = self.execute("clip.set", json!({"clip": clip, "text": text}));
+            }
+            Ask::Split { clip, text, at } => {
+                let steps = json!([set(&clip, &text), {"id": "captions.split", "params": {"clip": clip, "at": at}}]);
+                let label = self.lang.command("captions.split");
+                let _ = self.execute("edit.batch", json!({"steps": steps, "label": label}));
+            }
+            Ask::Merge { first, second, typed } => {
+                let mut steps = Vec::new();
+                if let Some((clip, text)) = typed.filter(|(_, t)| !t.trim().is_empty()) {
+                    steps.push(set(&clip, &text));
+                }
+                steps.push(json!({"id": "captions.merge", "params": {"clips": [first, second]}}));
+                let label = self.lang.command("captions.merge");
+                if self.execute("edit.batch", json!({"steps": steps, "label": label})).is_ok() {
+                    self.select(timeline::Select::Only(first));
+                }
+            }
+            Ask::Delete(clip) => {
+                let _ = self.execute("clip.remove", json!({"clip": clip}));
+            }
+            Ask::Replace { track, find, with } => {
+                if let Ok(v) = self.execute("captions.replace", json!({"track": track, "find": find, "replace": with}))
+                {
+                    self.status = fill(self.s().cap_replaced, &[&v["count"].as_u64().unwrap_or(0)]);
+                }
+            }
+            Ask::Restyle(from) => {
+                let _ = self.execute("captions.restyle", json!({"from": from}));
+            }
+            Ask::Shift { track, seconds } => {
+                let _ = self.execute("captions.shift", json!({"track": track, "by": {"seconds": seconds}}));
+            }
+            Ask::Import { second } => {
+                self.second_captions = second;
+                self.pick(ctx, &["srt"]);
+            }
+            Ask::Export(track) => self.export_captions(&track),
+        }
+    }
+
+    /// Saves a track's captions as a SubRip file: where the person says on the desktop, as a
+    /// download in the browser.
+    fn export_captions(&mut self, track: &str) {
+        let Ok(v) = self.run("captions.export", &json!({"track": track})) else { return };
+        let srt = v["srt"].as_str().unwrap_or_default();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some(path) =
+                rfd::FileDialog::new().add_filter("SubRip", &["srt"]).set_file_name("captions.srt").save_file()
+            else {
+                return;
+            };
+            self.status = match std::fs::write(&path, srt) {
+                Ok(()) => fill(self.s().cap_exported, &[&path.display()]),
+                Err(e) => format!("{}: {e}", path.display()),
+            };
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            picker::save("captions.srt", srt.as_bytes(), "application/x-subrip");
+            self.status = fill(self.s().cap_exported, &[&"captions.srt"]);
+        }
+    }
+
+    /// Places SubRip captions on a captions track (a command, so a joined editor shares them); as
+    /// a second language's line when the captions list asked for the file so.
     fn import_captions(&mut self, name: &str, bytes: &[u8]) {
         let text = String::from_utf8_lossy(bytes);
-        if let Ok(v) = self.execute("captions.import", json!({ "srt": text })) {
+        let line = if std::mem::take(&mut self.second_captions) { 2 } else { 1 };
+        if let Ok(v) = self.execute("captions.import", json!({ "srt": text, "line": line })) {
             let n = v["clips"].as_array().map_or(0, Vec::len);
             self.status = fill(self.s().captions_imported, &[&n, &name]);
         }
@@ -817,15 +900,24 @@ impl EditorApp {
     /// Asks for files to add to the project's media: the system's file dialog on the desktop, the
     /// browser's file picker on the web (its files arrive later, like dropped ones).
     fn pick_files(&mut self, ctx: &egui::Context) {
+        self.second_captions = false;
+        self.pick(ctx, IMPORTABLE);
+    }
+
+    /// Asks for files with these extensions and imports what is picked.
+    fn pick(&mut self, ctx: &egui::Context, extensions: &[&str]) {
         let s = self.s();
         #[cfg(not(target_arch = "wasm32"))]
         {
             let _ = ctx;
-            let picked = rfd::FileDialog::new()
-                .add_filter(s.picker_media, IMPORTABLE)
-                .add_filter(s.picker_all, &["*"])
-                .pick_files()
-                .unwrap_or_default();
+            let mut dialog = rfd::FileDialog::new().add_filter(s.picker_media, extensions);
+            if extensions.len() > 1 {
+                dialog = dialog.add_filter(s.picker_all, &["*"]);
+            }
+            let picked = dialog.pick_files().unwrap_or_default();
+            if picked.is_empty() {
+                self.second_captions = false;
+            }
             for path in picked {
                 if self.remote.is_some() {
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -839,7 +931,7 @@ impl EditorApp {
             }
         }
         #[cfg(target_arch = "wasm32")]
-        if let Err(e) = picker::pick_files(ctx, self.arrivals.clone(), IMPORTABLE) {
+        if let Err(e) = picker::pick_files(ctx, self.arrivals.clone(), extensions) {
             self.status = format!("{}: {e}", s.import);
         }
     }
@@ -2794,13 +2886,14 @@ impl eframe::App for EditorApp {
             self.looks = Some(looks::previews(&ctx));
         }
         let looks = self.looks.clone().unwrap_or_default();
-        let s = self.s();
         let asked = egui::Panel::left("assets")
             .resizable(true)
             .default_size(300.0)
             .size_range(220.0..=520.0)
             .frame(egui::Frame::new().fill(theme::color::PANEL).inner_margin(egui::Margin::same(10)))
-            .show_collapsible(ui, &mut shown.clone(), |ui| self.assets.show(ui, &p, &media, s, &looks, playing))
+            .show_collapsible(ui, &mut shown.clone(), |ui| {
+                self.assets.show(ui, &p, &media, lang, &looks, playing, self.playhead, &selection)
+            })
             .and_then(|r| r.inner);
         egui::Panel::right("inspector")
             .resizable(true)
@@ -2874,6 +2967,7 @@ impl eframe::App for EditorApp {
                     self.status = fill(self.s().media_removed, &[&name]);
                 }
             }
+            Some(assets::Action::Captions(ask)) => self.captions_ask(ask, &ctx),
             None => {}
         }
         if let Some((item, at, track)) = out.dropped {
