@@ -406,6 +406,104 @@
         }
       ]
     },
+    "CharCurve": {
+      "description": "How a character travels between `pose` and rest.",
+      "oneOf": [
+        {
+          "const": "settle",
+          "description": "From `pose` to rest once, fast at first and slowing into place; its opacity in a straight line.",
+          "type": "string"
+        },
+        {
+          "const": "spring",
+          "description": "As `settle`, overshooting rest a little before it comes back.",
+          "type": "string"
+        },
+        {
+          "const": "wave",
+          "description": "To `pose`, back through rest to its opposite and back, every round.",
+          "type": "string"
+        },
+        {
+          "const": "hop",
+          "description": "To `pose` and back in the first half of every round, at rest in the second.",
+          "type": "string"
+        }
+      ]
+    },
+    "CharMotion": {
+      "additionalProperties": false,
+      "description": "One way a text's characters move one after another (`text/5`). Characters are counted from\nthe start of the text, white space left out.",
+      "properties": {
+        "curve": {
+          "$ref": "#/$defs/CharCurve",
+          "description": "How a character travels."
+        },
+        "pose": {
+          "$ref": "#/$defs/CharPose",
+          "description": "Where a character is when it is furthest from rest."
+        },
+        "progress": {
+          "$ref": "#/$defs/Animated",
+          "description": "How far along the movement is. For `settle` and `spring`: 0, no character has started, to\n1, every character is in place. For `wave` and `hop`: rounds, 1 a whole round."
+        },
+        "reverse": {
+          "description": "Counted from the last character instead of the first.",
+          "type": "boolean"
+        },
+        "step": {
+          "description": "How much later each character starts than the one before. For `settle` and `spring`, in\nunits of one character's own time: 0 moves them all together, 1 starts each as the one\nbefore arrives. For `wave` and `hop`, in rounds.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "progress",
+        "step",
+        "curve",
+        "pose"
+      ],
+      "type": "object"
+    },
+    "CharPose": {
+      "additionalProperties": false,
+      "description": "Where a character is, against where the layout puts it.",
+      "properties": {
+        "offset": {
+          "default": [
+            0.0,
+            0.0
+          ],
+          "description": "Moved `[right, down]`, in ems.",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "opacity": {
+          "default": 1.0,
+          "description": "How much of it shows, 0 to 1.",
+          "format": "float",
+          "type": "number"
+        },
+        "rotation": {
+          "default": 0.0,
+          "description": "Turned about its own centre, degrees clockwise.",
+          "format": "float",
+          "type": "number"
+        },
+        "scale": {
+          "default": 1.0,
+          "description": "Scaled about its own centre.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
     "Color": {
       "description": "A straight (not premultiplied) sRGB colour with alpha, each 0 to 1.",
       "items": {
@@ -854,6 +952,13 @@
                 }
               ],
               "description": "A box behind the block."
+            },
+            "chars": {
+              "description": "With `text/5`: the characters move one after another, each about its own centre, from where\nthe layout puts them. Several movements add up. Boxes and underlines stay where they are.",
+              "items": {
+                "$ref": "#/$defs/CharMotion"
+              },
+              "type": "array"
             },
             "color": {
               "$ref": "#/$defs/Color",

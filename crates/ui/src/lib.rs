@@ -46,8 +46,8 @@ use reelforge_compile::{CompileOptions, compile};
 use reelforge_engine::{Session, SharedSession};
 use reelforge_media::Footage;
 use reelforge_model::{
-    Adjust, AnimKind, BlendMode, ClipContent, ClipTransform, CurvePreset, FilterKind, Mask, MaskKind, MediaKind,
-    Project, Prop, TrackKind, TransitionKind, VoiceKind,
+    Adjust, AnimKind, BlendMode, ClipContent, ClipTransform, CurvePreset, FilterKind, LoopKind, Mask, MaskKind,
+    MediaKind, Project, Prop, TrackKind, TransitionKind, VoiceKind,
 };
 use reelforge_render::{Quality, render_frame};
 use reelforge_time::Tick;
@@ -235,6 +235,8 @@ struct Inspector {
     title: Option<Title>,
     /// Picture clips: the in and out animations, with their lengths in seconds.
     anim: Option<[Option<(AnimKind, f32)>; 2]>,
+    /// With `anim`: the animation that repeats, with one round in seconds.
+    looped: Option<(LoopKind, f32)>,
     /// Clips on a video track: the transition into it with its length in seconds, and whether a
     /// clip ends where it starts (so one can play).
     transition: Option<(Option<(TransitionKind, f32)>, bool)>,
@@ -2327,6 +2329,7 @@ impl EditorApp {
                 _ => None,
             },
             anim: (picture && !adjustment).then(|| [anim_of(clip.anim.enter), anim_of(clip.anim.exit)]),
+            looped: clip.anim.repeat.map(|l| (l.kind, l.period.seconds() as f32)),
             transition: p.clip(&id).filter(|(ti, _)| p.tracks[*ti].kind == TrackKind::Video && !adjustment).map(
                 |(ti, _)| {
                     let touching = p.tracks[ti].clips.iter().any(|c| c.end() == clip.start && !c.is_adjustment());
@@ -3031,6 +3034,7 @@ impl EditorApp {
                 });
             }
             let titled = edit.title.is_some();
+            let looped = &mut edit.looped;
             if let Some(slots) = &mut edit.anim {
                 ui.add_space(6.0);
                 theme::section(ui, s.sec_motion, |ui| {
@@ -3087,6 +3091,50 @@ impl EditorApp {
                             }
                             ui.end_row();
                         }
+                        // the one that goes round and round in between
+                        ui.label(egui::RichText::new(s.anim_loop).color(theme::color::WEAK));
+                        let name = |k: LoopKind| s.loop_kinds[LoopKind::ALL.iter().position(|x| *x == k).unwrap_or(0)];
+                        let mut picked = looped.map(|(k, _)| k);
+                        egui::ComboBox::from_id_salt("anim loop")
+                            .selected_text(picked.map_or(s.anim_none, name))
+                            .width(110.0)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut picked, None, s.anim_none);
+                                for k in LoopKind::ALL {
+                                    if !k.titles_only() || titled {
+                                        ui.selectable_value(&mut picked, Some(k), name(k));
+                                    }
+                                }
+                            });
+                        if picked != looped.map(|(k, _)| k) {
+                            actions.push((
+                                "clip.setAnimation",
+                                json!({"clip": id, "slot": "loop", "kind": picked.map(LoopKind::name)}),
+                            ));
+                        }
+                        match looped {
+                            Some((kind, secs)) => {
+                                let r = ui.add(
+                                    egui::DragValue::new(secs)
+                                        .speed(0.02)
+                                        .range(0.05..=20.0)
+                                        .suffix(" s")
+                                        .max_decimals(2),
+                                );
+                                if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                                    actions.push((
+                                        "clip.setAnimation",
+                                        json!({"clip": id, "slot": "loop",
+                                            "kind": kind.name(), "duration": {"seconds": *secs}}),
+                                    ));
+                                }
+                                r.on_hover_text(s.anim_round);
+                            }
+                            None => {
+                                ui.label("");
+                            }
+                        }
+                        ui.end_row();
                     });
                 });
             }

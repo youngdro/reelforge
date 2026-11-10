@@ -251,7 +251,7 @@ fn lower_tracks(
                         LayerContent::Comp { comp: timeline.clone(), from: *source_in - shape.lead }
                     }
                     ClipContent::Adjustment => unreachable!("an adjustment clip is not a picture"),
-                    ClipContent::Text { text, size, color, style } => LayerContent::Text(TextContent {
+                    ClipContent::Text { text, size, color, style } => LayerContent::Text(Box::new(TextContent {
                         weight: style.weight,
                         align: match style.align {
                             TitleAlign::Left => TextAlign::Left,
@@ -282,13 +282,14 @@ fn lower_tracks(
                             blur: sh.blur,
                         }),
                         reveal: motion::reveal(clip, &shape),
+                        chars: motion::chars(clip, &shape),
                         font: style.font.as_ref().map(|f| asset_for(f)).transpose()?,
                         tracking: style.tracking,
                         leading: style.leading,
                         italic: style.italic,
                         underline: style.underline,
                         ..TextContent::new(text.clone(), *size, Color(*color))
-                    }),
+                    })),
                 };
                 // a blurred copy filling the frame behind it
                 if let (Some(amount), LayerContent::Media { asset, time, .. }) = (clip.look.backdrop, &content) {

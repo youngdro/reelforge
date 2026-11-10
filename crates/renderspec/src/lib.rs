@@ -464,7 +464,7 @@ pub enum LayerContent {
         color: Color,
     },
     /// Set text (feature `text/1`).
-    Text(TextContent),
+    Text(Box<TextContent>),
     /// The picture of a composition (feature `comp/1`): drawn first, on a see-through frame the
     /// size of the output, then placed, cropped, masked and given this layer's effects as one
     /// picture.
@@ -647,6 +647,123 @@ pub struct TextContent {
     /// With `text/4`: a line under each line of text, outlined and shadowed with the glyphs.
     #[serde(default, skip_serializing_if = "is_false")]
     pub underline: bool,
+    /// With `text/5`: the characters move one after another, each about its own centre, from where
+    /// the layout puts them. Several movements add up. Boxes and underlines stay where they are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chars: Vec<CharMotion>,
+}
+
+/// One way a text's characters move one after another (`text/5`). Characters are counted from
+/// the start of the text, white space left out.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CharMotion {
+    /// How far along the movement is. For `settle` and `spring`: 0, no character has started, to
+    /// 1, every character is in place. For `wave` and `hop`: rounds, 1 a whole round.
+    pub progress: Animated<f32>,
+    /// How much later each character starts than the one before. For `settle` and `spring`, in
+    /// units of one character's own time: 0 moves them all together, 1 starts each as the one
+    /// before arrives. For `wave` and `hop`, in rounds.
+    pub step: f32,
+    /// How a character travels.
+    pub curve: CharCurve,
+    /// Where a character is when it is furthest from rest.
+    pub pose: CharPose,
+    /// Counted from the last character instead of the first.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub reverse: bool,
+}
+
+/// How a character travels between `pose` and rest.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CharCurve {
+    /// From `pose` to rest once, fast at first and slowing into place; its opacity in a straight line.
+    Settle,
+    /// As `settle`, overshooting rest a little before it comes back.
+    Spring,
+    /// To `pose`, back through rest to its opposite and back, every round.
+    Wave,
+    /// To `pose` and back in the first half of every round, at rest in the second.
+    Hop,
+}
+
+/// Where a character is, against where the layout puts it.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CharPose {
+    /// Moved `[right, down]`, in ems.
+    #[serde(default)]
+    pub offset: [f32; 2],
+    /// Scaled about its own centre.
+    #[serde(default = "whole")]
+    pub scale: f32,
+    /// Turned about its own centre, degrees clockwise.
+    #[serde(default)]
+    pub rotation: f32,
+    /// How much of it shows, 0 to 1.
+    #[serde(default = "whole")]
+    pub opacity: f32,
+}
+
+fn whole() -> f32 {
+    1.0
+}
+
+impl CharPose {
+    /// Where the layout puts it.
+    pub const REST: CharPose = CharPose { offset: [0.0; 2], scale: 1.0, rotation: 0.0, opacity: 1.0 };
+
+    /// Both at once.
+    pub fn and(self, o: CharPose) -> CharPose {
+        CharPose {
+            offset: [self.offset[0] + o.offset[0], self.offset[1] + o.offset[1]],
+            scale: self.scale * o.scale,
+            rotation: self.rotation + o.rotation,
+            opacity: self.opacity * o.opacity,
+        }
+    }
+
+    /// This pose `w` of the way from rest (beyond 1, or the other way from rest below 0), showing
+    /// as much as it does `shown` of the way from rest.
+    fn weighed(self, w: f32, shown: f32) -> CharPose {
+        CharPose {
+            offset: [self.offset[0] * w, self.offset[1] * w],
+            scale: (1.0 + (self.scale - 1.0) * w).max(0.0),
+            rotation: self.rotation * w,
+            opacity: (1.0 + (self.opacity - 1.0) * shown.clamp(0.0, 1.0)).clamp(0.0, 1.0),
+        }
+    }
+}
+
+impl CharMotion {
+    /// Where character `i` of `n` is when the movement is at `progress`.
+    pub fn at(&self, i: usize, n: usize, progress: f32) -> CharPose {
+        let i = if self.reverse { n.saturating_sub(1 + i) } else { i } as f32;
+        let step = self.step.max(0.0);
+        match self.curve {
+            CharCurve::Settle | CharCurve::Spring => {
+                // one character's share of the whole, so that the last one ends at 1
+                let own = 1.0 / (1.0 + step * n.saturating_sub(1) as f32);
+                let u = ((progress - i * step * own) / own).clamp(0.0, 1.0);
+                let away = if self.curve == CharCurve::Settle {
+                    (1.0 - u).powi(3)
+                } else {
+                    // back-out: about a tenth past rest, then back
+                    let (c, v) = (1.70158f32, u - 1.0);
+                    -((c + 1.0) * v * v * v + c * v * v)
+                };
+                // a spring is all there a third of the way in, so its overshoot shows
+                let shown = if self.curve == CharCurve::Settle { 1.0 - u } else { 1.0 - (u * 3.0).min(1.0) };
+                self.pose.weighed(away, shown)
+            }
+            CharCurve::Wave | CharCurve::Hop => {
+                let w = (std::f32::consts::TAU * (progress - i * step)).sin();
+                let w = if self.curve == CharCurve::Hop { w.max(0.0) } else { w };
+                self.pose.weighed(w, w.abs())
+            }
+        }
+    }
 }
 
 fn regular() -> u16 {
@@ -674,6 +791,7 @@ impl TextContent {
             leading: 0.0,
             italic: false,
             underline: false,
+            chars: vec![],
         }
     }
 }
@@ -752,6 +870,11 @@ impl TextContent {
     /// Whether it uses anything beyond `text/3`.
     pub fn needs_v4(&self) -> bool {
         self.tracking != 0.0 || self.leading != 0.0 || self.italic || self.underline
+    }
+
+    /// Whether it uses anything beyond `text/4`.
+    pub fn needs_v5(&self) -> bool {
+        !self.chars.is_empty()
     }
 }
 
@@ -1151,6 +1274,9 @@ impl RenderSpec {
                 }
                 if t.needs_v4() {
                     out.insert("text/4".to_string());
+                }
+                if t.needs_v5() {
+                    out.insert("text/5".to_string());
                 }
             }
             if let LayerContent::Media { time, .. } = &layer.content {

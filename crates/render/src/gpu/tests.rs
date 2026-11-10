@@ -236,7 +236,7 @@ fn grades_and_lookup_tables_match() {
     // and on a title
     let mut t = base(96, 48);
     let mut title =
-        layer("t", LayerContent::Text(TextContent::new("Hi".to_string(), 30.0, Color([0.9, 0.6, 0.3, 1.0]))));
+        layer("t", LayerContent::Text(Box::new(TextContent::new("Hi".to_string(), 30.0, Color([0.9, 0.6, 0.3, 1.0])))));
     title.fx = s.layers[i].fx.clone();
     t.assets = s.assets.clone();
     t.layers.push(title);
@@ -253,7 +253,7 @@ fn text_with_outline_and_box_over_a_multiplied_picture() {
     t.stroke = Some(TextStroke { color: Color([0.0, 0.0, 0.0, 1.0]), width: 4.0 });
     t.background =
         Some(TextBackground { color: Color([0.0, 0.0, 0.0, 0.5]), padding: 0.25, radius: 0.0, lines: false });
-    let mut l = layer("title", LayerContent::Text(t));
+    let mut l = layer("title", LayerContent::Text(Box::new(t)));
     l.transform.rotation = Animated::Constant(-8.0);
     l.transform.position = Animated::Constant([0.0, 0.3]);
     // half off the bottom: clipped the same way
@@ -531,7 +531,7 @@ fn distortions_read_the_same_places_on_both() {
     }
     // text is split too
     let mut s = base(160, 80);
-    let mut l = layer("t", LayerContent::Text(TextContent::new("Glitch".to_string(), 40.0, Color([1.0; 4]))));
+    let mut l = layer("t", LayerContent::Text(Box::new(TextContent::new("Glitch".to_string(), 40.0, Color([1.0; 4])))));
     l.fx = vec![fx_of(effects::SPLIT, &[("x", 0.03)]), fx_of(effects::GLITCH, &[("amount", 0.1), ("seed", 2.0)])];
     s.layers.push(l);
     same(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Final);
@@ -550,7 +550,7 @@ fn compositions_match_however_they_are_placed() {
     square.blend = Blend::Multiply;
     square.transform.scale = Animated::Constant(0.5);
     square.transform.position = Animated::Constant([0.15, -0.1]);
-    let title = layer("t", LayerContent::Text(TextContent::new("Ab".to_string(), 30.0, Color([1.0; 4]))));
+    let title = layer("t", LayerContent::Text(Box::new(TextContent::new("Ab".to_string(), 30.0, Color([1.0; 4])))));
     s.comps.insert("k".into(), Comp { layers: vec![inside, square, title], audio: vec![] });
 
     let mut behind = layer("behind", LayerContent::Solid { color: Color([0.2, 0.7, 0.3, 1.0]) });

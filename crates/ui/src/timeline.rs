@@ -1167,6 +1167,20 @@ fn paint_motion(painter: &egui::Painter, r: Rect, clip: &reelforge_model::Clip, 
         ));
         on.line_segment([egui::pos2(x, r.top()), r.right_bottom()], Stroke::new(1.0, Color32::from_white_alpha(150)));
     }
+    // a loop: a ripple along the top, a crest a round (drawn no tighter than it can be read)
+    if let Some(l) = clip.anim.repeat
+        && r.width() > 12.0
+    {
+        let round = (r.width() * (l.period.0 as f32 / len)).max(8.0);
+        let n = ((r.width() / 2.0) as usize).clamp(2, 600);
+        let wave: Vec<egui::Pos2> = (0..=n)
+            .map(|i| {
+                let x = r.width() * i as f32 / n as f32;
+                egui::pos2(r.left() + x, r.top() + 5.0 - 2.5 * (std::f32::consts::TAU * x / round).sin())
+            })
+            .collect();
+        on.add(egui::Shape::line(wave, Stroke::new(1.0, Color32::from_white_alpha(150))));
+    }
     // sound fades: the level rising from the left corner and falling to the right one
     let (fi, fo) = clip.fade.spans(clip.duration);
     let shade = Color32::from_black_alpha(90);

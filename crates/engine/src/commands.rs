@@ -4,9 +4,9 @@ use reelforge_compile::{CompileOptions, compile};
 use reelforge_model::timeline as model_timeline;
 use reelforge_model::{
     Adjust, AnimKind, Animation, BlendMode, ChromaKey, Clip, ClipContent, ClipEffect, ClipTransform, Codec, CurvePoint,
-    CurvePreset, Denoise, Ease, ExportSettings, Filter, FilterKind, Fx, FxGroup, FxKind, Key, LutUse, Mask, MaskKind,
-    Media, MediaKind, Outline, Project, Prop, Quality, Resolution, Shadow, Timeline, TitleStyle, Track, TrackKind,
-    Transition, TransitionKind, Voice, VoiceKind, anim, export, timing,
+    CurvePreset, Denoise, Ease, ExportSettings, Filter, FilterKind, Fx, FxGroup, FxKind, Key, Loop, LoopKind, LutUse,
+    Mask, MaskKind, Media, MediaKind, Outline, Project, Prop, Quality, Resolution, Shadow, Timeline, TitleStyle, Track,
+    TrackKind, Transition, TransitionKind, Voice, VoiceKind, anim, export, timing,
 };
 use reelforge_renderspec::AssetKind;
 use reelforge_time::{FrameRate, Tick};
@@ -689,8 +689,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.setAnimation",
         label: "Animation",
-        params: r#"{"clip": id, "slot": "in"|"out", "kind": "fade"|"slideUp"|"slideDown"|"slideLeft"|"slideRight"|"zoomIn"|"zoomOut"|"pop"|"spin"|"typewriter"|null, "duration"?: time}"#,
-        doc: "Puts an in or out animation on a picture or title clip (null removes it); 0.5 s unless `duration` is given. `typewriter` is for titles: their words type in, or erase themselves as the title leaves.",
+        params: r#"{"clip": id, "slot": "in"|"out"|"loop", "kind": "fade"|"slideUp"|"slideDown"|"slideLeft"|"slideRight"|"zoomIn"|"zoomOut"|"pop"|"spin"|"typewriter"|"charFade"|"charRise"|"charDrop"|"charPop" | "breathe"|"heartbeat"|"swing"|"float"|"bounce"|"shake"|"spin"|"blink"|"wave"|"jump" | null, "duration"?: time}"#,
+        doc: "Puts an in or out animation on a picture or title clip, or one that repeats for as long as it is on screen (slot `loop`, with the kinds from `breathe` on); null removes it. In and out take 0.5 s unless `duration` is given; for a loop `duration` is one round (1 s or so by default, by kind). For titles only: `typewriter` types the words in or erases them, `charFade`, `charRise`, `charDrop` and `charPop` bring the characters in (or take them out) one after another, and the loops `wave` and `jump` move them one after another.",
         edits: true,
         enabled: always,
         run: clip_set_animation,
@@ -2456,33 +2456,56 @@ fn clip_set_animation(s: &mut Session, v: &Value) -> CmdResult {
     let p = P::new(v, fps(s));
     let id = p.str("clip")?.to_string();
     let slot = p.str("slot")?.to_string();
-    if slot != "in" && slot != "out" {
-        return Err(EngineError::Params("`slot` must be in or out".into()));
+    if slot != "in" && slot != "out" && slot != "loop" {
+        return Err(EngineError::Params("`slot` must be in, out or loop".into()));
     }
-    let kind = match p.opt_str("kind")? {
-        None => None,
-        Some(k) => Some(AnimKind::parse(k).ok_or_else(|| {
+    let name = p.opt_str("kind")?;
+    let duration = p.opt_time("duration")?;
+    if duration.is_some_and(|d| d <= Tick::ZERO) {
+        return Err(EngineError::Params("`duration` must be positive".into()));
+    }
+    let looped = match name {
+        Some(k) if slot == "loop" => Some(LoopKind::parse(k).ok_or_else(|| {
+            EngineError::Params(format!(
+                "a loop's `kind` must be null or one of {}",
+                LoopKind::ALL.map(LoopKind::name).join(", ")
+            ))
+        })?),
+        _ => None,
+    };
+    // a round shorter than this is a blur
+    if slot == "loop" && duration.is_some_and(|d| d < Tick(reelforge_time::TICKS_PER_SECOND / 20)) {
+        return Err(EngineError::Params("a loop's `duration` is one round: at least 0.05 s".into()));
+    }
+    let kind = match name {
+        Some(k) if slot != "loop" => Some(AnimKind::parse(k).ok_or_else(|| {
             EngineError::Params(format!(
                 "`kind` must be null or one of {}",
                 AnimKind::ALL.map(AnimKind::name).join(", ")
             ))
         })?),
+        _ => None,
     };
-    let duration = p.opt_time("duration")?;
-    if duration.is_some_and(|d| d <= Tick::ZERO) {
-        return Err(EngineError::Params("`duration` must be positive".into()));
-    }
     s.edit("Animation", |proj| {
         let (ti, _) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
         if proj.tracks[ti].kind == TrackKind::Audio {
             return Err(EngineError::Params("animations apply to picture and title clips".into()));
         }
-        if kind.is_some_and(AnimKind::titles_only)
+        if (kind.is_some_and(AnimKind::titles_only) || looped.is_some_and(LoopKind::titles_only))
             && !matches!(proj.clip(&id).map(|(_, c)| &c.content), Some(ClipContent::Text { .. }))
         {
-            return Err(EngineError::Params("typewriter applies to titles".into()));
+            return Err(EngineError::Params(format!("{} applies to titles", name.unwrap_or_default())));
         }
         let clip = proj.clip_mut(&id).expect("found above");
+        if slot == "loop" {
+            let before = clip.anim.repeat;
+            clip.anim.repeat = looped.map(|kind| Loop {
+                kind,
+                // another kind keeps the round it had only when one was asked for
+                period: duration.or(before.filter(|l| l.kind == kind).map(|l| l.period)).unwrap_or(kind.period()),
+            });
+            return Ok(json!({ "clip": id, "anim": serde_json::to_value(clip.anim).expect("serialises") }));
+        }
         let slot_ref = if slot == "in" { &mut clip.anim.enter } else { &mut clip.anim.exit };
         *slot_ref = kind.map(|kind| Animation {
             kind,

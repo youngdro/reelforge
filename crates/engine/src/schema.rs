@@ -631,13 +631,18 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 clip(),
                 (
                     "slot",
-                    json!({"enum": ["in", "out"], "description": "Plays from the clip's start (in) or up to its end (out)."}),
+                    json!({"enum": ["in", "out", "loop"], "description": "Plays from the clip's start (in), up to its end (out), or round and round for as long as the clip is on screen (loop)."}),
                 ),
                 (
                     "kind",
-                    json!({"description": "Preset; null removes the animation. typewriter (titles only) types the words in, or erases them as the title leaves.", "oneOf": [{"enum": ["fade", "slideUp", "slideDown", "slideLeft", "slideRight", "zoomIn", "zoomOut", "pop", "spin", "typewriter"]}, {"type": "null"}]}),
+                    json!({"description": "Preset; null removes the animation. In and out: fade to spin, and for titles only typewriter (types the words in, or erases them) and charFade, charRise, charDrop, charPop (the characters one after another). Loop: breathe, heartbeat, swing, float, bounce, shake, spin, blink, and for titles only wave and jump (the characters one after another).", "oneOf": [{"enum": ["fade", "slideUp", "slideDown", "slideLeft", "slideRight", "zoomIn", "zoomOut", "pop", "spin", "typewriter", "charFade", "charRise", "charDrop", "charPop", "breathe", "heartbeat", "swing", "float", "bounce", "shake", "blink", "wave", "jump"]}, {"type": "null"}]}),
                 ),
-                ("duration", time("How long it plays; 0.5 s by default.")),
+                (
+                    "duration",
+                    time(
+                        "How long it plays, 0.5 s by default; for a loop, how long one round takes (1 s or so by default, by kind).",
+                    ),
+                ),
             ],
             &["clip", "slot", "kind"],
         ),

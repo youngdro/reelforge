@@ -27,7 +27,7 @@ pub mod timing;
 pub mod transition;
 pub mod voice;
 
-pub use anim::{AnimKind, Animation, Animations, Ease, Key, Keys, Offset, Prop};
+pub use anim::{AnimKind, Animation, Animations, Ease, Key, Keys, Loop, LoopKind, Offset, Prop};
 pub use color::{Adjust, ColorGrade, Filter, FilterKind, LutUse};
 pub use export::{Codec, ExportSettings, Quality, Resolution};
 pub use fx::{Fx, FxChannel, FxGroup, FxKind, FxSample};
@@ -727,6 +727,9 @@ impl Project {
                 }
                 if [clip.anim.enter, clip.anim.exit].iter().flatten().any(|a| a.duration <= Tick::ZERO) {
                     return motion("an animation must have a positive length");
+                }
+                if clip.anim.repeat.is_some_and(|l| l.period <= Tick::ZERO) {
+                    return motion("a looping animation must take some time a round");
                 }
                 if clip.fade.fade_in < Tick::ZERO || clip.fade.fade_out < Tick::ZERO {
                     return motion("a fade cannot be negative");

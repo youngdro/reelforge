@@ -265,11 +265,19 @@ pub enum AnimKind {
     Spin,
     /// Types a title in a character at a time (or erases it as it leaves); titles only.
     Typewriter,
+    /// A title's characters fade in one after another; titles only.
+    CharFade,
+    /// A title's characters rise into place one after another; titles only.
+    CharRise,
+    /// A title's characters drop into place one after another; titles only.
+    CharDrop,
+    /// A title's characters pop up one after another, each overshooting a little; titles only.
+    CharPop,
 }
 
 impl AnimKind {
     /// Every preset, in menu order.
-    pub const ALL: [AnimKind; 10] = [
+    pub const ALL: [AnimKind; 14] = [
         AnimKind::Fade,
         AnimKind::SlideUp,
         AnimKind::SlideDown,
@@ -280,6 +288,10 @@ impl AnimKind {
         AnimKind::Pop,
         AnimKind::Spin,
         AnimKind::Typewriter,
+        AnimKind::CharFade,
+        AnimKind::CharRise,
+        AnimKind::CharDrop,
+        AnimKind::CharPop,
     ];
 
     /// The name commands use.
@@ -295,12 +307,21 @@ impl AnimKind {
             AnimKind::Pop => "pop",
             AnimKind::Spin => "spin",
             AnimKind::Typewriter => "typewriter",
+            AnimKind::CharFade => "charFade",
+            AnimKind::CharRise => "charRise",
+            AnimKind::CharDrop => "charDrop",
+            AnimKind::CharPop => "charPop",
         }
     }
 
     /// Whether only titles take it.
     pub fn titles_only(self) -> bool {
-        self == AnimKind::Typewriter
+        self == AnimKind::Typewriter || self.by_character()
+    }
+
+    /// Whether it moves a title's characters one after another instead of the title as a whole.
+    pub fn by_character(self) -> bool {
+        matches!(self, AnimKind::CharFade | AnimKind::CharRise | AnimKind::CharDrop | AnimKind::CharPop)
     }
 
     /// The preset a command names.
@@ -337,8 +358,10 @@ impl AnimKind {
                 o.rotation = -90.0 * away;
                 o.scale = 0.5 + 0.5 * e;
             }
-            // the text itself changes (`reveal`), not its placement
-            AnimKind::Typewriter => o = Offset::REST,
+            // the text itself changes (`reveal`, or its characters move), not its placement
+            AnimKind::Typewriter | AnimKind::CharFade | AnimKind::CharRise | AnimKind::CharDrop | AnimKind::CharPop => {
+                o = Offset::REST
+            }
         }
         o
     }
@@ -387,6 +410,135 @@ impl Offset {
     }
 }
 
+/// A movement that repeats for as long as the clip is on screen.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum LoopKind {
+    /// Grows and shrinks a little, slowly.
+    Breathe,
+    /// Two quick beats and a rest.
+    Heartbeat,
+    /// Turns a little to one side and the other.
+    Swing,
+    /// Drifts up and down.
+    Float,
+    /// Jumps up and lands.
+    Bounce,
+    /// Trembles.
+    Shake,
+    /// Turns round and round.
+    Spin,
+    /// Fades nearly out and back.
+    Blink,
+    /// A title's characters rise and fall in a wave that runs along it; titles only.
+    Wave,
+    /// A title's characters hop one after another; titles only.
+    Jump,
+}
+
+impl LoopKind {
+    /// Every one, in menu order.
+    pub const ALL: [LoopKind; 10] = [
+        LoopKind::Breathe,
+        LoopKind::Heartbeat,
+        LoopKind::Swing,
+        LoopKind::Float,
+        LoopKind::Bounce,
+        LoopKind::Shake,
+        LoopKind::Spin,
+        LoopKind::Blink,
+        LoopKind::Wave,
+        LoopKind::Jump,
+    ];
+
+    /// The name commands use.
+    pub fn name(self) -> &'static str {
+        match self {
+            LoopKind::Breathe => "breathe",
+            LoopKind::Heartbeat => "heartbeat",
+            LoopKind::Swing => "swing",
+            LoopKind::Float => "float",
+            LoopKind::Bounce => "bounce",
+            LoopKind::Shake => "shake",
+            LoopKind::Spin => "spin",
+            LoopKind::Blink => "blink",
+            LoopKind::Wave => "wave",
+            LoopKind::Jump => "jump",
+        }
+    }
+
+    /// The one a command names.
+    pub fn parse(name: &str) -> Option<LoopKind> {
+        LoopKind::ALL.into_iter().find(|k| k.name() == name)
+    }
+
+    /// Whether only titles take it: it moves their characters.
+    pub fn titles_only(self) -> bool {
+        matches!(self, LoopKind::Wave | LoopKind::Jump)
+    }
+
+    /// How long one round takes when none is asked for.
+    pub fn period(self) -> Tick {
+        let ms = match self {
+            LoopKind::Breathe | LoopKind::Float | LoopKind::Spin => 2000,
+            LoopKind::Shake => 200,
+            LoopKind::Bounce => 800,
+            _ => 1000,
+        };
+        Tick(reelforge_time::TICKS_PER_SECOND / 1000 * ms)
+    }
+
+    /// Where the clip is `phase` rounds in (only the fraction counts; every round starts and ends
+    /// at rest, a spin a whole turn on).
+    pub fn offset(self, phase: f64) -> Offset {
+        let u = phase.rem_euclid(1.0) as f32;
+        let turn = std::f32::consts::TAU * u;
+        let mut o = Offset::REST;
+        match self {
+            LoopKind::Breathe => o.scale = 1.0 + 0.06 * turn.sin(),
+            LoopKind::Heartbeat => {
+                let beat = |x: f32| (std::f32::consts::PI * x).sin().powi(2);
+                let b = if u < 0.2 {
+                    beat(u / 0.2)
+                } else if u < 0.45 {
+                    0.6 * beat((u - 0.2) / 0.25)
+                } else {
+                    0.0
+                };
+                o.scale = 1.0 + 0.14 * b;
+            }
+            LoopKind::Swing => o.rotation = 8.0 * turn.sin(),
+            LoopKind::Float => o.dy = -0.02 * turn.sin(),
+            LoopKind::Bounce => o.dy = -0.06 * (std::f32::consts::PI * u).sin(),
+            LoopKind::Shake => {
+                o.dx = 0.008 * turn.sin();
+                o.dy = 0.005 * (2.0 * turn).sin();
+            }
+            LoopKind::Spin => o.rotation = 360.0 * u,
+            LoopKind::Blink => o.opacity = 0.575 + 0.425 * turn.cos(),
+            // the characters move, not the title
+            LoopKind::Wave | LoopKind::Jump => {}
+        }
+        o
+    }
+}
+
+/// A repeating movement on a clip.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Loop {
+    /// Which movement.
+    pub kind: LoopKind,
+    /// How long one round takes; positive.
+    pub period: Tick,
+}
+
+impl Loop {
+    /// How many rounds in the clip is at `t` from its start.
+    pub fn phase(&self, t: Tick) -> f64 {
+        if self.period <= Tick::ZERO { 0.0 } else { t.0 as f64 / self.period.0 as f64 }
+    }
+}
+
 /// An in or out animation on a clip.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Animation {
@@ -396,7 +548,7 @@ pub struct Animation {
     pub duration: Tick,
 }
 
-/// A clip's in and out animations.
+/// A clip's in and out animations, and the one that repeats in between.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Animations {
     /// Plays from the clip's start.
@@ -405,12 +557,15 @@ pub struct Animations {
     /// Plays up to the clip's end.
     #[serde(default, rename = "out", skip_serializing_if = "Option::is_none")]
     pub exit: Option<Animation>,
+    /// Repeats from the clip's start to its end, under the other two.
+    #[serde(default, rename = "loop", skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<Loop>,
 }
 
 impl Animations {
-    /// Neither.
+    /// None of them.
     pub fn is_empty(&self) -> bool {
-        self.enter.is_none() && self.exit.is_none()
+        self.enter.is_none() && self.exit.is_none() && self.repeat.is_none()
     }
 
     /// How long the in and out animations play on a clip `len` long: each as asked, shortened in
@@ -428,7 +583,7 @@ impl Animations {
     /// The combined offset at `t` from the start of a clip `len` long.
     pub fn offset(&self, t: Tick, len: Tick) -> Offset {
         let (a, b) = self.spans(len);
-        let mut o = Offset::REST;
+        let mut o = self.repeat.map_or(Offset::REST, |l| l.kind.offset(l.phase(t)));
         if let Some(x) = self.enter
             && a > Tick::ZERO
             && t < a
@@ -593,6 +748,7 @@ mod tests {
         let a = Animations {
             enter: Some(Animation { kind: AnimKind::SlideUp, duration: Tick(40) }),
             exit: Some(Animation { kind: AnimKind::Fade, duration: Tick(60) }),
+            repeat: None,
         };
         assert_eq!(a.spans(Tick(200)), (Tick(40), Tick(60)));
         assert_eq!(a.spans(Tick(50)), (Tick(20), Tick(30)));
@@ -606,5 +762,31 @@ mod tests {
             assert!((o.scale - 1.0).abs() < 1e-5 && o.dx == 0.0 && o.dy == 0.0 && o.rotation == 0.0, "{k:?}");
             assert_eq!(AnimKind::parse(k.name()), Some(k));
         }
+    }
+
+    #[test]
+    fn a_loop_comes_back_to_rest_every_round_under_the_in_and_out() {
+        for k in LoopKind::ALL {
+            assert_eq!(LoopKind::parse(k.name()), Some(k));
+            assert!(k.period() > Tick::ZERO);
+            let (start, round) = (k.offset(0.0), k.offset(3.0));
+            assert_eq!(start, round, "{k:?}");
+            assert!(start.dx == 0.0 && start.dy == 0.0 && (start.scale - 1.0).abs() < 1e-6, "{k:?}");
+            assert!((start.opacity - 1.0).abs() < 1e-6 && start.rotation == 0.0, "{k:?}");
+            // somewhere in the round it is elsewhere, unless it is the characters that move
+            let moved = (1..20).any(|i| k.offset(i as f64 / 20.0) != Offset::REST);
+            assert_eq!(moved, !k.titles_only(), "{k:?}");
+        }
+        let a = Animations {
+            enter: Some(Animation { kind: AnimKind::Fade, duration: Tick(40) }),
+            exit: None,
+            repeat: Some(Loop { kind: LoopKind::Swing, period: Tick(100) }),
+        };
+        assert!(!a.is_empty());
+        // a quarter of a round in: as far over as it goes, and half faded in
+        let o = a.offset(Tick(25), Tick(1000));
+        assert!((o.rotation - 8.0).abs() < 1e-4 && (o.opacity - 0.625).abs() < 1e-6, "{o:?}");
+        assert!((a.offset(Tick(575), Tick(1000)).rotation + 8.0).abs() < 1e-3);
+        assert!(a.offset(Tick(600), Tick(1000)).rotation.abs() < 1e-3);
     }
 }
