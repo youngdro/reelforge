@@ -84,6 +84,9 @@ impl CaptionsTab {
             self.track = None;
         }
         ui.horizontal_wrapped(|ui| {
+            // five tools in the width of the panel
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.spacing_mut().button_padding.x = 8.0;
             if theme::tool(ui, icon::IMPORT, s.cap_import, s.cap_import_tip, true).clicked() {
                 ask = Some(Ask::Import { second: false });
             }

@@ -329,7 +329,7 @@ impl Drafts {
             ask = Some(Ask::Back);
         }
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(s.drafts).size(20.0).strong());
+            ui.label(egui::RichText::new(s.drafts).size(22.0).strong());
             ui.add_space(8.0);
             ui.label(egui::RichText::new(self.index.drafts.len().to_string()).color(color::WEAK));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -389,7 +389,7 @@ impl Drafts {
             ui.set_width(w);
             let (thumb, r) = ui.allocate_exact_size(vec2(w, thumb_h), Sense::click());
             let painter = ui.painter_at(thumb.expand(2.0));
-            painter.rect_filled(thumb, 8.0, color::ROW);
+            painter.rect_filled(thumb, 14.0, color::ROW);
             match self.cover(ui.ctx(), store, d) {
                 Some(t) => {
                     // the whole picture, whatever its shape, in the middle of the card
@@ -398,7 +398,7 @@ impl Drafts {
                     let at = Rect::from_center_size(thumb.center(), size * scale);
                     let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
                     painter.add(
-                        egui::epaint::RectShape::filled(at, CornerRadius::same(4), Color32::WHITE)
+                        egui::epaint::RectShape::filled(at, CornerRadius::same(10), Color32::WHITE)
                             .with_texture(t.id(), uv),
                     );
                 }
@@ -417,15 +417,15 @@ impl Drafts {
             } else if r.hovered() {
                 Stroke::new(1.0, color::WEAK)
             } else {
-                Stroke::new(1.0, color::LINE)
+                Stroke::new(1.0, Color32::from_white_alpha(18))
             };
-            painter.rect_stroke(thumb, 8.0, stroke, StrokeKind::Inside);
+            painter.rect_stroke(thumb, 14.0, stroke, StrokeKind::Inside);
             if current {
                 let label =
                     painter.layout_no_wrap(s.draft_current.to_string(), FontId::proportional(10.5), color::ON_ACCENT);
                 let pad = vec2(6.0, 3.0);
-                let tag = Rect::from_min_size(thumb.left_top() + vec2(6.0, 6.0), label.size() + pad * 2.0);
-                painter.rect_filled(tag, 4.0, color::ACCENT);
+                let tag = Rect::from_min_size(thumb.left_top() + vec2(8.0, 8.0), label.size() + pad * 2.0);
+                painter.rect_filled(tag, 8.0, color::ACCENT);
                 painter.galley(tag.min + pad, label, color::ON_ACCENT);
             }
             if d.duration > Tick::ZERO {
@@ -433,10 +433,10 @@ impl Drafts {
                 let label = painter.layout_no_wrap(text, FontId::monospace(10.5), color::TEXT);
                 let pad = vec2(5.0, 2.0);
                 let tag = Rect::from_min_size(
-                    thumb.right_bottom() - label.size() - pad * 2.0 - vec2(6.0, 6.0),
+                    thumb.right_bottom() - label.size() - pad * 2.0 - vec2(8.0, 8.0),
                     label.size() + pad * 2.0,
                 );
-                painter.rect_filled(tag, 4.0, Color32::from_black_alpha(170));
+                painter.rect_filled(tag, 8.0, Color32::from_black_alpha(170));
                 painter.galley(tag.min + pad, label, color::TEXT);
             }
             if r.clicked() {

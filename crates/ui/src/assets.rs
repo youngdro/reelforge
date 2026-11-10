@@ -36,6 +36,22 @@ pub(crate) const OVERLAY_LENGTH: Tick = Tick(3 * reelforge_time::TICKS_PER_SECON
 const BUDGET: Duration = Duration::from_millis(8);
 /// The narrowest a media card is drawn.
 const CARD_MIN: f32 = 104.0;
+/// How wide the tabs down the panel's side are, and how tall a panel has room for them.
+const RAIL: f32 = 58.0;
+const RAIL_ROOM: f32 = 7.0 * 54.0;
+
+/// The tabs, in the order shown: the kinds of thing there are to add.
+fn tab_list(s: &Strings) -> [(Tab, &'static str, &'static str); 7] {
+    [
+        (Tab::Media, icon::IMAGE, s.tab_media),
+        (Tab::Audio, icon::MUSIC, s.tab_audio),
+        (Tab::Text, icon::TEXT, s.tab_text),
+        (Tab::Stickers, icon::STICKER, s.tab_stickers),
+        (Tab::Effects, icon::SPARKLE, s.tab_effects),
+        (Tab::Captions, icon::CAPTIONS, s.tab_captions),
+        (Tab::Templates, icon::FILM, s.tab_templates),
+    ]
+}
 
 /// Something dragged from the panel onto the timeline, or added at the playhead.
 #[derive(Clone, Debug, PartialEq)]
@@ -194,17 +210,22 @@ pub(crate) fn finds(query: &str, name: &str) -> bool {
 /// The search box at the top of a tab.
 fn search_box(ui: &mut egui::Ui, query: &mut String, s: &Strings) {
     ui.horizontal(|ui| {
-        let clear = if query.is_empty() { 0.0 } else { 26.0 };
-        ui.add(
-            egui::TextEdit::singleline(query)
-                .hint_text(format!("{}  {}", icon::SEARCH, s.search_hint))
-                .desired_width(ui.available_width() - clear),
-        );
-        if !query.is_empty() && ui.add(egui::Button::new("×").small().frame(false)).clicked() {
-            query.clear();
-        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| search_field(ui, query, s));
     });
     ui.add_space(6.0);
+}
+
+/// A field to search in, filling what is left of a row laid out from its right.
+fn search_field(ui: &mut egui::Ui, query: &mut String, s: &Strings) {
+    if !query.is_empty() && ui.add(egui::Button::new("×").small().frame(false)).clicked() {
+        query.clear();
+    }
+    ui.add(
+        egui::TextEdit::singleline(query)
+            .hint_text(egui::RichText::new(format!("{}  {}", icon::SEARCH, s.search_hint)).color(color::WEAK))
+            .margin(egui::Margin::symmetric(10, 5))
+            .desired_width(ui.available_width()),
+    );
 }
 
 /// What a tab says when the search leaves nothing.
@@ -256,18 +277,34 @@ impl AssetPanel {
     ) -> Option<Action> {
         let s = lang.strings();
         let mut action = None;
-        self.tabs(ui, s);
-        ui.add_space(6.0);
-        match self.tab {
-            Tab::Media => self.media_tab(ui, p, media, s, playing, &mut action),
-            Tab::Audio => self.audio_tab(ui, s, &mut action),
-            Tab::Text => text_tab(ui, s, looks, &mut action),
-            Tab::Stickers => self.stickers_tab(ui, s, &mut action),
-            Tab::Effects => effects_tab(ui, &mut self.query, s, &mut action),
-            Tab::Templates => templates_tab(ui, p, s, &mut action),
+        // what the chosen tab holds
+        let body = |panel: &mut AssetPanel, ui: &mut egui::Ui, action: &mut Option<Action>| match panel.tab {
+            Tab::Media => panel.media_tab(ui, p, media, s, playing, action),
+            Tab::Audio => panel.audio_tab(ui, s, action),
+            Tab::Text => text_tab(ui, s, looks, action),
+            Tab::Stickers => panel.stickers_tab(ui, s, action),
+            Tab::Effects => effects_tab(ui, &mut panel.query, s, action),
+            Tab::Templates => templates_tab(ui, p, s, action),
             Tab::Captions => {
-                action = self.captions.show(ui, p, lang, playhead, selected, playing).map(Action::Captions);
+                if let Some(ask) = panel.captions.show(ui, p, lang, playhead, selected, playing) {
+                    *action = Some(Action::Captions(ask));
+                }
             }
+        };
+        // a tall panel has its tabs down its side, where each has room for its word; a low one (the
+        // sheet of a narrow window) has them along its top
+        if ui.available_height() >= RAIL_ROOM {
+            let whole = ui.available_rect_before_wrap();
+            let side = whole.with_max_x(whole.left() + RAIL);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(side), |ui| self.rail(ui, s));
+            let x = side.right() + 6.0;
+            ui.painter().vline(x, whole.y_range(), Stroke::new(1.0, Color32::from_white_alpha(14)));
+            let rest = whole.with_min_x(x + 9.0);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rest), |ui| body(self, ui, &mut action));
+        } else {
+            self.tabs(ui, s);
+            ui.add_space(6.0);
+            body(self, ui, &mut action);
         }
         drag_preview(ui.ctx(), p, s);
         action
@@ -284,70 +321,71 @@ impl AssetPanel {
         self.tab == Tab::Text
     }
 
+    /// Goes to a tab; each is searched for its own things.
+    fn go(&mut self, tab: Tab) {
+        if self.tab != tab {
+            self.tab = tab;
+            self.query.clear();
+        }
+    }
+
+    /// One tab: its picture over its word, lit when it is the one showing.
+    fn tab_button(&mut self, ui: &mut egui::Ui, size: egui::Vec2, (tab, glyph, word): (Tab, &str, &str)) {
+        let on = self.tab == tab;
+        let (rect, r) = ui.allocate_exact_size(size, Sense::click());
+        let lit = ui.ctx().animate_bool_with_time(r.id, on, 0.12);
+        let painter = ui.painter();
+        if lit > 0.0 {
+            painter.rect_filled(rect, 12.0, color::GLASS_HOVER.gamma_multiply(lit));
+        } else if r.hovered() {
+            painter.rect_filled(rect, 12.0, color::GLASS_CONTROL);
+        }
+        let (ink, word_ink) = if on {
+            (color::ACCENT, color::TEXT)
+        } else if r.hovered() {
+            (color::TEXT, color::TEXT)
+        } else {
+            (color::WEAK, color::WEAK)
+        };
+        painter.text(rect.center() - vec2(0.0, 8.0), Align2::CENTER_CENTER, glyph, FontId::proportional(18.0), ink);
+        // a long word is drawn smaller rather than over its neighbours
+        let mut font = 10.5;
+        while font > 8.0
+            && painter.layout_no_wrap(word.to_string(), FontId::proportional(font), ink).size().x > rect.width() - 4.0
+        {
+            font -= 0.5;
+        }
+        painter.text(
+            rect.center() + vec2(0.0, 13.0),
+            Align2::CENTER_CENTER,
+            word,
+            FontId::proportional(font),
+            word_ink,
+        );
+        if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            self.go(tab);
+        }
+    }
+
+    /// The tabs down the panel's side.
+    fn rail(&mut self, ui: &mut egui::Ui, s: &Strings) {
+        ui.spacing_mut().item_spacing.y = 4.0;
+        for tab in tab_list(s) {
+            self.tab_button(ui, vec2(RAIL, 50.0), tab);
+        }
+    }
+
+    /// The tabs along the panel's top.
     fn tabs(&mut self, ui: &mut egui::Ui, s: &Strings) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            let tabs = [
-                (Tab::Media, icon::IMAGE, s.tab_media),
-                (Tab::Audio, icon::MUSIC, s.tab_audio),
-                (Tab::Text, icon::TEXT, s.tab_text),
-                (Tab::Stickers, icon::STICKER, s.tab_stickers),
-                (Tab::Effects, icon::SPARKLE, s.tab_effects),
-                (Tab::Captions, icon::CAPTIONS, s.tab_captions),
-                (Tab::Templates, icon::FILM, s.tab_templates),
-            ];
+            let tabs = tab_list(s);
             // as wide as the panel lets them be
-            let w = ((ui.available_width() - 2.0 * (tabs.len() - 1) as f32) / tabs.len() as f32).clamp(36.0, 54.0);
-            for (tab, glyph, word) in tabs {
-                let on = self.tab == tab;
-                let (rect, r) = ui.allocate_exact_size(vec2(w.floor(), 44.0), Sense::click());
-                if r.hovered() && !on {
-                    ui.painter().rect_filled(rect, 6.0, color::HOVER);
-                }
-                let tint = if on {
-                    color::ACCENT
-                } else if r.hovered() {
-                    color::TEXT
-                } else {
-                    color::WEAK
-                };
-                let painter = ui.painter();
-                painter.text(
-                    rect.center_top() + vec2(0.0, 6.0),
-                    Align2::CENTER_TOP,
-                    glyph,
-                    FontId::proportional(17.0),
-                    tint,
-                );
-                // a long word is drawn smaller rather than over its neighbours
-                let mut size = 11.5;
-                while size > 8.0
-                    && painter.layout_no_wrap(word.to_string(), FontId::proportional(size), tint).size().x
-                        > rect.width()
-                {
-                    size -= 0.5;
-                }
-                painter.text(
-                    rect.center_bottom() - vec2(0.0, 6.0),
-                    Align2::CENTER_BOTTOM,
-                    word,
-                    FontId::proportional(size),
-                    tint,
-                );
-                if on {
-                    let bar = Rect::from_center_size(rect.center_bottom() - vec2(0.0, 1.0), vec2(22.0, 2.0));
-                    painter.rect_filled(bar, 1.0, color::ACCENT);
-                }
-                if r.clicked() && self.tab != tab {
-                    self.tab = tab;
-                    // each tab is searched for its own things
-                    self.query.clear();
-                }
+            let w = ((ui.available_width() - 2.0 * (tabs.len() - 1) as f32) / tabs.len() as f32).clamp(36.0, 64.0);
+            for tab in tabs {
+                self.tab_button(ui, vec2(w.floor(), 50.0), tab);
             }
         });
-        let y = ui.cursor().top();
-        let x = ui.max_rect().x_range();
-        ui.painter().hline(x, y, Stroke::new(1.0, color::LINE));
     }
 
     fn media_tab(
@@ -364,34 +402,36 @@ impl AssetPanel {
             self.missing.clear();
             self.pictures.retain(|_, t| t.is_some());
         }
-        ui.horizontal(|ui| {
-            if theme::primary(ui, icon::IMPORT, s.import, true).on_hover_text(s.import_tip).clicked() {
-                *action = Some(Action::Import);
-            }
-            ui.spacing_mut().item_spacing.x = 4.0;
-            for (f, word) in [
-                (Filter::All, s.filter_all),
-                (Filter::Video, s.filter_video),
-                (Filter::Image, s.filter_image),
-                (Filter::Audio, s.filter_audio),
-            ] {
-                let on = self.filter == f;
-                let text = egui::RichText::new(word).small().color(if on { color::TEXT } else { color::WEAK });
-                if ui.add(egui::Button::new(text).selected(on).frame(on)).clicked() {
-                    self.filter = f;
-                }
-            }
-        });
-        ui.add_space(8.0);
         // in the order they were imported (ids are minted in order: m2 before m10)
         let mut all: Vec<&Media> =
             p.media.values().filter(|m| !matches!(m.kind, MediaKind::Lut | MediaKind::Font)).collect();
         all.sort_by_key(|m| (m.id.trim_start_matches(|c: char| !c.is_ascii_digit()).parse::<u64>().ok(), &m.id));
         if all.is_empty() {
+            // nothing yet: the whole tab asks for files
             empty(ui, s, action);
             return;
         }
-        search_box(ui, &mut self.query, s);
+        // what to find, and beside it the way to bring more in
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if theme::primary(ui, icon::IMPORT, s.import, true).on_hover_text(s.import_tip).clicked() {
+                    *action = Some(Action::Import);
+                }
+                search_field(ui, &mut self.query, s);
+            });
+        });
+        ui.add_space(2.0);
+        let filters = [
+            (Filter::All, s.filter_all),
+            (Filter::Video, s.filter_video),
+            (Filter::Image, s.filter_image),
+            (Filter::Audio, s.filter_audio),
+        ];
+        let at = filters.iter().position(|(f, _)| *f == self.filter).unwrap_or(0);
+        if let Some(i) = theme::segmented(ui, &filters.map(|(_, word)| word), at) {
+            self.filter = filters[i].0;
+        }
+        ui.add_space(6.0);
         // the folders there are, with how much is in each
         let mut folders: Vec<(&str, usize)> = Vec::new();
         for f in all.iter().filter_map(|m| m.folder.as_deref()) {
@@ -978,16 +1018,18 @@ fn fx_row(ui: &mut egui::Ui, glyph: &str, name: &str, item: Item, tip: &str) -> 
 
 /// Nothing imported yet: a large target that imports.
 fn empty(ui: &mut egui::Ui, s: &Strings, action: &mut Option<Action>) {
-    let h = 150.0f32.min(ui.available_height().max(100.0));
+    let h = 180.0f32.min(ui.available_height().max(100.0));
     let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
     let tint = if r.hovered() { color::ACCENT } else { color::WEAK };
     let painter = ui.painter();
-    painter.rect_filled(rect, 8.0, if r.hovered() { color::RAISED } else { color::ROW });
-    // dashed border
-    let corners = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom(), rect.left_top()];
-    for pair in corners.windows(2) {
-        painter.add(egui::Shape::dashed_line(&[pair[0], pair[1]], Stroke::new(1.0, tint), 5.0, 4.0));
-    }
+    // a well in the glass, its rim lit under the pointer
+    painter.rect(
+        rect,
+        CornerRadius::same(16),
+        if r.hovered() { color::GLASS_CONTROL } else { color::GLASS_INSET },
+        Stroke::new(1.0, if r.hovered() { color::ACCENT.gamma_multiply(0.7) } else { Color32::from_white_alpha(22) }),
+        StrokeKind::Inside,
+    );
     painter.text(
         rect.center() - vec2(0.0, 22.0),
         Align2::CENTER_CENTER,
