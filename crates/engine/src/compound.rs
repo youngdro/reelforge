@@ -90,6 +90,7 @@ fn plain(id: String, start: Tick, duration: Tick, content: ClipContent) -> Clip 
         fx: vec![],
         voice: Default::default(),
         group: None,
+        slot: None,
     }
 }
 

@@ -141,6 +141,7 @@ fn blank_clip(id: String, start: Tick, duration: Tick, content: ClipContent) -> 
         fx: vec![],
         voice: Default::default(),
         group: None,
+        slot: None,
     }
 }
 
