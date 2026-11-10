@@ -87,7 +87,7 @@ reelforge-cli call render.frame at=1.5s --server http://127.0.0.1:7878 -o frame.
   list.
 - **Files.** `media_import` takes a path on the server's disk. A client on another machine first
   sends the bytes with `PUT /v1/media/{sha256}?name=clip.mp4`, then imports the path it gets back.
-  Fonts (`.ttf`, `.otf`) and LUTs (`.cube`) are media as well.
+  Fonts (`.ttf`, `.otf`), LUTs (`.cube`) and Lottie animations (`.json`, `.lottie`) are media as well.
 - **Saving.** With a project file, every edit is written to it as it commits. `project_save` with
   `path` writes a copy.
 
@@ -117,6 +117,8 @@ render_export {"path": "out.mp4"}
 | Green screen and cutout | `clip_pickChromaKey` (finds the backdrop colour and keys it), `clip_setChromaKey`, `clip_setPersonKey` (cuts a person out without a green screen) |
 | Effects and stickers | `fx_list`, `clip_setFx` (including the distortions), `clip_add` with `fx` or `adjustment: true` (an effect layer over the tracks below), `sticker_library`, `clip_add` with `sticker` |
 | Titles and fonts | `clip_add` / `clip_set` with `text` and style (`font` is an imported font's media id, `tracking`, `leading`, `italic`, `underline`…), `title_templates` and `template` |
+| Shapes, numbers and promo pieces | `clip_add` with `shape` (rectangle, ellipse, line, polygon, star, tag, arrow; gradient fill, outline, shadow), `clip_setShape` (`drawStart` / `drawEnd` and the `draw` animation draw the outline on), `clip_setCounter` (a title's `{n}` runs from one number to another: a price, a sales count, a countdown), `promo_list`, `promo_add` (a price tag, discount badge, banner, countdown, sales counter, struck-out price or "new" stamp as one group) |
+| Lottie animations | `media_import` a `.json` or `.lottie` file (kind `lottie`; `unsupported` in the reply lists what the file uses that is not drawn: expressions, effects…), then `clip_add` on a video track like a video. It is see-through where it draws nothing and goes round again when its clip is longer than it is |
 | Animations | `clip_setAnimation` (`in`, `out`, and `loop` for one that repeats; the `char*` kinds animate each character), `clip_setTransition` |
 | Captions | `captions_transcribe` (local Whisper on the server), `captions_add`, `captions_import` / `captions_export` (SubRip; `line: 2` for a second language), `captions_list`, `captions_split`, `captions_merge`, `captions_replace`, `captions_restyle`, `captions_shift` |
 | Talking-head cleanup | `audio_cutPauses`, `captions_fillers`, `captions_cutFillers` |
