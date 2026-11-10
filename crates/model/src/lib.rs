@@ -785,8 +785,9 @@ impl Project {
                 return Err(ModelError::BadTimeline("the current timeline's tracks are the project's"));
             }
             if let Some(made) = &t.made {
-                let colours = made.color.iter().chain(&made.color2);
-                if !t.compound || colours.into_iter().any(|c| !(0.0..=1.0).contains(c)) || !(made.scale > 0.0) {
+                let mut colours = made.color.iter().chain(&made.color2);
+                let sized = made.scale.is_finite() && made.scale > 0.0;
+                if !t.compound || colours.any(|c| !(0.0..=1.0).contains(c)) || !sized {
                     return Err(ModelError::BadTimeline("a ready-made piece is a compound clip's, its colours 0 to 1"));
                 }
             }
