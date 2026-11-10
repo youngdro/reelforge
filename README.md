@@ -5,7 +5,7 @@ and run on the desktop and in the browser (WebAssembly). Every action is a comma
 and AI agents drive the same way, and rendering reads one versioned, self-contained description of the
 edit (RenderSpec), so a render can happen in the editor or on a separate render service.
 
-Status: early. Video, still images and sound import (Import in the media panel on the left, dropping files on the editor, or `media.import`; `media.remove` takes an unused file out) and
+Status: early. Video, still images and sound import (Import in the media panel on the left, dropping files on the editor, or `media.import`; `media.remove` takes an unused file out; `media.set` renames a file or files it under a folder of the media panel, which has a search box as the sound, sticker and effect lists do) and
 decode in pure Rust on the desktop and in the browser; solid colours, transforms, opacity, two colour
 effects and undo work; projects export to MP4 from the desktop editor and the CLI (H.264 + AAC) and from the
 browser (H.264, HEVC or AV1 through the browser's hardware encoder, WebCodecs), at a chosen

@@ -3948,6 +3948,12 @@ impl eframe::App for EditorApp {
                     self.status = fill(self.s().media_removed, &[&name]);
                 }
             }
+            Some(assets::Action::Rename(id, name)) => {
+                let _ = self.execute("media.set", json!({"media": id, "name": name}));
+            }
+            Some(assets::Action::File(ids, folder)) => {
+                let _ = self.execute("media.set", json!({"media": ids, "folder": folder}));
+            }
             Some(assets::Action::Captions(ask)) => self.captions_ask(ask, &ctx),
             None => {}
         }

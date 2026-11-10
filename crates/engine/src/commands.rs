@@ -237,6 +237,15 @@ static REGISTRY: &[CommandSpec] = &[
         run: media_import,
     },
     CommandSpec {
+        id: "media.set",
+        label: "Media Name and Folder",
+        params: r#"{"media": id | [id], "name"?: string, "folder"?: string | null}"#,
+        doc: "Renames a file in the project's media (one at a time), or files one or several under a folder of the media panel; `folder` null takes them out of theirs. A folder is only its name: it is there while some media is filed under it. Clips that use the media are not changed.",
+        edits: true,
+        enabled: always,
+        run: media_set,
+    },
+    CommandSpec {
         id: "media.remove",
         label: "Remove Media",
         params: r#"{"media": id}"#,
@@ -845,6 +854,7 @@ fn sound_add(s: &mut Session, v: &Value) -> CmdResult {
                     kind: MediaKind::Audio,
                     duration: Some(duration),
                     size: None,
+                    folder: None,
                 };
                 proj.media.insert(m.clone(), item);
                 m
@@ -1152,7 +1162,7 @@ fn media_import(s: &mut Session, v: &Value) -> CmdResult {
             return Ok(json!({ "media": serde_json::to_value(m).expect("serialises") }));
         }
         let id = proj.mint("m");
-        let m = Media { id: id.clone(), name, uri: path, sha256, kind, duration, size };
+        let m = Media { id: id.clone(), name, uri: path, sha256, kind, duration, size, folder: None };
         let out = json!({ "media": serde_json::to_value(&m).expect("serialises") });
         proj.media.insert(id, m);
         Ok(out)
@@ -1172,6 +1182,60 @@ pub fn media_uses(proj: &Project, id: &str) -> usize {
                 || c.color.lut.as_ref().is_some_and(|l| l.media == id)
         })
         .count()
+}
+
+fn media_set(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let ids: Vec<String> = match p.opt("media") {
+        Some(Value::String(id)) => vec![id.clone()],
+        Some(list) => serde_json::from_value(list.clone())
+            .map_err(|_| EngineError::Params("`media` must be an id or a list of ids".into()))?,
+        None => return Err(EngineError::Params("`media` is required".into())),
+    };
+    if ids.is_empty() {
+        return Err(EngineError::Params("`media` must name at least one file".into()));
+    }
+    let name = p.opt_str("name")?.map(|n| n.trim().to_string());
+    if name.as_deref().is_some_and(str::is_empty) {
+        return Err(EngineError::Params("`name` must not be empty".into()));
+    }
+    if name.is_some() && ids.len() > 1 {
+        return Err(EngineError::Params("`name` renames one file: give one id".into()));
+    }
+    // null takes the files out of their folder; leaving `folder` out keeps it
+    let folder: Option<Option<String>> = match v.get("folder") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(Value::String(f)) => {
+            let f = f.trim();
+            if f.is_empty() || f.chars().count() > Media::FOLDER_NAME_MAX {
+                return Err(EngineError::Params(format!(
+                    "`folder` is a name of 1 to {} characters, or null",
+                    Media::FOLDER_NAME_MAX
+                )));
+            }
+            Some(Some(f.to_string()))
+        }
+        Some(_) => return Err(EngineError::Params("`folder` must be a name or null".into())),
+    };
+    if name.is_none() && folder.is_none() {
+        return Err(EngineError::Params("give a `name`, a `folder`, or both".into()));
+    }
+    s.edit("Media Name and Folder", |proj| {
+        for id in &ids {
+            let m = proj.media.get_mut(id).ok_or_else(|| EngineError::Refused(format!("no media {id:?}")))?;
+            if let Some(n) = &name {
+                m.name = n.clone();
+            }
+            if let Some(f) = &folder {
+                m.folder = f.clone();
+            }
+        }
+        let mut folders: Vec<&str> = proj.media.values().filter_map(|m| m.folder.as_deref()).collect();
+        folders.sort();
+        folders.dedup();
+        Ok(json!({ "media": ids, "folders": folders }))
+    })
 }
 
 fn media_remove(s: &mut Session, v: &Value) -> CmdResult {
@@ -1427,6 +1491,7 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
                         kind: MediaKind::Image,
                         duration: None,
                         size: Some([side, side]),
+                        folder: None,
                     };
                     proj.media.insert(m.clone(), item);
                     m

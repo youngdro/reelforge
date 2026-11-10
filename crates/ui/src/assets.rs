@@ -107,6 +107,10 @@ pub(crate) enum Action {
     Add(Item),
     /// Take a file out of the project's media.
     Remove(String),
+    /// Call a file of the project's media this.
+    Rename(String, String),
+    /// File these under a folder of the panel, or take them out of theirs.
+    File(Vec<String>, Option<String>),
     /// Something asked of the captions list.
     Captions(crate::captions::Ask),
 }
@@ -149,6 +153,12 @@ pub(crate) struct AssetPanel {
     filter: Filter,
     /// The media card last clicked.
     selected: Option<String>,
+    /// What the tab's search box holds: only what has every word of it in its name is shown.
+    query: String,
+    /// The folder whose media is shown; all of it otherwise.
+    folder: Option<String>,
+    /// A name being typed.
+    naming: Option<Naming>,
     /// Pictures of the media by [`thumb_key`]; `None` for one that could not be made.
     pictures: HashMap<String, Option<egui::TextureHandle>>,
     /// Files that were not there at [`Footage::generation`] `seen`.
@@ -159,6 +169,43 @@ pub(crate) struct AssetPanel {
     /// The stickers' pictures, drawn the first time the stickers are shown.
     stickers: Vec<egui::TextureHandle>,
     captions: crate::captions::CaptionsTab,
+}
+
+/// A name being typed in the media tab.
+#[derive(Clone, Debug, PartialEq)]
+enum Naming {
+    /// A file's new name.
+    Rename { media: String, text: String, focused: bool },
+    /// A new folder for a file.
+    Folder { media: String, text: String, focused: bool },
+}
+
+/// Whether `name` has every word of `query` in it, whatever the case. An empty query admits all.
+pub(crate) fn finds(query: &str, name: &str) -> bool {
+    let name = name.to_lowercase();
+    query.split_whitespace().all(|word| name.contains(&word.to_lowercase()))
+}
+
+/// The search box at the top of a tab.
+fn search_box(ui: &mut egui::Ui, query: &mut String, s: &Strings) {
+    ui.horizontal(|ui| {
+        let clear = if query.is_empty() { 0.0 } else { 26.0 };
+        ui.add(
+            egui::TextEdit::singleline(query)
+                .hint_text(format!("{}  {}", icon::SEARCH, s.search_hint))
+                .desired_width(ui.available_width() - clear),
+        );
+        if !query.is_empty() && ui.add(egui::Button::new("×").small().frame(false)).clicked() {
+            query.clear();
+        }
+    });
+    ui.add_space(6.0);
+}
+
+/// What a tab says when the search leaves nothing.
+fn nothing_matches(ui: &mut egui::Ui, s: &Strings) {
+    ui.add_space(24.0);
+    ui.vertical_centered(|ui| ui.label(egui::RichText::new(s.search_none).color(color::WEAK)));
 }
 
 /// A picture is made once per file (a relinked file gets a new one).
@@ -206,7 +253,7 @@ impl AssetPanel {
             Tab::Audio => self.audio_tab(ui, s, &mut action),
             Tab::Text => text_tab(ui, s, looks, &mut action),
             Tab::Stickers => self.stickers_tab(ui, s, &mut action),
-            Tab::Effects => effects_tab(ui, s, &mut action),
+            Tab::Effects => effects_tab(ui, &mut self.query, s, &mut action),
             Tab::Captions => {
                 action = self.captions.show(ui, p, lang, playhead, selected, playing).map(Action::Captions);
             }
@@ -273,8 +320,10 @@ impl AssetPanel {
                     let bar = Rect::from_center_size(rect.center_bottom() - vec2(0.0, 1.0), vec2(22.0, 2.0));
                     painter.rect_filled(bar, 1.0, color::ACCENT);
                 }
-                if r.clicked() {
+                if r.clicked() && self.tab != tab {
                     self.tab = tab;
+                    // each tab is searched for its own things
+                    self.query.clear();
                 }
             }
         });
@@ -324,7 +373,31 @@ impl AssetPanel {
             empty(ui, s, action);
             return;
         }
-        let shown: Vec<&Media> = all.iter().copied().filter(|m| self.filter.admits(m.kind)).collect();
+        search_box(ui, &mut self.query, s);
+        // the folders there are, with how much is in each
+        let mut folders: Vec<(&str, usize)> = Vec::new();
+        for f in all.iter().filter_map(|m| m.folder.as_deref()) {
+            match folders.iter_mut().find(|(name, _)| *name == f) {
+                Some((_, n)) => *n += 1,
+                None => folders.push((f, 1)),
+            }
+        }
+        folders.sort();
+        if self.folder.as_deref().is_some_and(|f| !folders.iter().any(|(name, _)| *name == f)) {
+            self.folder = None;
+        }
+        if !folders.is_empty() {
+            self.folders_row(ui, &folders, s, action);
+        }
+        self.naming_row(ui, s, action);
+        let shown: Vec<&Media> = all
+            .iter()
+            .copied()
+            .filter(|m| self.filter.admits(m.kind))
+            .filter(|m| self.folder.is_none() || m.folder == self.folder)
+            .filter(|m| finds(&self.query, &m.name))
+            .collect();
+        let folder_names: Vec<&str> = folders.iter().map(|(name, _)| *name).collect();
         let mut uses: HashMap<&str, usize> = HashMap::new();
         for m in &shown {
             uses.insert(&m.id, reelforge_engine::media_uses(p, &m.id));
@@ -343,7 +416,7 @@ impl AssetPanel {
                     ui.spacing_mut().item_spacing.x = gap;
                     for m in row {
                         let used = uses.get(m.id.as_str()).copied().unwrap_or(0);
-                        if let Some(a) = self.card(ui, m, w, used, s, &mut wanted) {
+                        if let Some(a) = self.card(ui, m, w, used, s, &folder_names, &mut wanted) {
                             *action = Some(a);
                         }
                     }
@@ -351,8 +424,9 @@ impl AssetPanel {
                 ui.add_space(gap - ui.spacing().item_spacing.y);
             }
             if shown.is_empty() {
+                let why = if self.query.trim().is_empty() { s.media_none_here } else { s.search_none };
                 ui.add_space(24.0);
-                ui.vertical_centered(|ui| ui.label(egui::RichText::new(s.media_none_here).color(color::WEAK)));
+                ui.vertical_centered(|ui| ui.label(egui::RichText::new(why).color(color::WEAK)));
             }
         });
         if !playing && self.make_pictures(ui.ctx(), footage, &wanted) {
@@ -360,7 +434,94 @@ impl AssetPanel {
         }
     }
 
+    /// The folders as a row of chips: a click shows one folder's media, and a card dropped on a
+    /// chip is filed there.
+    fn folders_row(&mut self, ui: &mut egui::Ui, folders: &[(&str, usize)], s: &Strings, action: &mut Option<Action>) {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+            let chip = |ui: &mut egui::Ui, on: bool, label: String| {
+                let text = egui::RichText::new(label).small().color(if on { color::TEXT } else { color::WEAK });
+                ui.add(egui::Button::new(text).selected(on).fill(if on { color::HOVER } else { color::RAISED }))
+            };
+            let all = chip(ui, self.folder.is_none(), s.folders_all.to_string());
+            if all.clicked() {
+                self.folder = None;
+            }
+            // dropped on "all": out of its folder
+            if let Some(item) = all.dnd_release_payload::<Item>()
+                && let Item::Media(id) = &*item
+            {
+                *action = Some(Action::File(vec![id.clone()], None));
+            }
+            for (name, n) in folders {
+                let on = self.folder.as_deref() == Some(*name);
+                let r = chip(ui, on, format!("{name}  {n}"));
+                if r.dnd_hover_payload::<Item>().is_some_and(|i| matches!(&*i, Item::Media(_))) {
+                    ui.painter().rect_stroke(r.rect, 4.0, Stroke::new(1.5, color::ACCENT), StrokeKind::Outside);
+                }
+                if let Some(item) = r.dnd_release_payload::<Item>()
+                    && let Item::Media(id) = &*item
+                {
+                    *action = Some(Action::File(vec![id.clone()], Some(name.to_string())));
+                }
+                if r.on_hover_text(s.folder_drop_tip).clicked() {
+                    self.folder = if on { None } else { Some(name.to_string()) };
+                }
+            }
+        });
+        ui.add_space(6.0);
+    }
+
+    /// The name being typed, if one is: Enter (or the tick) takes it, Escape leaves things be.
+    fn naming_row(&mut self, ui: &mut egui::Ui, s: &Strings, action: &mut Option<Action>) {
+        let Some(naming) = &mut self.naming else { return };
+        let (label, hint, text, focused, limit) = match naming {
+            Naming::Rename { text, focused, .. } => (s.media_rename, s.media_name_hint, text, focused, 200),
+            Naming::Folder { text, focused, .. } => {
+                (s.folder_new, s.folder_name_hint, text, focused, reelforge_model::Media::FOLDER_NAME_MAX)
+            }
+        };
+        let mut done = false;
+        let mut cancel = false;
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(label).small().color(color::WEAK));
+            // the buttons first, from the right, so the field takes what is left and no more
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                cancel = ui.add(egui::Button::new("×").small()).clicked();
+                done = ui.add(egui::Button::new(icon::DONE).small()).clicked();
+                let r = ui.add(
+                    egui::TextEdit::singleline(text)
+                        .hint_text(hint)
+                        .char_limit(limit)
+                        .desired_width(ui.available_width()),
+                );
+                if !*focused {
+                    r.request_focus();
+                    *focused = true;
+                }
+                done |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                cancel |= ui.input(|i| i.key_pressed(egui::Key::Escape));
+            });
+        });
+        ui.add_space(6.0);
+        if done {
+            match self.naming.take() {
+                Some(Naming::Rename { media, text, .. }) if !text.trim().is_empty() => {
+                    *action = Some(Action::Rename(media, text.trim().to_string()));
+                }
+                Some(Naming::Folder { media, text, .. }) if !text.trim().is_empty() => {
+                    *action = Some(Action::File(vec![media], Some(text.trim().to_string())));
+                }
+                _ => {}
+            }
+        } else if cancel {
+            self.naming = None;
+        }
+    }
+
     /// One media card: its picture, length, use and state. Pictures it lacks go to `wanted`.
+    /// `folders` are the folders it can be filed under.
+    #[allow(clippy::too_many_arguments)]
     fn card<'m>(
         &mut self,
         ui: &mut egui::Ui,
@@ -368,6 +529,7 @@ impl AssetPanel {
         w: f32,
         used: usize,
         s: &Strings,
+        folders: &[&str],
         wanted: &mut Vec<&'m Media>,
     ) -> Option<Action> {
         let mut action = None;
@@ -494,6 +656,9 @@ impl AssetPanel {
             if used > 0 {
                 facts.push(fill(s.media_used_n, &[&used]));
             }
+            if let Some(f) = &m.folder {
+                facts.push(f.clone());
+            }
             if !facts.is_empty() {
                 ui.label(egui::RichText::new(facts.join(" · ")).color(color::WEAK));
             }
@@ -507,6 +672,33 @@ impl AssetPanel {
                 action = Some(Action::Add(Item::Media(m.id.clone())));
                 ui.close();
             }
+            if ui.button(s.media_rename).clicked() {
+                self.naming = Some(Naming::Rename { media: m.id.clone(), text: m.name.clone(), focused: false });
+                ui.close();
+            }
+            ui.menu_button(s.media_move_to, |ui| {
+                for f in folders {
+                    let here = m.folder.as_deref() == Some(*f);
+                    if ui.add(egui::Button::new(*f).selected(here)).clicked() {
+                        if !here {
+                            action = Some(Action::File(vec![m.id.clone()], Some(f.to_string())));
+                        }
+                        ui.close();
+                    }
+                }
+                if !folders.is_empty() {
+                    ui.separator();
+                }
+                if ui.button(format!("{}  {}", icon::ADD, s.folder_new)).clicked() {
+                    self.naming = Some(Naming::Folder { media: m.id.clone(), text: String::new(), focused: false });
+                    ui.close();
+                }
+                if m.folder.is_some() && ui.button(s.folder_none).clicked() {
+                    action = Some(Action::File(vec![m.id.clone()], None));
+                    ui.close();
+                }
+            });
+            ui.separator();
             let remove = ui
                 .add_enabled(used == 0, egui::Button::new(format!("{}  {}", icon::DELETE, s.media_remove)))
                 .on_disabled_hover_text(fill(s.media_in_use, &[&used]));
@@ -550,11 +742,25 @@ impl AssetPanel {
         if self.sound_lengths.is_empty() {
             self.sound_lengths = SOUNDS.iter().map(|snd| (snd.id, sound_length(snd.id))).collect();
         }
+        search_box(ui, &mut self.query, s);
+        let query = self.query.clone();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            if !SOUNDS.iter().zip(s.sound_names).any(|(_, name)| finds(&query, name)) {
+                nothing_matches(ui, s);
+                return;
+            }
             for (title, cat) in [(s.sound_effects, Category::Effect), (s.sound_music, Category::Music)] {
+                let found: Vec<_> = SOUNDS
+                    .iter()
+                    .zip(s.sound_names)
+                    .filter(|(x, name)| x.category == cat && finds(&query, name))
+                    .collect();
+                if found.is_empty() {
+                    continue;
+                }
                 ui.label(egui::RichText::new(title).small().strong().color(color::WEAK));
                 ui.add_space(2.0);
-                for (snd, name) in SOUNDS.iter().zip(s.sound_names).filter(|(x, _)| x.category == cat) {
+                for (snd, name) in found {
                     let length = self.sound_lengths.get(snd.id).copied().unwrap_or(Tick::ZERO);
                     let item = Item::Sound { id: snd.id, name, length };
                     let glyph = if cat == Category::Music { icon::MUSIC } else { icon::SOUND };
@@ -588,12 +794,23 @@ impl AssetPanel {
                 })
                 .collect();
         }
+        search_box(ui, &mut self.query, s);
+        let query = self.query.clone();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             let gap = 8.0;
             let room = ui.available_width();
             let columns = ((room + gap) / (72.0 + gap)).floor().max(2.0) as usize;
             let w = ((room - gap * (columns - 1) as f32) / columns as f32).floor();
-            let all: Vec<_> = STICKERS.iter().zip(&self.stickers).zip(s.sticker_names).collect();
+            let all: Vec<_> = STICKERS
+                .iter()
+                .zip(&self.stickers)
+                .zip(s.sticker_names)
+                .filter(|(_, name)| finds(&query, name))
+                .collect();
+            if all.is_empty() {
+                nothing_matches(ui, s);
+                return;
+            }
             for row in all.chunks(columns) {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = gap;
@@ -627,18 +844,32 @@ impl AssetPanel {
 }
 
 /// Picture effects by what they do, and the empty adjustment layer.
-fn effects_tab(ui: &mut egui::Ui, s: &Strings, action: &mut Option<Action>) {
+fn effects_tab(ui: &mut egui::Ui, query: &mut String, s: &Strings, action: &mut Option<Action>) {
+    search_box(ui, query, s);
+    let query = query.as_str();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        let adjustment = finds(query, s.fx_adjustment);
+        if !adjustment && !FxKind::ALL.into_iter().any(|k| finds(query, fx_name(k, s))) {
+            nothing_matches(ui, s);
+            return;
+        }
         ui.label(egui::RichText::new(s.fx_tip).small().color(color::WEAK));
         ui.add_space(6.0);
-        if let Some(a) = fx_row(ui, icon::SLIDERS, s.fx_adjustment, Item::Effect(None), s.fx_adjustment_tip) {
+        if adjustment
+            && let Some(a) = fx_row(ui, icon::SLIDERS, s.fx_adjustment, Item::Effect(None), s.fx_adjustment_tip)
+        {
             *action = Some(a);
         }
         ui.add_space(8.0);
         for (title, group) in s.fx_groups.into_iter().zip(FxGroup::ALL) {
+            let found: Vec<FxKind> =
+                FxKind::ALL.into_iter().filter(|k| k.group() == group && finds(query, fx_name(*k, s))).collect();
+            if found.is_empty() {
+                continue;
+            }
             ui.label(egui::RichText::new(title).small().strong().color(color::WEAK));
             ui.add_space(2.0);
-            for kind in FxKind::ALL.into_iter().filter(|k| k.group() == group) {
+            for kind in found {
                 if let Some(a) = fx_row(ui, icon::SPARKLE, fx_name(kind, s), Item::Effect(Some(kind)), s.item_tip) {
                     *action = Some(a);
                 }
@@ -900,6 +1131,17 @@ mod tests {
         assert!(tall.width() == 1.0 && (tall.height() - (90.0 / 160.0) / (16.0 / 9.0)).abs() < 1e-5);
         assert_eq!(short_time(Tick::from_seconds(65.4)), "1:05");
         assert_eq!(short_time(Tick::from_seconds(3725.0)), "1:02:05");
+    }
+
+    #[test]
+    fn a_search_finds_names_with_every_word_whatever_the_case() {
+        assert!(finds("", "anything"));
+        assert!(finds("  ", "anything"));
+        assert!(finds("beach", "Beach walk.MP4"));
+        assert!(finds("walk BEACH", "Beach walk.MP4"));
+        assert!(!finds("beach night", "Beach walk.MP4"));
+        assert!(finds("海", "海边 01.mp4"));
+        assert!(!finds("山", "海边 01.mp4"));
     }
 
     #[test]
