@@ -1,0 +1,20 @@
+[package]
+name = "reelforge-speech"
+description = "Local speech recognition (Whisper, pure Rust on candle): 16 kHz samples in, timed text out."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+reelforge-time = { workspace = true }
+reelforge-renderspec = { workspace = true }
+reelforge-media = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+candle-core = "0.11.1"
+candle-nn = "0.11.1"
+candle-transformers = "0.11.1"

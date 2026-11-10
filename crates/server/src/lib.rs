@@ -84,6 +84,8 @@ pub struct Op {
 const RENDER_FRAME: &str = "render.frame";
 const RENDER_EXPORT: &str = "render.export";
 const PROJECT_SAVE: &str = "project.save";
+const CAPTIONS_TRANSCRIBE: &str = "captions.transcribe";
+const VOICE_SPEAK: &str = "voice.speak";
 
 /// Every operation: the engine's commands, then the service's own.
 pub fn ops() -> Vec<Op> {
@@ -133,6 +135,42 @@ pub fn ops() -> Vec<Op> {
         destructive: false,
     });
     out.push(Op {
+        name: CAPTIONS_TRANSCRIBE,
+        title: "Transcribe Captions",
+        doc: "Listens to the timeline's sound with the server's local Whisper model and places what is said as captions (captions.add), on a new Captions track unless `track` names one. Runs on the server's CPU; nothing leaves it. Takes about as long as the sound with a small model.".into(),
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "language": {"type": "string", "description": "What is spoken, as a code (zh, en, ja, …); told from the first 30 s by default."},
+                "prompt": {"type": "string", "description": "Words that set the style: names, punctuation, simplified or traditional characters. For Chinese a simplified-character prompt is used by default."},
+                "from": time.clone(),
+                "to": time.clone(),
+                "track": {"type": "string", "description": "A text track to put the captions on; a new Captions track by default."},
+                "template": {"type": "string", "description": "Title template id (title.templates); classic by default."}
+            },
+            "additionalProperties": false
+        }),
+        read_only: false,
+        destructive: false,
+    });
+    out.push(Op {
+        name: VOICE_SPEAK,
+        title: "Voice-over",
+        doc: "Reads titles aloud with the server's local Kokoro voice model and places each spoken line where its title starts (voiceover.add), on Voice-over tracks. Reads the titles in `clips`, or the captions when there are none. Chinese voices read Chinese text; runs on the server's CPU, nothing leaves it.".into(),
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "clips": {"type": "array", "items": {"type": "string"}, "description": "Title clips to read; the Captions track's titles by default."},
+                "voice": {"type": "string", "description": "A voice the model has (zf_xiaoxiao, zm_yunxi, …); zf_xiaoxiao by default."},
+                "speed": {"type": "number", "minimum": 0.5, "maximum": 2, "description": "How fast, 1 being the voice's own pace."},
+                "track": {"type": "string", "description": "An audio track to put the lines on; Voice-over tracks by default."}
+            },
+            "additionalProperties": false
+        }),
+        read_only: false,
+        destructive: false,
+    });
+    out.push(Op {
         name: PROJECT_SAVE,
         title: "Save Project",
         doc: "Writes the project file (edits already save themselves when the server has one); `path` saves a copy elsewhere.".into(),
@@ -175,6 +213,10 @@ pub struct Hub {
     file: Option<PathBuf>,
     /// Where files clients send are kept: `media/` beside the project file, or a temporary folder.
     media_dir: PathBuf,
+    speech: reelforge_speech::Recogniser,
+    voice_dir: PathBuf,
+    /// Loaded the first time something is read aloud.
+    voice: std::sync::Mutex<Option<reelforge_voice::Kokoro>>,
 }
 
 impl Hub {
@@ -206,7 +248,29 @@ impl Hub {
             None => std::env::temp_dir().join("reelforge-media"),
         };
         let media_dir = std::path::absolute(&media_dir).unwrap_or(media_dir);
-        Ok(Hub { shared, footage: Footage::new(), file, media_dir })
+        let speech = reelforge_speech::Recogniser::new(reelforge_speech::default_model_dir());
+        Ok(Hub {
+            shared,
+            footage: Footage::new(),
+            file,
+            media_dir,
+            speech,
+            voice_dir: reelforge_voice::default_model_dir(),
+            voice: Default::default(),
+        })
+    }
+
+    /// Listens with the Whisper model in `dir` instead of the default one.
+    pub fn with_speech_model(mut self, dir: PathBuf) -> Hub {
+        self.speech = reelforge_speech::Recogniser::new(dir);
+        self
+    }
+
+    /// Reads aloud with the Kokoro model in `dir` instead of the default one.
+    pub fn with_voice_model(mut self, dir: PathBuf) -> Hub {
+        self.voice_dir = dir;
+        self.voice = Default::default();
+        self
     }
 
     /// Keeps a file a client sent (a browser has no path the server can read) and says where it is,
@@ -275,6 +339,8 @@ impl Hub {
         match op.name {
             RENDER_FRAME => self.frame(params),
             RENDER_EXPORT => self.export(params),
+            CAPTIONS_TRANSCRIBE => self.transcribe(params, by),
+            VOICE_SPEAK => self.speak(params, by),
             PROJECT_SAVE => {
                 let path = match params.get("path").and_then(Value::as_str) {
                     Some(p) => self.resolve(p),
@@ -349,6 +415,82 @@ impl Hub {
                 "placeholders": placeholders,
             }),
         })
+    }
+
+    fn transcribe(&self, params: &Value, by: &str) -> Result<Output, CallError> {
+        self.speech.check().map_err(CallError::Failed)?;
+        let project = self.shared.project();
+        let fps = project.canvas.fps;
+        let time = |name: &str| {
+            params
+                .get(name)
+                .map(|v| parse_time(v, fps).map_err(|e| CallError::Failed(format!("`{name}`: {e}"))))
+                .transpose()
+        };
+        let text = |name: &str| params.get(name).and_then(Value::as_str).map(str::to_string);
+        let range = (time("from")?, time("to")?);
+        let options = reelforge_speech::Options { language: text("language"), prompt: text("prompt") };
+        let spec = reelforge_compile::compile(&project, &reelforge_compile::CompileOptions { encode: false })
+            .map_err(|e| CallError::Failed(e.to_string()))?;
+        let heard =
+            self.speech.transcribe(&spec, &self.footage, range, &options, &mut |_| true).map_err(CallError::Failed)?;
+        if heard.segments.is_empty() {
+            return Ok(Output::Json(json!({"language": heard.language, "count": 0, "clips": []})));
+        }
+        let add =
+            reelforge_speech::captions_params(&heard.segments, text("track").as_deref(), text("template").as_deref());
+        let placed = self.shared.execute("captions.add", &add, by)?;
+        Ok(Output::Json(json!({
+            "language": heard.language,
+            "count": heard.segments.len(),
+            "track": placed["track"],
+            "clips": placed["clips"],
+        })))
+    }
+
+    fn speak(&self, params: &Value, by: &str) -> Result<Output, CallError> {
+        let failed = CallError::Failed;
+        let voice = params.get("voice").and_then(Value::as_str).unwrap_or(reelforge_voice::DEFAULT_VOICE).to_string();
+        let speed = match params.get("speed") {
+            None => 1.0,
+            Some(v) => v.as_f64().ok_or_else(|| failed("`speed` must be a number".into()))? as f32,
+        };
+        let clips: Vec<String> = match params.get("clips") {
+            None => vec![],
+            Some(v) => {
+                serde_json::from_value(v.clone()).map_err(|_| failed("`clips` must be a list of clip ids".into()))?
+            }
+        };
+        let lines = reelforge_engine::spoken_lines(&self.shared.project(), &clips).map_err(failed)?;
+        if lines.is_empty() {
+            return Err(failed("the titles have no words to read".into()));
+        }
+        let mut model = self.voice.lock().expect("voice lock");
+        if model.is_none() {
+            *model = Some(reelforge_voice::Kokoro::load(&self.voice_dir).map_err(failed)?);
+        }
+        let model = model.as_mut().expect("loaded");
+        let mut spoken = Vec::with_capacity(lines.len());
+        for line in &lines {
+            let samples = model.speak(&line.text, &voice, speed).map_err(failed)?;
+            let bytes = reelforge_voice::wav(&samples, reelforge_voice::SAMPLE_RATE);
+            use sha2::{Digest, Sha256};
+            let sha: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+            let kept = self.upload(&sha, &format!("voice-{voice}.wav"), &bytes)?;
+            let name: String = line.text.chars().take(24).collect();
+            spoken.push(json!({"path": kept["path"], "start": line.start.0, "name": name, "sha256": sha}));
+        }
+        let mut add = json!({ "lines": spoken });
+        if let Some(t) = params.get("track") {
+            add["track"] = t.clone();
+        }
+        let placed = self.shared.execute("voiceover.add", &add, by)?;
+        Ok(Output::Json(json!({
+            "voice": voice,
+            "count": lines.len(),
+            "clips": placed["clips"],
+            "tracks": placed["tracks"],
+        })))
     }
 
     fn export(&self, params: &Value) -> Result<Output, CallError> {

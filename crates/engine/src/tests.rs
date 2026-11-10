@@ -1700,6 +1700,55 @@ fn a_title_is_set_in_an_imported_font_and_spaced() {
 }
 
 #[test]
+fn the_people_in_a_clip_are_cut_out_and_put_back() {
+    let mut s = Session::default();
+    let v = video_track(&s);
+    let m = s
+        .execute(
+            "media.import",
+            &json!({"path": "/nowhere/host.mp4", "kind": "video", "duration": {"seconds": 6}, "size": [1920, 1080], "sha256": "ab".repeat(32)}),
+        )
+        .unwrap()["media"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let c = s.execute("clip.add", &json!({"track": v, "media": m})).unwrap()["clip"].as_str().unwrap().to_string();
+    let person = |s: &Session| s.project().clip(&c).unwrap().1.look.person;
+    let features = |s: &mut Session| s.execute("render.compile", &json!({})).unwrap()["engine"]["features"].clone();
+
+    // on when nothing else is said; it is the layer's first effect, before a keyed colour
+    assert_eq!(s.execute("clip.setPersonKey", &json!({"clip": c})).unwrap(), json!({"clip": c, "person": true}));
+    assert!(person(&s));
+    s.execute("clip.setChromaKey", &json!({"clip": c, "color": [0.1, 0.8, 0.2]})).unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let fx = spec["layers"][0]["fx"].as_array().unwrap();
+    assert_eq!((fx[0]["id"].as_str(), fx[1]["id"].as_str()), (Some("key.person@1"), Some("key.chroma@1")));
+    assert!(features(&mut s).as_array().unwrap().contains(&json!("key.person@1")));
+    // it is part of the clip: saved with it, kept when the clip is split
+    assert_eq!(serde_json::to_value(s.project().clip(&c).unwrap().1).unwrap()["look"]["person"], json!(true));
+    let right = s.execute("clip.split", &json!({"clip": c, "at": {"seconds": 2}})).unwrap()["right"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(s.project().clip(&right).unwrap().1.look.person);
+    s.execute("edit.undo", &json!({})).unwrap();
+
+    // off, and undone
+    s.execute("clip.setPersonKey", &json!({"clip": c, "on": false})).unwrap();
+    assert!(!person(&s));
+    assert!(!features(&mut s).as_array().unwrap().contains(&json!("key.person@1")));
+    assert!(!serde_json::to_string(s.project().clip(&c).unwrap().1).unwrap().contains("person"));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(person(&s));
+
+    // only videos and pictures, and only a yes or a no
+    let red = add_red(&mut s, 10.0, 2.0);
+    assert!(s.execute("clip.setPersonKey", &json!({"clip": red})).is_err());
+    assert!(s.execute("clip.setPersonKey", &json!({"clip": c, "on": "yes"})).is_err());
+    assert!(s.execute("clip.setPersonKey", &json!({"clip": "nothing"})).is_err());
+}
+
+#[test]
 fn a_colour_is_keyed_out_and_pictures_are_distorted() {
     let mut s = Session::default();
     let v = video_track(&s);
@@ -2190,6 +2239,31 @@ fn any_picture_clip_is_replaced_or_made_a_slot() {
 }
 
 #[test]
+fn recognised_lines_become_captions() {
+    let mut s = Session::default();
+    let out = s
+        .execute(
+            "captions.add",
+            &json!({"cues": [
+                {"start": {"seconds": 0.5}, "end": {"seconds": 2.0}, "text": "大家好"},
+                {"start": {"seconds": 2.0}, "end": {"seconds": 3.5}, "text": "今天剪一条短视频"}
+            ], "template": "variety"}),
+        )
+        .unwrap();
+    let p = s.project();
+    let track = p.track(out["track"].as_str().unwrap()).unwrap();
+    assert_eq!(track.name, crate::CAPTIONS_TRACK);
+    assert_eq!(track.clips.len(), 2);
+    assert_eq!(track.clips[1].start, Tick::SECOND * 2);
+    let srt = s.execute("captions.export", &json!({})).unwrap();
+    assert!(srt["srt"].as_str().unwrap().contains("00:00:00,500 --> 00:00:02,000\n大家好"));
+    let bad = s.execute("captions.add", &json!({"cues": [{"start": 10, "end": 5, "text": "x"}]})).unwrap_err();
+    assert!(bad.to_string().contains("cues[0]"), "{bad}");
+    let missing = s.execute("captions.add", &json!({"cues": [{"start": 0, "text": "x"}]})).unwrap_err();
+    assert!(missing.to_string().contains("cues[0]") && missing.to_string().contains("end"), "{missing}");
+}
+
+#[test]
 fn a_video_is_stabilized_with_a_measured_path_and_how_much_is_changed_alone() {
     let mut s = Session::default();
     let a = add_video(&mut s, 6.0);
@@ -2302,4 +2376,63 @@ fn a_video_is_asked_for_frames_between_its_own() {
     let pic = s.execute("clip.add", &json!({"track": v, "media": still, "start": {"seconds": 20}})).unwrap();
     let e = s.execute("clip.setSpeed", &json!({"clip": pic["clip"], "frames": "flow"})).unwrap_err().to_string();
     assert!(e.contains("only a video"), "{e}");
+}
+
+#[test]
+fn spoken_lines_are_placed_on_voiceover_tracks_in_one_step() {
+    let mut s = Session::default();
+    let line = |n: u8, at: f64, secs: f64| {
+        json!({"path": format!("/nowhere/line{n}.wav"), "start": {"seconds": at}, "duration": {"seconds": secs},
+               "sha256": format!("{n:02x}").repeat(32)})
+    };
+    let tracks_before = s.project().tracks.len();
+    // the second line starts before the first has finished, so it goes a track down
+    let out = s
+        .execute("voiceover.add", &json!({"lines": [line(1, 0.0, 2.0), line(2, 1.5, 1.0), line(3, 2.0, 1.0)]}))
+        .unwrap();
+    let p = s.project();
+    let tracks: Vec<&str> = out["tracks"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
+    assert_eq!(tracks.len(), 2);
+    assert_eq!(p.tracks.len(), tracks_before + 2);
+    let (a, b) = (p.track(tracks[0]).unwrap(), p.track(tracks[1]).unwrap());
+    assert_eq!((a.name.as_str(), a.kind), (crate::VOICEOVER_TRACK, reelforge_model::TrackKind::Audio));
+    assert_eq!(b.name, "Voice-over 2");
+    assert_eq!(a.clips.iter().map(|c| c.start).collect::<Vec<_>>(), [Tick::ZERO, Tick::SECOND * 2]);
+    assert_eq!(b.clips[0].start, Tick::from_seconds(1.5));
+    assert_eq!(p.media.len(), 3);
+    // one undo takes it all away
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!((s.project().tracks.len(), s.project().media.len()), (tracks_before, 0));
+    // a bad line applies nothing and says which
+    let e = s.execute("voiceover.add", &json!({"lines": [line(1, 0.0, 1.0), {"path": "x.wav"}]})).unwrap_err();
+    assert!(e.to_string().contains("lines[1]") && e.to_string().contains("start"), "{e}");
+    let e = s.execute("voiceover.add", &json!({"lines": [{"path": "/nowhere/x.wav", "start": 0}]})).unwrap_err();
+    assert!(e.to_string().contains("how long"), "{e}");
+    assert_eq!(s.project().media.len(), 0);
+    let v = video_track(&s);
+    assert!(s.execute("voiceover.add", &json!({"lines": [line(1, 0.0, 1.0)], "track": v})).is_err());
+}
+
+#[test]
+fn a_voiceover_reads_the_titles_picked_or_the_captions() {
+    let mut s = Session::default();
+    assert!(crate::spoken_lines(&s.project(), &[]).unwrap_err().contains("add captions"));
+    let out = s
+        .execute(
+            "captions.add",
+            &json!({"cues": [
+                {"start": {"seconds": 2.0}, "end": {"seconds": 3.0}, "text": "第二句"},
+                {"start": {"seconds": 0.0}, "end": {"seconds": 1.0}, "text": "第一\n句"},
+                {"start": {"seconds": 1.0}, "end": {"seconds": 2.0}, "text": "  "}
+            ]}),
+        )
+        .unwrap();
+    let lines = crate::spoken_lines(&s.project(), &[]).unwrap();
+    assert_eq!(lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), ["第一 句", "第二句"]);
+    assert_eq!(lines[1].start, Tick::SECOND * 2);
+    let second = out["clips"][1].as_str().unwrap().to_string();
+    let picked = crate::spoken_lines(&s.project(), std::slice::from_ref(&second)).unwrap();
+    assert_eq!((picked.len(), picked[0].clip.as_str()), (1, second.as_str()));
+    let v = add_video(&mut s, 2.0);
+    assert!(crate::spoken_lines(&s.project(), &[v]).unwrap_err().contains("not a title"));
 }

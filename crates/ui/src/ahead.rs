@@ -104,9 +104,24 @@ fn read_ahead(
         if t >= spec.output.duration {
             break;
         }
-        for (asset, at, shrink, between) in sources_at(spec, t, scale) {
+        for (asset, at, shrink, between, person) in sources_at(spec, t, scale) {
             let Some(def) = spec.assets.get(&asset) else { continue };
-            if pictures && step <= PICTURES && !between.is_nearest() {
+            if person && step <= PICTURES {
+                // the picture a compositor will ask for, and its people cut out of it: both are
+                // kept (by the footage, by the renderer) for when it does. The GPU preview needs
+                // this too, as a cut-out is made from a whole picture before it gets there
+                use reelforge_render::MediaSource;
+                let picture = if !between.is_nearest() {
+                    media.picture_between(&asset, def, at, between, shrink)
+                } else if shrink > 1 {
+                    media.picture_shrunk(&asset, def, at, shrink)
+                } else {
+                    media.picture(&asset, def, at)
+                };
+                if let Ok(Some(picture)) = picture {
+                    let _ = reelforge_render::cutout::person(&picture);
+                }
+            } else if pictures && step <= PICTURES && !between.is_nearest() {
                 // a picture made between two frames is kept by the footage for when it is asked for
                 let _ = reelforge_render::MediaSource::picture_between(media, &asset, def, at, between, shrink);
             } else if pictures && step <= PICTURES {
@@ -123,9 +138,10 @@ fn read_ahead(
 }
 
 /// The pictures of assets a frame at `t` drawn `scale` times its size shows: `(asset id, source
-/// instant, how many times smaller the draft asks for it, what shows between its frames)`.
+/// instant, how many times smaller the draft asks for it, what shows between its frames, whether
+/// its people are cut out)`.
 #[cfg(not(target_arch = "wasm32"))]
-fn sources_at(spec: &RenderSpec, t: Tick, scale: f32) -> Vec<(String, Tick, u32, reelforge_renderspec::Between)> {
+fn sources_at(spec: &RenderSpec, t: Tick, scale: f32) -> Vec<(String, Tick, u32, reelforge_renderspec::Between, bool)> {
     let plan = reelforge_render::plan_frame(spec, t, scale);
     // the ones a compound clip shows are drawn into a frame of their own
     plan.media_layers()
@@ -133,7 +149,8 @@ fn sources_at(spec: &RenderSpec, t: Tick, scale: f32) -> Vec<(String, Tick, u32,
         .filter_map(|(frame, l)| match &l.source {
             reelforge_render::PlannedSource::Media { asset, at, between } => {
                 let shrink = spec.assets.get(asset).map_or(1, |a| reelforge_render::cpu::draft_shrink(a, frame, l));
-                Some((asset.clone(), *at, shrink, *between))
+                let person = l.fx.iter().any(|(id, _)| id == reelforge_renderspec::effects::PERSON_KEY);
+                Some((asset.clone(), *at, shrink, *between, person))
             }
             _ => None,
         })

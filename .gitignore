@@ -2,4 +2,5 @@
 /dist
 *.png
 !docs/**/*.png
+!crates/matte/tests/*.png
 .DS_Store

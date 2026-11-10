@@ -647,6 +647,39 @@ fn a_font_dropped_in_is_set_on_the_selected_title() {
 }
 
 #[test]
+fn a_person_is_cut_out_of_a_picture_and_the_frame_shows_around_them() {
+    use reelforge_model::{MediaKind, TrackKind};
+    let mut app = EditorApp::new(Session::default());
+    // a portrait in front of a studio backdrop, filling a green frame
+    app.execute("project.setCanvas", json!({"width": 256, "height": 256, "background": [0, 1, 0, 1]})).unwrap();
+    let portrait = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../matte/tests/astronaut.png")).unwrap();
+    app.import_bytes("portrait.png", portrait, false);
+    let media = app.project().media.values().find(|m| m.kind == MediaKind::Image).expect("imported").id.clone();
+    let track = first_track(&app, TrackKind::Video);
+    let clip =
+        app.execute("clip.add", json!({"track": track, "media": media})).unwrap()["clip"].as_str().unwrap().to_string();
+    let frame = |app: &EditorApp| {
+        let spec = reelforge_compile::compile(&app.project(), &Default::default()).unwrap();
+        reelforge_media::still(&spec, &app.media, Tick::ZERO, 1.0).unwrap()
+    };
+    let green = |p: [f32; 4]| p[1] > 0.98 && p[0] < 0.02 && p[2] < 0.02;
+    let (face, beside, suit) = ((128, 60), (20, 30), (110, 170));
+    let whole = frame(&app);
+    assert!(!green(whole.get(beside.0, beside.1)));
+
+    app.execute("clip.setPersonKey", json!({"clip": clip})).unwrap();
+    let cut = frame(&app);
+    // the person is as they were; beside the head the frame's own green shows
+    assert_eq!(cut.get(face.0, face.1), whole.get(face.0, face.1));
+    assert_eq!(cut.get(suit.0, suit.1), whole.get(suit.0, suit.1));
+    assert!(green(cut.get(beside.0, beside.1)), "{:?}", cut.get(beside.0, beside.1));
+    assert!(green(cut.get(235, 30)), "{:?}", cut.get(235, 30));
+    // and back
+    app.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(frame(&app).pixels, whole.pixels);
+}
+
+#[test]
 fn keying_finds_the_backdrop_or_says_it_guessed() {
     use reelforge_model::{ChromaKey, MediaKind, TrackKind};
     let mut app = EditorApp::new(Session::default());

@@ -402,8 +402,13 @@ fn lower_tracks(
                         },
                     ),
                     fx: {
-                        // a keyed colour goes first, from the picture as it was shot
-                        let mut fx: Vec<Effect> = clip.look.chroma.iter().filter(|_| media).map(chroma_fx).collect();
+                        // people are cut out of the picture as it was shot, and a keyed colour
+                        // goes from that before anything changes the colours
+                        let mut fx: Vec<Effect> = Vec::new();
+                        if media && clip.look.person {
+                            fx.push(Effect { id: effects::PERSON_KEY.into(), params: Default::default(), asset: None });
+                        }
+                        fx.extend(clip.look.chroma.iter().filter(|_| media).map(chroma_fx));
                         fx.extend(color_fx(clip, &shape, step, &mut asset_for)?);
                         fx.extend(clip.effects.iter().map(|e| Effect {
                             id: e.id.clone(),
@@ -919,6 +924,47 @@ mod tests {
         let spec = compile(&p, &CompileOptions::default()).unwrap();
         assert_eq!(spec.layers[0].transform.position, Animated::Constant([0.0, 0.0]));
         assert_eq!(spec.layers[0].transform.scale, Animated::Constant(1.0));
+    }
+
+    #[test]
+    fn people_are_cut_out_of_a_clip_before_anything_else_is_done_to_it() {
+        let mut p = Project::default();
+        p.media.insert(
+            "m9".into(),
+            Media {
+                id: "m9".into(),
+                name: "m9".into(),
+                uri: "file:///m9".into(),
+                sha256: Some("ab".repeat(32)),
+                kind: MediaKind::Video,
+                duration: Some(Tick::SECOND * 10),
+                size: Some([1920, 1080]),
+                folder: None,
+            },
+        );
+        let mut video = clip("c20", Tick::ZERO, Tick::SECOND * 2, ClipContent::media("m9", Tick::SECOND));
+        video.look.person = true;
+        video.look.chroma = Some(reelforge_model::ChromaKey::new([0.1, 0.8, 0.2]));
+        video.look.backdrop = Some(0.5);
+        // a colour has no people to cut out, whatever its look says
+        let mut flat = clip("c21", Tick::SECOND * 2, Tick::SECOND, ClipContent::Solid { color: [1.0; 4] });
+        flat.look.person = true;
+        p.tracks[0].clips = vec![video, flat];
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        let fx = |id: &str| -> Vec<&str> {
+            spec.layers.iter().find(|l| l.id == id).expect("a layer").fx.iter().map(|e| e.id.as_str()).collect()
+        };
+        // the people first, then the colour keyed out of what is left; the blurred copy behind
+        // stays whole (the people are cut out of the clip, not out of the frame)
+        assert_eq!(fx("c20"), ["key.person@1", "key.chroma@1"]);
+        assert_eq!(fx("c20~backdrop"), ["blur.gaussian@1"]);
+        assert!(fx("c21").is_empty());
+        assert!(spec.engine.features.contains(&"key.person@1".to_string()));
+        assert!(spec.layers.iter().find(|l| l.id == "c20").unwrap().fx[0].params.is_empty());
+        // off: nothing is asked of the renderer
+        p.tracks[0].clips[0].look.person = false;
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        assert!(!spec.engine.features.contains(&"key.person@1".to_string()));
     }
 
     #[test]

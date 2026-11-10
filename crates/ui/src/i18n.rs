@@ -76,6 +76,12 @@ impl Lang {
         if name == "Look" {
             return self.strings().track_look.into();
         }
+        // Voice-over, Voice-over 2, …
+        if let Some(rest) = name.strip_prefix(reelforge_engine::VOICEOVER_TRACK)
+            && (rest.is_empty() || rest.strip_prefix(' ').is_some_and(|n| n.chars().all(|c| c.is_ascii_digit())))
+        {
+            return format!("{}{rest}", self.strings().voiceover);
+        }
         let Some((word, n)) = name.split_once(' ') else { return name.to_string() };
         if !n.chars().all(|c| c.is_ascii_digit()) {
             return name.to_string();
@@ -202,6 +208,25 @@ pub(crate) struct Strings {
     pub(crate) draft_skipped: &'static str,
     /// `{}`: the file.
     pub(crate) relinked: &'static str,
+    pub(crate) auto_captions: &'static str,
+    pub(crate) auto_captions_tip: &'static str,
+    pub(crate) listening: &'static str,
+    pub(crate) listening_remote: &'static str,
+    pub(crate) captions_heard: &'static str,
+    pub(crate) no_speech_heard: &'static str,
+    pub(crate) transcribe_failed: &'static str,
+    pub(crate) transcribe_stopped: &'static str,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) transcribe_needs_server: &'static str,
+    pub(crate) voiceover: &'static str,
+    pub(crate) voiceover_tip: &'static str,
+    pub(crate) voiceover_picked_tip: &'static str,
+    pub(crate) speaking: &'static str,
+    pub(crate) speaking_remote: &'static str,
+    pub(crate) voiced: &'static str,
+    pub(crate) voice_failed: &'static str,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) voice_needs_server: &'static str,
     pub(crate) sec_colour: &'static str,
     pub(crate) sec_transform: &'static str,
     pub(crate) sec_sound: &'static str,
@@ -278,6 +303,8 @@ pub(crate) struct Strings {
     pub(crate) row_height_tip: &'static str,
     pub(crate) canvas_blur: &'static str,
     pub(crate) canvas_blur_tip: &'static str,
+    pub(crate) person: &'static str,
+    pub(crate) person_tip: &'static str,
     pub(crate) chroma: &'static str,
     pub(crate) chroma_tip: &'static str,
     pub(crate) chroma_color: &'static str,
@@ -640,6 +667,7 @@ static EN: Strings = Strings {
         ("clip.setBlend", "Blend Mode"),
         ("clip.setBackdrop", "Canvas Blur"),
         ("clip.setChromaKey", "Chroma key"),
+        ("clip.setPersonKey", "Cut out people"),
         ("clip.pickChromaKey", "Key out backdrop"),
         ("clip.setStabilize", "Stabilize"),
         ("clip.stabilize", "Stabilize"),
@@ -670,6 +698,10 @@ static EN: Strings = Strings {
         ("edit.batch", "Several edits"),
         ("captions.import", "Import captions"),
         ("captions.export", "Export captions"),
+        ("captions.add", "Add captions"),
+        ("captions.transcribe", "Auto captions"),
+        ("voiceover.add", "Add voice-over"),
+        ("voice.speak", "Voice-over"),
         ("captions.list", "List captions"),
         ("captions.split", "Split caption"),
         ("captions.merge", "Merge captions"),
@@ -806,6 +838,23 @@ static EN: Strings = Strings {
     draft_offline: "; drop its {} files in to relink them",
     draft_skipped: "; {} items without an equivalent skipped",
     relinked: "{} relinked",
+    auto_captions: "Auto captions",
+    auto_captions_tip: "Hear what is said on the timeline and add it as captions (a local Whisper model; nothing leaves this machine)",
+    listening: "Listening {}%",
+    listening_remote: "The server is listening…",
+    captions_heard: "Added {} captions",
+    no_speech_heard: "No speech heard",
+    transcribe_failed: "Auto captions failed: {}",
+    transcribe_stopped: "Auto captions stopped",
+    transcribe_needs_server: "Auto captions run on a server: open this editor from `reelforge serve`",
+    voiceover: "Voice-over",
+    voiceover_tip: "Read the captions aloud onto a Voice-over track (a local Kokoro model; nothing leaves this machine)",
+    voiceover_picked_tip: "Read the selected titles aloud onto a Voice-over track (a local Kokoro model; nothing leaves this machine)",
+    speaking: "Reading {} of {}",
+    speaking_remote: "The server is reading…",
+    voiced: "Read {} lines aloud",
+    voice_failed: "Voice-over failed: {}",
+    voice_needs_server: "Voice-over runs on a server: open this editor from `reelforge serve`",
     sec_colour: "COLOUR",
     sec_transform: "TRANSFORM",
     sec_sound: "SOUND",
@@ -936,6 +985,8 @@ static EN: Strings = Strings {
     row_height_tip: "Track height",
     canvas_blur: "Canvas blur",
     canvas_blur_tip: "Fill the frame behind the clip with a blurred copy of it",
+    person: "Cut out people",
+    person_tip: "Keep only the people in the picture and make the rest see-through, so the tracks below show around them. No green screen needed. Best for a person facing the camera; outlines are soft",
     chroma: "Chroma key",
     chroma_tip: "Make the backdrop colour (a green screen) see-through, so the tracks below show",
     chroma_color: "The colour that is keyed out",
@@ -1333,6 +1384,7 @@ static ZH: Strings = Strings {
         ("clip.setBlend", "混合模式"),
         ("clip.setBackdrop", "画布模糊"),
         ("clip.setChromaKey", "色度抠图"),
+        ("clip.setPersonKey", "智能抠像"),
         ("clip.pickChromaKey", "自动抠背景"),
         ("clip.setStabilize", "防抖"),
         ("clip.stabilize", "防抖"),
@@ -1363,6 +1415,10 @@ static ZH: Strings = Strings {
         ("edit.batch", "批量编辑"),
         ("captions.import", "导入字幕"),
         ("captions.export", "导出字幕"),
+        ("captions.add", "添加字幕"),
+        ("captions.transcribe", "自动字幕"),
+        ("voiceover.add", "添加配音"),
+        ("voice.speak", "配音"),
         ("captions.list", "字幕列表"),
         ("captions.split", "拆分字幕"),
         ("captions.merge", "合并字幕"),
@@ -1499,6 +1555,23 @@ static ZH: Strings = Strings {
     draft_offline: "；把其中 {} 个素材文件拖进来即可重新链接",
     draft_skipped: "；{} 项暂不支持，已跳过",
     relinked: "已重新链接 {}",
+    auto_captions: "自动字幕",
+    auto_captions_tip: "识别时间线里说的话，生成字幕（本地 Whisper 模型，数据不出本机）",
+    listening: "识别中 {}%",
+    listening_remote: "服务端识别中…",
+    captions_heard: "已添加 {} 条字幕",
+    no_speech_heard: "没有识别到人声",
+    transcribe_failed: "自动字幕失败：{}",
+    transcribe_stopped: "已停止自动字幕",
+    transcribe_needs_server: "自动字幕需要在服务端运行：请通过 `reelforge serve` 打开编辑器",
+    voiceover: "配音",
+    voiceover_tip: "把字幕读出来，放到配音轨（本地 Kokoro 模型，数据不出本机）",
+    voiceover_picked_tip: "把选中的文字读出来，放到配音轨（本地 Kokoro 模型，数据不出本机）",
+    speaking: "配音中 {}/{}",
+    speaking_remote: "服务端配音中…",
+    voiced: "已配音 {} 句",
+    voice_failed: "配音失败：{}",
+    voice_needs_server: "配音需要在服务端运行：请通过 `reelforge serve` 打开编辑器",
     sec_colour: "颜色",
     sec_transform: "变换",
     sec_sound: "声音",
@@ -1608,6 +1681,8 @@ static ZH: Strings = Strings {
     row_height_tip: "轨道高度",
     canvas_blur: "画布模糊",
     canvas_blur_tip: "用片段自身的模糊画面填满背景",
+    person: "智能抠像",
+    person_tip: "只保留画面里的人，其余变透明，露出下面轨道的画面，不需要绿幕。适合正对镜头的人像，边缘比较柔和",
     chroma: "色度抠图",
     chroma_tip: "把背景色（比如绿幕）抠成透明，露出下面轨道的画面",
     chroma_color: "要抠掉的颜色",
@@ -1974,6 +2049,8 @@ mod tests {
         assert_eq!(Lang::Zh.command("nope"), "");
         assert_eq!(Lang::Ja.track_name("Video 3"), "動画 3");
         assert_eq!(Lang::Ja.track_name("Captions"), "字幕");
+        assert_eq!(Lang::Zh.track_name("Voice-over 2"), "配音 2");
+        assert_eq!(Lang::Zh.track_name("Voice-overs"), "Voice-overs");
         assert_eq!(Lang::Zh.track_name("Stickers"), "贴纸");
         assert_eq!(Lang::Zh.track_name("Look"), "滤镜");
     }

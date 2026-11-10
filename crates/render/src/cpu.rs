@@ -83,6 +83,7 @@ pub(crate) fn resolve(
                 && fit == 1
                 && between.is_nearest()
                 && blur_radius(layer).is_none()
+                && !keys_person(layer)
                 && let Some(y) = media.yuv(asset, def, *at).map_err(RenderError::Media)?
                 && y.is_whole()
             {
@@ -97,10 +98,7 @@ pub(crate) fn resolve(
                 media.picture(asset, def, *at)
             };
             match pic.map_err(RenderError::Media)? {
-                Some(pic) => match blur_radius(layer) {
-                    Some(r) => Resolved::Picture(std::sync::Arc::new(crate::image::blurred(&pic, r))),
-                    None => Resolved::Picture(pic),
-                },
+                Some(pic) => Resolved::Picture(treated(layer, pic)?),
                 None => {
                     placeholder("media offline or not decodable yet")?;
                     let size = def
@@ -116,10 +114,7 @@ pub(crate) fn resolve(
             // the composition's own frame, then a picture like any other
             let (pic, drawn) = composite(spec, inner, media, quality)?;
             report.placeholders.extend(drawn.placeholders);
-            match blur_radius(layer) {
-                Some(r) => Resolved::Picture(Arc::new(crate::image::blurred(&pic, r))),
-                None => Resolved::Picture(Arc::new(pic)),
-            }
+            Resolved::Picture(treated(layer, Arc::new(pic))?)
         }
         PlannedSource::Text(text) => {
             let k = plan.width as f32 / spec.output.width as f32;
@@ -153,6 +148,20 @@ pub fn draft_shrink(asset: &reelforge_renderspec::Asset, plan: &FramePlan, layer
         Some((w, h)) => layer.shrink(w as f32, h as f32, [plan.width as f32, plan.height as f32]),
         None => 1,
     }
+}
+
+/// Whether `layer` keeps only the people in its picture (`key.person@1`).
+pub(crate) fn keys_person(layer: &PlannedLayer) -> bool {
+    layer.fx.iter().any(|(id, _)| id == effects::PERSON_KEY)
+}
+
+/// `pic` as `layer`'s effects on a whole picture leave it: its people cut out, then blurred.
+fn treated(layer: &PlannedLayer, pic: Arc<Image>) -> Result<Arc<Image>, RenderError> {
+    let pic = if keys_person(layer) { crate::cutout::person(&pic).map_err(RenderError::Media)? } else { pic };
+    Ok(match blur_radius(layer) {
+        Some(r) => Arc::new(crate::image::blurred(&pic, r)),
+        None => pic,
+    })
 }
 
 /// The radius of `layer`'s `blur.gaussian@1`, as a fraction of its picture's shorter side.

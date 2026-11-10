@@ -637,3 +637,95 @@ fn pauses_are_heard_and_cut_with_what_goes_with_the_voice() {
     let nothing = add(json!({"track": a1, "media": import(&quiet), "start": {"seconds": 10}}));
     assert!(matches!(hub.call("audio.cutPauses", &json!({"clips": [nothing]})), Err(CallError::Failed(_))));
 }
+
+#[test]
+fn transcribing_without_a_model_says_where_to_put_one() {
+    let hub = Hub::new(Session::default()).with_speech_model(temp("no-model"));
+    let err = hub.call("captions.transcribe", &json!({"language": "zh"})).unwrap_err();
+    assert!(matches!(&err, CallError::Failed(m) if m.contains("no speech model") && m.contains("no-model")), "{err}");
+    // lines from elsewhere still go in
+    let out =
+        hub.call("captions.add", &json!({"cues": [{"start": 0, "end": {"seconds": 1}, "text": "你好"}]})).unwrap();
+    assert!(matches!(out, Output::Json(v) if v["clips"].as_array().unwrap().len() == 1));
+}
+
+#[test]
+fn an_agent_gets_captions_from_the_timeline_sound() {
+    // a model shaped like Whisper (random, tiny): checks the chain, not the hearing
+    let model = temp("tiny-whisper");
+    reelforge_speech::tiny::write(&model).unwrap();
+    let hub = Hub::new(Session::default()).with_speech_model(model);
+    // three seconds of a warbling 16 kHz mono tone, on the timeline
+    let rate = 16_000u32;
+    let n = rate * 3;
+    let mut wav = Vec::new();
+    wav.extend(b"RIFF");
+    wav.extend((36 + n * 2).to_le_bytes());
+    wav.extend(b"WAVEfmt ");
+    for v in [16u32.to_le_bytes(), [1, 0, 1, 0], rate.to_le_bytes(), (rate * 2).to_le_bytes(), [2, 0, 16, 0]] {
+        wav.extend(v);
+    }
+    wav.extend(b"data");
+    wav.extend((n * 2).to_le_bytes());
+    for i in 0..n {
+        let t = i as f32 / rate as f32;
+        let v = ((t * 300.0 * std::f32::consts::TAU).sin() * (t * 3.0).sin() * 12000.0) as i16;
+        wav.extend(v.to_le_bytes());
+    }
+    let path = temp("speech.wav");
+    std::fs::write(&path, &wav).unwrap();
+    let Output::Json(m) = hub.call("media.import", &json!({"path": path.to_string_lossy()})).unwrap() else {
+        panic!("json")
+    };
+    let audio = track(&hub, "audio");
+    hub.call("clip.add", &json!({"track": audio, "media": m["media"]["id"]})).unwrap();
+
+    let Output::Json(heard) = hub.call("captions.transcribe", &json!({"language": "zh"})).unwrap() else {
+        panic!("json")
+    };
+    assert_eq!(heard["language"], "zh");
+    let count = heard["count"].as_u64().unwrap() as usize;
+    assert_eq!(heard["clips"].as_array().unwrap().len(), count);
+    let p = hub.session().project();
+    let captions = p.tracks.iter().find(|t| t.name == reelforge_engine::CAPTIONS_TRACK);
+    assert_eq!(captions.map_or(0, |t| t.clips.len()), count);
+    for c in captions.iter().flat_map(|t| &t.clips) {
+        assert!(c.end() <= reelforge_time::Tick::from_seconds(3.0));
+    }
+    // parameters are checked before any listening
+    let bad = hub.call("captions.transcribe", &json!({"from": "soon"})).unwrap_err();
+    assert!(bad.to_string().contains("`from`"), "{bad}");
+}
+
+#[test]
+fn captions_are_read_aloud_onto_a_voiceover_track() {
+    let hub = Hub::new(Session::default()).with_voice_model(temp("no-voice-model"));
+    let err = hub.call("voice.speak", &json!({})).unwrap_err();
+    assert!(err.to_string().contains("add captions"), "{err}");
+    hub.call(
+        "captions.add",
+        &json!({"cues": [
+            {"start": {"seconds": 1}, "end": {"seconds": 2}, "text": "你好。"},
+            {"start": {"seconds": 4}, "end": {"seconds": 5}, "text": "剪辑视频"}
+        ]}),
+    )
+    .unwrap();
+    let err = hub.call("voice.speak", &json!({})).unwrap_err();
+    assert!(err.to_string().contains("fetch-model --kokoro"), "{err}");
+
+    // a model shaped like Kokoro (random, tiny): checks the chain, not the voice
+    let model = temp("tiny-kokoro");
+    reelforge_voice::tiny::write(&model).unwrap();
+    let hub = hub.with_voice_model(model);
+    assert!(hub.call("voice.speak", &json!({"speed": 5})).is_err());
+    let Output::Json(out) = hub.call("voice.speak", &json!({})).unwrap() else { panic!("json") };
+    assert_eq!((out["count"].as_u64(), out["voice"].as_str()), (Some(2), Some(reelforge_voice::DEFAULT_VOICE)));
+    let p = hub.session().project();
+    let vo = p.tracks.iter().find(|t| t.name == reelforge_engine::VOICEOVER_TRACK).expect("a Voice-over track");
+    let starts: Vec<_> = vo.clips.iter().map(|c| c.start).collect();
+    assert_eq!(starts, [reelforge_time::Tick::SECOND, reelforge_time::Tick::SECOND * 4]);
+    for m in p.media.values() {
+        assert!(std::path::Path::new(&m.uri).is_file(), "{}", m.uri);
+        assert!(m.duration.is_some_and(|d| d > reelforge_time::Tick::ZERO));
+    }
+}
