@@ -1782,10 +1782,36 @@ impl EditorApp {
             Action::Compound => self.compound(),
             Action::Uncompound => self.uncompound(),
             Action::OpenCompound => self.open_compound(),
+            Action::Layout(id) => self.lay_out(id),
             Action::Slot => self.mark_slots(true),
             Action::Unslot => self.mark_slots(false),
             // needs the window to ask for a file: see `pick_replacement`
             Action::Replace => {}
+        }
+    }
+
+    /// Makes the selected picture clips share the frame as the layout `id` has it: the lowest
+    /// track's clip first, which is the large one of a picture in picture and the one underneath
+    /// in a comparison.
+    fn lay_out(&mut self, id: &'static str) {
+        let p = self.project();
+        let mut all: Vec<(usize, Tick, String)> = self
+            .selection()
+            .into_iter()
+            .filter_map(|c| p.clip(&c).map(|(ti, clip)| (ti, clip.start, c)))
+            .filter(|(ti, _, c)| {
+                p.tracks[*ti].kind == TrackKind::Video && p.clip(c).is_some_and(|(_, clip)| clip.is_picture())
+            })
+            .collect();
+        all.sort();
+        let clips: Vec<String> = all.into_iter().map(|(_, _, c)| c).collect();
+        if clips.len() < 2 {
+            return;
+        }
+        if self.execute("layout.apply", json!({"layout": id, "clips": clips})).is_ok() {
+            self.inspector = None;
+            let at = reelforge_engine::LAYOUTS.iter().position(|l| l.id == id).unwrap_or(0);
+            self.status = fill(self.s().layout_done, &[&self.s().layout_names[at]]);
         }
     }
 
@@ -2145,6 +2171,14 @@ impl EditorApp {
             act(icon::MERGE, s.group, "Ctrl+G", Action::Group, several),
             act(icon::MERGE, s.ungroup, "Ctrl+Shift+G", Action::Ungroup, any),
             act(icon::FILM, s.compound, "Alt+G", Action::Compound, any),
+        ];
+        // the layouts, for the pictures selected
+        for (layout, name) in reelforge_engine::LAYOUTS.iter().zip(s.layout_names) {
+            let fits = (layout.clips.0..=layout.clips.1).contains(&chosen.len());
+            let word = format!("{} · {}", s.layout, name);
+            all.push(Entry::new(icon::FILM, word, "", Run::Act(Action::Layout(layout.id))).enabled(fits));
+        }
+        all.extend([
             act(icon::FILM, s.uncompound, "Alt+Shift+G", Action::Uncompound, any),
             act(icon::DONE, s.select_all, "Ctrl+A", Action::SelectAll, true),
             Entry::new(icon::UNDO, plain(s.undo_tip), "Ctrl+Z", Run::Undo),
@@ -2158,7 +2192,7 @@ impl EditorApp {
             Entry::new(icon::ZOOM_OUT, plain(s.zoom_out_tip), "−", Run::ZoomOut),
             Entry::new(icon::SCREEN, plain(s.preview_only_tip), "F", Run::PreviewOnly),
             Entry::new(icon::SEARCH, s.hint_keys, "?", Run::Keys),
-        ];
+        ]);
         for m in &p.markers {
             let at = theme::timecode(m.at.seconds());
             let label = if m.note.is_empty() {

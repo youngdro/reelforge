@@ -299,7 +299,54 @@ pub fn input_schema(id: &str) -> Option<Value> {
     Some(match id {
         "commands.list" | "project.inspect" | "project.outline" | "project.new" | "edit.undo" | "edit.redo"
         | "title.templates" | "sound.library" | "timeline.list" | "fx.list" | "sticker.library" | "voice.list"
-        | "template.list" | "template.slots" | "promo.list" | "brand.get" | "decor.list" => object(vec![], &[]),
+        | "template.list" | "template.slots" | "promo.list" | "brand.get" | "decor.list" | "layout.list" => {
+            object(vec![], &[])
+        }
+        "layout.apply" => object(
+            vec![
+                (
+                    "layout",
+                    json!({"enum": crate::layout::LAYOUTS.iter().map(|l| l.id).collect::<Vec<_>>(), "description": "Which layout; layout.list says what each does."}),
+                ),
+                (
+                    "clips",
+                    json!({"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 6, "description": "The picture clips, in the order of their cells: for pip the large one first, for compare the one underneath."}),
+                ),
+                ("gap", num("The space between cells, as a share of the frame's shorter side; 0.012 by default.")),
+                (
+                    "margin",
+                    num(
+                        "The space round the cells, as a share of the frame's shorter side; 0 by default, 0.04 for pip.",
+                    ),
+                ),
+                (
+                    "corner",
+                    json!({"enum": crate::layout::CORNERS, "description": "Where pip's small pictures sit; topRight by default."}),
+                ),
+                (
+                    "size",
+                    num(
+                        "A small picture's width as a share of the frame's (a circle's, of the frame's shorter side), 0.1 to 0.6; 0.32 by default.",
+                    ),
+                ),
+                ("round", json!({"type": "boolean", "description": "Small pictures as circles."})),
+                (
+                    "border",
+                    json!({"anyOf": [
+                        {"type": "object", "properties": {"color": color("White by default."), "width": num("Pixels; 6 on a frame 1080 across by default.")}, "additionalProperties": false},
+                        {"type": "null"},
+                    ], "description": "An outline round each cell; pip's small pictures have a white one unless this is null."}),
+                ),
+                ("from", num("Where compare's divider starts, 0 to 1 across the frame; 0.85 by default.")),
+                ("to", num("Where it ends; 0.15 by default.")),
+                (
+                    "axis",
+                    json!({"enum": ["x", "y"], "description": "The way compare's divider travels: across (x, the default) or down."}),
+                ),
+                ("divider", json!({"type": "boolean", "description": "false leaves compare's line and knob out."})),
+            ],
+            &["layout", "clips"],
+        ),
         "decor.add" => object(
             vec![
                 (
