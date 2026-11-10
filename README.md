@@ -19,7 +19,9 @@ speed, volume, placement, mirroring, fades and transitions; files the draft name
 show as offline and relink when dropped in. Titles
 render with shaping, wrapping, outlines, shadows, gradients and boxes, Chinese included (a bundled
 Noto Sans SC subset covering GB 2312), and ten title templates (花字) apply a look in one step
-(`title.templates`, `"template"` on `clip.add` / `clip.set`). SubRip captions come in by dropping a
+(`title.templates`, `"template"` on `clip.add` / `clip.set`). A green (or any one-colour) screen is keyed out with `clip.setChromaKey`, and
+`clip.pickChromaKey` finds the backdrop's colour in the frame by itself; picture effects (`fx.list`) include
+glitch, colour split, mosaic and wave next to the shakes, zooms and blurs. SubRip captions come in by dropping a
 `.srt` on the editor or `captions.import`, and go out with `captions.export`. Frames are composited on the GPU (wgpu) in the editor's preview and in exports,
 with the CPU compositor as the reference and the fallback. Agents edit through an MCP server (stdio
 or HTTP), and the same operations are an HTTP API and `reelforge-cli call`. People in a browser or on

@@ -27,9 +27,14 @@ struct Layer {
     mask0: vec4<f32>,
     // mask: width, height, rotation (degrees), inverted (1 or 0)
     mask1: vec4<f32>,
+    // distortions: wave amount, waves, phase, mosaic size
+    warp0: vec4<f32>,
+    // distortions: glitch amount, seed, split x, y
+    warp1: vec4<f32>,
     // x: 1 brightness, 2 saturation (y: amount); 3 grade, over three slots (exposure, contrast,
     // saturation | temperature, tint, highlights, shadows | fade, vignette); 6 lookup table over
-    // three slots (amount, size | domain min | domain max)
+    // three slots (amount, size | domain min | domain max); 7 chroma key over two slots
+    // (tolerance, softness, spill | key r, g, b)
     fx: array<vec4<f32>, 16>,
 }
 
@@ -73,6 +78,116 @@ fn bilinear(x: f32, y: f32) -> vec4<f32> {
     let top = a + (b - a) * t.x;
     let bottom = c + (d - c) * t.x;
     return top + (bottom - top) * t.y;
+}
+
+// `distort::hash`
+fn hash2(a: u32, b: u32) -> u32 {
+    var x = (a * 0x9E3779B1u) ^ (b * 0x85EBCA77u + 0xC2B2AE3Du);
+    x ^= x >> 15u;
+    x *= 0x2C1B3C6Du;
+    x ^= x >> 12u;
+    x *= 0x297A2D39u;
+    return x ^ (x >> 15u);
+}
+
+// the picture at a point of the visible part, in its pixels: mirrored, then moved past the crop
+fn read(sx: f32, sy: f32) -> vec4<f32> {
+    var px = sx;
+    var py = sy;
+    if L.geo.z > 0.5 {
+        px = L.inv1.z - sx;
+    }
+    if L.geo.w > 0.5 {
+        py = L.inv1.w - sy;
+    }
+    return bilinear(px + L.geo.x, py + L.geo.y);
+}
+
+// `Warp::sample`: a point held half a pixel inside the visible part
+fn held(uv: vec2<f32>) -> vec4<f32> {
+    let size = L.inv1.zw;
+    return read(min(max(uv.x * size.x, 0.5), size.x - 0.5), min(max(uv.y * size.y, 0.5), size.y - 0.5));
+}
+
+// `Warp::taps` and `Warp::sample`
+fn warped(uv: vec2<f32>) -> vec4<f32> {
+    let size = L.inv1.zw;
+    var u = uv.x;
+    var v = uv.y;
+    if L.warp0.x != 0.0 {
+        u += L.warp0.x * sin(6.2831855 * (v * L.warp0.y + L.warp0.z));
+    }
+    if L.warp1.x != 0.0 {
+        let step = u32(floor(max(L.warp1.y, 0.0)));
+        let bands = 6u + hash2(step, 0u) % 18u;
+        let band = min(u32(max(floor(v * f32(bands)), 0.0)), bands - 1u);
+        let h = hash2(step, band + 1u);
+        if (h & 0xffu) < 96u {
+            let slide = (f32((h >> 8u) & 0xffffu) / 65535.0 * 2.0 - 1.0) * L.warp1.x;
+            let moved = u + slide;
+            u = moved - floor(moved);
+        }
+    }
+    if L.warp0.w > 0.0 {
+        let side = L.warp0.w * min(size.x, size.y);
+        let bx = side / size.x;
+        let by = side / size.y;
+        u = (floor(u / bx) + 0.5) * bx;
+        v = (floor(v / by) + 0.5) * by;
+    }
+    let green = held(vec2(u, v));
+    let split = L.warp1.zw;
+    if split.x == 0.0 && split.y == 0.0 {
+        return green;
+    }
+    let red = held(vec2(u, v) + split);
+    let blue = held(vec2(u, v) - split);
+    return vec4(red.r, green.g, blue.b, max(max(red.a, green.a), blue.a));
+}
+
+// `cpu::chroma_key`, step for step
+fn chroma_key(p: vec4<f32>, how: vec4<f32>, key: vec4<f32>) -> vec4<f32> {
+    let a = p.a;
+    if a <= 0.0 {
+        return p;
+    }
+    let tolerance = clamp(how.y, 0.0, 1.0);
+    let softness = clamp(how.z, 0.0, 1.0);
+    let spill = clamp(how.w, 0.0, 1.0);
+    let c = p.rgb / a;
+    let st = clamp(c, vec3(0.0), vec3(1.0));
+    let e = vec3(to_srgb(st.r), to_srgb(st.g), to_srgb(st.b));
+    let cb = vec3(-0.168736, -0.331264, 0.5);
+    let cr = vec3(0.5, -0.418688, -0.081312);
+    let q = vec2(dot(cb, e), dot(cr, e));
+    let k = vec2(dot(cb, key.xyz), dot(cr, key.xyz));
+    let d = length(q - k);
+    var keep: f32;
+    if softness > 0.0 {
+        let t = clamp((d - tolerance) / softness, 0.0, 1.0);
+        keep = t * t * (3.0 - 2.0 * t);
+    } else if d > tolerance {
+        keep = 1.0;
+    } else {
+        keep = 0.0;
+    }
+    let near = 1.0 - clamp((d - tolerance) / (softness + 0.3), 0.0, 1.0);
+    let len = length(k);
+    var towards = 0.0;
+    if len > 1e-4 {
+        towards = dot(q, k) / len;
+    }
+    var o = c;
+    if spill * near > 0.0 && towards > 0.0 {
+        let off = k * (-towards * spill * near / len);
+        let m = clamp(
+            e + vec3(1.402 * off.y, -0.344136 * off.x - 0.714136 * off.y, 1.772 * off.x),
+            vec3(0.0),
+            vec3(1.0),
+        );
+        o = vec3(to_linear(m.r), to_linear(m.g), to_linear(m.b));
+    }
+    return vec4(o * a * keep, a * keep);
 }
 
 fn luma3(c: vec3<f32>) -> f32 {
@@ -156,6 +271,9 @@ fn effects(p0: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {
         } else if fx.x == 6.0 {
             p = apply_lut(p, fx, L.fx[i + 1u], L.fx[i + 2u]);
             i += 2u;
+        } else if fx.x == 7.0 {
+            p = chroma_key(p, fx, L.fx[i + 1u]);
+            i += 1u;
         }
         i += 1u;
     }
@@ -269,17 +387,10 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     var s: vec4<f32>;
     if L.mode == 1u {
         s = L.color;
+    } else if L.warp0.x != 0.0 || L.warp0.w > 0.0 || L.warp1.x != 0.0 || L.warp1.z != 0.0 || L.warp1.w != 0.0 {
+        s = warped(vec2(sx / L.inv1.z, sy / L.inv1.w));
     } else {
-        // mirrored, then moved past the crop
-        var px = sx;
-        var py = sy;
-        if L.geo.z > 0.5 {
-            px = L.inv1.z - sx;
-        }
-        if L.geo.w > 0.5 {
-            py = L.inv1.w - sy;
-        }
-        s = bilinear(px + L.geo.x, py + L.geo.y);
+        s = read(sx, sy);
     }
     let uv = vec2(sx / L.inv1.z, sy / L.inv1.w);
     s = effects(s, uv) * (L.opacity * coverage(uv));

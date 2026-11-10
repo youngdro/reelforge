@@ -458,3 +458,81 @@ fn pictures_larger_than_the_device_takes_are_fitted_and_frames_refused() {
     let huge = base(side + 1, 16);
     assert!(g.render(&huge, Tick::ZERO, 1.0, &NoMedia, Quality::Draft).is_err());
 }
+
+fn fx_of(id: &str, pairs: &[(&str, f32)]) -> Effect {
+    Effect {
+        id: id.into(),
+        params: pairs.iter().map(|(k, v)| (k.to_string(), Animated::Constant(*v))).collect(),
+        asset: None,
+    }
+}
+
+#[test]
+fn a_keyed_colour_goes_the_same_way_on_both() {
+    // green of several shades around a red box with soft edges, like a subject on a green screen
+    let (w, h) = (48u32, 40u32);
+    let mut bytes = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            let inside = (12..36).contains(&x) && (8..32).contains(&y);
+            let edge = x == 12 || x == 35 || y == 8 || y == 31;
+            let shade = 150 + ((x * 3 + y * 5) % 80) as u8;
+            bytes.extend(match (inside, edge) {
+                (true, false) => [200, 60 + (x * 2) as u8, 50, 255],
+                (true, true) => [120, 150, 50, 255],
+                _ => [20 + (y % 30) as u8, shade, 30, 255],
+            });
+        }
+    }
+    let pic = Arc::new(Image::from_srgba8(w, h, &bytes));
+    for (softness, spill) in [(0.1, 0.5), (0.0, 0.0), (0.4, 1.0)] {
+        let mut s = base(64, 48);
+        let i = with_picture(&mut s, Fit::Contain);
+        s.layers[i].fx = vec![
+            fx_of(
+                effects::CHROMA_KEY,
+                &[("r", 0.1), ("g", 0.75), ("b", 0.12), ("tolerance", 0.25), ("softness", softness), ("spill", spill)],
+            ),
+            fx_of(effects::GRADE, &[("exposure", 0.3)]),
+        ];
+        same(&s, Tick::ZERO, 1.0, &Pictures(pic.clone()), Quality::Final);
+    }
+}
+
+#[test]
+fn distortions_read_the_same_places_on_both() {
+    let pic = picture(60, 44);
+    let cases: Vec<Vec<Effect>> = vec![
+        vec![fx_of(effects::SPLIT, &[("x", 0.031), ("y", -0.017)])],
+        vec![fx_of(effects::MOSAIC, &[("size", 0.137)])],
+        vec![fx_of(effects::WAVE, &[("amount", 0.043), ("waves", 3.3), ("phase", 0.21)])],
+        vec![fx_of(effects::GLITCH, &[("amount", 0.13), ("seed", 7.0)])],
+        vec![fx_of(effects::GLITCH, &[("amount", 0.2), ("seed", 41.6)])],
+        // all at once, with a colour effect after them
+        vec![
+            fx_of(effects::SPLIT, &[("x", 0.02)]),
+            fx_of(effects::GLITCH, &[("amount", 0.1), ("seed", 3.0)]),
+            fx_of(effects::WAVE, &[("amount", 0.02)]),
+            fx_of(effects::MOSAIC, &[("size", 0.071)]),
+            fx_of(effects::GRADE, &[("contrast", 0.3)]),
+        ],
+    ];
+    for fx in cases {
+        let mut s = base(96, 72);
+        let i = with_picture(&mut s, Fit::Contain);
+        s.layers[i].fx = fx;
+        s.layers[i].transform.scale = Animated::Constant(0.9);
+        same(&s, Tick::ZERO, 1.0, &Pictures(pic.clone()), Quality::Final);
+        // cropped, mirrored and turned: positions are of the visible part
+        s.layers[i].crop = Some(Crop { left: 0.1, top: 0.05, right: 0.2, bottom: 0.15 });
+        s.layers[i].flip_x = true;
+        s.layers[i].transform.rotation = Animated::Constant(11.0);
+        same(&s, Tick::ZERO, 1.0, &Pictures(pic.clone()), Quality::Final);
+    }
+    // text is split too
+    let mut s = base(160, 80);
+    let mut l = layer("t", LayerContent::Text(TextContent::new("Glitch".to_string(), 40.0, Color([1.0; 4]))));
+    l.fx = vec![fx_of(effects::SPLIT, &[("x", 0.03)]), fx_of(effects::GLITCH, &[("amount", 0.1), ("seed", 2.0)])];
+    s.layers.push(l);
+    same(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Final);
+}

@@ -251,6 +251,7 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                 if let (Some(amount), LayerContent::Media { asset, time, .. }) = (clip.look.backdrop, &content) {
                     let mut fx = color_fx(clip, &shape, step, &mut asset_for)?;
                     fx.extend(above_fx(clip, &shape, &covers, step));
+                    fx.extend(distort_fx(clip, &shape, step));
                     // it fills the frame where it is, and moves only with the frame
                     let still = Clip {
                         transform: ClipTransform::default(),
@@ -324,13 +325,16 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                         },
                     ),
                     fx: {
-                        let mut fx = color_fx(clip, &shape, step, &mut asset_for)?;
+                        // a keyed colour goes first, from the picture as it was shot
+                        let mut fx: Vec<Effect> = clip.look.chroma.iter().filter(|_| media).map(chroma_fx).collect();
+                        fx.extend(color_fx(clip, &shape, step, &mut asset_for)?);
                         fx.extend(clip.effects.iter().map(|e| Effect {
                             id: e.id.clone(),
                             params: e.params.iter().map(|(k, v)| (k.clone(), Animated::Constant(*v))).collect(),
                             asset: None,
                         }));
                         fx.extend(above_fx(clip, &shape, &covers, step));
+                        fx.extend(distort_fx(clip, &shape, step));
                         // out of focus: pictures only, and one blur a layer
                         if media
                             && !fx.iter().any(|e| e.id == effects::BLUR)
@@ -490,6 +494,44 @@ fn above_fx(clip: &Clip, shape: &Shape, covers: &[(Tick, Tick, &Clip)], step: Ti
         }
     }
     fx
+}
+
+/// A clip's keyed colour as `key.chroma@1`.
+fn chroma_fx(k: &reelforge_model::ChromaKey) -> Effect {
+    let values = [
+        ("r", k.color[0]),
+        ("g", k.color[1]),
+        ("b", k.color[2]),
+        ("tolerance", k.tolerance),
+        ("softness", k.softness),
+        ("spill", k.spill),
+    ];
+    Effect {
+        id: effects::CHROMA_KEY.into(),
+        params: values.into_iter().map(|(name, v)| (name.to_string(), Animated::Constant(v))).collect(),
+        asset: None,
+    }
+}
+
+/// How the clip's own effects and those of adjustment clips above distort a layer's picture:
+/// one `distort.*` effect for each kind that plays, sampled while it does.
+fn distort_fx(clip: &Clip, shape: &Shape, step: Tick) -> Vec<Effect> {
+    let kinds: [(&str, &[(&str, FxChannel)]); 4] = [
+        (effects::WAVE, &[("amount", FxChannel::Wave), ("phase", FxChannel::WavePhase)]),
+        (effects::GLITCH, &[("amount", FxChannel::Glitch), ("seed", FxChannel::GlitchSeed)]),
+        (effects::MOSAIC, &[("size", FxChannel::Mosaic)]),
+        (effects::SPLIT, &[("x", FxChannel::Split)]),
+    ];
+    kinds
+        .into_iter()
+        .filter_map(|(id, channels)| {
+            let params: BTreeMap<String, Animated<f32>> = channels
+                .iter()
+                .filter_map(|(name, ch)| Some((name.to_string(), motion::fx_channel(clip, shape, *ch, step)?)))
+                .collect();
+            (!params.is_empty()).then(|| Effect { id: id.into(), params, asset: None })
+        })
+        .collect()
 }
 
 /// A clip's timing as a layer or audio clip that starts `lead` before the clip.

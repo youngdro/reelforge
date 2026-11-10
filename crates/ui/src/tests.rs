@@ -462,3 +462,54 @@ fn a_font_dropped_in_is_set_on_the_selected_title() {
     assert!(app.status.starts_with("c.ttf: "), "{}", app.status);
     assert_eq!(app.project().media.len(), 2);
 }
+
+#[test]
+fn keying_finds_the_backdrop_or_says_it_guessed() {
+    use reelforge_model::{ChromaKey, MediaKind, TrackKind};
+    let mut app = EditorApp::new(Session::default());
+    app.lang = crate::i18n::Lang::Zh;
+    let png = |f: &dyn Fn(u32, u32) -> [u8; 3]| {
+        let mut out = Vec::new();
+        let img = image::RgbaImage::from_fn(96, 54, |x, y| {
+            let [r, g, b] = f(x, y);
+            image::Rgba([r, g, b, 255])
+        });
+        img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+        out
+    };
+    let track = first_track(&app, TrackKind::Video);
+    let place = |app: &mut EditorApp, name: &str, bytes: Vec<u8>, start: f64| {
+        app.import_bytes(name, bytes, false);
+        let p = app.project();
+        let m = p.media.values().find(|m| m.kind == MediaKind::Image && m.name.starts_with(name)).expect("imported");
+        let at = json!({"track": track, "media": m.id, "start": {"seconds": start}});
+        app.execute("clip.add", at).unwrap()["clip"].as_str().unwrap().to_string()
+    };
+    let key = |app: &EditorApp, clip: &str| app.project().clip(clip).unwrap().1.look.chroma;
+    // a blue screen behind a subject: its colour is found in the frame, in one step
+    let screen = png(&|x, y| if (30..60).contains(&x) && y > 20 { [200, 150, 120] } else { [20, 50, 200] });
+    let host = place(&mut app, "screen.png", screen, 0.0);
+    app.key_out(&host);
+    let found = key(&app, &host).expect("keyed");
+    assert!(found.color[2] > 0.7 && found.color[0] < 0.2, "{found:?}");
+    assert_eq!(app.status, "已按这一帧的背景色抠图");
+    app.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(key(&app, &host), None);
+
+    // no single colour around the frame: green to start from, and it says so
+    let busy = png(&|x, y| {
+        let t = (x as f32 / 96.0 + y as f32 / 54.0) * 9.0;
+        let ch = |o: f32| (127.0 + 120.0 * (t + o).sin()) as u8;
+        [ch(0.0), ch(2.1), ch(4.2)]
+    });
+    let other = place(&mut app, "busy.png", busy, 20.0);
+    app.key_out(&other);
+    assert_eq!(key(&app, &other).unwrap().color, ChromaKey::GREEN);
+    assert!(app.status.starts_with("没找到单一的背景色"), "{}", app.status);
+    // asked again with a colour chosen by hand: it is kept
+    app.execute("clip.setChromaKey", json!({"clip": other, "color": [1, 0, 1], "tolerance": 0.3})).unwrap();
+    app.key_out(&other);
+    let kept = key(&app, &other).unwrap();
+    assert_eq!((kept.color, kept.tolerance), ([1.0, 0.0, 1.0], 0.3));
+    assert!(app.status.starts_with("这一帧四周没有单一的背景色"), "{}", app.status);
+}

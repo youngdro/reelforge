@@ -28,8 +28,8 @@ service ships them without the editor.
 | --- | --- | --- |
 | L0 | `reelforge-time` | `Tick`, `FrameRate`, `TimeRange` |
 | L1 | `reelforge-renderspec` | RenderSpec types, validation, JSON Schema (`schema/renderspec-1.schema.json`) |
-| L1 | `reelforge-model` | The project document: canvas, media, tracks (magnetic or not) of the timeline being edited and the other timelines parked beside it (`timeline`), clips and their colour (filters, LUTs, adjustments; `color`), their crop, mirror, blend mode and shape mask (`look`), keyframes (on placement, opacity and volume, and on the crop's edges, the mask and the colour adjustments) and in/out animations (`anim`), transitions (`transition`), picture effects on a clip and adjustment clips that lay their effects and colour on the tracks below (`fx`), speed curves, reverse and freeze frames (`timing`); invariants |
-| L2 | `reelforge-compile` | Project → RenderSpec: all editing meaning resolved here (keyframes, animations and transitions become RenderSpec keys and overlapping layers, `motion`; picture effects are sampled into those keys and into keyed `color.grade@1` and `blur.gaussian@1` parameters, so the renderer needs nothing new for them, and an adjustment clip becomes no layer of its own) |
+| L1 | `reelforge-model` | The project document: canvas, media, tracks (magnetic or not) of the timeline being edited and the other timelines parked beside it (`timeline`), clips and their colour (filters, LUTs, adjustments; `color`), their crop, mirror, blend mode, shape mask and chroma key (a green screen keyed out; `look`), keyframes (on placement, opacity and volume, and on the crop's edges, the mask and the colour adjustments) and in/out animations (`anim`), transitions (`transition`), picture effects on a clip and adjustment clips that lay their effects and colour on the tracks below (`fx`), speed curves, reverse and freeze frames (`timing`); invariants |
+| L2 | `reelforge-compile` | Project → RenderSpec: all editing meaning resolved here (keyframes, animations and transitions become RenderSpec keys and overlapping layers, `motion`; picture effects are sampled into those keys and into keyed `color.grade@1` and `blur.gaussian@1` parameters, so the renderer needs nothing new for them, except the distortions, which become keyed `distort.*@1` effects; a chroma key becomes `key.chroma@1`, first among a layer's effects; and an adjustment clip becomes no layer of its own) |
 | L2 | `reelforge-render` | Pure frame plan, CPU reference compositor, wgpu compositor (feature `gpu`; it converts video pictures from Y'CbCr in a shader, `yuv`); drafts ask for pictures only as big as they are drawn (`picture_shrunk`); `MediaSource` trait |
 | L3 | `reelforge-media` | Probing, video/audio decoding (`Footage`), MP4 export (`ExportWriter` over any `VideoEncoder`, AAC sound), the synthesised sound library (`library:` URIs) and the drawn sticker library (`library:sticker/` URIs, `stickers`); FilmCraft's pure-Rust codecs |
 | L4 | `reelforge-hwenc` | The operating system's video encoders behind `reelforge_media::VideoEncoder` (VideoToolbox on macOS, Media Foundation transforms on Windows: H.264 and HEVC, in hardware where the machine has it); the apps register them in front of the software encoder (`register_video_encoder`), which stays the fallback. The one crate that may use `unsafe` |
@@ -84,10 +84,14 @@ In rough priority order for short videos:
    `font` (`media.import`; like a LUT it is used by clips, not placed), a title names one with
    `font`, and it reaches the renderer as a `font` asset. `text/4` adds letter spacing, line
    spacing (both in ems), italic (slanted when the family has no italic face) and underline.
-3. GPU, next steps: blurs and other effects that read neighbouring pixels on the GPU (the colour
-   ones, `color.grade@1` and `color.lut@1` included, are per-pixel WGSL already, as are crops,
-   mirrors, shape masks and the `blend/2` modes, which read the layers below from a copy; a blurred
-   layer's picture is still made on the CPU). The wgpu compositor itself is in place: the same
+3. GPU, next steps: blurs on the GPU (the colour effects, `color.grade@1`, `color.lut@1` and
+   `key.chroma@1` included, are per-pixel WGSL already, as are crops, mirrors, shape masks and the
+   `blend/2` modes, which read the layers below from a copy; the distortions, `distort.wave@1`,
+   `distort.glitch@1`, `distort.mosaic@1` and `distort.split@1`, move where a layer's picture is
+   read, by the same arithmetic in `render::distort` and in WGSL, the glitch's bands from an
+   integer hash so every backend cuts them alike; a blurred layer's picture is still made on the
+   CPU). A distortion on an adjustment clip bends each layer below in that layer's own picture,
+   not the frame they make together. The wgpu compositor itself is in place: the same
    frame plan, tested against the CPU reference to one 8-bit code (on Vulkan, and on GL with
    WebGL2's limits), drawing the editor's preview on eframe's own device (WebGL2 included, where
    the browser can draw into float pictures) and exports on a headless one, with decoded video
@@ -103,7 +107,8 @@ In rough priority order for short videos:
    edit (`reelforge_engine::listen`, over `reelforge_media::analysis`: BS.1770 loudness, beats, where a voice is heard, a noise
    floor) read a project and its media and answer with ordinary commands to run as one `edit.batch`; the server exposes them as
    the operations `audio.normalize`, `audio.beats`, `audio.duck` and `audio.denoise`, and the editor calls them with the media it
-   holds. The export's mix (`reelforge_media::export::mix`) plays in the
+   holds. One looks instead of listening: `clip.pickChromaKey` reads the frame a clip shows (`reelforge_media::picture`) and keys
+   out the colour most of its border has. The export's mix (`reelforge_media::export::mix`) plays in the
    preview (`reelforge-ui`'s `audio`, through cpal: ALSA, CoreAudio, WASAPI, WebAudio), mixed a
    quarter second ahead on the editor's thread; while it plays the device's sample count is the
    playhead, so picture follows sound, and an edit or a seek mixes again from the playhead.

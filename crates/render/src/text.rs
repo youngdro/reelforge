@@ -131,13 +131,20 @@ pub struct Sprite {
 pub(crate) fn draw_sprite(out: &mut Image, layer: &PlannedLayer, sp: &Sprite, lut: Option<&crate::Lut>) {
     let w = sp.image.width as i32;
     let h = sp.image.height as f32;
+    let warp = crate::distort::Warp::of(&layer.fx);
     for (i, px) in sp.image.pixels.iter().enumerate() {
         let (x, y) = (sp.x + i as i32 % w, sp.y + i as i32 / w);
-        if px[3] <= 0.0 || x < 0 || y < 0 || x >= out.width as i32 || y >= out.height as i32 {
+        if x < 0 || y < 0 || x >= out.width as i32 || y >= out.height as i32 {
             continue;
         }
-        let mut px = *px;
         let uv = [((i as i32 % w) as f32 + 0.5) / w as f32, ((i as i32 / w) as f32 + 0.5) / h];
+        let mut px = match &warp {
+            Some(warp) => warp.sample(uv, [w as f32, h], |x, y| sp.image.sample(x, y)),
+            None => *px,
+        };
+        if px[3] <= 0.0 {
+            continue;
+        }
         apply_fx(&mut px, &layer.fx, uv, lut);
         let k = layer.opacity * layer.shape.map_or(1.0, |m| m.coverage(uv, w as f32, h));
         for c in &mut px {

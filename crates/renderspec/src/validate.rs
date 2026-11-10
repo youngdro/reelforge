@@ -221,6 +221,11 @@ pub fn validate(spec: &RenderSpec) -> Result<(), ValidationError> {
         if layer.fx.iter().filter(|f| f.id == crate::effects::LUT).count() > 1 {
             return Err(bad(format!("{path}.fx"), "one lookup table per layer"));
         }
+        for id in crate::effects::DISTORT {
+            if layer.fx.iter().filter(|f| f.id == id).count() > 1 {
+                return Err(bad(format!("{path}.fx"), "one of each distortion per layer"));
+            }
+        }
     }
 
     let mut audio_ids = BTreeSet::new();

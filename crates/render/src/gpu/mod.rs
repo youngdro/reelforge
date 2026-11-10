@@ -33,7 +33,7 @@ const DISPLAY: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// Effects one layer can carry on the GPU (the uniform's array length).
 const MAX_FX: usize = 16;
 /// The `Layer` uniform's length in 32-bit words.
-const UNIFORM: usize = 40 + MAX_FX * 4;
+const UNIFORM: usize = 48 + MAX_FX * 4;
 
 /// Why the GPU could not be used.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -1017,6 +1017,10 @@ fn layer_uniform(
                 let g = effects::GRADE_PARAMS.map(|n| get(n, 0.0));
                 vec![[3.0, g[0], g[1], g[2]], [g[3], g[4], g[5], g[6]], [g[7], g[8], 0.0, 0.0]]
             }
+            effects::CHROMA_KEY => vec![
+                [7.0, get("tolerance", 0.3), get("softness", 0.1), get("spill", 0.5)],
+                [get("r", 0.0), get("g", 1.0), get("b", 0.0), 0.0],
+            ],
             effects::LUT => match lut {
                 Some(l) => vec![
                     [6.0, get("amount", 1.0), l.size as f32, 0.0],
@@ -1080,7 +1084,13 @@ fn layer_uniform(
         ]
         .map(f),
     );
-    for (slot, v) in u[40..].iter_mut().zip(fx.as_flattened()) {
+    // a flat colour is the same wherever it is read
+    if let Some(w) = crate::distort::Warp::of(&layer.fx).filter(|_| mode != 1) {
+        u[40..48].copy_from_slice(
+            &[w.wave[0], w.wave[1], w.wave[2], w.mosaic, w.glitch[0], w.glitch[1], w.split[0], w.split[1]].map(f),
+        );
+    }
+    for (slot, v) in u[48..].iter_mut().zip(fx.as_flattened()) {
         *slot = f(*v);
     }
     Some(u)

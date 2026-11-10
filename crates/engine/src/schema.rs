@@ -617,6 +617,22 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["clip", "blur"],
         ),
+        "clip.setChromaKey" => {
+            let unit = |doc: &str| json!({"type": "number", "minimum": 0, "maximum": 1, "description": doc});
+            object(
+                vec![
+                    clip(),
+                    (
+                        "color",
+                        json!({"description": "The colour that goes, as on screen: [r, g, b], each 0 to 1. null removes the key.", "oneOf": [{"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1}, "minItems": 3, "maxItems": 3}, {"type": "null"}]}),
+                    ),
+                    ("tolerance", unit("How far from the colour still goes; 0.2 at first.")),
+                    ("softness", unit("How gradually what is further comes back; 0 is a hard edge.")),
+                    ("spill", unit("How much of the colour's tint comes off what stays near it.")),
+                ],
+                &["clip"],
+            )
+        }
         "clip.setBlend" => object(
             vec![
                 clip(),
