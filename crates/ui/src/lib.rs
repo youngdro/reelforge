@@ -3283,7 +3283,7 @@ impl EditorApp {
                             (s.shape_stroke, 0.0..=512.0),
                         ];
                         for ((name, range), v) in rows.into_iter().zip(v.iter_mut()) {
-                            ui.label(egui::RichText::new(name).color(theme::color::WEAK));
+                            theme::field_name(ui, name);
                             let r = ui.add_sized(
                                 [ui.available_width(), 24.0],
                                 egui::DragValue::new(v).speed(1.0).range(range).suffix(" px"),
