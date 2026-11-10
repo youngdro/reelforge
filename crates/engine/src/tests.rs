@@ -4194,3 +4194,177 @@ fn a_clip_is_smeared_along_its_way_when_it_is_asked_to_be() {
     s.execute("edit.undo", &json!({})).unwrap();
     assert_eq!(s.project().clip(&blue).unwrap().1.transform.motion_blur, 0.0);
 }
+
+#[test]
+fn clips_move_on_the_beat_and_are_cut_on_it() {
+    let listed = Session::default().execute("beat.list", &json!({})).unwrap();
+    let ids: Vec<&str> = listed["moves"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["punch", "pulse", "shake", "flash", "strobe", "tilt", "bounce", "squash"]);
+
+    let mut s = Session::default();
+    let fps = s.project().canvas.fps;
+    let frame = fps.frame_duration();
+    let video = add_video(&mut s, 10.0);
+    let at = |secs: f64| fps.snap(Tick::from_seconds(secs));
+    let keys =
+        |s: &Session, id: &str, p: Prop| s.project().clip(id).unwrap().1.keys.get(&p).cloned().unwrap_or_default();
+    let value = |s: &Session, id: &str, p: Prop, t: Tick| s.project().clip(id).unwrap().1.value_at(p, t);
+
+    // with no beat said and none marked, it says what to do
+    let ask = json!({"clips": [video], "move": "punch"});
+    assert!(matches!(s.execute("beat.apply", &ask), Err(EngineError::Refused(m)) if m.contains("audio.beats")));
+
+    // a tempo: 120 a minute is a beat every half second, the first at 1 s
+    let out = s
+        .execute("beat.apply", &json!({"clips": [video], "move": "punch", "bpm": 120, "first": {"seconds": 1}}))
+        .unwrap();
+    assert_eq!(out["beats"], 18, "{out}");
+    assert_eq!(out["props"], json!(["scale"]));
+    // at rest before the first beat, at its largest on the beat, at rest again before the next
+    assert_eq!(value(&s, &video, Prop::Scale, at(0.9)), 1.0);
+    assert!((value(&s, &video, Prop::Scale, at(1.0)) - 1.14).abs() < 1e-4);
+    let after = value(&s, &video, Prop::Scale, at(1.0) + frame * 3);
+    assert!(after > 1.0 && after < 1.14, "{after}");
+    assert_eq!(value(&s, &video, Prop::Scale, at(1.4)), 1.0);
+    assert!((value(&s, &video, Prop::Scale, at(1.5)) - 1.14).abs() < 1e-4);
+    // every key is at the start of a frame
+    assert!(keys(&s, &video, Prop::Scale).iter().all(|k| fps.snap(k.t) == k.t));
+
+    // the same kind again replaces it: twice as strong, every second beat
+    let stronger =
+        json!({"clips": [video], "move": "punch", "bpm": 120, "first": {"seconds": 1}, "every": 2, "strength": 1});
+    assert_eq!(s.execute("beat.apply", &stronger).unwrap()["beats"], 9);
+    assert!((value(&s, &video, Prop::Scale, at(1.0)) - 1.28).abs() < 1e-4);
+    assert_eq!(value(&s, &video, Prop::Scale, at(1.5)), 1.0);
+    // another kind adds to it, and measures from the clip's own place
+    s.execute("clip.set", &json!({"clip": video, "rotation": 10})).unwrap();
+    s.execute("beat.apply", &json!({"clips": [video], "move": "tilt", "at": [{"seconds": 2}, {"seconds": 3}]}))
+        .unwrap();
+    assert_eq!(value(&s, &video, Prop::Rotation, at(2.0)), 13.5);
+    assert_eq!(value(&s, &video, Prop::Rotation, at(3.0)), 6.5);
+    assert_eq!(value(&s, &video, Prop::Rotation, at(2.9)), 10.0);
+    assert!(!keys(&s, &video, Prop::Scale).is_empty());
+
+    // the timeline's beat markers are the beat when nothing else is said; other markers are not
+    for (secs, note) in [(0.5, "♪"), (1.25, "♪"), (2.0, "♪"), (2.6, "here")] {
+        s.execute("marker.add", &json!({"at": {"seconds": secs}, "note": note})).unwrap();
+    }
+    for mv in ids.iter().filter(|m| **m != "punch" && **m != "tilt") {
+        let out = s.execute("beat.apply", &json!({"clips": [video], "move": mv})).unwrap();
+        assert_eq!(out["beats"], 3, "{mv}: {out}");
+    }
+    assert!(value(&s, &video, Prop::Exposure, at(1.25)) > 0.8 && value(&s, &video, Prop::Exposure, at(2.6)) == 0.0);
+    assert!(value(&s, &video, Prop::Opacity, at(2.0)) < 0.6 && value(&s, &video, Prop::Opacity, at(1.9)) == 1.0);
+    assert!(value(&s, &video, Prop::ScaleX, at(0.5)) > 1.05 && value(&s, &video, Prop::ScaleY, at(0.5)) < 0.95);
+    // a hop goes up and comes down; a shake ends where it began
+    assert!(value(&s, &video, Prop::Y, at(0.5) + frame * 3) < 0.0 && value(&s, &video, Prop::Y, at(1.2)) == 0.0);
+    // what comes out is a project that compiles
+    s.execute("render.compile", &json!({})).unwrap();
+    // one undo takes a move off again
+    let had = keys(&s, &video, Prop::ScaleX).len();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(had > 0 && keys(&s, &video, Prop::ScaleX).is_empty());
+
+    // what cannot be: an unknown move, both a tempo and times, no beat within the clips, a
+    // title asked to flash, a sound clip, a clip on a path asked to shake
+    let text = s.project().tracks.iter().find(|t| t.kind == TrackKind::Text).unwrap().id.clone();
+    let title = s.execute("clip.add", &json!({"track": text, "text": "SALE", "duration": {"seconds": 2}})).unwrap();
+    let title = title["clip"].as_str().unwrap().to_string();
+    for bad in [
+        json!({"clips": [video], "move": "wobble"}),
+        json!({"clips": [video], "move": "punch", "bpm": 120, "at": [0]}),
+        json!({"clips": [video], "move": "punch", "at": [{"seconds": 60}]}),
+        json!({"clips": [video], "move": "punch", "first": 0}),
+        json!({"clips": [video], "move": "punch", "every": 0}),
+        json!({"clips": [video], "move": "punch", "strength": 2}),
+        json!({"clips": [title], "move": "flash"}),
+        json!({"clips": [video, video], "move": "punch"}),
+        json!({"clips": ["c999"], "move": "punch"}),
+    ] {
+        assert!(s.execute("beat.apply", &bad).is_err(), "{bad}");
+    }
+    s.execute("beat.apply", &json!({"clips": [title], "move": "shake"})).unwrap();
+    let path = json!({"clip": title, "points": [[-0.2, 0], [0.2, 0]]});
+    s.execute("clip.setPath", &path).unwrap();
+    assert!(
+        matches!(s.execute("beat.apply", &json!({"clips": [title], "move": "bounce"})), Err(EngineError::Refused(m)) if m.contains("path"))
+    );
+    assert!(s.execute("beat.apply", &json!({"clips": [title], "move": "punch"})).is_ok());
+}
+
+#[test]
+fn a_montage_is_cut_so_that_every_clip_ends_on_a_beat() {
+    let mut s = Session::default();
+    let fps = s.project().canvas.fps;
+    let track = video_track(&s);
+    let span = |s: &Session, id: &str| {
+        let c = s.project().clip(id).unwrap().1.clone();
+        (c.start.seconds(), c.duration.seconds())
+    };
+    let near = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 0.02 && (a.1 - b.1).abs() < 0.02;
+    // three stills end to end, 1.3 s each, and a video of 0.9 s
+    let mut stills = vec![];
+    for i in 0..3 {
+        let params = json!({"track": track, "color": [1, 0, 0], "start": {"seconds": 1.3 * i as f64}, "duration": {"seconds": 1.3}});
+        stills.push(s.execute("clip.add", &params).unwrap()["clip"].as_str().unwrap().to_string());
+    }
+    let m = s
+        .execute("media.import", &json!({"path": "/nowhere/short.mp4", "kind": "video", "duration": {"seconds": 0.9}, "sha256": "ab".repeat(32)}))
+        .unwrap()["media"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let short = s.execute("clip.add", &json!({"track": track, "media": m, "start": {"seconds": 3.9}})).unwrap();
+    let short = short["clip"].as_str().unwrap().to_string();
+
+    // 120 a minute, two beats a clip: every still is a second long, one after another
+    let out = s.execute("beat.cut", &json!({"clips": stills, "bpm": 120, "every": 2})).unwrap();
+    assert_eq!(out["onBeat"], 3, "{out}");
+    for (i, id) in stills.iter().enumerate() {
+        assert!(near(span(&s, id), (i as f64, 1.0)), "{:?}", span(&s, id));
+    }
+    assert_eq!(out["cuts"][1]["start"], json!(fps.snap(Tick::from_seconds(1.0))));
+    // one undo puts them back
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(near(span(&s, &stills[2]), (2.6, 1.3)));
+
+    // a video too short for two beats ends on the one it reaches, and the next cut is on the
+    // beat again; a still is made longer to reach its beat
+    let order = [stills[0].clone(), short.clone(), stills[1].clone(), stills[2].clone()];
+    // at 150 a minute a beat is 0.4 s: the short video takes two of them when asked for three
+    let out = s.execute("beat.cut", &json!({"clips": order, "bpm": 150, "every": 3})).unwrap();
+    assert!(near(span(&s, &stills[0]), (0.0, 1.2)), "{out}");
+    assert!(near(span(&s, &short), (1.2, 0.8)), "{:?}", span(&s, &short));
+    assert!(near(span(&s, &stills[1]), (2.0, 0.4)) && near(span(&s, &stills[2]), (2.4, 1.2)), "{out}");
+    assert_eq!(out["onBeat"], 4);
+    s.execute("edit.undo", &json!({})).unwrap();
+    // and is refused when it reaches no beat at all, with nothing changed
+    let slow = s.execute("beat.cut", &json!({"clips": order, "bpm": 60, "every": 2}));
+    assert!(matches!(slow, Err(EngineError::Refused(m)) if m.contains("0.90 s") && m.contains("1.00 s")));
+    assert!(near(span(&s, &stills[0]), (0.0, 1.3)));
+
+    // times given: clips left over when the beats run out follow at their own length; each
+    // arrives with a flash, once, at its cut
+    let ask = json!({"clips": stills, "at": [{"seconds": 0.5}, {"seconds": 1.5}], "move": "punch", "from": 0});
+    let out = s.execute("beat.cut", &ask).unwrap();
+    assert_eq!(out["onBeat"], 2);
+    assert!(near(span(&s, &stills[0]), (0.0, 0.5)) && near(span(&s, &stills[1]), (0.5, 1.0)));
+    assert!(near(span(&s, &stills[2]), (1.5, 1.3)), "{:?}", span(&s, &stills[2]));
+    for id in &stills {
+        let c = s.project().clip(id).unwrap().1.clone();
+        assert!(c.value_at(Prop::Scale, Tick::ZERO) > 1.1 && c.value_at(Prop::Scale, c.duration) == 1.0);
+    }
+    s.execute("render.compile", &json!({})).unwrap();
+
+    // refused: clips of two tracks, a clip in the way, no beat after the start
+    let other = s.execute("track.add", &json!({"kind": "video"})).unwrap()["track"].as_str().unwrap().to_string();
+    let above =
+        s.execute("clip.add", &json!({"track": other, "color": [0, 0, 1], "duration": {"seconds": 1}})).unwrap();
+    let above = above["clip"].as_str().unwrap().to_string();
+    let two = s.execute("beat.cut", &json!({"clips": [stills[0], above], "bpm": 120}));
+    assert!(matches!(two, Err(EngineError::Refused(m)) if m.contains("one track")));
+    let crowded = s.execute("beat.cut", &json!({"clips": [stills[0], stills[1]], "bpm": 20}));
+    assert!(matches!(crowded, Err(EngineError::Refused(m)) if m.contains("in the way")), "{:?}", span(&s, &stills[2]));
+    let late = s.execute("beat.cut", &json!({"clips": [above], "at": [0]}));
+    assert!(matches!(late, Err(EngineError::Refused(m)) if m.contains("no beat")));
+}
