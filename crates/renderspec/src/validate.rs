@@ -80,9 +80,48 @@ pub fn validate(spec: &RenderSpec) -> Result<(), ValidationError> {
         }
     }
 
+    layers_ok(spec, "", &spec.layers)?;
+    audio_ok(spec, "", &spec.audio)?;
+    for (id, comp) in &spec.comps {
+        let at = format!("comps.{id}.");
+        layers_ok(spec, &at, &comp.layers)?;
+        audio_ok(spec, &at, &comp.audio)?;
+        if comp_reaches(spec, id, id) {
+            return Err(bad(format!("comps.{id}"), "a composition cannot show or play itself"));
+        }
+    }
+    Ok(())
+}
+
+/// The compositions `comp` shows and plays.
+fn comps_in(comp: &crate::Comp) -> impl Iterator<Item = &str> {
+    let shown = comp.layers.iter().filter_map(|l| match &l.content {
+        LayerContent::Comp { comp, .. } => Some(comp.as_str()),
+        _ => None,
+    });
+    shown.chain(comp.audio.iter().filter_map(|a| a.comp.as_deref()))
+}
+
+/// Whether composition `from` shows or plays composition `to`, directly or through others.
+fn comp_reaches(spec: &RenderSpec, from: &str, to: &str) -> bool {
+    let mut seen = BTreeSet::new();
+    let mut todo: Vec<&str> = spec.comps.get(from).into_iter().flat_map(comps_in).collect();
+    while let Some(id) = todo.pop() {
+        if id == to {
+            return true;
+        }
+        if seen.insert(id) {
+            todo.extend(spec.comps.get(id).into_iter().flat_map(comps_in));
+        }
+    }
+    false
+}
+
+/// Checks the layers of the spec (`at` empty) or of one composition (`at` its path and a dot).
+fn layers_ok(spec: &RenderSpec, at: &str, layers: &[crate::Layer]) -> Result<(), ValidationError> {
     let mut ids = BTreeSet::new();
-    for (i, layer) in spec.layers.iter().enumerate() {
-        let path = format!("layers[{i}]");
+    for (i, layer) in layers.iter().enumerate() {
+        let path = format!("{at}layers[{i}]");
         if !ids.insert(layer.id.as_str()) {
             return Err(bad(format!("{path}.id"), format!("duplicate layer id {:?}", layer.id)));
         }
@@ -95,6 +134,11 @@ pub fn validate(spec: &RenderSpec) -> Result<(), ValidationError> {
                 time_ok(&format!("{path}.content.time"), time, layer.dur)?;
             }
             LayerContent::Solid { color } => color_ok(&format!("{path}.content.color"), color.0)?,
+            LayerContent::Comp { comp, .. } => {
+                if !spec.comps.contains_key(comp) {
+                    return Err(bad(format!("{path}.content.comp"), format!("unknown composition {comp:?}")));
+                }
+            }
             LayerContent::Text(text) => {
                 if !(text.size > 0.0 && text.size.is_finite()) {
                     return Err(bad(format!("{path}.content.size"), "must be positive"));
@@ -149,10 +193,11 @@ pub fn validate(spec: &RenderSpec) -> Result<(), ValidationError> {
                 }
             }
         }
+        let pictured = matches!(layer.content, LayerContent::Media { .. } | LayerContent::Comp { .. });
         if let Some(c) = &layer.crop {
             let v = [c.left, c.top, c.right, c.bottom];
-            if !matches!(layer.content, LayerContent::Media { .. }) {
-                return Err(bad(format!("{path}.crop"), "only media layers are cropped"));
+            if !pictured {
+                return Err(bad(format!("{path}.crop"), "only media and composition layers are cropped"));
             }
             if v.iter().any(|x| !(0.0..1.0).contains(x)) || c.left + c.right > 0.99 || c.top + c.bottom > 0.99 {
                 return Err(bad(
@@ -161,8 +206,8 @@ pub fn validate(spec: &RenderSpec) -> Result<(), ValidationError> {
                 ));
             }
         }
-        if (layer.flip_x || layer.flip_y) && !matches!(layer.content, LayerContent::Media { .. }) {
-            return Err(bad(format!("{path}.flip_x"), "only media layers are mirrored"));
+        if (layer.flip_x || layer.flip_y) && !pictured {
+            return Err(bad(format!("{path}.flip_x"), "only media and composition layers are mirrored"));
         }
         if let Some(m) = &layer.shape_mask {
             let v = [m.center[0], m.center[1], m.size[0], m.size[1], m.rotation, m.feather];
@@ -171,10 +216,10 @@ pub fn validate(spec: &RenderSpec) -> Result<(), ValidationError> {
             }
         }
         if let Some(c) = &layer.crop_keys {
-            if !matches!(layer.content, LayerContent::Media { .. }) || layer.crop.is_some() {
+            if !pictured || layer.crop.is_some() {
                 return Err(bad(
                     format!("{path}.crop_keys"),
-                    "only media layers are cropped, and by `crop` or `crop_keys`",
+                    "only media and composition layers are cropped, and by `crop` or `crop_keys`",
                 ));
             }
             for (name, edge) in [("left", &c.left), ("top", &c.top), ("right", &c.right), ("bottom", &c.bottom)] {
@@ -227,17 +272,34 @@ pub fn validate(spec: &RenderSpec) -> Result<(), ValidationError> {
             }
         }
     }
+    Ok(())
+}
 
+/// Checks the audio clips of the spec or of one composition, as [`layers_ok`] does layers.
+fn audio_ok(spec: &RenderSpec, at: &str, clips: &[crate::AudioClip]) -> Result<(), ValidationError> {
     let mut audio_ids = BTreeSet::new();
-    for (i, clip) in spec.audio.iter().enumerate() {
-        let path = format!("audio[{i}]");
+    for (i, clip) in clips.iter().enumerate() {
+        let path = format!("{at}audio[{i}]");
         if !audio_ids.insert(clip.id.as_str()) {
             return Err(bad(format!("{path}.id"), format!("duplicate audio id {:?}", clip.id)));
         }
         if clip.dur <= Tick::ZERO {
             return Err(bad(format!("{path}.dur"), "must be positive"));
         }
-        asset_of_kind(spec, &format!("{path}.asset"), &clip.asset, &[AssetKind::Video, AssetKind::Audio])?;
+        match &clip.comp {
+            None => asset_of_kind(spec, &format!("{path}.asset"), &clip.asset, &[AssetKind::Video, AssetKind::Audio])?,
+            Some(comp) => {
+                if !spec.comps.contains_key(comp) {
+                    return Err(bad(format!("{path}.comp"), format!("unknown composition {comp:?}")));
+                }
+                if !clip.asset.is_empty() {
+                    return Err(bad(format!("{path}.asset"), "a clip plays an asset or a composition, not both"));
+                }
+                if clip.time.speed != 1.0 || !clip.time.ramp.is_empty() || clip.pitch != 0.0 {
+                    return Err(bad(format!("{path}.time"), "a composition plays at speed 1 and its own pitch"));
+                }
+            }
+        }
         time_ok(&format!("{path}.time"), &clip.time, clip.dur)?;
         keys_ok(&format!("{path}.gain_db"), &clip.gain_db, clip.dur)?;
         if !(clip.pitch.is_finite() && (-24.0..=24.0).contains(&clip.pitch)) {

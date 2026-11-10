@@ -124,11 +124,12 @@ fn read_ahead(
 #[cfg(not(target_arch = "wasm32"))]
 fn sources_at(spec: &RenderSpec, t: Tick, scale: f32) -> Vec<(String, Tick, u32)> {
     let plan = reelforge_render::plan_frame(spec, t, scale);
-    plan.layers
-        .iter()
-        .filter_map(|l| match &l.source {
+    // the ones a compound clip shows are drawn into a frame of their own
+    plan.media_layers()
+        .into_iter()
+        .filter_map(|(frame, l)| match &l.source {
             reelforge_render::PlannedSource::Media { asset, at } => {
-                let shrink = spec.assets.get(asset).map_or(1, |a| reelforge_render::cpu::draft_shrink(a, &plan, l));
+                let shrink = spec.assets.get(asset).map_or(1, |a| reelforge_render::cpu::draft_shrink(a, frame, l));
                 Some((asset.clone(), *at, shrink))
             }
             _ => None,

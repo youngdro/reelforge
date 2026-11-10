@@ -284,8 +284,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.add",
         label: "Add Clip",
-        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "name"?: string, "adjustment"?: bool, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "template"?: id}"#,
-        doc: "Places media, a library sticker, text, a colour or an adjustment clip on a track; starts at the track's end unless `start` is given. Titles default to bold white with a black outline, wrapping at 90 % of the canvas. A sticker (sticker.library) is an image a third of the frame wide; `name` is what the project's media calls it (its English name by default). An adjustment clip shows nothing: its effects (`fx`) and colour work on the tracks below it while it lasts.",
+        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "name"?: string, "adjustment"?: bool, "timeline"?: id, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "template"?: id}"#,
+        doc: "Places media, a library sticker, text, a colour or an adjustment clip on a track; starts at the track's end unless `start` is given. Titles default to bold white with a black outline, wrapping at 90 % of the canvas. A sticker (sticker.library) is an image a third of the frame wide; `name` is what the project's media calls it (its English name by default). An adjustment clip shows nothing: its effects (`fx`) and colour work on the tracks below it while it lasts. `timeline` places another timeline of the project as a compound clip on a video track, from `sourceIn`.",
         edits: true,
         enabled: always,
         run: clip_add,
@@ -433,6 +433,42 @@ static REGISTRY: &[CommandSpec] = &[
         edits: true,
         enabled: always,
         run: clip_duplicate,
+    },
+    CommandSpec {
+        id: "clip.group",
+        label: "Group",
+        params: r#"{"clips": [id]}"#,
+        doc: "Makes two or more clips a group (剪映's 编组): editors select and move them together. Each clip stays an ordinary clip on its track; a clip is in one group at a time.",
+        edits: true,
+        enabled: always,
+        run: crate::compound::clip_group,
+    },
+    CommandSpec {
+        id: "clip.ungroup",
+        label: "Ungroup",
+        params: r#"{"clips": id | [id]}"#,
+        doc: "Dissolves the groups these clips are in: every clip of those groups is on its own again.",
+        edits: true,
+        enabled: always,
+        run: crate::compound::clip_ungroup,
+    },
+    CommandSpec {
+        id: "clip.compound",
+        label: "Compound Clip",
+        params: r#"{"clips": id | [id], "name"?: string}"#,
+        doc: "Joins clips into one compound clip (剪映's 复合片段): they move to a timeline of their own (listed by timeline.list with `compound`), and one clip that plays it takes their place. Its picture is drawn first and then placed, faded, masked, given effects, animations and transitions as one; its sound plays with it. timeline.switch to that timeline edits what is inside; clip.uncompound puts the clips back.",
+        edits: true,
+        enabled: always,
+        run: crate::compound::clip_compound,
+    },
+    CommandSpec {
+        id: "clip.uncompound",
+        label: "Take Apart Compound Clip",
+        params: r#"{"clip": id}"#,
+        doc: "Puts the clips of a compound clip back on the timeline where it was (the part of them the clip played), on tracks with room or new ones, and removes the compound clip; what was set on the compound clip itself goes with it.",
+        edits: true,
+        enabled: always,
+        run: crate::compound::clip_uncompound,
     },
     CommandSpec {
         id: "clip.setSpeed",
@@ -826,6 +862,7 @@ fn sound_add(s: &mut Session, v: &Value) -> CmdResult {
             look: Default::default(),
             fx: vec![],
             voice: Default::default(),
+            group: None,
         };
         proj.track_mut(&track).expect("found above").clips.push(c);
         Ok(json!({ "media": media, "track": track, "clip": clip, "start": start, "duration": duration }))
@@ -1111,7 +1148,13 @@ fn timeline_json(p: &Project) -> Value {
     let list: Vec<Value> = p
         .timeline_list()
         .into_iter()
-        .map(|t| json!({ "id": t.id, "name": t.name, "duration": t.duration, "current": t.current }))
+        .map(|t| {
+            let mut v = json!({ "id": t.id, "name": t.name, "duration": t.duration, "current": t.current });
+            if t.compound {
+                v["compound"] = json!(true);
+            }
+            v
+        })
         .collect();
     json!({ "current": p.timeline, "timelines": list })
 }
@@ -1155,7 +1198,7 @@ fn timeline_add(s: &mut Session, v: &Value) -> CmdResult {
         } else {
             vec![]
         };
-        proj.timelines.insert(at, Timeline { id: id.clone(), name, tracks, markers });
+        proj.timelines.insert(at, Timeline { id: id.clone(), name, tracks, markers, compound: false });
         proj.switch_timeline(&id);
         Ok(json!({ "timeline": id }))
     })
@@ -1198,6 +1241,12 @@ fn timeline_remove(s: &mut Session, v: &Value) -> CmdResult {
         let id = which_timeline(proj, &p)?;
         if proj.timelines.len() < 2 {
             return Err(EngineError::Refused("a project keeps at least one timeline".into()));
+        }
+        if let Some(clip) = proj.compounds_of(&id).first() {
+            return Err(EngineError::Refused(format!(
+                "compound clip {:?} plays this timeline; take it apart (clip.uncompound) or remove it first",
+                clip.id
+            )));
         }
         let at = proj.timelines.iter().position(|t| t.id == id).expect("checked above");
         if id == proj.timeline {
@@ -1259,6 +1308,7 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
     let size = p.opt_f64("size")?.unwrap_or(96.0) as f32;
     let fx = fx_param(&p)?.unwrap_or_default();
     let adjustment = p.opt_bool("adjustment")?.unwrap_or(false);
+    let timeline = p.opt_str("timeline")?.map(str::to_string);
     let sticker = match p.opt_str("sticker")? {
         None => None,
         Some(id) => {
@@ -1282,8 +1332,13 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
             Some((uri, p.opt_str("name")?.unwrap_or(st.en).to_string(), sha))
         }
     };
-    if [media.is_some(), text.is_some(), sticker.is_some(), adjustment].iter().filter(|x| **x).count() > 1 {
-        return Err(EngineError::Params("give one of `media`, `sticker`, `text` or `adjustment`".into()));
+    if [media.is_some(), text.is_some(), sticker.is_some(), adjustment, timeline.is_some()]
+        .iter()
+        .filter(|x| **x)
+        .count()
+        > 1
+    {
+        return Err(EngineError::Params("give one of `media`, `sticker`, `text`, `adjustment` or `timeline`".into()));
     }
     s.edit("Add Clip", |proj| {
         let track = proj.track(&track_id).ok_or_else(|| not_found("track", &track_id))?;
@@ -1311,6 +1366,15 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
         };
         let (content, natural) = match (&media, &text) {
             _ if adjustment => (ClipContent::Adjustment, None),
+            _ if timeline.is_some() => {
+                let id = timeline.clone().expect("checked");
+                let inner = proj.tracks_of(&id).filter(|_| !id.is_empty()).ok_or_else(|| not_found("timeline", &id))?;
+                if id == proj.timeline || proj.timeline_reaches(&id, &proj.timeline) {
+                    return Err(EngineError::Refused("a timeline cannot play inside itself".into()));
+                }
+                let natural = Some(model_timeline::tracks_duration(inner) - source_in).filter(|d| *d > Tick::ZERO);
+                (ClipContent::Compound { timeline: id, source_in }, natural)
+            }
             (Some(m), None) => {
                 let item = proj.media.get(m).ok_or_else(|| not_found("media", m))?;
                 let natural = item.duration.map(|d| d - source_in).filter(|d| *d > Tick::ZERO);
@@ -1354,6 +1418,7 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
             look: Default::default(),
             fx,
             voice: Default::default(),
+            group: None,
         };
         proj.track_mut(&track_id).expect("found above").clips.push(clip);
         Ok(json!({ "clip": id, "start": start, "duration": duration }))
@@ -1401,6 +1466,10 @@ pub(crate) fn split(proj: &mut Project, id: &str, at: Tick) -> Result<String, En
         }
         _ => None,
     };
+    // a compound clip's right half goes on from where the left stops in its timeline
+    if let ClipContent::Compound { source_in, .. } = &mut right.content {
+        *source_in += left_len;
+    }
     right.start = at;
     right.duration = clip.end() - at;
     right.id = proj.mint("c");
@@ -1445,7 +1514,7 @@ fn clip_trim(s: &mut Session, v: &Value) -> CmdResult {
 }
 
 /// Moves a clip's edges to `start` and `end`, keeping its media in sync.
-fn trim(clip: &mut Clip, start: Tick, end: Tick) -> Result<(), EngineError> {
+pub(crate) fn trim(clip: &mut Clip, start: Tick, end: Tick) -> Result<(), EngineError> {
     if end <= start {
         return Err(EngineError::Params("the clip would have no length".into()));
     }
@@ -1459,6 +1528,12 @@ fn trim(clip: &mut Clip, start: Tick, end: Tick) -> Result<(), EngineError> {
             return Err(EngineError::Refused("the clip cannot start before its media does".into()));
         }
         *source_in = moved;
+    }
+    if let ClipContent::Compound { source_in, .. } = &mut clip.content {
+        if *source_in + delta < Tick::ZERO {
+            return Err(EngineError::Refused("the clip cannot start before its timeline does".into()));
+        }
+        *source_in += delta;
     }
     clip.shift_keys(-delta);
     clip.start = start;
@@ -1609,6 +1684,7 @@ fn clip_remove(s: &mut Session, v: &Value) -> CmdResult {
                 }
             }
         }
+        crate::compound::tidy_groups(proj);
         Ok(json!({ "removed": ids }))
     })
 }
@@ -1760,7 +1836,19 @@ fn paste(proj: &mut Project, board: &Value, at: Tick) -> Result<Value, EngineErr
         {
             return Err(not_found("media", media));
         }
+        if let Some((timeline, _)) = clip.compound()
+            && (timeline == proj.timeline || proj.tracks_of(timeline).is_none())
+        {
+            return Err(EngineError::Refused(format!("compound clip {:?} cannot be placed in this timeline", clip.id)));
+        }
         parsed.push((track, kind, clip));
+    }
+    // copies of grouped clips are a group of their own
+    let mut groups: std::collections::BTreeMap<String, String> = Default::default();
+    for (_, _, clip) in &mut parsed {
+        if let Some(g) = &clip.group {
+            clip.group = Some(groups.entry(g.clone()).or_insert_with(|| proj.mint("g")).clone());
+        }
     }
     let base = parsed.iter().map(|(_, _, c)| c.start).min().expect("not empty");
     let mut placed = Vec::new();
@@ -2034,12 +2122,12 @@ fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
                     *sc = v;
                 }
             }
-            ClipContent::Media { .. } | ClipContent::Adjustment
+            ClipContent::Media { .. } | ClipContent::Adjustment | ClipContent::Compound { .. }
                 if text.is_some() || size.is_some() || color.is_some() =>
             {
                 return Err(EngineError::Params("`text`, `size` and `color` apply to text and colour clips".into()));
             }
-            ClipContent::Media { .. } | ClipContent::Adjustment => {}
+            ClipContent::Media { .. } | ClipContent::Adjustment | ClipContent::Compound { .. } => {}
         }
         Ok(json!({ "clip": serde_json::to_value(&*clip).expect("serialises") }))
     })
@@ -2264,7 +2352,7 @@ fn clip_set_key(s: &mut Session, v: &Value) -> CmdResult {
         if prop.plain() {
             // what moves must be there: a picture to crop or colour, a mask to move
             let (ti, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
-            let media = matches!(clip.content, ClipContent::Media { .. });
+            let media = clip.is_picture();
             let ok = if Prop::MASK.contains(&prop) {
                 clip.look.mask.is_some()
             } else if Prop::CROP.contains(&prop) {
@@ -2526,10 +2614,13 @@ fn clip_set_crop(s: &mut Session, v: &Value) -> CmdResult {
         let (_, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
         let picture = match &clip.content {
             ClipContent::Media { media, .. } => proj.media.get(media).is_some_and(|m| m.kind != MediaKind::Audio),
+            ClipContent::Compound { .. } => true,
             _ => false,
         };
         if !picture {
-            return Err(EngineError::Params("only video and picture clips can be cropped or mirrored".into()));
+            return Err(EngineError::Params(
+                "only video, picture and compound clips can be cropped or mirrored".into(),
+            ));
         }
         let clip = proj.clip_mut(&id).expect("found above");
         for (prop, x) in Prop::CROP.into_iter().zip(edges) {

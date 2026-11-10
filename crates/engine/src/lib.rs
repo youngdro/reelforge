@@ -13,6 +13,7 @@
 mod capcut;
 mod captions;
 mod commands;
+mod compound;
 pub mod listen;
 mod params;
 mod schema;

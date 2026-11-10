@@ -478,6 +478,7 @@ mod tests {
             look: Default::default(),
             fx: vec![],
             voice: Default::default(),
+            group: None,
         }
     }
 

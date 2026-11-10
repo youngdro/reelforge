@@ -226,6 +226,9 @@ pub struct Clip {
     /// A changed voice, a moved pitch, noise taken out (clips with sound).
     #[serde(default, skip_serializing_if = "Voice::is_empty")]
     pub voice: Voice,
+    /// The group it belongs to (`g…`): clips of one group are selected and moved together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 fn yes() -> bool {
@@ -236,7 +239,7 @@ fn is_yes(b: &bool) -> bool {
     *b
 }
 
-fn is_no(b: &bool) -> bool {
+pub(crate) fn is_no(b: &bool) -> bool {
     !*b
 }
 
@@ -289,6 +292,20 @@ impl Clip {
     /// Whether it is an adjustment layer: nothing to see, effects and colour for what is below.
     pub fn is_adjustment(&self) -> bool {
         matches!(self.content, ClipContent::Adjustment)
+    }
+
+    /// The timeline a compound clip plays, and from when.
+    pub fn compound(&self) -> Option<(&str, Tick)> {
+        match &self.content {
+            ClipContent::Compound { timeline, source_in } => Some((timeline, *source_in)),
+            _ => None,
+        }
+    }
+
+    /// Whether it shows a picture of its own that can be cropped, mirrored and coloured: media or
+    /// a compound clip.
+    pub fn is_picture(&self) -> bool {
+        matches!(self.content, ClipContent::Media { .. } | ClipContent::Compound { .. })
     }
 
     /// The clip's span on the timeline.
@@ -361,6 +378,14 @@ pub enum ClipContent {
     /// An adjustment layer: it shows nothing itself; its effects ([`Clip::fx`]) and its colour
     /// (filter and adjustments) apply to the clips on the tracks below it while it lasts.
     Adjustment,
+    /// Another timeline of the project played as one clip (剪映's 复合片段): its picture is drawn
+    /// first and then placed, faded, masked and given effects as one; its sound plays with it.
+    Compound {
+        /// The timeline's id.
+        timeline: String,
+        /// The instant of that timeline at the clip's start.
+        source_in: Tick,
+    },
 }
 
 /// How a title looks beyond its words, size and colour.
@@ -765,6 +790,15 @@ impl Project {
                         }
                     }
                     ClipContent::Solid { .. } => track.kind == TrackKind::Video,
+                    ClipContent::Compound { timeline, source_in } => {
+                        if !self.timelines.iter().any(|t| t.id == *timeline) {
+                            return Err(ModelError::BadTimeline("a compound clip plays a timeline that is not there"));
+                        }
+                        if *source_in < Tick::ZERO {
+                            return motion("a compound clip cannot start before its timeline does");
+                        }
+                        track.kind == TrackKind::Video
+                    }
                     ClipContent::Adjustment => {
                         if clip.color.lut.is_some() {
                             return motion("an adjustment clip takes a filter and adjustments, not a lookup table");
@@ -808,6 +842,12 @@ impl Project {
                 if pair[0].range().overlaps(pair[1].range()) {
                     return Err(ModelError::Overlap(pair[0].id.clone(), pair[1].id.clone(), track.id.clone()));
                 }
+            }
+        }
+        // a timeline cannot play inside itself, however many compound clips lie between
+        for t in &self.timelines {
+            if self.timeline_reaches(&t.id, &t.id) {
+                return Err(ModelError::BadTimeline("a compound clip plays the timeline it is in"));
             }
         }
         Ok(())
@@ -874,6 +914,7 @@ mod tests {
             look: Default::default(),
             fx: vec![],
             voice: Default::default(),
+            group: None,
         }
     }
 

@@ -140,6 +140,7 @@ fn blank_clip(id: String, start: Tick, duration: Tick, content: ClipContent) -> 
         look: Default::default(),
         fx: vec![],
         voice: Default::default(),
+        group: None,
     }
 }
 
@@ -436,7 +437,13 @@ pub(crate) fn capcut_import(s: &mut Session, v: &Value) -> CmdResult {
             let at = proj.timelines.iter().position(|t| t.id == proj.timeline).map_or(proj.timelines.len(), |i| i + 1);
             proj.timelines.insert(
                 at,
-                reelforge_model::Timeline { id: id.clone(), name: name.clone(), tracks: vec![], markers: vec![] },
+                reelforge_model::Timeline {
+                    id: id.clone(),
+                    name: name.clone(),
+                    tracks: vec![],
+                    markers: vec![],
+                    compound: false,
+                },
             );
             proj.switch_timeline(&id);
         }

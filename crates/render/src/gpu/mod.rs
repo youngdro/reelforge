@@ -21,7 +21,7 @@ use reelforge_renderspec::{Blend, Fit, MaskShape, RenderSpec, effects};
 use reelforge_time::Tick;
 
 use crate::cpu::{Resolved, resolve, resolve_lut};
-use crate::plan::{Affine, FramePlan, PlannedLayer, invert, plan_frame};
+use crate::plan::{Affine, FramePlan, PlannedLayer, PlannedSource, invert, plan_frame};
 use crate::{FrameReport, Image, Lut, MediaSource, Quality, RenderError, Yuv, unsupported_features};
 
 /// The working picture's format.
@@ -58,6 +58,24 @@ struct Frame {
     display_view: wgpu::TextureView,
 }
 
+/// Where a composition's frame is drawn before it is placed as a picture.
+struct Nested {
+    width: u32,
+    height: u32,
+    target: wgpu::Texture,
+    target_view: wgpu::TextureView,
+    under: wgpu::Texture,
+    under_view: wgpu::TextureView,
+}
+
+/// The layers drawn into one picture: the frame, or a composition's (`slot`).
+struct Pass {
+    slot: Option<usize>,
+    clear: [f32; 4],
+    /// Blend pipeline and bind group, bottom first.
+    draws: Vec<(usize, wgpu::BindGroup)>,
+}
+
 struct Cached {
     /// Held so the pointer key stays unique while the texture lives.
     _image: Arc<Image>,
@@ -84,6 +102,10 @@ pub struct GpuCompositor {
     no_under: wgpu::TextureView,
     no_lut: wgpu::TextureView,
     frame: Option<Frame>,
+    /// Pictures compositions are drawn into, kept from frame to frame, and how many this frame
+    /// has taken.
+    nested: Vec<Nested>,
+    nested_used: usize,
     /// Uploaded pictures by `Arc` address, kept while frames keep using them (stills, a paused
     /// video).
     pictures: HashMap<usize, Cached>,
@@ -406,6 +428,8 @@ impl GpuCompositor {
             no_under,
             no_lut,
             frame: None,
+            nested: Vec::new(),
+            nested_used: 0,
             pictures: HashMap::new(),
             luts: HashMap::new(),
             yuv_pipeline,
@@ -500,14 +524,126 @@ impl GpuCompositor {
         }
         self.count += 1;
         let mut report = FrameReport::default();
+        self.ensure_frame(plan.width, plan.height);
+        self.nested_used = 0;
+        // compositions first, each into a picture of its own, then the frame
+        let mut passes = Vec::new();
+        self.plan_passes(spec, plan, media, quality, None, &mut report, &mut passes)?;
+
+        let frame = self.frame.as_ref().expect("sized above");
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
+        for pass in &passes {
+            let (target, target_view, under) = match pass.slot {
+                None => (&frame.target, &frame.target_view, &frame.under),
+                Some(i) => (&self.nested[i].target, &self.nested[i].target_view, &self.nested[i].under),
+            };
+            let size = wgpu::Extent3d { width: target.width(), height: target.height(), depth_or_array_layers: 1 };
+            let bg = pass.clear.map(f64::from);
+            let clear = wgpu::LoadOp::Clear(wgpu::Color { r: bg[0], g: bg[1], b: bg[2], a: bg[3] });
+            let begin = |enc: &mut wgpu::CommandEncoder, load| {
+                enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("layers"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+                    })],
+                    ..Default::default()
+                })
+                .forget_lifetime()
+            };
+            let mut rp = begin(&mut enc, clear);
+            for (blend, bind) in &pass.draws {
+                if *blend == 2 {
+                    // a pass cannot read what it draws to: copy what is underneath, then go on
+                    drop(rp);
+                    enc.copy_texture_to_texture(target.as_image_copy(), under.as_image_copy(), size);
+                    rp = begin(&mut enc, wgpu::LoadOp::Load);
+                }
+                rp.set_pipeline(&self.layer_pipelines[*blend]);
+                rp.set_bind_group(0, bind, &[]);
+                rp.draw(0..6, 0..1);
+            }
+            drop(rp);
+        }
+        self.queue.submit([enc.finish()]);
+        let count = self.count;
+        self.pictures.retain(|_, c| c.used == count);
+        self.luts.retain(|_, c| c.used == count);
+        self.yuvs.retain(|_, c| c.used == count);
+        self.nested.truncate(self.nested_used);
+        Ok(report)
+    }
+
+    /// A picture of this size for a composition to be drawn into.
+    fn nested_slot(&mut self, width: u32, height: u32) -> usize {
+        let i = self.nested_used;
+        self.nested_used += 1;
+        if self.nested.get(i).is_some_and(|n| (n.width, n.height) == (width, height)) {
+            return i;
+        }
+        use wgpu::TextureUsages as U;
+        let d = &self.device;
+        let target =
+            texture(d, "composition", width, height, WORK, U::RENDER_ATTACHMENT | U::TEXTURE_BINDING | U::COPY_SRC);
+        let under = texture(d, "under", width, height, WORK, U::TEXTURE_BINDING | U::COPY_DST);
+        let made = Nested {
+            width,
+            height,
+            target_view: target.create_view(&Default::default()),
+            under_view: under.create_view(&Default::default()),
+            target,
+            under,
+        };
+        if i < self.nested.len() {
+            self.nested[i] = made;
+        } else {
+            self.nested.push(made);
+        }
+        i
+    }
+
+    /// Gets `plan` ready to draw into the frame (`slot` none) or into a composition's picture:
+    /// its layers' uniforms and textures, and before them the passes of the compositions it
+    /// shows. Passes come out in the order they must be drawn.
+    #[allow(clippy::too_many_arguments)]
+    fn plan_passes(
+        &mut self,
+        spec: &RenderSpec,
+        plan: &FramePlan,
+        media: &dyn MediaSource,
+        quality: Quality,
+        slot: Option<usize>,
+        report: &mut FrameReport,
+        passes: &mut Vec<Pass>,
+    ) -> Result<(), RenderError> {
+        enum Drawn {
+            Resolved(Resolved),
+            /// A composition drawn into this slot.
+            Nested(usize),
+        }
         let mut resolved = Vec::with_capacity(plan.layers.len());
         for layer in &plan.layers {
+            let lut = resolve_lut(spec, layer, media, quality, report)?;
+            // a composition is drawn here, unless its picture is blurred: those are made on the CPU
+            if let PlannedSource::Comp(inner) = &layer.source
+                && crate::cpu::blur_radius(layer).is_none()
+            {
+                let n = self.nested_slot(inner.width, inner.height);
+                self.plan_passes(spec, inner, media, quality, Some(n), report, passes)?;
+                resolved.push((Drawn::Nested(n), lut));
+                continue;
+            }
             let takes = crate::cpu::Takes { yuv: true, side: self.max_side() };
-            let what = resolve(spec, plan, layer, media, quality, takes, &mut report)?;
-            resolved.push((what, resolve_lut(spec, layer, media, quality, &mut report)?));
+            let what = resolve(spec, plan, layer, media, quality, takes, report)?;
+            resolved.push((Drawn::Resolved(what), lut));
         }
-        self.ensure_frame(plan.width, plan.height);
         let target = [plan.width as f32, plan.height as f32];
+        let under_view = match slot {
+            None => self.frame.as_ref().expect("sized before").under_view.clone(),
+            Some(i) => self.nested[i].under_view.clone(),
+        };
 
         // every layer's uniforms and textures, before any pass borrows them
         let mut draws = Vec::new();
@@ -515,40 +651,46 @@ impl GpuCompositor {
             // the map from the visible part, its size, the whole picture's size, the size a mask is
             // shaped on
             let (m, size, whole, shaped, mode, color, picture) = match what {
-                Resolved::Nothing => continue,
-                Resolved::Flat(color, None) => {
+                Drawn::Resolved(Resolved::Nothing) => continue,
+                Drawn::Resolved(Resolved::Flat(color, None)) => {
                     let mut l = layer.clone();
                     l.fit = Fit::Stretch;
                     (l.matrix(1.0, 1.0, target), [1.0, 1.0], [1.0, 1.0], target, 1, color, None)
                 }
-                Resolved::Flat(color, Some((w, h))) => {
+                Drawn::Resolved(Resolved::Flat(color, Some((w, h)))) => {
                     let (cw, ch) = layer.visible(w as f32, h as f32);
                     (layer.matrix(cw, ch, target), [cw, ch], [w as f32, h as f32], [cw, ch], 2, color, None)
                 }
-                Resolved::Picture(pic) => {
+                Drawn::Resolved(Resolved::Picture(pic)) => {
                     let pic = self.fitting(pic);
                     let (w, h) = (pic.width as f32, pic.height as f32);
                     let (cw, ch) = layer.visible(w, h);
                     let view = self.picture(&pic);
                     (layer.matrix(cw, ch, target), [cw, ch], [w, h], [cw, ch], 0, [0.0; 4], Some(view))
                 }
-                Resolved::Yuv(y) => {
+                Drawn::Resolved(Resolved::Yuv(y)) => {
                     let (w, h) = (y.width as f32, y.height as f32);
                     let (cw, ch) = layer.visible(w, h);
                     let view = self.yuv_picture(&y);
                     (layer.matrix(cw, ch, target), [cw, ch], [w, h], [cw, ch], 0, [0.0; 4], Some(view))
                 }
-                Resolved::Sprite(sp) => {
+                Drawn::Resolved(Resolved::Sprite(sp)) => {
                     let (w, h) = (sp.image.width as f32, sp.image.height as f32);
                     let view = self.picture(&sp.image);
                     ([1.0, 0.0, sp.x as f32, 0.0, 1.0, sp.y as f32], [w, h], [w, h], [w, h], 0, [0.0; 4], Some(view))
+                }
+                Drawn::Nested(n) => {
+                    let inner = &self.nested[n];
+                    let (w, h) = (inner.width as f32, inner.height as f32);
+                    let (cw, ch) = layer.visible(w, h);
+                    let view = inner.target_view.clone();
+                    (layer.matrix(cw, ch, target), [cw, ch], [w, h], [cw, ch], 0, [0.0; 4], Some(view))
                 }
             };
             let sizes = Sizes { visible: size, whole, shaped };
             let Some(uniform) = layer_uniform(layer, m, sizes, mode, color, target, lut.as_deref()) else { continue };
             let lut_view = lut.as_ref().map(|l| self.lut(l));
             let buffer = self.uniform("layer", bytemuck::cast_slice(&uniform));
-            let frame = self.frame.as_ref().expect("sized above");
             let multiply = blend_index(layer.blend) == 2;
             let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("layer"),
@@ -562,7 +704,7 @@ impl GpuCompositor {
                     wgpu::BindGroupEntry {
                         binding: 2,
                         resource: wgpu::BindingResource::TextureView(if multiply {
-                            &frame.under_view
+                            &under_view
                         } else {
                             &self.no_under
                         }),
@@ -575,47 +717,8 @@ impl GpuCompositor {
             });
             draws.push((blend_index(layer.blend), bind));
         }
-
-        let frame = self.frame.as_ref().expect("sized above");
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
-        let bg = plan.background.map(f64::from);
-        let clear = wgpu::LoadOp::Clear(wgpu::Color { r: bg[0], g: bg[1], b: bg[2], a: bg[3] });
-        let begin = |enc: &mut wgpu::CommandEncoder, load| {
-            enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("layers"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame.target_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
-                })],
-                ..Default::default()
-            })
-            .forget_lifetime()
-        };
-        let mut pass = begin(&mut enc, clear);
-        for (blend, bind) in &draws {
-            if *blend == 2 {
-                // a pass cannot read what it draws to: copy what is underneath, then go on
-                drop(pass);
-                enc.copy_texture_to_texture(
-                    frame.target.as_image_copy(),
-                    frame.under.as_image_copy(),
-                    wgpu::Extent3d { width: frame.width, height: frame.height, depth_or_array_layers: 1 },
-                );
-                pass = begin(&mut enc, wgpu::LoadOp::Load);
-            }
-            pass.set_pipeline(&self.layer_pipelines[*blend]);
-            pass.set_bind_group(0, bind, &[]);
-            pass.draw(0..6, 0..1);
-        }
-        drop(pass);
-        self.queue.submit([enc.finish()]);
-        let count = self.count;
-        self.pictures.retain(|_, c| c.used == count);
-        self.luts.retain(|_, c| c.used == count);
-        self.yuvs.retain(|_, c| c.used == count);
-        Ok(report)
+        passes.push(Pass { slot, clear: plan.background, draws });
+        Ok(())
     }
 
     /// The last frame as `Rgba8Unorm` sRGB with premultiplied alpha, on the GPU, sized like the

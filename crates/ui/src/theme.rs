@@ -35,6 +35,8 @@ pub(crate) mod color {
     pub const AUDIO: Color32 = Color32::from_rgb(0x27, 0x95, 0x6c);
     /// Adjustment clips: effects and colour for what is below.
     pub const FX: Color32 = Color32::from_rgb(0x7c, 0x55, 0xc8);
+    /// Compound clips.
+    pub const COMPOUND: Color32 = Color32::from_rgb(0x2f, 0x8a, 0xa8);
 }
 
 /// Icon glyphs from the bundled Phosphor subset; usable in any text. Not every one is used on every

@@ -42,6 +42,8 @@ pub(crate) struct TimelineView {
     menu_on_clip: bool,
     /// The clip the open menu is for can have its sound detached.
     menu_detachable: bool,
+    /// Whether the clip the menu opened on is a compound clip.
+    menu_compound: bool,
     /// The open menu was opened on this track's header, or on this marker in the ruler.
     menu_track: Option<String>,
     menu_marker: Option<String>,
@@ -111,6 +113,12 @@ pub(crate) enum Action {
     TrimEnd,
     SelectAll,
     DetachAudio,
+    Group,
+    Ungroup,
+    Compound,
+    Uncompound,
+    /// Edit what is inside the selected compound clip.
+    OpenCompound,
 }
 
 impl Default for TimelineView {
@@ -123,6 +131,7 @@ impl Default for TimelineView {
             strips: Strips::default(),
             menu_on_clip: false,
             menu_detachable: false,
+            menu_compound: false,
             menu_track: None,
             menu_marker: None,
             menu_at: Tick::ZERO,
@@ -815,7 +824,16 @@ impl TimelineView {
             }
             self.drag = None;
         }
-        if response.clicked()
+        if response.double_clicked()
+            && let Some(pos) = response.interact_pointer_pos()
+            && in_lanes(pos)
+            && pos.y > ruler.bottom()
+            && let Some(h) = hit_at(pos)
+            && p.clip(&h.clip).is_some_and(|(_, c)| c.compound().is_some())
+        {
+            out.select = Some(Select::Only(h.clip));
+            out.action = Some(Action::OpenCompound);
+        } else if response.clicked()
             && let Some(pos) = response.interact_pointer_pos()
             && in_lanes(pos)
         {
@@ -842,6 +860,7 @@ impl TimelineView {
             self.menu_marker = None;
             self.menu_on_clip = false;
             self.menu_detachable = false;
+            self.menu_compound = false;
             self.menu_at = fps.snap(t_of(pos.x).max(Tick::ZERO));
             if !in_lanes(pos) {
                 self.menu_track =
@@ -861,6 +880,7 @@ impl TimelineView {
                         out.select = Some(Select::Only(h.clip.clone()));
                     }
                     self.menu_detachable = detachable(p, &h.clip);
+                    self.menu_compound = p.clip(&h.clip).is_some_and(|(_, c)| c.compound().is_some());
                     true
                 }
                 None => false,
@@ -868,6 +888,9 @@ impl TimelineView {
         }
         let on_clip = self.menu_on_clip;
         let can_detach = self.menu_detachable;
+        let on_compound = self.menu_compound;
+        let grouped = selected.iter().any(|id| p.clip(id).is_some_and(|(_, c)| c.group.is_some()));
+        let several = selected.len() > 1;
         let (menu_track, menu_marker, menu_at) = (self.menu_track.clone(), self.menu_marker.clone(), self.menu_at);
         response.context_menu(|ui| {
             ui.set_min_width(190.0);
@@ -921,6 +944,18 @@ impl TimelineView {
             if on_clip {
                 item(ui, words.duplicate, "Ctrl+D", Action::Duplicate, true);
                 ui.separator();
+                if grouped {
+                    item(ui, words.ungroup, "Ctrl+Shift+G", Action::Ungroup, true);
+                }
+                if several || !grouped {
+                    item(ui, words.group, "Ctrl+G", Action::Group, several);
+                }
+                if on_compound {
+                    item(ui, words.compound_open, "", Action::OpenCompound, true);
+                    item(ui, words.uncompound, "Alt+Shift+G", Action::Uncompound, true);
+                }
+                item(ui, words.compound, "Alt+G", Action::Compound, true);
+                ui.separator();
                 item(ui, words.delete, "Delete", Action::Delete, true);
                 item(ui, words.ripple_delete, "Shift+Delete", Action::RippleDelete, true);
             } else {
@@ -973,6 +1008,15 @@ fn paint_clip(
         ClipContent::Solid { color: c, .. } => {
             let swatch = Color32::from_rgb((c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8);
             (icon::COLOUR, words.kind_colour.to_string(), swatch.lerp_to_gamma(color::VIDEO, 0.35))
+        }
+        ClipContent::Compound { timeline, .. } => {
+            // called what its timeline is called
+            let name = p.timelines.iter().find(|t| t.id == *timeline).map_or("", |t| t.name.as_str());
+            let label = match name.strip_prefix("Compound ").and_then(|n| n.parse::<u32>().ok()) {
+                Some(n) => crate::i18n::fill(words.compound_n, &[&n.to_string()]),
+                None => name.to_string(),
+            };
+            (icon::FILM, label, color::COMPOUND)
         }
         ClipContent::Adjustment => {
             // what it does, in a word or two
@@ -1029,6 +1073,18 @@ fn paint_clip(
     let stroke =
         if selected { Stroke::new(2.0, color::ACCENT) } else { Stroke::new(1.0, Color32::from_black_alpha(90)) };
     painter.rect_stroke(r, radius, stroke, if selected { StrokeKind::Outside } else { StrokeKind::Inside });
+    if clip.group.is_some() && r.width() > 14.0 {
+        // a grouped clip wears a tag in its top right corner
+        let tag = Rect::from_min_size(r.right_top() + vec2(-13.0, 3.0), vec2(10.0, 5.0));
+        let on = painter.with_clip_rect(r);
+        on.rect_filled(tag, CornerRadius::same(2), Color32::from_white_alpha(if dim { 110 } else { 215 }));
+        on.rect_stroke(
+            tag,
+            CornerRadius::same(2),
+            Stroke::new(1.0, Color32::from_black_alpha(120)),
+            StrokeKind::Outside,
+        );
+    }
     if selected && r.width() > 18.0 {
         // trim grips
         for x in [r.left() + 3.0, r.right() - 3.0] {

@@ -771,11 +771,33 @@ pub fn mix(
     start: i64,
     frames: usize,
 ) -> Result<Vec<Vec<f32>>, ExportError> {
+    let mut out = mix_clips(spec, &spec.audio, media, rate, start, frames, 0)?;
+    for ch in &mut out {
+        for s in ch {
+            *s = s.clamp(-1.0, 1.0);
+        }
+    }
+    Ok(out)
+}
+
+/// How deep compositions may play compositions (a validated spec has no loop).
+const DEPTH: usize = 8;
+
+/// The sum of `clips` over `frames` samples from sample `start` of their timeline (the output's,
+/// or a composition's), not yet limited to full scale.
+fn mix_clips(
+    spec: &RenderSpec,
+    clips: &[reelforge_renderspec::AudioClip],
+    media: &Footage,
+    rate: u32,
+    start: i64,
+    frames: usize,
+    depth: usize,
+) -> Result<Vec<Vec<f32>>, ExportError> {
     let mut out = vec![vec![0f32; frames]; CHANNELS];
     let end = start + frames as i64;
     let at_sample = |t: Tick| (t.0 as i128 * rate as i128 / TICKS_PER_SECOND as i128) as i64;
-    for clip in &spec.audio {
-        let Some(asset) = spec.assets.get(&clip.asset) else { continue };
+    for clip in clips {
         let (c0, c1) = (at_sample(clip.at), at_sample(clip.at + clip.dur));
         let (a, b) = (start.max(c0), end.min(c1));
         if a >= b {
@@ -786,7 +808,30 @@ pub fn mix(
             continue;
         }
         let n = (b - a) as usize;
-        let read = |from: i64, n: usize| clip_sound(media, asset, clip, rate, c1 - c0, from, n);
+        // a composition's own mix, from where the clip starts in it; or an asset's sound
+        let inner = clip.comp.as_ref().and_then(|id| spec.comps.get(id)).filter(|_| depth < DEPTH);
+        let asset = spec.assets.get(&clip.asset);
+        if inner.is_none() && asset.is_none() {
+            continue;
+        }
+        let read = |from: i64, n: usize| match (inner, asset) {
+            (Some(comp), _) => {
+                // silent before the clip's start and after its end, like any clip's sound
+                let (lo, hi) = (from.max(0), (from + n as i64).min(c1 - c0));
+                let mut all = vec![vec![0f32; n]; CHANNELS];
+                if hi > lo {
+                    let from_in = at_sample(clip.time.source_in) + lo;
+                    let part = mix_clips(spec, &comp.audio, media, rate, from_in, (hi - lo) as usize, depth + 1)
+                        .map_err(|e| e.to_string())?;
+                    for (ch, src) in all.iter_mut().zip(&part) {
+                        ch[(lo - from) as usize..][..src.len()].copy_from_slice(src);
+                    }
+                }
+                Ok(Some(all))
+            }
+            (None, Some(asset)) => clip_sound(media, asset, clip, rate, c1 - c0, from, n),
+            (None, None) => Ok(None),
+        };
         let Some(src) = crate::sound::processed(&read, &clip.fx, a - c0, n, rate).map_err(ExportError::Media)? else {
             continue;
         };
@@ -797,11 +842,6 @@ pub fn mix(
                 let s = src[c.min(src.len() - 1)].get(i).copied().unwrap_or(0.0);
                 ch[(a - start) as usize + i] += s * gain;
             }
-        }
-    }
-    for ch in &mut out {
-        for s in ch {
-            *s = s.clamp(-1.0, 1.0);
         }
     }
     Ok(out)

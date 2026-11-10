@@ -1142,16 +1142,42 @@ impl EditorApp {
 
     fn select(&mut self, change: timeline::Select) {
         use timeline::Select;
+        let p = self.project();
+        // a group is selected, and let go, as one: the clip itself first
+        let with_mates = |id: String| -> Vec<String> {
+            let group = p.clip(&id).and_then(|(_, c)| c.group.clone());
+            let mates: Vec<String> = match &group {
+                Some(g) => p
+                    .tracks
+                    .iter()
+                    .flat_map(|t| &t.clips)
+                    .filter(|c| c.group.as_ref() == Some(g) && c.id != id)
+                    .map(|c| c.id.clone())
+                    .collect(),
+                None => Vec::new(),
+            };
+            std::iter::once(id).chain(mates).collect()
+        };
         let mut all = self.selection();
         match change {
-            Select::Only(id) => all = vec![id],
-            Select::Toggle(id) => match all.iter().position(|c| *c == id) {
-                Some(i) => {
-                    all.remove(i);
+            Select::Only(id) => all = with_mates(id),
+            Select::Toggle(id) => {
+                let group = with_mates(id);
+                if all.contains(&group[0]) {
+                    all.retain(|c| !group.contains(c));
+                } else {
+                    all.retain(|c| !group.contains(c));
+                    all.splice(0..0, group);
                 }
-                None => all.insert(0, id),
-            },
-            Select::Set(ids) => all = ids,
+            }
+            Select::Set(ids) => {
+                all = Vec::new();
+                for id in ids.into_iter().flat_map(with_mates) {
+                    if !all.contains(&id) {
+                        all.push(id);
+                    }
+                }
+            }
         }
         let mut all = all.into_iter();
         self.selected = all.next();
@@ -1273,7 +1299,113 @@ impl EditorApp {
             Action::TrimEnd => self.trim_to_playhead(true),
             Action::SelectAll => self.select_all(),
             Action::DetachAudio => self.detach_audio(),
+            Action::Group => self.group(),
+            Action::Ungroup => self.ungroup(),
+            Action::Compound => self.compound(),
+            Action::Uncompound => self.uncompound(),
+            Action::OpenCompound => self.open_compound(),
         }
+    }
+
+    /// Ctrl+G: the selected clips are selected and moved as one from now on.
+    fn group(&mut self) {
+        let all = self.selection();
+        if all.len() >= 2 {
+            let _ = self.execute("clip.group", json!({"clips": all}));
+        }
+    }
+
+    fn ungroup(&mut self) {
+        let p = self.project();
+        let grouped: Vec<String> =
+            self.selection().into_iter().filter(|id| p.clip(id).is_some_and(|(_, c)| c.group.is_some())).collect();
+        if !grouped.is_empty() {
+            let _ = self.execute("clip.ungroup", json!({"clips": grouped}));
+        }
+    }
+
+    /// Alt+G: the selected clips become one clip that plays a timeline of their own.
+    fn compound(&mut self) {
+        let all = self.selection();
+        if all.is_empty() {
+            return;
+        }
+        if let Ok(v) = self.execute("clip.compound", json!({"clips": all})) {
+            let made = v["clip"].as_str().map(str::to_string);
+            self.select(timeline::Select::Set(made.into_iter().collect()));
+            self.inspector = None;
+            self.status = fill(self.s().compound_made, &[&all.len()]);
+        }
+    }
+
+    /// Puts the clips of the selected compound clips back in their place.
+    fn uncompound(&mut self) {
+        let p = self.project();
+        let ids: Vec<String> =
+            self.selection().into_iter().filter(|id| p.clip(id).is_some_and(|(_, c)| c.compound().is_some())).collect();
+        match ids.as_slice() {
+            [] => {}
+            [one] => {
+                if let Ok(v) = self.execute("clip.uncompound", json!({"clip": one})) {
+                    self.select_placed(&v);
+                }
+            }
+            _ => {
+                self.each(ids, "clip.uncompound", |c| json!({"clip": c}));
+                self.select(timeline::Select::Set(Vec::new()));
+                self.inspector = None;
+            }
+        }
+    }
+
+    /// Edits what is inside the selected compound clip: its timeline, at the instant the playhead
+    /// shows of it.
+    fn open_compound(&mut self) {
+        let p = self.project();
+        let Some((_, clip)) = self.selected.as_ref().and_then(|id| p.clip(id)) else { return };
+        let Some((timeline, source_in)) = clip.compound() else { return };
+        let inside = self.playhead.max(clip.start).min(clip.end()) - clip.start + source_in;
+        let list = p.timeline_list();
+        let name = list.iter().position(|t| t.id == timeline).map(|i| self.timeline_label(&list[i].name, i));
+        if self.go_to_timeline(timeline, inside) {
+            self.status = fill(self.s().compound_inside, &[&name.unwrap_or_default()]);
+        }
+    }
+
+    /// Leaves the compound clip being edited for a timeline that plays it, with that clip
+    /// selected and the playhead on the same picture.
+    fn leave_compound(&mut self) {
+        let p = self.project();
+        let (inside, id) = (self.playhead, p.timeline.clone());
+        match p.player_of(&id).map(|(timeline, c)| (timeline.to_string(), c.clone())) {
+            Some((timeline, clip)) => {
+                let source_in = clip.compound().map_or(Tick::ZERO, |(_, from)| from);
+                let at = (clip.start + (inside - source_in)).max(clip.start).min(clip.end());
+                if self.go_to_timeline(&timeline, at) {
+                    self.select(timeline::Select::Set(vec![clip.id]));
+                }
+            }
+            // nothing plays it any more: back to the first timeline that is not a compound clip's
+            None => {
+                if let Some(t) = p.timeline_list().into_iter().find(|t| !t.compound) {
+                    self.go_to_timeline(&t.id, Tick::ZERO);
+                }
+            }
+        }
+    }
+
+    /// Switches to timeline `id` with the playhead at `at`. The selection belonged to the old one.
+    fn go_to_timeline(&mut self, id: &str, at: Tick) -> bool {
+        if self.execute("timeline.switch", json!({"timeline": id})).is_err() {
+            return false;
+        }
+        let p = self.project();
+        self.selected = None;
+        self.also.clear();
+        self.inspector = None;
+        self.timeline_name.clear();
+        self.playhead = p.canvas.fps.snap(at.max(Tick::ZERO).min(p.duration()));
+        true
     }
 
     /// The range set with I and O, when it has both ends the right way round.
@@ -1386,6 +1518,19 @@ impl EditorApp {
         }
         if pressed(Modifiers::ALT, Key::D) {
             self.detach_audio();
+        }
+        // a key with Shift is asked for first: the same key without it would take it too
+        if pressed(cmd | Modifiers::SHIFT, Key::G) {
+            self.ungroup();
+        }
+        if pressed(cmd, Key::G) {
+            self.group();
+        }
+        if pressed(Modifiers::ALT | Modifiers::SHIFT, Key::G) {
+            self.uncompound();
+        }
+        if pressed(Modifiers::ALT, Key::G) {
+            self.compound();
         }
         if pressed(cmd, Key::A) {
             self.select_all();
@@ -1655,6 +1800,9 @@ impl EditorApp {
         if let Some(original) = name.strip_suffix(" copy") {
             return fill(s.timeline_copy, &[&self.timeline_label(original, index)]);
         }
+        if let Some(n) = name.strip_prefix("Compound ").and_then(|n| n.parse::<u32>().ok()) {
+            return fill(s.compound_n, &[&n.to_string()]);
+        }
         match name.strip_prefix("Timeline ").and_then(|n| n.parse::<u32>().ok()) {
             Some(n) => fill(s.timeline_n, &[&n.to_string()]),
             None if name.is_empty() => fill(s.timeline_n, &[&(index + 1).to_string()]),
@@ -1698,6 +1846,9 @@ impl EditorApp {
                         let r = ui.selectable_label(t.current, format!("{}  {name}", icon::FILM));
                         if r.clicked() && !t.current {
                             todo = Some(("timeline.switch", json!({"timeline": t.id})));
+                        }
+                        if t.compound {
+                            ui.label(egui::RichText::new(s.kind_compound).small().color(theme::color::COMPOUND));
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
@@ -1756,7 +1907,19 @@ impl EditorApp {
         let list = p.timeline_list();
         let current = list.iter().position(|t| t.current).unwrap_or(0);
         let shown = self.timeline_label(&list[current].name, current);
+        // inside a compound clip: the way back to the timeline that plays it
+        let back = list[current].compound.then(|| {
+            let outer = p.player_of(&p.timeline).map(|(id, _)| id.to_string());
+            let outer = outer.and_then(|id| list.iter().position(|t| t.id == id));
+            let outer = outer.or_else(|| list.iter().position(|t| !t.compound)).unwrap_or(0);
+            fill(s.compound_back, &[&self.timeline_label(&list[outer].name, outer)])
+        });
         ui.horizontal(|ui| {
+            if let Some(back) = &back
+                && theme::tool(ui, icon::FRAME_BACK, back, s.compound_back_tip, true).clicked()
+            {
+                self.leave_compound();
+            }
             let label = if list.len() > 1 { format!("{shown}  ({}/{})", current + 1, list.len()) } else { shown };
             if theme::tool(ui, icon::FILM, &label, s.timelines_tip, true).clicked() {
                 self.timelines_open = !self.timelines_open;
@@ -1853,13 +2016,18 @@ impl EditorApp {
                 ui.label(egui::RichText::new(s.select_hint).color(theme::color::WEAK));
             });
             ui.add_space(16.0);
-            theme::section(ui, s.shortcuts, |ui| {
-                egui::Grid::new("keys").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
-                    for &(k, what) in s.keys {
-                        ui.label(egui::RichText::new(i18n::keys(ui.ctx(), k)).monospace().color(theme::color::TEXT));
-                        ui.label(egui::RichText::new(what).color(theme::color::WEAK));
-                        ui.end_row();
-                    }
+            // the list is longer than a short window: it scrolls, and the panel keeps its height
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                theme::section(ui, s.shortcuts, |ui| {
+                    egui::Grid::new("keys").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+                        for &(k, what) in s.keys {
+                            ui.label(
+                                egui::RichText::new(i18n::keys(ui.ctx(), k)).monospace().color(theme::color::TEXT),
+                            );
+                            ui.label(egui::RichText::new(what).color(theme::color::WEAK));
+                            ui.end_row();
+                        }
+                    });
                 });
             });
             return;
@@ -1870,6 +2038,7 @@ impl EditorApp {
         };
         let has_sound = match &clip.content {
             ClipContent::Media { media, .. } => p.media.get(media).is_some_and(|m| m.kind != MediaKind::Image),
+            ClipContent::Compound { timeline, .. } => p.timeline_sounds(timeline),
             _ => false,
         };
         let picture = p.clip(&id).is_some_and(|(ti, _)| p.tracks[ti].kind != TrackKind::Audio);
@@ -1894,7 +2063,7 @@ impl EditorApp {
             opacity: clip.value_at(Prop::Opacity, local),
             color: match &clip.content {
                 ClipContent::Text { color, .. } | ClipContent::Solid { color } => Some(*color),
-                ClipContent::Media { .. } | ClipContent::Adjustment => None,
+                ClipContent::Media { .. } | ClipContent::Adjustment | ClipContent::Compound { .. } => None,
             },
             volume: has_sound.then(|| clip.value_at(Prop::VolumeDb, local)),
             fades: has_sound.then(|| [clip.fade.fade_in.seconds() as f32, clip.fade.fade_out.seconds() as f32]),
@@ -1937,7 +2106,8 @@ impl EditorApp {
                 denoise: clip.voice.denoise.as_ref().map(|d| (d.amount * 100.0).round()),
             }),
             look: (picture && !adjustment).then(|| LookEdit {
-                media: matches!(&clip.content, ClipContent::Media { media, .. }
+                media: clip.compound().is_some()
+                    || matches!(&clip.content, ClipContent::Media { media, .. }
                         if p.media.get(media).is_some_and(|m| m.kind != MediaKind::Audio)),
                 crop: Prop::CROP.map(|p| clip.value_at(p, local) * 100.0),
                 flip: [clip.look.flip_x, clip.look.flip_y],
@@ -1993,6 +2163,7 @@ impl EditorApp {
             ClipContent::Text { .. } => (icon::TEXT, s.kind_title),
             ClipContent::Solid { .. } => (icon::COLOUR, s.kind_colour),
             ClipContent::Adjustment => (icon::SLIDERS, s.kind_adjustment),
+            ClipContent::Compound { .. } => (icon::FILM, s.kind_compound),
         };
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(glyph).size(18.0).color(theme::color::ACCENT));

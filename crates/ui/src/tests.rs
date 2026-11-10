@@ -513,3 +513,58 @@ fn keying_finds_the_backdrop_or_says_it_guessed() {
     assert_eq!((kept.color, kept.tolerance), ([1.0, 0.0, 1.0], 0.3));
     assert!(app.status.starts_with("这一帧四周没有单一的背景色"), "{}", app.status);
 }
+
+#[test]
+fn a_group_is_chosen_as_one_and_a_compound_clip_is_opened_and_left() {
+    use crate::timeline::{Action, Select};
+    use reelforge_model::TrackKind;
+    let mut app = EditorApp::new(Session::default());
+    app.lang = crate::i18n::Lang::Zh;
+    let video = first_track(&app, TrackKind::Video);
+    let add = |app: &mut EditorApp, start: f64| {
+        let at =
+            json!({"track": video, "color": [1, 0, 0, 1], "start": {"seconds": start}, "duration": {"seconds": 2}});
+        app.execute("clip.add", at).unwrap()["clip"].as_str().unwrap().to_string()
+    };
+    let (a, b, c) = (add(&mut app, 0.0), add(&mut app, 2.0), add(&mut app, 4.0));
+    // two clips grouped: choosing either chooses both, the one clicked first
+    app.select(Select::Set(vec![a.clone(), b.clone()]));
+    app.act(Action::Group);
+    app.select(Select::Only(b.clone()));
+    assert_eq!(app.selection(), [b.clone(), a.clone()]);
+    app.select(Select::Toggle(c.clone()));
+    assert_eq!(app.selection().len(), 3);
+    // and letting go of either lets go of both
+    app.select(Select::Toggle(a.clone()));
+    assert_eq!(app.selection(), std::slice::from_ref(&c));
+    app.select(Select::Only(a.clone()));
+    app.act(Action::Ungroup);
+    app.select(Select::Only(a.clone()));
+    assert_eq!(app.selection(), std::slice::from_ref(&a));
+
+    // two clips joined: the compound clip is selected in their place
+    app.select(Select::Set(vec![b.clone(), c.clone()]));
+    app.act(Action::Compound);
+    let made = app.selected.clone().unwrap();
+    assert!(app.project().clip(&made).unwrap().1.compound().is_some());
+    assert!(app.status.starts_with("已把 2 个片段"), "{}", app.status);
+    // opened on the picture the playhead shows: it starts at 2 s, so 3 s is 1 s inside
+    app.playhead = Tick::from_seconds(3.0);
+    app.act(Action::OpenCompound);
+    let p = app.project();
+    assert!(p.timeline_list().iter().any(|t| t.current && t.compound));
+    assert_eq!(p.tracks.iter().map(|t| t.clips.len()).sum::<usize>(), 2);
+    assert_eq!(app.playhead, Tick::from_seconds(1.0));
+    assert!(app.selection().is_empty());
+    assert!(app.status.starts_with("正在编辑复合片段 1"), "{}", app.status);
+    // left again: back on the timeline that plays it, on the same picture, with it selected
+    app.playhead = Tick::from_seconds(3.5);
+    app.leave_compound();
+    assert!(app.project().timeline_list().iter().any(|t| t.current && !t.compound));
+    assert_eq!(app.playhead, Tick::from_seconds(5.5));
+    assert_eq!(app.selection(), std::slice::from_ref(&made));
+    // taken apart: its clips are back and selected, and its timeline is gone
+    app.act(Action::Uncompound);
+    assert_eq!(app.selection().len(), 2);
+    assert!(app.project().timeline_list().iter().all(|t| !t.compound));
+}

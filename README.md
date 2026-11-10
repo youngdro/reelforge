@@ -13,7 +13,10 @@ resolution (720p to 4K), frame rate and quality, or one of four presets (`projec
 sound library (twelve effects and four music beds, synthesised by reelforge itself, so free to
 use) adds with `sound.add`, and voice-overs record from the microphone on the desktop and in the
 browser. A project can hold several timelines (cuts) that share its media: `timeline.add` (empty or a
-copy), `timeline.switch`, `timeline.rename`, `timeline.remove`. CapCut / 剪映 drafts come in as a new timeline
+copy), `timeline.switch`, `timeline.rename`, `timeline.remove`. Clips are grouped to be selected and moved as one
+(`clip.group`, Ctrl+G), or joined into a compound clip (`clip.compound`, Alt+G): one clip that plays a timeline of
+their own, placed, faded, masked and given effects as one picture, opened with a double-click to edit what is inside,
+and taken apart again with `clip.uncompound`. CapCut / 剪映 drafts come in as a new timeline
 by dropping their `draft_content.json` (or `capcut.import`): video, photo, sound and text segments with
 speed, volume, placement, mirroring, fades and transitions; files the draft names that are not at hand
 show as offline and relink when dropped in. Titles
