@@ -456,6 +456,7 @@ pub(crate) fn capcut_import(s: &mut Session, v: &Value) -> CmdResult {
                     markers: vec![],
                     cover: None,
                     compound: false,
+                    made: None,
                 },
             );
             proj.switch_timeline(&id);

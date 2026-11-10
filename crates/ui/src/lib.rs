@@ -318,6 +318,21 @@ struct Inspector {
     adjustment: bool,
     /// Clips whose sound plays: a changed voice, a moved pitch, noise taken out.
     voice: Option<VoiceEdit>,
+    /// A ready-made piece folded into one clip: its words, its lines and its number.
+    piece: Option<PieceEdit>,
+}
+
+/// A ready-made piece's words and number, as the inspector edits them.
+#[derive(Clone, PartialEq)]
+struct PieceEdit {
+    /// The piece's shown name.
+    name: &'static str,
+    /// Its words, if it has any.
+    text: Option<String>,
+    /// Its lines, one to a row of the box, if it takes any.
+    lines: Option<String>,
+    /// Its number, if it counts.
+    value: Option<f32>,
 }
 
 /// A sounding clip's voice, as the inspector edits it.
@@ -3066,6 +3081,15 @@ impl EditorApp {
                 .then_some(clip.look.chroma),
                 person: clip.look.person,
             }),
+            piece: reelforge_engine::made_of(&p, &id).and_then(|(_, made)| {
+                let (i, promo) = reelforge_engine::PROMOS.iter().enumerate().find(|(_, x)| x.id == made.kind)?;
+                Some(PieceEdit {
+                    name: s.promo_names[i],
+                    text: (!promo.text.is_empty()).then(|| made.text.clone()),
+                    lines: (!promo.lines.is_empty()).then(|| made.lines.join("\n")),
+                    value: made.value,
+                })
+            }),
             title: match &clip.content {
                 ClipContent::Text { text, size, style, .. } => Some(Title {
                     text: text.clone(),
@@ -3190,6 +3214,40 @@ impl EditorApp {
             (cmd, json!({"clip": id, "prop": prop.name(), "at": at}))
         };
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            if let Some(piece) = &mut edit.piece {
+                // a ready-made piece: its words are given here, and it is made again to fit them
+                let was = current.piece.as_ref();
+                theme::section(ui, piece.name, |ui| {
+                    let mut told = serde_json::Map::new();
+                    if let Some(text) = &mut piece.text {
+                        let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+                        if r.lost_focus() && was.is_some_and(|w| w.text.as_ref() != Some(text)) {
+                            told.insert("text".into(), json!(text));
+                        }
+                    }
+                    if let Some(lines) = &mut piece.lines {
+                        let rows = lines.lines().count().clamp(2, 6);
+                        let r =
+                            ui.add(egui::TextEdit::multiline(lines).desired_rows(rows).desired_width(f32::INFINITY));
+                        if r.lost_focus() && was.is_some_and(|w| w.lines.as_ref() != Some(lines)) {
+                            let rows: Vec<&str> = lines.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+                            told.insert("lines".into(), json!(rows));
+                        }
+                    }
+                    if let Some(value) = &mut piece.value {
+                        egui::Grid::new("piece").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                            if row(ui, s.piece_number, value, 1.0, -1e9..=1e9, "") {
+                                told.insert("value".into(), json!(*value));
+                            }
+                        });
+                    }
+                    ui.label(egui::RichText::new(s.piece_tip).small().color(theme::color::WEAK));
+                    if !told.is_empty() {
+                        told.insert("clip".into(), json!(id));
+                        actions.push(("promo.set", Value::Object(told)));
+                    }
+                });
+            }
             if let Some(t) = &mut edit.title {
                 theme::section(ui, s.sec_text, |ui| {
                     let r = ui.add(egui::TextEdit::multiline(&mut t.text).desired_rows(3).desired_width(f32::INFINITY));

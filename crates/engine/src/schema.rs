@@ -886,14 +886,8 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["clip", "counter"],
         ),
-        "promo.add" => object(
-            vec![
-                (
-                    "kind",
-                    json!({"enum": crate::pieces::PROMOS.iter().map(|p| p.id).collect::<Vec<_>>(), "description": "Which piece; promo.list says what each is and what its parameters mean."}),
-                ),
-                ("start", time("Where it starts; 0 by default.")),
-                ("duration", time("How long it shows; the piece's own length by default, 3 s for most.")),
+        "promo.add" | "promo.set" => {
+            let mut props = vec![
                 ("text", json!({"type": "string", "description": "Its words; {n} is where its number goes."})),
                 (
                     "lines",
@@ -927,10 +921,24 @@ pub fn input_schema(id: &str) -> Option<Value> {
                     "scale",
                     num("Its size; 1 is as designed for a frame whose shorter side is 1080, in proportion for others."),
                 ),
-                ("compound", json!({"type": "boolean", "description": "Fold it into one compound clip."})),
-            ],
-            &["kind"],
-        ),
+            ];
+            if id == "promo.set" {
+                props.insert(0, ("clip", ident("The compound clip the piece is, such as c9.")));
+                return Some(object(props, &["clip"]));
+            }
+            props.insert(
+                0,
+                (
+                    "kind",
+                    json!({"enum": crate::pieces::PROMOS.iter().map(|p| p.id).collect::<Vec<_>>(), "description": "Which piece; promo.list says what each is and what its parameters mean."}),
+                ),
+            );
+            props.insert(1, ("start", time("Where it starts; 0 by default.")));
+            props.insert(2, ("duration", time("How long it shows; the piece's own length by default, 3 s for most.")));
+            props.push(("compound", json!({"type": "boolean", "description": "Fold it into one compound clip, which promo.set can give other words later."})));
+            object(props, &["kind"])
+        }
+        "promo.get" => object(vec![("clip", ident("Clip id, such as c9."))], &["clip"]),
         "brand.set" => object(
             vec![
                 ("primary", nullable(color("The main colour of ready-made pieces."))),

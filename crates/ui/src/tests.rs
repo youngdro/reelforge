@@ -580,6 +580,16 @@ fn a_ready_made_piece_of_many_parts_lands_as_one_clip_and_every_piece_has_a_name
     let (_, folded) = p.clip(app.selected.as_deref().unwrap()).unwrap();
     assert_eq!(folded.start, Tick::from_seconds(4.0));
     assert_eq!(p.tracks_of(folded.compound().unwrap().0).unwrap().iter().map(|t| t.clips.len()).sum::<usize>(), 4);
+    // the inspector shows the piece's lines, to be given others without going inside it
+    let ctx = egui::Context::default();
+    ctx.run_ui(Default::default(), |ui| app.inspector(ui)).textures_delta.clear();
+    let piece = app.inspector.as_ref().unwrap().piece.clone().expect("a piece");
+    assert_eq!((piece.name, piece.text, piece.value), ("Feature checklist", None, None));
+    assert_eq!(piece.lines.as_deref(), Some("持久保湿 12 小时\n温和不含香精\n敏感肌适用"));
+    // the small piece's clips are ordinary clips: nothing of the kind is shown for them
+    app.selected = p.tracks.iter().flat_map(|t| &t.clips).find(|c| c.group.is_some()).map(|c| c.id.clone());
+    ctx.run_ui(Default::default(), |ui| app.inspector(ui)).textures_delta.clear();
+    assert!(app.inspector.as_ref().unwrap().piece.is_none());
     // every piece and every list of them is named in every language
     for lang in i18n::Lang::ALL {
         let s = lang.strings();

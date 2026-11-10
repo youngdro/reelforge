@@ -444,6 +444,8 @@ pub(super) static JA: Strings = Strings {
         "カラースイープ",
     ],
     promo_categories: ["価格・特典", "商品の特長", "見出し・数字", "行動喚起", "リズム"],
+    piece_number: "数値",
+    piece_tip: "文言や数値を変えると、パーツがそれに合わせて作り直されます。クリップをダブルクリックすると中身を編集できます。",
     sec_shapes: "図形",
     shape_names: ["長方形", "楕円", "線", "多角形", "星", "タグ", "矢印"],
     shape_width: "幅",

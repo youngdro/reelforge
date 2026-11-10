@@ -32,6 +32,10 @@ pub struct Timeline {
     /// when its last compound clip is taken apart.
     #[serde(default, skip_serializing_if = "crate::is_no")]
     pub compound: bool,
+    /// The ready-made piece it was made as, for a compound clip that is one (`promo.add` with
+    /// `compound`): given other words or numbers (`promo.set`), its inside is made again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made: Option<crate::Made>,
 }
 
 /// A timeline as listed: id, name, length and whether it is the one being edited.
@@ -110,6 +114,7 @@ impl Project {
                 markers: Vec::new(),
                 cover: None,
                 compound: false,
+                made: None,
             });
             self.timeline = id;
         }
@@ -150,6 +155,14 @@ impl Project {
             }
         }
         tracks
+    }
+
+    /// The tracks of timeline `id` to change, wherever they are kept.
+    pub fn tracks_of_mut(&mut self, id: &str) -> Option<&mut Vec<Track>> {
+        if id == self.timeline {
+            return Some(&mut self.tracks);
+        }
+        self.timelines.iter_mut().find(|t| t.id == id).map(|t| &mut t.tracks)
     }
 
     /// The tracks of timeline `id`, wherever they are: the project's for the one being edited.
@@ -254,6 +267,7 @@ mod tests {
             markers: vec![],
             cover: None,
             compound: false,
+            made: None,
         });
         p.check().unwrap();
         let before = p.tracks.clone();

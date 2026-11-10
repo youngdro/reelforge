@@ -2730,6 +2730,97 @@ fn ready_made_pieces_take_lines_numbers_sides_and_fold_into_one_clip() {
 }
 
 #[test]
+fn a_folded_piece_is_given_other_words_and_made_again_to_fit() {
+    let mut s = Session::default();
+    let shape_width = |s: &Session, timeline: &str| {
+        let p = s.project();
+        let clips = p.tracks_of(timeline).unwrap().iter().flat_map(|t| &t.clips);
+        clips
+            .filter_map(|c| if let ClipContent::Shape { shape } = &c.content { Some(shape.size[0]) } else { None })
+            .next()
+    };
+    let words = |s: &Session, timeline: &str| -> Vec<String> {
+        let p = s.project();
+        let clips = p.tracks_of(timeline).unwrap().iter().flat_map(|t| &t.clips);
+        clips
+            .filter_map(|c| if let ClipContent::Text { text, .. } = &c.content { Some(text.clone()) } else { None })
+            .collect()
+    };
+    let out = s
+        .execute(
+            "promo.add",
+            &json!({"kind": "buyButton", "compound": true, "start": {"seconds": 2}, "color": [0, 0.5, 1]}),
+        )
+        .unwrap();
+    let (clip, timeline) = (out["clip"].as_str().unwrap().to_string(), out["timeline"].as_str().unwrap().to_string());
+    let narrow = shape_width(&s, &timeline).unwrap();
+    // what it was made as is kept, and read back
+    let got = s.execute("promo.get", &json!({"clip": clip})).unwrap();
+    assert_eq!((got["piece"]["kind"].as_str(), got["piece"]["text"].as_str()), (Some("buyButton"), Some("立即抢购")));
+    assert_eq!(got["piece"]["color"], json!([0.0, 0.5, 1.0, 1.0]));
+    // the clip is moved and set like any other; then the piece is given longer words
+    s.execute("clip.set", &json!({"clip": clip, "y": -0.1, "opacity": 0.8})).unwrap();
+    let out = s.execute("promo.set", &json!({"clip": clip, "text": "现在就去店里看看吧"})).unwrap();
+    assert_eq!(out["piece"]["text"], json!("现在就去店里看看吧"));
+    // the button is made again as wide as its words, in the colour it had; the clip is as it was set
+    assert_eq!(words(&s, &timeline), ["现在就去店里看看吧"]);
+    assert!(shape_width(&s, &timeline).unwrap() > narrow + 100.0);
+    let p = s.project();
+    let (_, outer) = p.clip(&clip).unwrap();
+    assert_eq!((outer.start, outer.transform.y, outer.opacity), (Tick::from_seconds(2.0), -0.1, 0.8));
+    let ClipContent::Shape { shape } = &p.tracks_of(&timeline).unwrap()[0].clips[0].content else { panic!() };
+    assert!(matches!(shape.fill, Some(Fill::Linear { to, .. }) if to == [0.0, 0.5, 1.0, 1.0]));
+    s.execute("render.compile", &json!({})).unwrap();
+    // one undo step
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(words(&s, &timeline), ["立即抢购"]);
+
+    // rows, numbers and sides are given the same way; what is not named stays
+    let out = s.execute("promo.add", &json!({"kind": "checklist", "compound": true, "lines": ["轻", "快"]})).unwrap();
+    let (list, inner) = (out["clip"].as_str().unwrap().to_string(), out["timeline"].as_str().unwrap().to_string());
+    s.execute("promo.set", &json!({"clip": list, "lines": ["轻", "快", "稳"], "scale": 0.8})).unwrap();
+    assert_eq!(words(&s, &inner), ["✓  轻", "✓  快", "✓  稳"]);
+    s.execute("promo.set", &json!({"clip": list, "color": [0, 0, 0]})).unwrap();
+    assert_eq!(words(&s, &inner).len(), 3);
+    assert_eq!(crate::made_of(&s.project(), &list).unwrap().1.scale, 0.8);
+    let out = s.execute("promo.add", &json!({"kind": "flashProgress", "compound": true})).unwrap();
+    let (bar, inner) = (out["clip"].as_str().unwrap().to_string(), out["timeline"].as_str().unwrap().to_string());
+    s.execute("promo.set", &json!({"clip": bar, "value": 40})).unwrap();
+    let p = s.project();
+    let ClipContent::Shape { shape } = &p.tracks_of(&inner).unwrap()[1].clips[0].content else { panic!() };
+    assert_eq!(shape.trim, [0.0, 0.4]);
+    // it is refused what the piece cannot be, and nothing changes
+    assert!(s.execute("promo.set", &json!({"clip": list, "lines": []})).is_err());
+    assert!(s.execute("promo.set", &json!({"clip": list, "side": "inwards"})).is_err());
+    assert!(s.execute("promo.set", &json!({"clip": list, "kind": "banner"})).is_err());
+    assert!(s.execute("promo.set", &json!({"clip": list, "scale": 0})).is_err());
+    // a piece left as grouped clips, or any other clip, is not one to rewrite
+    let grouped = s.execute("promo.add", &json!({"kind": "banner"})).unwrap();
+    let part = grouped["clips"][0]["clip"].clone();
+    assert!(s.execute("promo.set", &json!({"clip": part, "text": "x"})).is_err());
+    assert_eq!(s.execute("promo.get", &json!({"clip": part})).unwrap()["piece"], Value::Null);
+    assert!(s.execute("promo.get", &json!({"clip": "c999"})).is_err());
+
+    // a second clip playing the same piece changes with the first, also after the piece's own
+    // timeline was opened and left; saved and opened, it is still a piece
+    let copy = s.execute("clip.duplicate", &json!({"clips": [clip]})).unwrap();
+    let copy = copy["clips"][0]["clip"].as_str().unwrap().to_string();
+    s.execute("timeline.switch", &json!({"timeline": timeline})).unwrap();
+    let main = s.project().timelines.iter().find(|t| !t.compound).unwrap().id.clone();
+    s.execute("timeline.switch", &json!({"timeline": main})).unwrap();
+    s.execute("promo.set", &json!({"clip": copy, "text": "去看看"})).unwrap();
+    assert_eq!(words(&s, &timeline), ["去看看"]);
+    let again = Project::from_json(&s.project().to_json()).unwrap();
+    again.check().unwrap();
+    assert_eq!(crate::made_of(&again, &clip).unwrap().1.text, "去看看");
+    // taken apart, it is ordinary clips again
+    s.execute("clip.remove", &json!({"clips": [copy]})).unwrap();
+    s.execute("clip.uncompound", &json!({"clip": clip})).unwrap();
+    assert!(s.project().timelines.iter().all(|t| t.id != timeline));
+    s.project().check().unwrap();
+}
+
+#[test]
 fn the_brand_gives_new_pieces_their_colours_font_and_logo() {
     let mut s = Session::default();
     assert_eq!(s.execute("brand.get", &json!({})).unwrap(), json!({"brand": {}}));
