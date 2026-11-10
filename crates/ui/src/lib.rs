@@ -144,6 +144,8 @@ pub struct EditorApp {
     status: String,
     preview: Option<egui::TextureHandle>,
     preview_key: Option<PreviewKey>,
+    /// The preview's texture and where it was drawn last: what lights the stage.
+    lit: Option<(egui::TextureId, egui::Rect)>,
     /// The RenderSpec the preview draws, and the revision and gesture it was compiled for: a
     /// playing preview compiles once, not every frame.
     preview_spec: Option<((u64, Moving), Option<Spec>)>,
@@ -405,6 +407,7 @@ impl EditorApp {
             status: String::new(),
             preview: None,
             preview_key: None,
+            lit: None,
             preview_spec: None,
             full_quality: false,
             zoom: 1.0,
@@ -1934,7 +1937,7 @@ impl EditorApp {
         let s = self.s();
         ui.horizontal_centered(|ui| {
             let narrow = self.narrow;
-            ui.label(egui::RichText::new("reelforge").strong().size(15.0).color(theme::color::ACCENT));
+            theme::brand(ui);
             ui.add_space(6.0);
             if let Some(drafts) = &self.drafts {
                 // to the drafts page, and which draft this is
@@ -2024,7 +2027,10 @@ impl EditorApp {
         let s = self.s();
         ui.horizontal_centered(|ui| {
             ui.label(
-                egui::RichText::new(theme::timecode(self.playhead.seconds())).monospace().color(theme::color::TEXT),
+                egui::RichText::new(theme::timecode(self.playhead.seconds()))
+                    .monospace()
+                    .size(15.0)
+                    .color(theme::color::TEXT),
             );
             // a narrow bar keeps the playhead's time, the steps by a frame, play, loop and the
             // preview alone
@@ -2047,15 +2053,8 @@ impl EditorApp {
             if theme::tool(ui, icon::FRAME_BACK, "", s.prev_frame, true).clicked() {
                 self.seek(fps.tick_of(frame - 1));
             }
-            let play = egui::Button::new(
-                egui::RichText::new(if self.playing { icon::PAUSE } else { icon::PLAY })
-                    .size(18.0)
-                    .color(theme::color::ON_ACCENT),
-            )
-            .fill(theme::color::ACCENT)
-            .min_size(egui::vec2(44.0, 30.0))
-            .corner_radius(15.0);
-            if ui.add(play).on_hover_text(s.play_tip).clicked() {
+            let glyph = if self.playing { icon::PAUSE } else { icon::PLAY };
+            if theme::aurora_button(ui, glyph, 18.0, egui::vec2(52.0, 32.0), true).on_hover_text(s.play_tip).clicked() {
                 self.set_playing(!self.playing);
             }
             if theme::tool(ui, icon::FRAME_ON, "", s.next_frame, true).clicked() {
@@ -3752,6 +3751,7 @@ impl EditorApp {
     }
 
     fn preview(&mut self, ui: &mut egui::Ui) {
+        self.lit = None;
         let mut p = self.project();
         // a gesture in progress is drawn from a copy with the clip's new placement
         if let Some(g) = &self.gesture
@@ -3895,6 +3895,7 @@ impl EditorApp {
         }
         let s = (area.width() / w).min(area.height() / h) * self.zoom;
         let frame_rect = egui::Rect::from_center_size(area.center() + self.pan, egui::vec2(w * s, h * s));
+        self.lit = Some((id, frame_rect));
         ui.painter_at(area).image(
             id,
             frame_rect,
@@ -4316,10 +4317,22 @@ impl eframe::App for EditorApp {
             ui.ctx().request_repaint();
         }
         self.shortcuts(&ctx);
-        let bar = |fill| egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(12, 6));
-        egui::Panel::top("top").exact_size(42.0).frame(bar(theme::color::PANEL)).show(ui, |ui| self.top_bar(ui));
+        // everything sits on the stage: the bars straight on it, the panels as islands with gaps
+        ui.painter().rect_filled(ctx.content_rect(), 0.0, theme::color::STAGE);
+        // the picture lights the stage around it (from where it was drawn a frame ago)
+        if let Some((texture, frame)) = self.lit {
+            theme::ambient(ui.painter(), texture, frame, 1.0);
+        }
+        let bar = |_| egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 6));
+        let gap = theme::GAP;
+        egui::Panel::top("top")
+            .exact_size(44.0)
+            .show_separator_line(false)
+            .frame(bar(theme::color::STAGE))
+            .show(ui, |ui| self.top_bar(ui));
         egui::Panel::bottom("status")
             .exact_size(24.0)
+            .show_separator_line(false)
             .frame(bar(theme::color::STAGE))
             .show(ui, |ui| self.status_bar(ui));
         let p = self.project();
@@ -4342,18 +4355,19 @@ impl eframe::App for EditorApp {
                 egui::Panel::right(id.to_string()).default_size(width)
             }
             .resizable(true)
+            .show_separator_line(false)
         };
         if narrow {
-            egui::Panel::bottom("sheets").exact_size(40.0).frame(bar(theme::color::PANEL)).show_collapsible(
+            egui::Panel::bottom("sheets").exact_size(40.0).frame(bar(theme::color::STAGE)).show_collapsible(
                 ui,
                 &mut shown.clone(),
                 |ui| self.sheet_tabs(ui),
             );
         }
-        let timeline = egui::Panel::bottom("timeline").resizable(true).default_size(280.0);
+        let timeline = egui::Panel::bottom("timeline").resizable(true).show_separator_line(false).default_size(290.0);
         let timeline = if narrow { timeline.size_range(140.0..=tallest) } else { timeline };
         let out = timeline
-            .frame(egui::Frame::new().fill(theme::color::PANEL))
+            .frame(theme::island(0).outer_margin(egui::Margin { left: gap, right: gap, top: gap / 2, bottom: 0 }))
             .show_collapsible(ui, &mut timeline_on.clone(), |ui| {
                 egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| self.timeline_bar(ui));
                 self.timeline.show(ui, &p, self.playhead, &selection, playing, can_paste, range, lang, &media)
@@ -4365,21 +4379,30 @@ impl eframe::App for EditorApp {
         }
         let looks = self.looks.clone().unwrap_or_default();
         let asked = side("assets", true, 300.0)
-            .frame(egui::Frame::new().fill(theme::color::PANEL).inner_margin(egui::Margin::same(10)))
+            .frame(theme::island(10).outer_margin(if narrow {
+                egui::Margin { left: gap, right: gap, top: gap / 2, bottom: 0 }
+            } else {
+                egui::Margin { left: gap, right: gap / 2, top: 0, bottom: gap / 2 }
+            }))
             .show_collapsible(ui, &mut media_on.clone(), |ui| {
                 self.assets.show(ui, &p, &media, lang, &looks, playing, self.playhead, &selection)
             })
             .and_then(|r| r.inner);
         side("inspector", false, 290.0)
-            .frame(egui::Frame::new().fill(theme::color::PANEL).inner_margin(egui::Margin::same(12)))
+            .frame(theme::island(12).outer_margin(if narrow {
+                egui::Margin { left: gap, right: gap, top: gap / 2, bottom: 0 }
+            } else {
+                egui::Margin { left: gap / 2, right: gap, top: 0, bottom: gap / 2 }
+            }))
             .show_collapsible(ui, &mut adjust_on.clone(), |ui| self.inspector(ui));
         let edge = if narrow { 8 } else { 16 };
         egui::Panel::bottom("transport")
-            .exact_size(46.0)
-            .frame(bar(theme::color::STAGE).inner_margin(egui::Margin::symmetric(edge, 6)))
+            .exact_size(50.0)
+            .show_separator_line(false)
+            .frame(bar(theme::color::STAGE).inner_margin(egui::Margin::symmetric(edge, 8)))
             .show(ui, |ui| self.transport(ui));
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(theme::color::STAGE).inner_margin(egui::Margin::same(edge)))
+            .frame(egui::Frame::new().inner_margin(egui::Margin::same(edge)))
             .show(ui, |ui| self.preview(ui));
 
         if let Some(t) = out.seek {
