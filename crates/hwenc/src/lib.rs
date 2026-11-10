@@ -14,6 +14,8 @@ use reelforge_media::VideoEncoder;
 use reelforge_renderspec::VideoEncoding;
 use reelforge_time::FrameRate;
 
+#[cfg(target_os = "windows")]
+mod mediafoundation;
 mod nal;
 #[cfg(target_os = "macos")]
 mod videotoolbox;
@@ -37,7 +39,12 @@ fn system(size: [u32; 2], fps: FrameRate, venc: &VideoEncoding) -> Option<Box<dy
     videotoolbox::Encoder::open(size, fps, venc).ok().map(|e| Box::new(e) as Box<dyn VideoEncoder>)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn system(size: [u32; 2], fps: FrameRate, venc: &VideoEncoding) -> Option<Box<dyn VideoEncoder>> {
+    mediafoundation::Encoder::open(size, fps, venc).ok().map(|e| Box::new(e) as Box<dyn VideoEncoder>)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn system(_: [u32; 2], _: FrameRate, _: &VideoEncoding) -> Option<Box<dyn VideoEncoder>> {
     None
 }
