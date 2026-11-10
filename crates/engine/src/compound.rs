@@ -91,6 +91,7 @@ fn plain(id: String, start: Tick, duration: Tick, content: ClipContent) -> Clip 
         voice: Default::default(),
         group: None,
         slot: None,
+        steady: None,
     }
 }
 

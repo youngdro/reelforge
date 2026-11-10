@@ -104,9 +104,12 @@ fn read_ahead(
         if t >= spec.output.duration {
             break;
         }
-        for (asset, at, shrink) in sources_at(spec, t, scale) {
+        for (asset, at, shrink, between) in sources_at(spec, t, scale) {
             let Some(def) = spec.assets.get(&asset) else { continue };
-            if pictures && step <= PICTURES {
+            if pictures && step <= PICTURES && !between.is_nearest() {
+                // a picture made between two frames is kept by the footage for when it is asked for
+                let _ = reelforge_render::MediaSource::picture_between(media, &asset, def, at, between, shrink);
+            } else if pictures && step <= PICTURES {
                 media.prefetch(def, at, shrink);
             } else {
                 media.warm(def, at);
@@ -120,17 +123,17 @@ fn read_ahead(
 }
 
 /// The pictures of assets a frame at `t` drawn `scale` times its size shows: `(asset id, source
-/// instant, how many times smaller the draft asks for it)`.
+/// instant, how many times smaller the draft asks for it, what shows between its frames)`.
 #[cfg(not(target_arch = "wasm32"))]
-fn sources_at(spec: &RenderSpec, t: Tick, scale: f32) -> Vec<(String, Tick, u32)> {
+fn sources_at(spec: &RenderSpec, t: Tick, scale: f32) -> Vec<(String, Tick, u32, reelforge_renderspec::Between)> {
     let plan = reelforge_render::plan_frame(spec, t, scale);
     // the ones a compound clip shows are drawn into a frame of their own
     plan.media_layers()
         .into_iter()
         .filter_map(|(frame, l)| match &l.source {
-            reelforge_render::PlannedSource::Media { asset, at } => {
+            reelforge_render::PlannedSource::Media { asset, at, between } => {
                 let shrink = spec.assets.get(asset).map_or(1, |a| reelforge_render::cpu::draft_shrink(a, frame, l));
-                Some((asset.clone(), *at, shrink))
+                Some((asset.clone(), *at, shrink, *between))
             }
             _ => None,
         })

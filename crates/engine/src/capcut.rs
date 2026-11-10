@@ -142,6 +142,7 @@ fn blank_clip(id: String, start: Tick, duration: Tick, content: ClipContent) -> 
         voice: Default::default(),
         group: None,
         slot: None,
+        steady: None,
     }
 }
 
@@ -297,6 +298,7 @@ fn read_draft(proj: &mut Project, draft: &Value, folder: Option<&str>) -> Result
                         reversed: seg["reverse"].as_bool().unwrap_or(false),
                         curve: vec![],
                         silent: false,
+                        frames: Default::default(),
                     }
                 }
                 TrackKind::Text => {

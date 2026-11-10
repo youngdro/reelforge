@@ -54,8 +54,8 @@ use reelforge_compile::{CompileOptions, compile};
 use reelforge_engine::{Session, SharedSession};
 use reelforge_media::Footage;
 use reelforge_model::{
-    Adjust, AnimKind, BlendMode, ClipContent, ClipTransform, CurvePreset, FilterKind, LoopKind, Mask, MaskKind,
-    MediaKind, Project, Prop, TrackKind, TransitionKind, VoiceKind,
+    Adjust, AnimKind, BlendMode, ClipContent, ClipTransform, CurvePreset, FilterKind, Inbetween, LoopKind, Mask,
+    MaskKind, MediaKind, Project, Prop, TrackKind, TransitionKind, VoiceKind,
 };
 use reelforge_render::{Quality, render_frame};
 use reelforge_time::Tick;
@@ -208,6 +208,9 @@ pub struct EditorApp {
     sheet: Sheet,
     /// The clip the next picture or video picked takes the place of (Replace in a clip's menu).
     into: Option<String>,
+    /// A tool that takes a moment (it watches a clip's every frame), to run once this many more
+    /// frames have been drawn: by then the status bar says what is going on.
+    later: Option<(u8, &'static str, Value)>,
     /// The window, once it is known, for a remote's answers to wake it.
     window: Arc<std::sync::OnceLock<egui::Context>>,
 }
@@ -330,6 +333,10 @@ struct SpeedEdit {
     frozen: bool,
     /// Video, which can be frozen.
     video: bool,
+    /// How much of the camera's shake is taken out, in percent, when the picture is held steady.
+    steady: Option<f32>,
+    /// What shows between two frames of the file.
+    frames: Inbetween,
 }
 
 /// Whether a property has a keyframe at the playhead.
@@ -435,6 +442,7 @@ impl EditorApp {
             narrow: false,
             sheet: Sheet::default(),
             into: None,
+            later: None,
             window: Arc::default(),
         }
     }
@@ -619,6 +627,9 @@ impl EditorApp {
             }
             "audio.duck" => fill(s.duck_done, &[&found["spans"]]),
             "audio.denoise" if found.get("noiseDb").is_some() => fill(s.denoise_done, &[&found["noiseDb"]]),
+            "clip.stabilize" if found.get("frames").is_some() => {
+                fill(s.steady_done, &[&found["frames"], &found["zoom"]])
+            }
             _ => fill(s.done, &[&name]),
         };
     }
@@ -2801,7 +2812,7 @@ impl EditorApp {
             volume: has_sound.then(|| clip.value_at(Prop::VolumeDb, local)),
             fades: has_sound.then(|| [clip.fade.fade_in.seconds() as f32, clip.fade.fade_out.seconds() as f32]),
             speed: match &clip.content {
-                ClipContent::Media { media, speed, reversed, curve, .. }
+                ClipContent::Media { media, speed, reversed, curve, frames, .. }
                     if p.media.get(media).is_some_and(|m| m.kind != MediaKind::Image) =>
                 {
                     Some(SpeedEdit {
@@ -2812,6 +2823,8 @@ impl EditorApp {
                         frozen: *speed == 0.0,
                         video: p.media.get(media).is_some_and(|m| m.kind == MediaKind::Video)
                             && p.clip(&id).is_some_and(|(ti, _)| p.tracks[ti].kind == TrackKind::Video),
+                        steady: clip.steady.as_ref().map(|s| (s.amount * 100.0).round()),
+                        frames: *frames,
                     })
                 }
                 ClipContent::Media { speed, .. } if *speed == 0.0 => Some(SpeedEdit {
@@ -2821,6 +2834,8 @@ impl EditorApp {
                     curve: None,
                     frozen: true,
                     video: false,
+                    steady: None,
+                    frames: Inbetween::Repeat,
                 }),
                 _ => None,
             },
@@ -3584,6 +3599,51 @@ impl EditorApp {
                             actions.push(("clip.freeze", json!({"clip": id, "at": at})));
                         }
                     });
+                    if sp.video {
+                        // a shaky shot held steady: measured once, then only how much is taken out
+                        ui.horizontal(|ui| {
+                            let mut on = sp.steady.is_some();
+                            if ui.checkbox(&mut on, s.steady).on_hover_text(s.steady_tip).changed() {
+                                actions.push(if on {
+                                    ("clip.stabilize", json!({"clip": id}))
+                                } else {
+                                    ("clip.setStabilize", json!({"clip": id, "amount": 0}))
+                                });
+                            }
+                            if let Some(amount) = &mut sp.steady {
+                                let r = ui.add(
+                                    egui::DragValue::new(amount)
+                                        .speed(1.0)
+                                        .range(5.0..=100.0)
+                                        .suffix(" %")
+                                        .max_decimals(0),
+                                );
+                                if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                                    actions.push(("clip.setStabilize", json!({"clip": id, "amount": *amount / 100.0})));
+                                }
+                                r.on_hover_text(s.steady_amount_tip);
+                            }
+                        });
+                        // what a slowed clip shows between the file's frames
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(s.frames).color(theme::color::WEAK))
+                                .on_hover_text(s.frames_tip);
+                            let name =
+                                |f: Inbetween| s.frames_names[Inbetween::ALL.iter().position(|x| *x == f).unwrap_or(0)];
+                            let mut picked = sp.frames;
+                            egui::ComboBox::from_id_salt("frames").selected_text(name(picked)).width(110.0).show_ui(
+                                ui,
+                                |ui| {
+                                    for f in Inbetween::ALL {
+                                        ui.selectable_value(&mut picked, f, name(f));
+                                    }
+                                },
+                            );
+                            if picked != sp.frames {
+                                actions.push(("clip.setSpeed", json!({"clip": id, "frames": picked.name()})));
+                            }
+                        });
+                    }
                 });
             }
             let titled = edit.title.is_some();
@@ -3748,6 +3808,11 @@ impl EditorApp {
                 self.key_out(&id);
             } else if cmd.starts_with("audio.") {
                 self.listen(cmd, &params);
+            } else if cmd == "clip.stabilize" {
+                // every frame is watched, which takes a moment: say so first
+                self.status = self.s().steady_watching.to_string();
+                self.later = Some((2, cmd, params));
+                ui.ctx().request_repaint();
             } else {
                 let _ = self.execute(cmd, params);
             }
@@ -4379,6 +4444,14 @@ impl eframe::App for EditorApp {
             }
         }
         self.narrow = ctx.content_rect().width() < NARROW_BELOW;
+        match self.later.take() {
+            Some((0, tool, params)) => self.listen(tool, &params),
+            Some((n, tool, params)) => {
+                self.later = Some((n - 1, tool, params));
+                ctx.request_repaint();
+            }
+            None => {}
+        }
         if self.into.is_some() && self.into != self.selected {
             // the clip waiting for a file to replace it was let go of
             self.into = None;
