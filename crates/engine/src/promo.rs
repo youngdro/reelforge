@@ -217,6 +217,7 @@ pub(crate) fn promo_list(_: &mut Session, _: &Value) -> CmdResult {
                     "y": p.place[1],
                     "duration": Tick::from_seconds(p.millis as f64 / 1000.0),
                     "clips": p.clips(),
+                    "media": p.pictured,
                     "about": p.about,
                 })
             })
@@ -291,6 +292,18 @@ fn numbers(v: &Value, name: &str, most: usize) -> Result<Option<Vec<f32>>, Engin
     list.iter().map(read).collect::<Result<Vec<_>, _>>().map(Some)
 }
 
+/// Refuses a picture a command names for a piece (`media`) that the project has not got.
+fn pictured(proj: &Project, v: &Value) -> Result<(), EngineError> {
+    let Some(id) = v.get("media").and_then(Value::as_str) else { return Ok(()) };
+    match proj.media.get(id) {
+        None => Err(not_found("media", id)),
+        Some(m) if !matches!(m.kind, MediaKind::Image | MediaKind::Video) => {
+            Err(EngineError::Params(format!("media {id:?} is not a picture or a video")))
+        }
+        Some(_) => Ok(()),
+    }
+}
+
 fn known(id: &str) -> Result<&'static Promo, EngineError> {
     PROMOS
         .iter()
@@ -340,6 +353,12 @@ fn told(v: &Value, fps: reelforge_time::FrameRate, was: Made) -> Result<Made, En
         Side::parse(name).ok_or_else(|| wrong("side", &format!("one of {}", Side::NAMES.join(", "))))?;
         made.side = Some(name.to_string());
     }
+    // a picture to show, or none again
+    match v.get("media") {
+        None => {}
+        Some(Value::Null) => made.media = None,
+        Some(_) => made.media = Some(p.str("media")?.to_string()),
+    }
     made.x = p.opt_f64("x")?.map_or(made.x, |x| x as f32);
     made.y = p.opt_f64("y")?.map_or(made.y, |y| y as f32);
     made.scale = p.opt_f64("scale")?.map_or(made.scale, |s| s as f32);
@@ -350,8 +369,24 @@ fn told(v: &Value, fps: reelforge_time::FrameRate, was: Made) -> Result<Made, En
 }
 
 /// The clips of a piece as `made` has it, bottom first, each with the kind of track it goes on
-/// and when it starts after the piece does. Their ids are still to be given.
-fn clips_of(proj: &Project, made: &Made) -> Vec<(TrackKind, Tick, Clip)> {
+/// and when it starts after the piece does. Each has its id, and a carried one its carrier's.
+fn named(proj: &mut Project, made: &Made) -> Vec<(TrackKind, Tick, Clip)> {
+    let parts = parts_of(proj, made);
+    let ids: Vec<String> = parts.iter().map(|_| proj.mint("c")).collect();
+    parts
+        .into_iter()
+        .zip(&ids)
+        .map(|((kind, wait, mut clip, carried), id)| {
+            clip.id = id.clone();
+            clip.parent = carried.map(|i| ids[i].clone());
+            (kind, wait, clip)
+        })
+        .collect()
+}
+
+/// The clips of [`named`] before they have ids, each with the place in the list of the clip that
+/// carries it, if one does.
+fn parts_of(proj: &Project, made: &Made) -> Vec<(TrackKind, Tick, Clip, Option<usize>)> {
     let (x, y, scale, dur) = (made.x, made.y, made.scale, made.duration);
     let (cw, ch) = (proj.canvas.width as f32, proj.canvas.height as f32);
     // sizes are for a canvas whose shorter side is 1080; a larger or smaller one gets them in
@@ -377,10 +412,18 @@ fn clips_of(proj: &Project, made: &Made) -> Vec<(TrackKind, Tick, Clip)> {
         place: [x, y],
         scale,
         logo: held(&made.logo, MediaKind::Image),
+        media: made
+            .media
+            .clone()
+            .filter(|id| proj.media.get(id).is_some_and(|m| matches!(m.kind, MediaKind::Image | MediaKind::Video))),
     };
     let parts = pieces::parts(&made.kind, &ask).expect("a known piece");
     let mut out = vec![];
-    for mut part in parts {
+    // how large each part is on the canvas, for what it carries
+    let mut sizes: Vec<f32> = vec![];
+    for (at, mut part) in parts.into_iter().enumerate() {
+        // only a part before it can carry it
+        let carried = part.carried.filter(|i| *i < at);
         // a part that comes in late still shows for a quarter of the piece
         let wait = part.delay.min(Tick(dur.0 / 4 * 3));
         let long = dur - wait;
@@ -402,11 +445,19 @@ fn clips_of(proj: &Project, made: &Made) -> Vec<(TrackKind, Tick, Clip)> {
             _ => {}
         }
         let mut clip = plain_clip(String::new(), wait, long, part.content);
+        // a carried part is counted from its carrier's place, along the carrier's own scaled
+        // axes: its place and size are shares of the carrier's
+        let (from, by) = match carried {
+            Some(i) => ([0.0, 0.0], 1.0 / sizes[i].max(1e-6)),
+            None => ([x, y], 1.0),
+        };
+        sizes.push(size);
         clip.transform = ClipTransform {
-            x: x + part.at[0] * k / cw,
-            y: y + part.at[1] * k / ch,
-            scale: size,
+            x: from[0] + part.at[0] * k / cw * by,
+            y: from[1] + part.at[1] * k / ch * by,
+            scale: size * by,
             rotation: part.rotation,
+            motion_blur: if part.blur { ClipTransform::SHUTTERS.0 } else { 0.0 },
             ..ClipTransform::default()
         };
         let enter = part.enter_for.unwrap_or(Tick::from_seconds(0.6)).min(Tick(long.0 / 2));
@@ -417,8 +468,8 @@ fn clips_of(proj: &Project, made: &Made) -> Vec<(TrackKind, Tick, Clip)> {
             for (share, value, ease) in keys {
                 let t = Tick(long.0 * share / 1000);
                 let v = match prop {
-                    Prop::X => clip.transform.x + value * k / cw,
-                    Prop::Y => clip.transform.y + value * k / ch,
+                    Prop::X => clip.transform.x + value * k / cw * by,
+                    Prop::Y => clip.transform.y + value * k / ch * by,
                     _ => value,
                 };
                 match list.last_mut() {
@@ -428,7 +479,7 @@ fn clips_of(proj: &Project, made: &Made) -> Vec<(TrackKind, Tick, Clip)> {
             }
             clip.keys.insert(prop, list);
         }
-        out.push((part.track, wait, clip));
+        out.push((part.track, wait, clip, carried));
     }
     out
 }
@@ -439,8 +490,7 @@ fn inside(proj: &mut Project, made: &Made) -> (Vec<Track>, Vec<String>) {
     let group = proj.mint("g");
     let mut tracks: Vec<Track> = vec![];
     let mut ids = vec![];
-    for (kind, _, mut clip) in clips_of(proj, made) {
-        clip.id = proj.mint("c");
+    for (kind, _, mut clip) in named(proj, made) {
         clip.group = Some(group.clone());
         ids.push(clip.id.clone());
         let n = tracks.iter().filter(|t| t.kind == kind).count() + 1;
@@ -491,9 +541,11 @@ pub(crate) fn promo_add(s: &mut Session, v: &Value) -> CmdResult {
         duration: dur,
         font: brand.font,
         logo: brand.logo,
+        media: None,
         forms: Default::default(),
     };
     let made = told(v, fps(s), comes)?;
+    pictured(&s.project, v)?;
     s.edit("Add Promo", |proj| {
         if folded {
             // one compound clip, the piece inside it on a timeline of its own
@@ -526,11 +578,10 @@ pub(crate) fn promo_add(s: &mut Session, v: &Value) -> CmdResult {
         let group = proj.mint("g");
         let mut below = 0;
         let mut clips = vec![];
-        for (kind, wait, mut clip) in clips_of(proj, &made) {
+        for (kind, wait, mut clip) in named(proj, &made) {
             clip.start = start + wait;
             let ti = free_track(proj, kind, below, clip.start, clip.duration);
             below = ti + 1;
-            clip.id = proj.mint("c");
             clip.group = Some(group.clone());
             clips.push(json!({"clip": clip.id, "track": proj.tracks[ti].id}));
             proj.tracks[ti].clips.push(clip);
@@ -571,6 +622,7 @@ pub(crate) fn promo_set(s: &mut Session, v: &Value) -> CmdResult {
             )));
         };
         let made = told(v, fps, was)?;
+        pictured(proj, v)?;
         remake(proj, &timeline, made.clone());
         Ok(json!({ "clip": id, "timeline": timeline, "piece": made }))
     })

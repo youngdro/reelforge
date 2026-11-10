@@ -77,6 +77,9 @@ pub struct Made {
     /// The logo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logo: Option<String>,
+    /// A picture it shows (a product card's product): an image or video of the project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<String>,
     /// Where its words and numbers come from, for a piece written from the project's copy.
     #[serde(default, skip_serializing_if = "Forms::is_empty")]
     pub forms: Forms,

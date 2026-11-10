@@ -353,6 +353,8 @@ struct PieceEdit {
     lines: Option<String>,
     /// Its number, if it counts.
     value: Option<f32>,
+    /// The picture it shows, for a piece that shows one: a media id, or none.
+    picture: Option<Option<String>>,
 }
 
 /// A sounding clip's voice, as the inspector edits it.
@@ -3165,6 +3167,7 @@ impl EditorApp {
                     text: (!promo.text.is_empty()).then(|| made.text.clone()),
                     lines: (!promo.lines.is_empty()).then(|| made.lines.join("\n")),
                     value: made.value,
+                    picture: promo.pictured.then(|| made.media.clone()),
                 })
             }),
             title: match &clip.content {
@@ -3360,6 +3363,36 @@ impl EditorApp {
                                 told.insert("value".into(), json!(*value));
                             }
                         });
+                    }
+                    if let Some(picture) = &mut piece.picture {
+                        let pictures: Vec<(&str, &str)> = p
+                            .media
+                            .values()
+                            .filter(|m| matches!(m.kind, MediaKind::Image | MediaKind::Video))
+                            .map(|m| (m.id.as_str(), m.name.as_str()))
+                            .collect();
+                        let shown = picture
+                            .as_deref()
+                            .and_then(|at| pictures.iter().find(|(id, _)| *id == at))
+                            .map_or(s.none, |(_, name)| *name);
+                        let was = picture.clone();
+                        egui::Grid::new("piece picture").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                            theme::field_name(ui, s.piece_picture);
+                            egui::ComboBox::from_id_salt("piece picture")
+                                .selected_text(shown)
+                                .width(ui.available_width())
+                                .truncate()
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(picture, None, s.none);
+                                    for (id, name) in &pictures {
+                                        ui.selectable_value(picture, Some(id.to_string()), *name);
+                                    }
+                                });
+                            ui.end_row();
+                        });
+                        if *picture != was {
+                            told.insert("media".into(), json!(picture));
+                        }
                     }
                     ui.label(egui::RichText::new(s.piece_tip).small().color(theme::color::WEAK));
                     if !told.is_empty() {
