@@ -32,6 +32,7 @@ log = "0.4"
 
 # media
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+gif = "0.14"
 # FilmCraft's clean-room, pure-Rust codecs and containers (MIT OR Apache-2.0)
 filmcraft-media = "0.9"
 filmcraft-codecs = "0.9"

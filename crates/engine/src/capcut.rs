@@ -442,6 +442,7 @@ pub(crate) fn capcut_import(s: &mut Session, v: &Value) -> CmdResult {
                     name: name.clone(),
                     tracks: vec![],
                     markers: vec![],
+                    cover: None,
                     compound: false,
                 },
             );

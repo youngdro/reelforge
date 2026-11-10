@@ -1,5 +1,5 @@
-//! How a project is exported: picture size, frame rate, quality and codec. Kept with the project so
-//! every client (editor, CLI, agents) exports the same way.
+//! How a project is exported: the kind of file, picture size, frame rate, quality and codec. Kept
+//! with the project so every client (editor, CLI, agents) exports the same way.
 
 use reelforge_time::FrameRate;
 use schemars::JsonSchema;
@@ -152,6 +152,52 @@ impl Codec {
     }
 }
 
+/// The kind of file an export writes.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum Format {
+    /// A video with its sound: MP4.
+    #[default]
+    Mp4,
+    /// A silent, small, looping picture: an animated GIF. Its size and frame rate follow the
+    /// quality ([`ExportSettings::gif`]), not the resolution and frame rate.
+    Gif,
+    /// The sound alone, compressed: AAC in an M4A file.
+    M4a,
+    /// The sound alone, as it is: 16-bit WAV.
+    Wav,
+}
+
+impl Format {
+    /// Every format, in menu order.
+    pub const ALL: [Format; 4] = [Format::Mp4, Format::Gif, Format::M4a, Format::Wav];
+
+    /// The id commands use, and the file's extension.
+    pub fn name(self) -> &'static str {
+        match self {
+            Format::Mp4 => "mp4",
+            Format::Gif => "gif",
+            Format::M4a => "m4a",
+            Format::Wav => "wav",
+        }
+    }
+
+    /// The format with this id.
+    pub fn parse(s: &str) -> Option<Format> {
+        Format::ALL.into_iter().find(|f| f.name() == s)
+    }
+
+    /// Whether the file has a picture.
+    pub fn pictured(self) -> bool {
+        matches!(self, Format::Mp4 | Format::Gif)
+    }
+
+    /// Whether the file has sound.
+    pub fn sounds(self) -> bool {
+        self != Format::Gif
+    }
+}
+
 /// The frame rates offered.
 pub const FRAME_RATES: [u32; 5] = [24, 25, 30, 50, 60];
 
@@ -171,6 +217,9 @@ pub struct ExportSettings {
     /// Video codec.
     #[serde(skip_serializing_if = "is_h264")]
     pub codec: Codec,
+    /// The kind of file.
+    #[serde(skip_serializing_if = "is_mp4")]
+    pub format: Format,
 }
 
 fn is_canvas(r: &Resolution) -> bool {
@@ -185,19 +234,24 @@ fn is_recommended(q: &Quality) -> bool {
 fn is_h264(c: &Codec) -> bool {
     *c == Codec::H264
 }
+fn is_mp4(f: &Format) -> bool {
+    *f == Format::Mp4
+}
 
 /// Ready-made settings: `(id, settings)`.
 pub const PRESETS: [(&str, ExportSettings); 4] = [
-    ("draft", ExportSettings { resolution: Resolution::P720, fps: 30, quality: Quality::Low, codec: Codec::H264 }),
-    (
-        "standard",
-        ExportSettings { resolution: Resolution::P1080, fps: 30, quality: Quality::Recommended, codec: Codec::H264 },
-    ),
-    ("smooth", ExportSettings { resolution: Resolution::P1080, fps: 60, quality: Quality::High, codec: Codec::H264 }),
-    ("4k", ExportSettings { resolution: Resolution::P2160, fps: 30, quality: Quality::High, codec: Codec::Hevc }),
+    ("draft", ExportSettings::video(Resolution::P720, 30, Quality::Low, Codec::H264)),
+    ("standard", ExportSettings::video(Resolution::P1080, 30, Quality::Recommended, Codec::H264)),
+    ("smooth", ExportSettings::video(Resolution::P1080, 60, Quality::High, Codec::H264)),
+    ("4k", ExportSettings::video(Resolution::P2160, 30, Quality::High, Codec::Hevc)),
 ];
 
 impl ExportSettings {
+    /// Settings for an MP4.
+    const fn video(resolution: Resolution, fps: u32, quality: Quality, codec: Codec) -> ExportSettings {
+        ExportSettings { resolution, fps, quality, codec, format: Format::Mp4 }
+    }
+
     /// Whether these are the defaults.
     pub fn is_default(&self) -> bool {
         *self == ExportSettings::default()
@@ -215,7 +269,21 @@ impl ExportSettings {
 
     /// The frame rate the export runs at.
     pub fn frame_rate(&self, canvas: &Canvas) -> FrameRate {
+        if self.format == Format::Gif {
+            return self.gif().1;
+        }
         if self.fps == 0 { canvas.fps } else { FrameRate { num: self.fps, den: 1 } }
+    }
+
+    /// A GIF's shorter side in pixels and its frame rate, by the quality: 240 at 10 fps, 360 at
+    /// 12.5 or 480 at 20 (rates whose frames last a whole number of hundredths of a second, which
+    /// is how a GIF counts time).
+    pub fn gif(&self) -> (u32, FrameRate) {
+        match self.quality {
+            Quality::Low => (240, FrameRate { num: 10, den: 1 }),
+            Quality::Recommended => (360, FrameRate { num: 25, den: 2 }),
+            Quality::High => (480, FrameRate { num: 20, den: 1 }),
+        }
     }
 
     /// The encoded picture size: the canvas scaled so its shorter side is the resolution's, both
@@ -223,7 +291,13 @@ impl ExportSettings {
     /// canvas.width)`). Falls back to the canvas's size when no such size is near.
     pub fn size(&self, canvas: &Canvas) -> [u32; 2] {
         let (cw, ch) = (canvas.width, canvas.height);
-        let Some(short) = self.resolution.short_side() else { return [cw, ch] };
+        // a GIF is never larger than the canvas
+        let short = if self.format == Format::Gif {
+            Some(self.gif().0).filter(|s| *s < cw.min(ch))
+        } else {
+            self.resolution.short_side()
+        };
+        let Some(short) = short else { return [cw, ch] };
         let k = short as f64 / cw.min(ch) as f64;
         let start = ((cw as f64 * k).round() as u32) & !1;
         // look for an even width whose height comes out even too, nearest first
@@ -285,5 +359,30 @@ mod tests {
         for r in Resolution::ALL {
             assert_eq!(serde_json::to_value(r).unwrap(), serde_json::json!(r.name()));
         }
+        for f in Format::ALL {
+            assert_eq!(serde_json::to_value(f).unwrap(), serde_json::json!(f.name()));
+            assert_eq!(Format::parse(f.name()), Some(f));
+        }
+    }
+
+    #[test]
+    fn a_gif_is_small_and_slow_by_its_quality() {
+        let tall = Canvas::default();
+        let gif = |quality| ExportSettings { format: Format::Gif, quality, ..ExportSettings::of_preset("4k").unwrap() };
+        // whatever the resolution and frame rate say
+        // (to the nearest size with both sides even and the canvas's shape)
+        assert_eq!(gif(Quality::Low).size(&tall), [242, 430]);
+        assert_eq!(gif(Quality::Recommended).size(&tall), [360, 640]);
+        assert_eq!(gif(Quality::High).size(&tall), [478, 850]);
+        for q in Quality::ALL {
+            let rate = gif(q).frame_rate(&tall);
+            assert!(rate.is_valid());
+            // a frame lasts a whole number of hundredths of a second
+            assert_eq!(100 * rate.den % rate.num, 0, "{rate:?}");
+        }
+        assert!(gif(Quality::Low).preset().is_none());
+        let small = Canvas { width: 320, height: 200, ..Canvas::default() };
+        assert_eq!(gif(Quality::High).size(&small), [320, 200]);
+        assert!(Format::Mp4.pictured() && Format::Mp4.sounds() && !Format::Gif.sounds() && !Format::Wav.pictured());
     }
 }

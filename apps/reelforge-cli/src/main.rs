@@ -104,12 +104,16 @@ enum Cmd {
     Export {
         /// A project, or a RenderSpec (`spec` field) as a render service would receive it.
         input: PathBuf,
-        /// The MP4 to write.
+        /// The file to write: an MP4, or what the project's export settings (or `--format`) say.
         #[arg(short, long)]
         out: PathBuf,
         /// What draws the frames: the GPU when there is one (`auto`), or always `cpu` or `gpu`.
         #[arg(long, default_value = "auto", value_parser = ["auto", "cpu", "gpu"])]
         renderer: String,
+        /// The kind of file, whatever the project's export settings say: a video, an animated
+        /// GIF, or the sound alone. Projects only.
+        #[arg(long, value_parser = ["mp4", "gif", "m4a", "wav"])]
+        format: Option<String>,
     },
     /// Print the RenderSpec JSON Schema.
     Schema,
@@ -282,7 +286,7 @@ fn run(cmd: Cmd) -> Result<(), String> {
             }
             Ok(())
         }
-        Cmd::Export { input, out, renderer } => {
+        Cmd::Export { input, out, renderer, format } => {
             let renderer = match renderer.as_str() {
                 "cpu" => reelforge_media::Renderer::Cpu,
                 "gpu" => reelforge_media::Renderer::Gpu,
@@ -290,14 +294,23 @@ fn run(cmd: Cmd) -> Result<(), String> {
             };
             let text = read(&input)?;
             let is_spec = serde_json::from_str::<Value>(&text).map_err(|e| e.to_string())?.get("spec").is_some();
+            let mut project = None;
             let spec = if is_spec {
+                if format.is_some() {
+                    return Err("--format is for projects: a RenderSpec says its own (`output.format`)".into());
+                }
                 RenderSpec::from_json(&text).map_err(|e| e.to_string())?
             } else {
-                let p = Project::from_json(&text).map_err(|e| e.to_string())?;
-                reelforge_compile::compile(&p, &reelforge_compile::CompileOptions { encode: true })
-                    .map_err(|e| e.to_string())?
+                let mut p = Project::from_json(&text).map_err(|e| e.to_string())?;
+                if let Some(f) = format.as_deref().and_then(reelforge_model::export::Format::parse) {
+                    p.export.format = f;
+                }
+                let spec = reelforge_compile::compile(&p, &reelforge_compile::CompileOptions { encode: true })
+                    .map_err(|e| e.to_string())?;
+                project = Some(p);
+                spec
             };
-            let tmp = out.with_extension("mp4.part");
+            let tmp = reelforge_server::part_of(&out);
             let file = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -307,11 +320,13 @@ fn run(cmd: Cmd) -> Result<(), String> {
                 .map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
             let started = std::time::Instant::now();
             let mut shown = 0;
+            // the sound alone is mixed a second at a time
+            let unit = if spec.output.video.is_some() { "frame" } else { "second" };
             let result = reelforge_media::export_with(&spec, &Footage::new(), file, renderer, &mut |p| {
                 let pct = p.done * 100 / p.total;
                 if pct >= shown + 10 || p.done == p.total {
                     shown = pct;
-                    eprintln!("{pct:>3}%  frame {}/{}", p.done, p.total);
+                    eprintln!("{pct:>3}%  {unit} {}/{}", p.done, p.total);
                 }
                 true
             });
@@ -323,8 +338,15 @@ fn run(cmd: Cmd) -> Result<(), String> {
                 }
             };
             std::fs::rename(&tmp, &out).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
+            // a video's cover goes beside it
+            let cover = match &project {
+                Some(p) if p.export.format.pictured() => reelforge_server::write_cover(p, &Footage::new(), &out)?,
+                _ => None,
+            };
             print(&json!({
                 "out": out,
+                "format": spec.output.format.extension(),
+                "cover": cover,
                 "frames": stats.frames,
                 "audioSamples": stats.audio_samples,
                 "renderer": stats.renderer,

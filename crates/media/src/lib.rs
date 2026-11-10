@@ -13,6 +13,7 @@
 
 pub mod analysis;
 pub mod export;
+pub mod formats;
 pub mod library;
 pub mod picture;
 mod shrunk;
@@ -35,6 +36,7 @@ pub use export::{
     VideoConfig, VideoEncoder, Yuv420, draw_frame, encoded_size, export, export_with, open_encoder,
     register_video_encoder, video_encoding,
 };
+pub use formats::{AudioWriter, GifWriter, StillFormat, encode_still, still};
 
 /// What [`probe_path`] measured.
 #[derive(Clone, Debug, PartialEq)]

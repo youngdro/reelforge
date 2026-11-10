@@ -25,6 +25,9 @@ pub struct Timeline {
     /// Its marks while another timeline is being edited.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub markers: Vec<crate::Marker>,
+    /// Its cover while another timeline is being edited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover: Option<Tick>,
     /// Made by joining clips into a compound clip, not as a cut of its own: taken away again
     /// when its last compound clip is taken apart.
     #[serde(default, skip_serializing_if = "crate::is_no")]
@@ -105,6 +108,7 @@ impl Project {
                 name: name.into(),
                 tracks: Vec::new(),
                 markers: Vec::new(),
+                cover: None,
                 compound: false,
             });
             self.timeline = id;
@@ -125,7 +129,9 @@ impl Project {
         if let Some(from) = self.timelines.iter_mut().find(|t| t.id == self.timeline) {
             from.tracks = outgoing;
             from.markers = marks_out;
+            from.cover = self.cover;
         }
+        self.cover = self.timelines[to].cover.take();
         self.timeline = id.into();
         true
     }
@@ -246,6 +252,7 @@ mod tests {
             name: "Timeline 2".into(),
             tracks: copy,
             markers: vec![],
+            cover: None,
             compound: false,
         });
         p.check().unwrap();

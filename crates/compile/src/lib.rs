@@ -12,13 +12,13 @@ use std::collections::BTreeMap;
 
 use reelforge_model::{
     Adjust, BlendMode, Clip, ClipContent, ClipTransform, Codec, FxChannel, Mask, MaskKind, MediaKind, Project, Prop,
-    Timing, TitleAlign, Track, TrackKind, TransitionKind,
+    Timing, TitleAlign, Track, TrackKind, TransitionKind, export::Format,
 };
 use reelforge_renderspec::{
     Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Blend, Color, Comp, Crop, CropKeys, Ease, Effect,
-    Fit, Key, Layer, LayerContent, MaskShape, Output, Probe, RenderSpec, ShapeMask, ShapeMaskKeys, SpeedKey, TextAlign,
-    TextBackground, TextContent, TextShadow, TextStroke, TimeMap, Transform, VideoCodec, VideoEncoding, effects,
-    validate,
+    Fit, Key, Layer, LayerContent, MaskShape, Output, OutputFormat, Probe, RenderSpec, ShapeMask, ShapeMaskKeys,
+    SpeedKey, TextAlign, TextBackground, TextContent, TextShadow, TextStroke, TimeMap, Transform, VideoCodec,
+    VideoEncoding, effects, validate,
 };
 use reelforge_time::Tick;
 use thiserror::Error;
@@ -104,14 +104,16 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
         return Err(CompileError::Empty);
     }
     let c = &project.canvas;
+    let e = &project.export;
+    // what kind of file the encode settings are for
+    let format = if options.encode { e.format } else { Format::Mp4 };
     let mut spec = RenderSpec::new(Output {
         width: c.width,
         height: c.height,
-        fps: if options.encode { project.export.frame_rate(c) } else { c.fps },
+        fps: if options.encode { e.frame_rate(c) } else { c.fps },
         duration,
         background: Color(c.background),
-        video: options.encode.then(|| {
-            let e = &project.export;
+        video: (options.encode && format.pictured()).then(|| {
             let size = e.size(c);
             VideoEncoding {
                 codec: match e.codec {
@@ -124,11 +126,17 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                 size: (size != [c.width, c.height]).then_some(size),
             }
         }),
-        audio: options.encode.then_some(AudioEncoding {
+        audio: (options.encode && format.sounds()).then_some(AudioEncoding {
             codec: AudioCodec::Aac,
             sample_rate: 48_000,
             bitrate_kbps: 192,
         }),
+        format: match format {
+            Format::Mp4 => OutputFormat::Mp4,
+            Format::Gif => OutputFormat::Gif,
+            Format::M4a => OutputFormat::M4a,
+            Format::Wav => OutputFormat::Wav,
+        },
     });
 
     let mut assets: BTreeMap<String, Asset> = BTreeMap::new();

@@ -45,6 +45,7 @@ fn two_colours() -> RenderSpec {
         background: Color([0.0, 0.0, 0.0, 1.0]),
         video: None,
         audio: None,
+        format: Default::default(),
     });
     s.layers.push(layer("red", Tick::ZERO, Tick::SECOND, LayerContent::Solid { color: Color([1.0, 0.0, 0.0, 1.0]) }));
     s.layers.push(layer(
@@ -240,6 +241,141 @@ fn sound_is_mixed_with_gain_and_written_as_aac() {
     let (first, second) = back[0].split_at(48_000);
     assert!((rms(&first[4_800..43_200]) - expected).abs() < 0.03, "{}", rms(first));
     assert!(rms(&second[4_800..]) < 0.01, "{}", rms(second));
+}
+
+/// [`two_colours`] with a 440 Hz tone on the left for its first second, 6 dB down.
+fn with_a_tone(name: &str) -> RenderSpec {
+    let wav = temp(name);
+    std::fs::write(&wav, tone_wav(44_100, 2.0)).expect("write wav");
+    let mut spec = two_colours();
+    spec.assets.insert(
+        "a".into(),
+        Asset {
+            kind: AssetKind::Audio,
+            sha256: sha(3),
+            uri: wav.to_string_lossy().into_owned(),
+            of: None,
+            probe: None,
+        },
+    );
+    spec.audio.push(AudioClip {
+        id: "tone".into(),
+        asset: "a".into(),
+        comp: None,
+        at: Tick::ZERO,
+        dur: Tick::SECOND,
+        time: TimeMap::default(),
+        gain_db: Animated::Constant(-6.0),
+        keep_pitch: false,
+        pitch: 0.0,
+        fx: vec![],
+    });
+    spec
+}
+
+#[test]
+fn a_gif_plays_every_frame_at_the_encoded_size_round_and_round() {
+    let mut spec = two_colours();
+    spec.output.format = OutputFormat::Gif;
+    spec.output.fps = FrameRate { num: 25, den: 2 };
+    spec.output.video =
+        Some(VideoEncoding { codec: VideoCodec::H264, crf: None, bitrate_kbps: None, size: Some([32, 24]) });
+    assert!(spec.required_features().contains("encode.gif/1"));
+    let mut calls = 0;
+    let (out, stats) = export(&spec, &Footage::new(), Cursor::new(Vec::new()), &mut |p| {
+        calls += 1;
+        assert_eq!((p.done, p.total), (calls, 25));
+        true
+    })
+    .expect("export");
+    assert_eq!((stats.frames, stats.audio_samples, stats.encoder.as_str()), (25, 0, "gif"));
+    let bytes = out.into_inner();
+    assert_eq!(&bytes[..6], b"GIF89a");
+    let mut options = gif::DecodeOptions::new();
+    options.set_color_output(gif::ColorOutput::RGBA);
+    let mut back = options.read_info(Cursor::new(&bytes)).expect("a GIF");
+    assert_eq!((back.width(), back.height()), (32, 24));
+    let mut frames = vec![];
+    while let Some(f) = back.read_next_frame().expect("a frame") {
+        // 12.5 frames a second: eight hundredths each
+        assert_eq!((f.width, f.height, f.delay), (32, 24, 8));
+        let i = (12 * 32 + 16) * 4;
+        frames.push([f.buffer[i], f.buffer[i + 1], f.buffer[i + 2], f.buffer[i + 3]]);
+    }
+    assert_eq!(frames.len(), 25);
+    assert!(near(frames[0], [255, 0, 0]) && near(frames[12], [255, 0, 0]), "{:?}", frames[0]);
+    assert!(near(frames[13], [0, 0, 255]) && near(frames[24], [0, 0, 255]), "{:?}", frames[24]);
+    assert_eq!(back.repeat(), gif::Repeat::Infinite);
+
+    // a cancel stops it
+    let r = export(&spec, &Footage::new(), Cursor::new(Vec::new()), &mut |p| p.done < 3);
+    assert!(matches!(r, Err(ExportError::Cancelled)));
+}
+
+#[test]
+fn the_sound_alone_is_written_as_a_wav_or_an_m4a() {
+    let footage = Footage::new();
+    let expected = 16000.0 / 32768.0 / 2f32.sqrt() * 10f32.powf(-6.0 / 20.0);
+    for (format, name) in [(OutputFormat::Wav, "alone.wav"), (OutputFormat::M4a, "alone.m4a")] {
+        let mut spec = with_a_tone("alone-tone.wav");
+        spec.output.format = format;
+        assert!(spec.required_features().contains("encode.audio/1"));
+        let mut seconds = vec![];
+        let (out, stats) = export(&spec, &footage, Cursor::new(Vec::new()), &mut |p| {
+            seconds.push((p.done, p.total));
+            true
+        })
+        .expect("export");
+        assert_eq!(seconds, [(1, 2), (2, 2)]);
+        assert_eq!((stats.frames, stats.audio_samples), (0, 96_000));
+        let bytes = out.into_inner();
+        if format == OutputFormat::Wav {
+            assert_eq!((&bytes[..4], &bytes[8..16], bytes.len()), (&b"RIFF"[..], &b"WAVEfmt "[..], 44 + 96_000 * 4));
+            assert_eq!(u32::from_le_bytes(bytes[24..28].try_into().unwrap()), 48_000);
+            assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), 96_000 * 4);
+        }
+        let path = temp(name);
+        std::fs::write(&path, bytes).expect("write");
+        let probe = probe_path(&path).expect("probe");
+        assert!(probe.has_audio && probe.size.is_none(), "{probe:?}");
+        let asset = Asset {
+            kind: AssetKind::Audio,
+            sha256: sha(if format == OutputFormat::Wav { 5 } else { 6 }),
+            uri: path.to_string_lossy().into_owned(),
+            of: None,
+            probe: None,
+        };
+        let back = Footage::new().audio(&asset, 0, 96_000, 48_000).expect("decode").expect("has sound");
+        let (first, second) = back[0].split_at(48_000);
+        assert!((rms(&first[4_800..43_200]) - expected).abs() < 0.03, "{name}: {}", rms(first));
+        assert!(rms(&second[4_800..]) < 0.01 && rms(&back[1]) < 0.01, "{name}");
+    }
+    // with nothing to hear there is nothing to write
+    let mut silent = two_colours();
+    silent.output.format = OutputFormat::Wav;
+    let r = export(&silent, &footage, Cursor::new(Vec::new()), &mut |_| true);
+    assert!(matches!(r, Err(ExportError::Invalid(why)) if why.contains("no sound")));
+}
+
+#[test]
+fn one_frame_is_a_png_or_a_jpeg() {
+    let spec = two_colours();
+    let footage = Footage::new();
+    let red = still(&spec, &footage, Tick::from_seconds(0.5), 1.0).expect("a frame");
+    assert_eq!((red.width, red.height), (64, 48));
+    assert!(near(centre(&red), [255, 0, 0]));
+    // half the size, and past the end the last frame stands in
+    let blue = still(&spec, &footage, Tick::SECOND * 9, 0.5).expect("a frame");
+    assert_eq!((blue.width, blue.height), (32, 24));
+    assert!(near(centre(&blue), [0, 0, 255]));
+    for (format, magic) in [(StillFormat::Png, &b"\x89PNG"[..]), (StillFormat::Jpeg, &b"\xff\xd8\xff"[..])] {
+        let bytes = encode_still(&red, format).expect("encodes");
+        assert!(bytes.starts_with(magic), "{format:?}");
+        let back = image::load_from_memory(&bytes).expect("decodes").to_rgba8();
+        assert_eq!((back.width(), back.height()), (64, 48));
+        let p = back.get_pixel(32, 24).0;
+        assert!(near(p, [255, 0, 0]), "{format:?}: {p:?}");
+    }
 }
 
 #[test]

@@ -212,11 +212,20 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "project.setExport",
         label: "Export Settings",
-        params: r#"{"preset"?: "draft"|"standard"|"smooth"|"4k", "resolution"?: "canvas"|"720p"|"1080p"|"2k"|"4k", "fps"?: 0|24|25|30|50|60, "quality"?: "low"|"recommended"|"high", "codec"?: "h264"|"hevc"|"av1"}"#,
-        doc: "Sets how the project exports: a preset, then any of picture size (by the shorter side; `canvas` keeps the canvas's), frame rate (0 keeps the canvas's), quality and codec. HEVC and AV1 are encoded by the browser's (hardware) encoder; the desktop and CLI write H.264.",
+        params: r#"{"preset"?: "draft"|"standard"|"smooth"|"4k", "format"?: "mp4"|"gif"|"m4a"|"wav", "resolution"?: "canvas"|"720p"|"1080p"|"2k"|"4k", "fps"?: 0|24|25|30|50|60, "quality"?: "low"|"recommended"|"high", "codec"?: "h264"|"hevc"|"av1"}"#,
+        doc: "Sets how the project exports: a preset (which is an MP4), then any of the kind of file, picture size (by the shorter side; `canvas` keeps the canvas's), frame rate (0 keeps the canvas's), quality and codec. `gif` writes a silent animated GIF whose size and frame rate follow the quality alone (240 px at 10 fps, 360 at 12.5, 480 at 20); `m4a` (AAC) and `wav` write the sound alone. HEVC and AV1 are encoded by the browser's (hardware) encoder; the desktop and CLI write H.264.",
         edits: true,
         enabled: always,
         run: project_set_export,
+    },
+    CommandSpec {
+        id: "project.setCover",
+        label: "Cover",
+        params: r#"{"at": time | null}"#,
+        doc: "Makes the frame at `at` the cover of the timeline being edited (null: none). An export of a video writes the cover beside it as a JPEG; `render.frame` draws any frame.",
+        edits: true,
+        enabled: always,
+        run: project_set_cover,
     },
     CommandSpec {
         id: "media.import",
@@ -285,7 +294,7 @@ static REGISTRY: &[CommandSpec] = &[
         id: "timeline.cut",
         label: "Cut Out Time",
         params: r#"{"ranges": [{"from": time, "to": time}], "tracks"?: [id]}"#,
-        doc: "Takes stretches of time out of the timeline, on every track that is not locked at once (or only on `tracks`): what lies in a range goes, a clip reaching into one is cut there, and everything after moves up, so picture, sound and captions stay in step. With every track cut, markers move too. For pauses and filler words (audio.cutPauses and captions.fillers find them).",
+        doc: "Takes stretches of time out of the timeline, on every track that is not locked at once (or only on `tracks`): what lies in a range goes, a clip reaching into one is cut there, and everything after moves up, so picture, sound and captions stay in step. With every track cut, markers and the cover move too. For pauses and filler words (audio.cutPauses and captions.fillers find them).",
         edits: true,
         enabled: always,
         run: crate::cut::timeline_cut,
@@ -909,11 +918,31 @@ fn project_new(s: &mut Session, _: &Value) -> CmdResult {
         p.timelines.clear();
         p.timeline.clear();
         p.markers.clear();
+        p.cover = None;
         // ids keep counting up, so nothing still pointing at an old track finds a new one
         p.tracks = model_timeline::empty_tracks(p);
         Ok(())
     })?;
     Ok(json!({ "tracks": s.project().tracks.iter().map(|t| t.id.clone()).collect::<Vec<_>>() }))
+}
+
+fn project_set_cover(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    if v.get("at").is_none() {
+        return Err(EngineError::Params("`at` is required: a time, or null for no cover".into()));
+    }
+    let at = p.opt_time("at")?;
+    if at.is_some_and(|t| t < Tick::ZERO) {
+        return Err(EngineError::Params("`at` cannot be before the start".into()));
+    }
+    s.edit("Cover", |proj| {
+        if at.is_some_and(|t| t >= proj.duration().max(Tick(1))) {
+            return Err(EngineError::Refused("the cover must be a frame of the timeline: `at` is past its end".into()));
+        }
+        // a cover is a frame: the one `at` is in
+        proj.cover = at.map(|t| proj.canvas.fps.snap(t));
+        Ok(json!({ "cover": proj.cover }))
+    })
 }
 
 fn project_set_export(s: &mut Session, v: &Value) -> CmdResult {
@@ -931,6 +960,7 @@ fn project_set_export(s: &mut Session, v: &Value) -> CmdResult {
     let resolution = pick(&p, "resolution", Resolution::parse, &Resolution::ALL.map(Resolution::name))?;
     let quality = pick(&p, "quality", Quality::parse, &Quality::ALL.map(Quality::name))?;
     let codec = pick(&p, "codec", Codec::parse, &Codec::ALL.map(Codec::name))?;
+    let format = pick(&p, "format", export::Format::parse, &export::Format::ALL.map(export::Format::name))?;
     let rate = match p.opt_u32("fps")? {
         Some(r) if r != 0 && !export::FRAME_RATES.contains(&r) => {
             return Err(EngineError::Params(format!("`fps` must be 0 or one of {:?}", export::FRAME_RATES)));
@@ -946,11 +976,13 @@ fn project_set_export(s: &mut Session, v: &Value) -> CmdResult {
         e.quality = quality.unwrap_or(e.quality);
         e.codec = codec.unwrap_or(e.codec);
         e.fps = rate.unwrap_or(e.fps);
+        e.format = format.unwrap_or(e.format);
         let c = &proj.canvas;
         let [w, h] = e.size(c);
         Ok(json!({
             "export": serde_json::to_value(*e).expect("serialises"),
             "preset": e.preset(),
+            "format": e.format.name(),
             "width": w,
             "height": h,
             "fps": e.frame_rate(c).fps(),
@@ -1225,7 +1257,8 @@ fn timeline_add(s: &mut Session, v: &Value) -> CmdResult {
         } else {
             vec![]
         };
-        proj.timelines.insert(at, Timeline { id: id.clone(), name, tracks, markers, compound: false });
+        let cover = proj.cover.filter(|_| copy);
+        proj.timelines.insert(at, Timeline { id: id.clone(), name, tracks, markers, cover, compound: false });
         proj.switch_timeline(&id);
         Ok(json!({ "timeline": id }))
     })

@@ -66,6 +66,10 @@ pub struct Project {
     /// Marks on the timeline being edited, in time order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub markers: Vec<Marker>,
+    /// The instant of the timeline being edited whose frame stands for it: the cover, written
+    /// beside an exported video. Past the end, the last frame stands in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover: Option<Tick>,
 }
 
 /// A mark on a timeline: a place to come back to, and to snap to.
@@ -616,6 +620,7 @@ impl Project {
             timelines: Vec::new(),
             timeline: String::new(),
             markers: Vec::new(),
+            cover: None,
         };
         p.tracks = timeline::empty_tracks(&mut p);
         p

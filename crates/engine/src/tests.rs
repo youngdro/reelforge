@@ -709,6 +709,62 @@ fn export_settings_shape_the_compiled_output() {
 }
 
 #[test]
+fn a_gif_or_the_sound_alone_is_a_kind_of_export_and_the_cover_is_a_frame() {
+    let mut s = Session::default();
+    add_red(&mut s, 0.0, 4.0);
+    s.execute("sound.add", &json!({"sound": "whoosh"})).unwrap();
+
+    // a GIF: pictures only, small and slow by its quality
+    let r = s.execute("project.setExport", &json!({"format": "gif", "quality": "low"})).unwrap();
+    assert_eq!((r["format"].clone(), r["preset"].clone()), (json!("gif"), json!(null)));
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let o = &spec["output"];
+    assert_eq!((o["format"].clone(), o["fps"].clone()), (json!("gif"), json!({"num": 10, "den": 1})));
+    assert_eq!(o["video"]["size"], json!([242, 430]));
+    assert!(o.get("audio").is_none_or(|a| a.is_null()), "{o}");
+    assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("encode.gif/1")));
+
+    // the sound alone: no pictures are encoded
+    for f in ["m4a", "wav"] {
+        s.execute("project.setExport", &json!({"format": f})).unwrap();
+        let spec = s.execute("render.compile", &json!({})).unwrap();
+        let o = &spec["output"];
+        assert_eq!(o["format"], json!(f));
+        assert!(o.get("video").is_none_or(|v| v.is_null()), "{o}");
+        assert!(o["audio"].is_object());
+        assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("encode.audio/1")));
+    }
+    // a video again says nothing about its format, as before there were others
+    s.execute("project.setExport", &json!({"format": "mp4"})).unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert!(spec["output"].get("format").is_none());
+    assert!(s.execute("project.setExport", &json!({"format": "webm"})).is_err());
+
+    // the cover is a frame of the timeline
+    let fps = s.project().canvas.fps;
+    let r = s.execute("project.setCover", &json!({"at": {"seconds": 2.51}})).unwrap();
+    let at = fps.snap(Tick::from_seconds(2.51));
+    assert_eq!((r["cover"].clone(), s.project().cover), (json!(at), Some(at)));
+    assert!(s.execute("project.setCover", &json!({})).is_err(), "`at` is asked for, so that null means none");
+    assert!(s.execute("project.setCover", &json!({"at": {"seconds": 9}})).is_err());
+    assert!(s.execute("project.setCover", &json!({"at": {"seconds": -1}})).is_err());
+    // it moves with what is cut out before it, and lands on the cut when its own frame goes
+    s.execute("timeline.cut", &json!({"ranges": [{"from": {"seconds": 0.5}, "to": {"seconds": 1.5}}]})).unwrap();
+    assert_eq!(s.project().cover, Some(at - Tick::SECOND));
+    s.execute("timeline.cut", &json!({"ranges": [{"from": {"seconds": 1}, "to": {"seconds": 2}}]})).unwrap();
+    assert_eq!(s.project().cover, Some(Tick::SECOND));
+    // each timeline has its own; a copy starts with the same one
+    s.execute("timeline.add", &json!({"copy": true})).unwrap();
+    let first = s.project().timelines[0].id.clone();
+    assert_eq!(s.project().cover, Some(Tick::SECOND));
+    s.execute("project.setCover", &json!({"at": null})).unwrap();
+    assert_eq!(s.project().cover, None);
+    s.execute("timeline.switch", &json!({"timeline": first})).unwrap();
+    assert_eq!(s.project().cover, Some(Tick::SECOND));
+    s.execute("edit.undo", &json!({})).unwrap();
+}
+
+#[test]
 fn library_sounds_go_on_an_audio_track_and_into_the_mix() {
     let mut s = Session::default();
     let list = s.execute("sound.library", &json!({})).unwrap();

@@ -319,6 +319,16 @@ impl TimelineView {
                 );
             }
         }
+        // the frame that is the cover
+        if let Some(at) = p.cover {
+            ruler_painter.text(
+                egui::pos2(x_of(at), ruler.bottom() - 1.0),
+                Align2::CENTER_BOTTOM,
+                icon::IMAGE,
+                FontId::proportional(11.0),
+                color::ACCENT,
+            );
+        }
         let marker_at = |x: f32| p.markers.iter().find(|m| (x_of(m.at) - x).abs() <= 5.0);
 
         // Where the pointer is.

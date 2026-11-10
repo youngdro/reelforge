@@ -210,6 +210,11 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &[],
         ),
+        "project.setCover" => {
+            let mut at = time("The instant whose frame is the cover; null for no cover.");
+            at["oneOf"].as_array_mut().expect("a time is one of several shapes").push(json!({"type": "null"}));
+            object(vec![("at", at)], &["at"])
+        }
         "project.setExport" => {
             use reelforge_model::{Codec, Quality, Resolution, export};
             object(
@@ -217,6 +222,10 @@ pub fn input_schema(id: &str) -> Option<Value> {
                     (
                         "preset",
                         json!({"enum": export::PRESETS.map(|(id, _)| id), "description": "Ready-made settings, applied before the others: draft (720p 30 fps, low), standard (1080p 30 fps), smooth (1080p 60 fps, high), 4k (2160p HEVC, high)."}),
+                    ),
+                    (
+                        "format",
+                        json!({"enum": export::Format::ALL.map(export::Format::name), "description": "The kind of file: mp4 (video and sound), gif (a silent animated GIF, its size and frame rate by `quality` alone), m4a (the sound alone, AAC) or wav (the sound alone, uncompressed)."}),
                     ),
                     (
                         "resolution",

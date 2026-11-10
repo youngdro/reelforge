@@ -440,6 +440,7 @@ mod tests {
             background: Color([0.0, 0.0, 0.0, 1.0]),
             video: None,
             audio: None,
+            format: Default::default(),
         });
         s.layers.push(Layer {
             id: "c1".into(),

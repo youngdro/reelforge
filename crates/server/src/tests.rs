@@ -123,6 +123,32 @@ fn export_writes_beside_the_project() {
     };
     assert_eq!(out["frames"], 3);
     assert!(path.with_file_name("out.mp4").exists());
+    assert_eq!((&out["format"], &out["cover"]), (&json!("mp4"), &Value::Null));
+
+    // a GIF instead, as the project's settings say, and the cover beside it
+    hub.call("clip.add", &json!({"track": video, "color": [1, 0, 0], "duration": {"frame": 6}})).unwrap();
+    hub.call("project.setCover", &json!({"at": {"frame": 1}})).unwrap();
+    hub.call("project.setExport", &json!({"format": "gif", "quality": "low"})).unwrap();
+    let Output::Json(out) = hub.call("render.export", &json!({"path": "out.gif"})).unwrap() else { panic!("json") };
+    // 0.3 s at ten frames a second
+    assert_eq!((&out["format"], &out["frames"], &out["encoder"]), (&json!("gif"), &json!(3), &json!("gif")));
+    let gif = std::fs::read(path.with_file_name("out.gif")).unwrap();
+    assert_eq!(&gif[..6], b"GIF89a");
+    assert_eq!(u16::from_le_bytes([gif[6], gif[7]]), 64, "no larger than the canvas");
+    let cover = path.with_file_name("out.cover.jpg");
+    assert_eq!(out["cover"], json!(cover));
+    let jpeg = image::load_from_memory(&std::fs::read(&cover).unwrap()).unwrap().to_rgb8();
+    assert_eq!((jpeg.width(), jpeg.height()), (64, 64));
+    let p = jpeg.get_pixel(32, 32).0;
+    assert!(p[2] > 200 && p[0] < 60, "the second frame is blue: {p:?}");
+
+    // for one export another kind of file; with nothing to hear a sound file is refused, and
+    // nothing is left behind
+    let err = hub.call("render.export", &json!({"path": "out.wav", "format": "wav"})).unwrap_err();
+    assert!(err.to_string().contains("no sound"), "{err}");
+    assert!(!path.with_file_name("out.wav").exists() && !path.with_file_name("out.wav.part").exists());
+    assert!(hub.call("render.export", &json!({"path": "out.x", "format": "webm"})).is_err());
+    assert_eq!(hub.session().project().export.format, reelforge_model::export::Format::Gif);
 }
 
 fn post(base: &str, path: &str, body: &str, headers: &[(&str, &str)]) -> (u16, Vec<(String, String)>, Vec<u8>) {

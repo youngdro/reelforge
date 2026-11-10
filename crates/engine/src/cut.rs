@@ -79,6 +79,8 @@ pub(crate) fn cut(
             for m in proj.markers.iter_mut().filter(|m| m.at >= b) {
                 m.at -= len;
             }
+            // the cover stays on its frame, or goes to where its frame was cut out
+            proj.cover = proj.cover.map(|c| if c >= b { c - len } else { c.min(a) });
         }
     }
     crate::compound::tidy_groups(proj);

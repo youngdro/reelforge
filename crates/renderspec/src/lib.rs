@@ -107,6 +107,42 @@ pub struct Output {
     /// How to encode the sound; absent for a silent output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<AudioEncoding>,
+    /// The kind of file to write.
+    #[serde(default, skip_serializing_if = "OutputFormat::is_mp4")]
+    pub format: OutputFormat,
+}
+
+/// The kind of file an output is written as.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputFormat {
+    /// The picture and the sound, in an MP4.
+    #[default]
+    Mp4,
+    /// The picture alone as an animated GIF that plays round and round (feature `encode.gif/1`),
+    /// at `video.size` when one is given; a frame lasts `1 ÷ fps`, to the hundredth of a second.
+    Gif,
+    /// The sound alone, encoded as `audio` says, in an M4A (feature `encode.audio/1`).
+    M4a,
+    /// The sound alone as 16-bit PCM in a WAV, at `audio`'s sample rate (feature
+    /// `encode.audio/1`).
+    Wav,
+}
+
+impl OutputFormat {
+    fn is_mp4(&self) -> bool {
+        *self == OutputFormat::Mp4
+    }
+
+    /// The extension of such a file.
+    pub fn extension(self) -> &'static str {
+        match self {
+            OutputFormat::Mp4 => "mp4",
+            OutputFormat::Gif => "gif",
+            OutputFormat::M4a => "m4a",
+            OutputFormat::Wav => "wav",
+        }
+    }
 }
 
 fn black() -> Color {
@@ -1309,6 +1345,15 @@ impl RenderSpec {
         }
         if self.output.video.as_ref().is_some_and(|v| v.size.is_some()) {
             out.insert("encode.size/1".to_string());
+        }
+        match self.output.format {
+            OutputFormat::Mp4 => {}
+            OutputFormat::Gif => {
+                out.insert("encode.gif/1".to_string());
+            }
+            OutputFormat::M4a | OutputFormat::Wav => {
+                out.insert("encode.audio/1".to_string());
+            }
         }
         for a in self.audio.iter().chain(self.comps.values().flat_map(|c| &c.audio)) {
             out.extend(a.time.features().map(str::to_string));

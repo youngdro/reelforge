@@ -117,12 +117,13 @@ pub fn ops() -> Vec<Op> {
     });
     out.push(Op {
         name: RENDER_EXPORT,
-        title: "Export MP4",
-        doc: "Renders the whole project to an H.264 + AAC MP4 file on the server's disk.".into(),
+        title: "Export",
+        doc: "Renders the whole project to a file on the server's disk: an H.264 + AAC MP4, or what the project's export settings (`project.setExport`) or `format` say, an animated GIF or the sound alone. A video's cover (`project.setCover`) is written beside it as a JPEG.".into(),
         schema: json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Where to write the MP4 on the server; relative paths are beside the project."},
+                "path": {"type": "string", "description": "Where to write the file on the server; relative paths are beside the project."},
+                "format": {"enum": ["mp4", "gif", "m4a", "wav"], "description": "The kind of file for this export, whatever the project's export settings say."},
                 "renderer": {"enum": ["auto", "cpu", "gpu"], "description": "What draws the frames; the GPU when there is one by default."}
             },
             "required": ["path"],
@@ -359,11 +360,17 @@ impl Hub {
             "gpu" => Renderer::Gpu,
             other => return Err(CallError::Failed(format!("`renderer` must be auto, cpu or gpu, not {other:?}"))),
         };
-        let project = self.shared.project();
+        let mut project = (*self.shared.project()).clone();
+        if let Some(f) = params.get("format") {
+            project.export.format = f
+                .as_str()
+                .and_then(reelforge_model::export::Format::parse)
+                .ok_or_else(|| CallError::Failed("`format` must be mp4, gif, m4a or wav".into()))?;
+        }
         let spec = reelforge_compile::compile(&project, &reelforge_compile::CompileOptions { encode: true })
             .map_err(|e| CallError::Failed(e.to_string()))?;
         let out = self.resolve(path);
-        let tmp = out.with_extension("mp4.part");
+        let tmp = part_of(&out);
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -381,8 +388,15 @@ impl Hub {
             }
         };
         std::fs::rename(&tmp, &out).map_err(|e| CallError::Failed(format!("cannot write {}: {e}", out.display())))?;
+        let cover = if project.export.format.pictured() {
+            write_cover(&project, &self.footage, &out).map_err(CallError::Failed)?
+        } else {
+            None
+        };
         Ok(Output::Json(json!({
             "path": out,
+            "format": project.export.format.name(),
+            "cover": cover,
             "frames": stats.frames,
             "audioSamples": stats.audio_samples,
             "renderer": stats.renderer,
@@ -390,6 +404,27 @@ impl Hub {
             "seconds": started.elapsed().as_secs_f64(),
         })))
     }
+}
+
+/// Where an export is written until it is whole: `path` with `.part` after its name.
+pub fn part_of(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".part");
+    path.with_file_name(name)
+}
+
+/// Writes the cover of `project`'s timeline beside `file`, an export of it, as a JPEG the size of
+/// the canvas (`clip.mp4` gets `clip.cover.jpg`). Returns where, or `None` when the project has no
+/// cover.
+pub fn write_cover(project: &Project, footage: &Footage, file: &Path) -> Result<Option<PathBuf>, String> {
+    let Some(at) = project.cover else { return Ok(None) };
+    let spec = reelforge_compile::compile(project, &reelforge_compile::CompileOptions { encode: false })
+        .map_err(|e| e.to_string())?;
+    let img = reelforge_media::still(&spec, footage, at, 1.0).map_err(|e| e.to_string())?;
+    let bytes = reelforge_media::encode_still(&img, reelforge_media::StillFormat::Jpeg).map_err(|e| e.to_string())?;
+    let path = file.with_extension("cover.jpg");
+    std::fs::write(&path, bytes).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    Ok(Some(path))
 }
 
 /// Reads a project file, or an empty project when there is none yet.
