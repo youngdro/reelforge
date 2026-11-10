@@ -626,9 +626,11 @@ impl GpuCompositor {
         let mut resolved = Vec::with_capacity(plan.layers.len());
         for layer in &plan.layers {
             let lut = resolve_lut(spec, layer, media, quality, report)?;
-            // a composition is drawn here, unless its picture is blurred: those are made on the CPU
+            // a composition is drawn here, unless its picture is blurred or has its people cut
+            // out: those are made on the CPU
             if let PlannedSource::Comp(inner) = &layer.source
                 && crate::cpu::blur_radius(layer).is_none()
+                && !crate::cpu::keys_person(layer)
             {
                 let n = self.nested_slot(inner.width, inner.height);
                 self.plan_passes(spec, inner, media, quality, Some(n), report, passes)?;

@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 reelforge-time = { workspace = true }
 reelforge-renderspec = { workspace = true }
+reelforge-matte = { workspace = true }
 thiserror = { workspace = true }
 image = { workspace = true }
 filmcraft-text = { workspace = true }

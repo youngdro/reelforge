@@ -48,7 +48,7 @@ impl Gray {
     }
 
     /// Half as large each way: every pixel the mean of four.
-    fn half(&self) -> Gray {
+    pub(crate) fn half(&self) -> Gray {
         let (w, h) = (self.width / 2, self.height / 2);
         let mut px = Vec::with_capacity(w * h);
         for y in 0..h {

@@ -298,6 +298,7 @@ fn read_draft(proj: &mut Project, draft: &Value, folder: Option<&str>) -> Result
                         reversed: seg["reverse"].as_bool().unwrap_or(false),
                         curve: vec![],
                         silent: false,
+                        frames: Default::default(),
                     }
                 }
                 TrackKind::Text => {

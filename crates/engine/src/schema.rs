@@ -537,6 +537,33 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["by"],
         ),
+        "captions.add" => object(
+            vec![
+                (
+                    "cues",
+                    json!({
+                        "type": "array",
+                        "description": "The lines, each shown from `start` to `end`; `\\n` in `text` breaks a line.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "start": time("When the line appears."),
+                                "end": time("When it goes."),
+                                "text": {"type": "string"}
+                            },
+                            "required": ["start", "end", "text"],
+                            "additionalProperties": false
+                        }
+                    }),
+                ),
+                ("track", ident("A text track to put them on; a new Captions track by default.")),
+                (
+                    "template",
+                    json!({"type": "string", "description": "Title template id (title.templates); classic by default."}),
+                ),
+            ],
+            &["cues"],
+        ),
         "captions.export" => object(vec![("track", ident("A text track; the Captions track by default."))], &[]),
         "clip.split" => object(vec![clip(), ("at", time("Timeline time inside the clip."))], &["clip", "at"]),
         "clip.trim" => {
@@ -660,6 +687,10 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 (
                     "keepPitch",
                     json!({"type": "boolean", "description": "Sound keeps its pitch at another speed (default); false lets it rise and fall like tape."}),
+                ),
+                (
+                    "frames",
+                    json!({"enum": ["repeat", "blend", "flow"], "description": "What a video shows between two frames of its file (a slowed clip has to): the frame before held, the two mixed, or a frame made in between by following what moved."}),
                 ),
             ],
             &["clip"],
@@ -791,6 +822,13 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ("all", json!({"type": "boolean", "description": "Every video and picture clip on the clip's track."})),
             ],
             &["clip", "blur"],
+        ),
+        "clip.setPersonKey" => object(
+            vec![
+                clip(),
+                ("on", json!({"type": "boolean", "description": "false removes the cut-out; true when left out."})),
+            ],
+            &["clip"],
         ),
         "clip.setChromaKey" => {
             let unit = |doc: &str| json!({"type": "number", "minimum": 0, "maximum": 1, "description": doc});
