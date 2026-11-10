@@ -735,7 +735,7 @@ static REGISTRY: &[CommandSpec] = &[
         id: "clip.replace",
         label: "Replace",
         params: r#"{"clip": id, "media": id, "sourceIn"?: time, "fit"?: "refuse"|"slow"}"#,
-        doc: "Makes a clip show (or play) another file of the project, in the same place for the same length, with everything set on it: effects, animations, keyframes, transition, colour, crop, speed. A picture or a colour on a video track takes a video or an image; a sound takes a sound. A video plays from `sourceIn` (its start by default); one too short for the clip is refused, or with `fit: \"slow\"` slowed down to fill it.",
+        doc: "Makes a clip show (or play) another file of the project, in the same place for the same length, with everything set on it: effects, animations, keyframes, transition, colour, crop, speed. A picture or a colour on a video track takes a video or an image; a sound takes a sound. A video plays from `sourceIn` (its start by default); one too short for the clip is refused, or with `fit: \"slow\"` slowed down to fill it. What filled the frame goes on filling it: in place of a colour, or of a picture scaled to cover the canvas, a picture of another shape is scaled to cover it.",
         edits: true,
         enabled: always,
         run: crate::remix::clip_replace,

@@ -31,7 +31,7 @@ use thiserror::Error;
 pub use captions::{CAPTIONS_TRACK, CAPTIONS_TRACK_2, Cue, format_srt, parse_srt};
 pub use commands::{CommandSpec, media_uses, registry};
 pub use params::parse_time;
-pub use remix::{TimelineTemplate, is_empty_slot, timeline_template, timeline_templates};
+pub use remix::{TimelineTemplate, is_empty_slot, slot_colour, slot_states, timeline_template, timeline_templates};
 pub use schema::input_schema;
 pub use shared::{Change, SharedSession};
 pub use templates::{TitleTemplate, title_template, title_templates};

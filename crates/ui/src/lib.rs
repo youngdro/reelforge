@@ -35,6 +35,7 @@ mod looks;
 #[cfg(target_arch = "wasm32")]
 mod picker;
 mod record;
+mod remix;
 pub mod remote;
 mod spoken;
 mod stage;
@@ -199,6 +200,8 @@ pub struct EditorApp {
     /// of them shows under the preview.
     narrow: bool,
     sheet: Sheet,
+    /// The clip the next picture or video picked takes the place of (Replace in a clip's menu).
+    into: Option<String>,
     /// The window, once it is known, for a remote's answers to wake it.
     window: Arc<std::sync::OnceLock<egui::Context>>,
 }
@@ -422,6 +425,7 @@ impl EditorApp {
             spare: Default::default(),
             narrow: false,
             sheet: Sheet::default(),
+            into: None,
             window: Arc::default(),
         }
     }
@@ -774,9 +778,9 @@ impl EditorApp {
         let s = self.s();
         let now = drafts::now();
         // a draft just started, to edit
-        let start = |app: &mut EditorApp, store: &mut dyn drafts::Store| {
+        let start = |app: &mut EditorApp, store: &mut dyn drafts::Store, name: &str| {
             let drafts = app.drafts.as_mut().expect("checked");
-            let name = drafts.free_name(s.draft_name);
+            let name = drafts.free_name(name);
             drafts.start(name.clone(), now);
             app.edit_draft((*Session::default().project()).clone());
             app.keep_draft(store);
@@ -812,9 +816,18 @@ impl EditorApp {
             }
             Ask::New => {
                 self.keep_draft(store);
-                let name = start(self, store);
+                let name = start(self, store, s.draft_name);
                 self.drafts.as_mut().expect("checked").home = false;
                 self.status = fill(s.draft_started, &[&name]);
+            }
+            Ask::Template(id) => {
+                // a new draft named after the template, with the template built in it
+                self.keep_draft(store);
+                start(self, store, remix::name(id, s));
+                self.drafts.as_mut().expect("checked").home = false;
+                self.use_template(id);
+                self.sheet = Sheet::Media;
+                self.keep_draft(store);
             }
             Ask::Rename(id, name) => self.drafts.as_mut().expect("checked").rename(store, &id, &name),
             Ask::Duplicate(id) => {
@@ -833,7 +846,7 @@ impl EditorApp {
                     match next.and_then(|id| drafts.open(store, &id)) {
                         Some(project) => self.edit_draft(project),
                         None => {
-                            start(self, store);
+                            start(self, store, s.draft_name);
                         }
                     }
                 }
@@ -1020,7 +1033,7 @@ impl EditorApp {
             }
             Ask::Import { second } => {
                 self.second_captions = second;
-                self.pick(ctx, &["srt"]);
+                self.pick(ctx, &["srt"], false);
             }
             Ask::Export(track) => self.export_captions(&track),
         }
@@ -1146,9 +1159,95 @@ impl EditorApp {
             }
             return false;
         }
+        if m.kind != MediaKind::Audio && self.fill_with(m, at, track.as_deref()) {
+            return false;
+        }
         let want = if m.kind == MediaKind::Audio { TrackKind::Audio } else { TrackKind::Video };
         let id = m.id.clone();
         self.put(want, track, move |t| json!({"track": t, "media": id, "start": at}))
+    }
+
+    /// Puts picture or video `m` where one was asked for, and says so: in the clip Replace was
+    /// picked on, else in the template slot it was dropped on (`track` at `at`), else, when it was
+    /// not dropped anywhere in particular, in the first empty slot of the timeline's template.
+    /// False when nothing asked for it.
+    fn fill_with(&mut self, m: &reelforge_model::Media, at: Tick, track: Option<&str>) -> bool {
+        let s = self.s();
+        if let Some(clip) = self.into.take() {
+            if self.execute("clip.replace", json!({"clip": clip, "media": m.id, "fit": "slow"})).is_ok() {
+                self.selected = Some(clip);
+                self.status = fill(s.replaced, &[&m.name]);
+            }
+            return true;
+        }
+        let p = self.project();
+        let slot = match track {
+            Some(t) => p
+                .track(t)
+                .and_then(|t| t.clips.iter().find(|c| c.start <= at && at < c.start + c.duration))
+                .and_then(|c| c.slot),
+            None => reelforge_engine::slot_states(&p).into_iter().find(|(_, _, filled)| !filled).map(|(n, ..)| n),
+        };
+        let Some(n) = slot else { return false };
+        if self.execute("template.fill", json!({"media": [m.id], "from": n})).is_ok() {
+            let p = self.project();
+            self.selected =
+                reelforge_engine::slot_states(&p).into_iter().find(|(k, ..)| *k == n).map(|(_, clip, _)| clip);
+            self.also.clear();
+            if let Some((_, c)) = self.selected.as_ref().and_then(|c| p.clip(c)) {
+                self.playhead = c.start;
+            }
+            self.status = fill(s.remix_filled, &[&m.name, &n.to_string()]);
+        }
+        true
+    }
+
+    /// Builds built-in timeline template `id`: on this timeline when nothing is on it yet, else on
+    /// a new one. Its slots wait for pictures and videos, counted in the templates tab.
+    fn use_template(&mut self, id: &str) {
+        let s = self.s();
+        let name = remix::name(id, s);
+        // its titles say what they say in the interface's language
+        let texts = reelforge_engine::timeline_templates().iter().position(|t| t.id == id).map(|i| s.remix_texts[i]);
+        if let Ok(v) = self.execute("template.apply", json!({"template": id, "name": name, "texts": texts})) {
+            self.set_playing(false);
+            self.selected = None;
+            self.also.clear();
+            self.playhead = Tick::ZERO;
+            self.timeline_name.clear();
+            self.assets.show_templates();
+            let slots = v["slots"].as_array().map_or(0, Vec::len);
+            self.status = fill(s.remix_used, &[&name, &slots.to_string()]);
+        }
+    }
+
+    /// Asks for pictures and videos for the empty slots of the timeline's template.
+    fn pick_fill(&mut self, ctx: &egui::Context) {
+        self.into = None;
+        self.pick(ctx, PICTURES, true);
+    }
+
+    /// Replace in a clip's menu: asks for the picture or video the selected clip shows instead.
+    fn pick_replacement(&mut self, ctx: &egui::Context) {
+        let Some(clip) = self.selected.clone() else { return };
+        self.into = Some(clip);
+        self.pick(ctx, PICTURES, true);
+        // the desktop's dialog has answered by now; the browser's files arrive later
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.remote.is_none() {
+            self.into = None;
+        }
+    }
+
+    /// Makes the selected picture clips slots of a template (numbered in the order they play), or
+    /// no longer slots.
+    fn mark_slots(&mut self, on: bool) {
+        let clips = self.selection();
+        let mut params = json!({ "clips": clips });
+        if !on {
+            params["slot"] = Value::Null;
+        }
+        let _ = self.execute("template.mark", params);
     }
 
     /// Adds a clip (`params` for a track id) to `track` when it takes it there, else to the lowest
@@ -1239,11 +1338,12 @@ impl EditorApp {
     /// browser's file picker on the web (its files arrive later, like dropped ones).
     fn pick_files(&mut self, ctx: &egui::Context) {
         self.second_captions = false;
-        self.pick(ctx, IMPORTABLE);
+        self.pick(ctx, IMPORTABLE, false);
     }
 
-    /// Asks for files with these extensions and imports what is picked.
-    fn pick(&mut self, ctx: &egui::Context, extensions: &[&str]) {
+    /// Asks for files with these extensions and imports what is picked; when `place`, they go on
+    /// the timeline as dropped files do.
+    fn pick(&mut self, ctx: &egui::Context, extensions: &[&str], place: bool) {
         let s = self.s();
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -1260,16 +1360,16 @@ impl EditorApp {
                 if self.remote.is_some() {
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     match std::fs::read(&path) {
-                        Ok(bytes) => self.import_bytes(&name, bytes, false),
+                        Ok(bytes) => self.import_bytes(&name, bytes, place),
                         Err(e) => self.status = format!("{name}: {e}"),
                     }
                 } else {
-                    self.import_path(&path, false);
+                    self.import_path(&path, place);
                 }
             }
         }
         #[cfg(target_arch = "wasm32")]
-        if let Err(e) = picker::pick_files(ctx, self.arrivals.clone(), extensions) {
+        if let Err(e) = picker::pick_files(ctx, self.arrivals.clone(), extensions, place) {
             self.status = format!("{}: {e}", s.import);
         }
     }
@@ -1506,6 +1606,10 @@ impl EditorApp {
             Action::Compound => self.compound(),
             Action::Uncompound => self.uncompound(),
             Action::OpenCompound => self.open_compound(),
+            Action::Slot => self.mark_slots(true),
+            Action::Unslot => self.mark_slots(false),
+            // needs the window to ask for a file: see `pick_replacement`
+            Action::Replace => {}
         }
     }
 
@@ -3578,7 +3682,7 @@ impl EditorApp {
         }
         if pick_font {
             self.second_captions = false;
-            self.pick(ui.ctx(), FONTS);
+            self.pick(ui.ctx(), FONTS, false);
         }
     }
 
@@ -3912,6 +4016,9 @@ const IMPORTABLE: &[&str] = &[
     "opus", "cube", "ttf", "otf", "ttc", "srt", "json",
 ];
 
+/// What fills a template's slot or takes a clip's place: video and pictures.
+const PICTURES: &[&str] = &["mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "webp", "gif"];
+
 /// What a title's font button offers.
 const FONTS: &[&str] = &["ttf", "otf", "ttc"];
 
@@ -4102,6 +4209,10 @@ impl eframe::App for EditorApp {
             }
         }
         self.narrow = ctx.content_rect().width() < NARROW_BELOW;
+        if self.into.is_some() && self.into != self.selected {
+            // the clip waiting for a file to replace it was let go of
+            self.into = None;
+        }
         if let Some(ask) = self.draft_ask.take() {
             self.with_store(frame, |app, store| app.drafts_do(ask, store));
         }
@@ -4211,8 +4322,10 @@ impl eframe::App for EditorApp {
         if let Some((clips, by)) = out.shifted {
             let _ = self.execute("clip.shift", json!({"clips": clips, "by": by}));
         }
-        if let Some(action) = out.action {
-            self.act(action);
+        match out.action {
+            Some(timeline::Action::Replace) => self.pick_replacement(&ctx),
+            Some(action) => self.act(action),
+            None => {}
         }
         if let Some((track, what)) = out.track_action {
             self.track_action(&track, what);
@@ -4264,6 +4377,8 @@ impl eframe::App for EditorApp {
                 let _ = self.execute("media.set", json!({"media": ids, "folder": folder}));
             }
             Some(assets::Action::Captions(ask)) => self.captions_ask(ask, &ctx),
+            Some(assets::Action::Template(id)) => self.use_template(id),
+            Some(assets::Action::Fill) => self.pick_fill(&ctx),
             None => {}
         }
         if let Some((item, at, track)) = out.dropped {

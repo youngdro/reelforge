@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use reelforge_model::{Clip, ClipContent, MediaKind, Project, TrackKind};
+use reelforge_model::{Clip, ClipContent, MediaKind, Project, Prop, TrackKind};
 use reelforge_time::Tick;
 use serde_json::{Value, json};
 
@@ -86,6 +86,11 @@ impl TimelineTemplate {
     /// How long it runs, in seconds.
     pub fn seconds(&self) -> f64 {
         self.shots.iter().map(|s| s.len).sum()
+    }
+
+    /// How long each of its pictures shows, in seconds, in order.
+    pub fn shots(&self) -> impl Iterator<Item = f64> + '_ {
+        self.shots.iter().map(|s| s.len)
     }
 }
 
@@ -286,7 +291,7 @@ pub fn timeline_template(id: &str) -> Option<&'static TimelineTemplate> {
 }
 
 /// What a slot shows while it is empty: a different quiet colour for each.
-fn slot_colour(n: u32) -> [f32; 4] {
+pub fn slot_colour(n: u32) -> [f32; 4] {
     const TONES: [[f32; 3]; 6] = [
         [0.27, 0.33, 0.46],
         [0.44, 0.31, 0.42],
@@ -327,6 +332,15 @@ fn slots_of(proj: &Project) -> Vec<Slot> {
     slots.into_values().collect()
 }
 
+/// The slots of the timeline being edited, in order: each one's number, its first clip and
+/// whether a file is in it.
+pub fn slot_states(proj: &Project) -> Vec<(u32, String, bool)> {
+    slots_of(proj)
+        .into_iter()
+        .map(|s| (s.n, s.clips.into_iter().next().unwrap_or_default(), s.media.is_some()))
+        .collect()
+}
+
 fn slots_json(proj: &Project) -> Value {
     let slots = slots_of(proj);
     let texts: Vec<Value> = proj
@@ -352,9 +366,20 @@ fn slots_json(proj: &Project) -> Value {
     })
 }
 
+/// How much larger than it is drawn at scale 1 (fitted inside the canvas) a picture of `size`
+/// must be to cover the canvas.
+fn cover(canvas: [u32; 2], size: [u32; 2]) -> f32 {
+    if size[0] == 0 || size[1] == 0 {
+        return 1.0;
+    }
+    let (w, h) = (canvas[0] as f32 / size[0] as f32, canvas[1] as f32 / size[1] as f32);
+    w.max(h) / w.min(h).max(f32::MIN_POSITIVE)
+}
+
 /// Makes clip `id` show media `media` from `source_in`, in the same place for the same length
 /// with everything set on it. A video too short for the clip is slowed down to fill it when
-/// `slow`, and refused otherwise.
+/// `slow`, and refused otherwise. What filled the frame goes on filling it: in place of a colour,
+/// or of a picture scaled to cover the canvas, a picture of another shape is scaled to cover it.
 pub(crate) fn replace(
     proj: &mut Project,
     id: &str,
@@ -364,15 +389,11 @@ pub(crate) fn replace(
 ) -> Result<(), EngineError> {
     let item = proj.media.get(media).ok_or_else(|| not_found("media", media))?.clone();
     let (track, clip) = proj.clip(id).ok_or_else(|| not_found("clip", id))?;
-    let fits = match (&clip.content, proj.tracks[track].kind, item.kind) {
-        (
-            ClipContent::Media { .. } | ClipContent::Solid { .. },
-            TrackKind::Video,
-            MediaKind::Video | MediaKind::Image,
-        ) => true,
-        (ClipContent::Media { .. }, TrackKind::Audio, MediaKind::Audio | MediaKind::Video) => true,
-        _ => false,
-    };
+    let fits = matches!(
+        (&clip.content, proj.tracks[track].kind, item.kind),
+        (ClipContent::Media { .. } | ClipContent::Solid { .. }, TrackKind::Video, MediaKind::Video | MediaKind::Image)
+            | (ClipContent::Media { .. }, TrackKind::Audio, MediaKind::Audio | MediaKind::Video)
+    );
     if !fits {
         return Err(EngineError::Refused(
             "a picture or a colour on a video track takes a video or an image, and a sound takes a sound".into(),
@@ -382,6 +403,16 @@ pub(crate) fn replace(
         return Err(EngineError::Params("`sourceIn` must not be negative".into()));
     }
     let duration = clip.duration;
+    let canvas = [proj.canvas.width, proj.canvas.height];
+    // the scale at which what the clip shows now covers the canvas
+    let covering = match &clip.content {
+        ClipContent::Media { media, .. } => proj.media.get(media).and_then(|m| m.size).map(|size| cover(canvas, size)),
+        _ => Some(1.0),
+    };
+    let grow = match (covering, item.size) {
+        (Some(was), Some(size)) if (clip.transform.scale - was).abs() <= 0.01 * was => cover(canvas, size) / was,
+        _ => 1.0,
+    };
     // how the old file ran is part of the edit: the new one runs the same way
     let (mut speed, mut curve, silent) = match &clip.content {
         ClipContent::Media { speed, curve, silent, .. } if *speed > 0.0 => (*speed, curve.clone(), *silent),
@@ -410,6 +441,12 @@ pub(crate) fn replace(
     }
     let clip = proj.clip_mut(id).expect("found above");
     clip.content = ClipContent::Media { media: media.to_string(), source_in, speed, reversed: false, curve, silent };
+    if grow != 1.0 {
+        clip.transform.scale *= grow;
+        for key in clip.keys.get_mut(&Prop::Scale).into_iter().flatten() {
+            key.v *= grow;
+        }
+    }
     Ok(())
 }
 

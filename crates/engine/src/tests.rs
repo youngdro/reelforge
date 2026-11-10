@@ -2100,6 +2100,25 @@ fn a_template_is_built_with_slots_that_files_fill_keeping_what_is_set_on_them() 
     assert_eq!(r["slots"][0]["media"], json!(long));
     s.execute("render.compile", &json!({})).unwrap();
 
+    // what fills the frame goes on filling it: a wide picture in the tall canvas's empty slot is
+    // scaled to cover it, and a picture of the canvas's shape after it is back at 1
+    let sized = |s: &mut Session, name: &str, size: [u32; 2]| {
+        let params =
+            json!({"path": format!("/nowhere/{name}"), "kind": "image", "size": size, "sha256": "ef".repeat(32)});
+        s.execute("media.import", &params).unwrap()["media"]["id"].as_str().unwrap().to_string()
+    };
+    assert_eq!((s.project().canvas.width, s.project().canvas.height), (1080, 1920));
+    let (wide, tall) = (sized(&mut s, "wide.png", [1920, 1080]), sized(&mut s, "tall.png", [1080, 1920]));
+    let scale = |s: &Session| s.project().clip(&clips[3]).unwrap().1.transform.scale;
+    s.execute("template.fill", &json!({"media": [wide]})).unwrap();
+    assert!((scale(&s) - 3.1605).abs() < 0.001, "{}", scale(&s));
+    s.execute("template.fill", &json!({"media": [tall], "from": 4})).unwrap();
+    assert!((scale(&s) - 1.0).abs() < 0.001, "{}", scale(&s));
+    // a size the person set is theirs: it is not touched
+    s.execute("clip.set", &json!({"clip": clips[3], "scale": 0.5})).unwrap();
+    s.execute("template.fill", &json!({"media": [wide], "from": 4})).unwrap();
+    assert_eq!(scale(&s), 0.5);
+
     // a second template gets a timeline of its own, filled as it is built
     let r = s.execute("template.apply", &json!({"template": "beat", "media": [still, long], "name": "卡点"})).unwrap();
     assert_eq!(s.project().timeline_list().len(), 2);
