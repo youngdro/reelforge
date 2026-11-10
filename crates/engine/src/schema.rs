@@ -569,6 +569,11 @@ pub fn input_schema(id: &str) -> Option<Value> {
             &["track"],
         ),
         "clip.add" => {
+            // a stretch, a turn in space, an anchor and motion blur, as clip.set says them
+            let set = input_schema("clip.set").expect("clip.set has a schema");
+            let placed =
+                ["scaleX", "scaleY", "rotationX", "rotationY", "perspective", "motionBlur", "anchorX", "anchorY"]
+                    .map(|k| (k, set["properties"][k].clone()));
             let mut props = vec![
                 ("track", ident("Track id, such as t1 (project.inspect lists them).")),
                 ("start", time("Timeline start; the end of the track by default.")),
@@ -612,6 +617,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ),
             ];
             props.extend(title_props());
+            props.extend(placed);
             object(props, &["track"])
         }
         "clip.setFx" => object(

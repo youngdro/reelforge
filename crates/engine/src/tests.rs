@@ -4194,3 +4194,29 @@ fn a_clip_is_smeared_along_its_way_when_it_is_asked_to_be() {
     s.execute("edit.undo", &json!({})).unwrap();
     assert_eq!(s.project().clip(&blue).unwrap().1.transform.motion_blur, 0.0);
 }
+
+#[test]
+fn a_clip_lands_turned_in_space_in_one_step_and_the_outline_says_so() {
+    let mut s = Session::default();
+    let t = video_track(&s);
+    let r = s
+        .execute(
+            "clip.add",
+            &json!({"track": t, "color": [1, 0, 0], "rotationY": 30, "scaleX": -1, "motionBlur": true, "anchorX": 0}),
+        )
+        .unwrap();
+    let id = r["clip"].as_str().unwrap();
+    let tr = s.project().clip(id).unwrap().1.transform;
+    assert_eq!((tr.rotation_y, tr.scale_x, tr.anchor[0]), (30.0, -1.0, 0.0));
+    assert!(tr.motion_blur > 0.0);
+    assert_eq!(s.history(), ["Add Clip"], "one undo step");
+    let outline = s.execute("project.outline", &json!({})).unwrap();
+    let space = &outline["tracks"][0]["clips"][0]["space"];
+    assert_eq!(
+        (&space["rotationY"], &space["scaleX"], &space["motionBlur"]),
+        (&json!(30.0), &json!(-1.0), &json!(0.5))
+    );
+    // what clip.set refuses, clip.add refuses, and adds nothing
+    assert!(s.execute("clip.add", &json!({"track": t, "color": [1, 0, 0], "perspective": 0})).is_err());
+    assert_eq!(s.project().tracks[0].clips.len(), 1);
+}

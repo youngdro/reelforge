@@ -45,9 +45,11 @@ enum Cmd {
         #[arg(long)]
         demo: bool,
     },
-    /// List every command with its parameters, as JSON.
+    /// List the engine's commands with their parameters, as JSON (`ops` adds rendering, exporting,
+    /// listening to the media and speech, which `exec`, `run` and `call` run as well).
     Commands,
-    /// Run one command on a project and print its result.
+    /// Run one operation on a project and print its result: any command, or one `ops` lists (audio.beats,
+    /// render.export…); `--save` writes the project back.
     Exec {
         /// The project file.
         project: PathBuf,
@@ -225,6 +227,15 @@ fn open(path: &Path) -> Result<Session, String> {
     Ok(Session::new(Project::from_json(&read(path)?).map_err(|e| format!("{}: {e}", path.display()))?))
 }
 
+/// Runs any operation (an engine command, or one that needs the media: the listening tools, a
+/// transcription, an export) on a project held in memory, for `exec` and `run`.
+fn exec(hub: &Hub, id: &str, params: &Value) -> Result<Value, String> {
+    match hub.call(id, params).map_err(|e| e.to_string())? {
+        Output::Json(v) => Ok(v),
+        Output::Png { .. } => Err(format!("{id} draws a picture: use `call {id} … --project FILE -o out.png`")),
+    }
+}
+
 fn print(v: &Value) {
     println!("{}", serde_json::to_string_pretty(v).expect("serialises"));
 }
@@ -250,16 +261,16 @@ fn run(cmd: Cmd) -> Result<(), String> {
             Ok(())
         }
         Cmd::Exec { project, id, params, save } => {
-            let mut s = open(&project)?;
+            let hub = Hub::new(open(&project)?);
             let params: Value = serde_json::from_str(&params).map_err(|e| format!("params are not JSON: {e}"))?;
-            print(&s.execute(&id, &params).map_err(|e| e.to_string())?);
+            print(&exec(&hub, &id, &params)?);
             if save {
-                write(&project, &s.project().to_json())?;
+                write(&project, &hub.session().project().to_json())?;
             }
             Ok(())
         }
         Cmd::Run { project, script, save } => {
-            let mut s = open(&project)?;
+            let hub = Hub::new(open(&project)?);
             let text = read(&script)?;
             for (n, line) in text.as_bytes().lines().enumerate() {
                 let line = line.map_err(|e| e.to_string())?;
@@ -268,13 +279,12 @@ fn run(cmd: Cmd) -> Result<(), String> {
                 }
                 let step: Value = serde_json::from_str(&line).map_err(|e| format!("line {}: {e}", n + 1))?;
                 let id = step.get("id").and_then(Value::as_str).ok_or(format!("line {}: no \"id\"", n + 1))?;
-                let out = s
-                    .execute(id, step.get("params").unwrap_or(&Value::Null))
+                let out = exec(&hub, id, step.get("params").unwrap_or(&Value::Null))
                     .map_err(|e| format!("line {} ({id}): {e}", n + 1))?;
                 println!("{}", json!({"line": n + 1, "id": id, "result": out}));
             }
             if save {
-                write(&project, &s.project().to_json())?;
+                write(&project, &hub.session().project().to_json())?;
             }
             Ok(())
         }

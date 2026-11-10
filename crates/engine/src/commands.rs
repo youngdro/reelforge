@@ -357,11 +357,11 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.add",
         label: "Add Clip",
-        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "name"?: string, "adjustment"?: bool, "timeline"?: id, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "shape"?: {"kind"?, "size"?: [w, h], "radius"?, "points"?, "inner"?, "fill"?, "stroke"?, "shadow"?, "trim"?}, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "karaoke"?: {"color"?: [r,g,b,a], "mode"?: "sweep"|"word"|"line", "start"?: time, "duration"?: time | null} | null, "template"?: id}"#,
+        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "scaleX"?, "scaleY"?, "rotationX"?, "rotationY"?, "perspective"?, "motionBlur"?, "anchorX"?, "anchorY"?, "name"?: string, "adjustment"?: bool, "timeline"?: id, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "shape"?: {"kind"?, "size"?: [w, h], "radius"?, "points"?, "inner"?, "fill"?, "stroke"?, "shadow"?, "trim"?}, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "karaoke"?: {"color"?: [r,g,b,a], "mode"?: "sweep"|"word"|"line", "start"?: time, "duration"?: time | null} | null, "template"?: id}"#,
         doc: "Places media, a library sticker, text, a drawn shape (`shape`, on a video track: see clip.setShape), a colour or an adjustment clip on a track; starts at the track's end unless `start` is given. Titles default to bold white with a black outline, wrapping at 90 % of the canvas. A sticker (sticker.library) is an image a third of the frame wide; `name` is what the project's media calls it (its English name by default). An adjustment clip shows nothing: its effects (`fx`) and colour work on the tracks below it while it lasts. `timeline` places another timeline of the project as a compound clip on a video track, from `sourceIn`.",
         edits: true,
         enabled: always,
-        run: clip_add,
+        run: clip_add_placed,
     },
     CommandSpec {
         id: "clip.split",
@@ -1727,6 +1727,29 @@ fn track_add(s: &mut Session, v: &Value) -> CmdResult {
 }
 
 const STILL_LENGTH: Tick = Tick(5 * reelforge_time::TICKS_PER_SECOND);
+
+/// What clip.add takes that clip.set sets once the clip is there: a stretch, a turn in space, an
+/// anchor, motion blur. One undo step with the add.
+const ADD_THEN_SET: [&str; 8] =
+    ["scaleX", "scaleY", "rotationX", "rotationY", "perspective", "motionBlur", "anchorX", "anchorY"];
+
+fn clip_add_placed(s: &mut Session, v: &Value) -> CmdResult {
+    let later: serde_json::Map<String, Value> = ADD_THEN_SET
+        .iter()
+        .filter_map(|k| Some((k.to_string(), v.get(*k).filter(|x| !x.is_null())?.clone())))
+        .collect();
+    if later.is_empty() {
+        return clip_add(s, v);
+    }
+    one_step(s, "Add Clip", |s| {
+        let added = clip_add(s, v)?;
+        let mut set = Value::Object(later);
+        set["clip"] = added["clip"].clone();
+        set["at"] = added["start"].clone();
+        clip_set(s, &set)?;
+        Ok(added)
+    })
+}
 
 fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
     let p = P::new(v, fps(s));

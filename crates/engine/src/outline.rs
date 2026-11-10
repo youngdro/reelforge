@@ -73,12 +73,41 @@ fn clip(project: &Project, c: &Clip) -> Value {
             o.insert("timeline".into(), json!(timeline));
         }
     }
+    // where it is: what differs from a clip left as it lands
     let t = &c.transform;
     if t.x != 0.0 || t.y != 0.0 || t.scale != 1.0 || t.rotation != 0.0 {
         o.insert(
             "place".into(),
             json!({"x": num(t.x), "y": num(t.y), "scale": num(t.scale), "rotation": num(t.rotation)}),
         );
+    }
+    let mut space = Map::new();
+    for (name, v, rest) in [
+        ("scaleX", t.scale_x, 1.0),
+        ("scaleY", t.scale_y, 1.0),
+        ("rotationX", t.rotation_x, 0.0),
+        ("rotationY", t.rotation_y, 0.0),
+        ("perspective", t.distance, reelforge_model::ClipTransform::DISTANCE),
+        ("motionBlur", t.motion_blur, 0.0),
+    ] {
+        if v != rest {
+            space.insert(name.into(), json!(num(v)));
+        }
+    }
+    if t.anchor != [0.5, 0.5] {
+        space.insert("anchor".into(), json!(t.anchor.map(num)));
+    }
+    if !space.is_empty() {
+        o.insert("space".into(), Value::Object(space));
+    }
+    if let Some(parent) = &c.parent {
+        o.insert("parent".into(), json!(parent));
+    }
+    if c.path.is_some() {
+        o.insert("path".into(), json!(true));
+    }
+    if c.steady.is_some() {
+        o.insert("stabilized".into(), json!(true));
     }
     if c.opacity != 1.0 {
         o.insert("opacity".into(), json!(num(c.opacity)));
