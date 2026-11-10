@@ -3521,6 +3521,7 @@ dependencies = [
  "reelforge-server",
  "reelforge-speech",
  "reelforge-time",
+ "reelforge-voice",
  "serde_json",
  "ureq",
 ]
@@ -3637,6 +3638,7 @@ dependencies = [
  "reelforge-renderspec",
  "reelforge-speech",
  "reelforge-time",
+ "reelforge-voice",
  "serde_json",
  "sha2",
  "tiny_http",
@@ -3685,6 +3687,7 @@ dependencies = [
  "reelforge-server",
  "reelforge-speech",
  "reelforge-time",
+ "reelforge-voice",
  "rfd",
  "serde",
  "serde_json",

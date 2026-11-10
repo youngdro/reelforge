@@ -84,6 +84,15 @@ static REGISTRY: &[CommandSpec] = &[
         run: crate::captions::captions_add,
     },
     CommandSpec {
+        id: "voiceover.add",
+        label: "Add Voice-over",
+        params: r#"{"lines": [{"path": string, "start": time, "name"?: string, "sha256"?: string, "duration"?: time}], "track"?: id}"#,
+        doc: "Imports spoken lines (sound files, from text to speech) and places each where its line starts, on a Voice-over audio track; one that would overlap goes on the next Voice-over track. One undo step.",
+        edits: true,
+        enabled: always,
+        run: crate::voiceover::voiceover_add,
+    },
+    CommandSpec {
         id: "captions.export",
         label: "Export Captions",
         params: r#"{"track"?: id}"#,

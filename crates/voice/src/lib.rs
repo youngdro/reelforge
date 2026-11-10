@@ -46,6 +46,13 @@ pub fn default_model_dir() -> PathBuf {
     PathBuf::from(home).join(".reelforge").join("models").join("kokoro")
 }
 
+/// Where the desktop editor keeps the lines it reads aloud: `.reelforge/voiceover` in the home
+/// folder.
+pub fn voiceover_dir() -> PathBuf {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).unwrap_or_else(|| ".".into());
+    PathBuf::from(home).join(".reelforge").join("voiceover")
+}
+
 /// The checkpoint in `dir`: `kokoro-v1_0.pth`, or the only `.pth` there.
 fn checkpoint_in(dir: &Path) -> Option<PathBuf> {
     let named = dir.join("kokoro-v1_0.pth");
