@@ -747,6 +747,101 @@ pub struct TextContent {
     /// `text` where it says `{n}`, or as the whole text when it does not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub number: Option<NumberText>,
+    /// With `text/7`: part of the text takes another colour as it is said (karaoke).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<TextHighlight>,
+    /// With `text/7`: the text is written on, each character's outline drawn by a pen before its
+    /// fill comes in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draw: Option<TextDraw>,
+}
+
+/// What of a text moves as one, or is said as one (`text/7`).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum TextUnit {
+    /// Each character.
+    #[default]
+    Char,
+    /// Each word: characters with no white space between them. A Chinese character or a kana is
+    /// a word of its own, together with the punctuation that follows it.
+    Word,
+    /// Each line, as the text is laid out.
+    Line,
+}
+
+impl TextUnit {
+    fn is_char(&self) -> bool {
+        *self == TextUnit::Char
+    }
+
+    /// The name commands use.
+    pub fn name(self) -> &'static str {
+        match self {
+            TextUnit::Char => "char",
+            TextUnit::Word => "word",
+            TextUnit::Line => "line",
+        }
+    }
+}
+
+/// The word each character of `text` belongs to, white space left out, counted from 0: see
+/// [`TextUnit::Word`].
+pub fn words(text: &str) -> Vec<usize> {
+    // written without spaces between words
+    let wide = |c: char| matches!(c as u32, 0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x2FA1F);
+    let mut out = vec![];
+    let (mut word, mut before): (usize, Option<char>) = (0, None);
+    for c in text.chars() {
+        if c.is_whitespace() {
+            before = None;
+            continue;
+        }
+        let new = match before {
+            None => true,
+            Some(b) => wide(c) || (wide(b) && c.is_alphanumeric()),
+        };
+        if new && !out.is_empty() {
+            word += 1;
+        }
+        out.push(word);
+        // punctuation stays with what it follows
+        if before.is_none() || c.is_alphanumeric() {
+            before = Some(c);
+        }
+    }
+    out
+}
+
+/// Part of a text in another colour as it is said (`text/7`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TextHighlight {
+    /// How much of the text has been said: 0, none of it, to 1, all of it, counted in characters,
+    /// white space left out.
+    pub progress: Animated<f32>,
+    /// The fill of what is highlighted, in place of the text's own colour or gradient.
+    pub color: Color,
+    /// `char`: everything said so far, the edge passing smoothly through the character being
+    /// said. `word` and `line`: the word or line being said, alone; none before 0 or from 1 on.
+    #[serde(default, skip_serializing_if = "TextUnit::is_char")]
+    pub unit: TextUnit,
+}
+
+/// A text written on (`text/7`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TextDraw {
+    /// 0, nothing shows, to 1, the text as it is. In between the characters are written one
+    /// after another: a pen follows each one's outline, then its fill, outlines and shadow fade
+    /// in and the pen's line goes.
+    pub progress: Animated<f32>,
+    /// The pen's width in ems. It draws in the colour of the text's outline, or of its fill when
+    /// it has none.
+    pub width: f32,
+    /// How much later each character starts than the one before, in units of one character's
+    /// own time: 0 writes them all together, 1 starts each as the one before is done.
+    pub step: f32,
 }
 
 /// A number shown by a text (`text/6`).
@@ -821,6 +916,9 @@ pub struct CharMotion {
     /// Counted from the last character instead of the first.
     #[serde(default, skip_serializing_if = "is_false")]
     pub reverse: bool,
+    /// With `text/7`: what moves as one, about its own centre, where this says "character".
+    #[serde(default, skip_serializing_if = "TextUnit::is_char")]
+    pub unit: TextUnit,
 }
 
 /// How a character travels between `pose` and rest.
@@ -835,6 +933,12 @@ pub enum CharCurve {
     Wave,
     /// To `pose` and back in the first half of every round, at rest in the second.
     Hop,
+    /// With `text/7`: from `pose` to rest once, swinging past rest and back several times, less
+    /// each time, like something on a spring.
+    Elastic,
+    /// With `text/7`: from `pose` to rest once, falling faster and faster, then bouncing back
+    /// towards `pose` three times, less each time, like a dropped ball.
+    Bounce,
 }
 
 /// Where a character is, against where the layout puts it.
@@ -906,6 +1010,30 @@ impl CharMotion {
                 let shown = if self.curve == CharCurve::Settle { 1.0 - u } else { 1.0 - (u * 3.0).min(1.0) };
                 self.pose.weighed(away, shown)
             }
+            CharCurve::Elastic | CharCurve::Bounce => {
+                let own = 1.0 / (1.0 + step * n.saturating_sub(1) as f32);
+                let u = ((progress - i * step * own) / own).clamp(0.0, 1.0);
+                let away = if u >= 1.0 {
+                    0.0
+                } else if self.curve == CharCurve::Elastic {
+                    -(2.0f32.powf(-10.0 * u)) * ((u * 10.0 - 0.75) * std::f32::consts::TAU / 3.0).sin()
+                } else {
+                    // four falls, each a parabola, the first from `pose`
+                    let (k, d) = (7.5625f32, 2.75f32);
+                    let down = if u < 1.0 / d {
+                        k * u * u
+                    } else if u < 2.0 / d {
+                        k * (u - 1.5 / d).powi(2) + 0.75
+                    } else if u < 2.5 / d {
+                        k * (u - 2.25 / d).powi(2) + 0.9375
+                    } else {
+                        k * (u - 2.625 / d).powi(2) + 0.984375
+                    };
+                    1.0 - down
+                };
+                // all there early, so the swings and bounces show
+                self.pose.weighed(away, 1.0 - (u * 4.0).min(1.0))
+            }
             CharCurve::Wave | CharCurve::Hop => {
                 let w = (std::f32::consts::TAU * (progress - i * step)).sin();
                 let w = if self.curve == CharCurve::Hop { w.max(0.0) } else { w };
@@ -942,6 +1070,8 @@ impl TextContent {
             underline: false,
             chars: vec![],
             number: None,
+            highlight: None,
+            draw: None,
         }
     }
 }
@@ -1030,6 +1160,16 @@ impl TextContent {
     /// Whether it uses anything beyond `text/5`.
     pub fn needs_v6(&self) -> bool {
         self.number.is_some()
+    }
+
+    /// Whether it uses anything beyond `text/6`.
+    pub fn needs_v7(&self) -> bool {
+        self.highlight.is_some()
+            || self.draw.is_some()
+            || self
+                .chars
+                .iter()
+                .any(|m| m.unit != TextUnit::Char || matches!(m.curve, CharCurve::Elastic | CharCurve::Bounce))
     }
 }
 
@@ -1623,6 +1763,9 @@ impl RenderSpec {
                 if t.needs_v6() {
                     out.insert("text/6".to_string());
                 }
+                if t.needs_v7() {
+                    out.insert("text/7".to_string());
+                }
             }
             if let LayerContent::Shape(_) = &layer.content {
                 out.insert("shape/1".to_string());
@@ -1775,6 +1918,50 @@ mod tests {
         );
         assert_eq!(n.fill("¥{n} 起", 59.0), "¥59 起");
         assert_eq!(n.fill("whatever", 59.0), "59");
+    }
+
+    #[test]
+    fn words_are_what_stands_between_spaces_and_each_chinese_character() {
+        assert_eq!(words("big sale  today"), [0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 2]);
+        // punctuation stays with the word before it; Latin after Chinese starts a word
+        assert_eq!(words("保温杯 Pro，限时！"), [0, 1, 2, 3, 3, 3, 3, 4, 5, 5]);
+        assert_eq!(words("新品A1 ひら"), [0, 1, 2, 2, 3, 4]);
+        assert_eq!(words("-50% off"), [0, 0, 0, 0, 1, 1, 1]);
+        assert!(words(" \n ").is_empty());
+    }
+
+    #[test]
+    fn springs_swing_past_rest_and_balls_bounce_short_of_it() {
+        let from = CharPose { offset: [0.0, -1.0], scale: 0.0, rotation: 0.0, opacity: 0.0 };
+        let m = |curve| CharMotion {
+            progress: Animated::Constant(0.0),
+            step: 0.0,
+            curve,
+            pose: from,
+            reverse: false,
+            unit: TextUnit::Char,
+        };
+        for curve in [CharCurve::Elastic, CharCurve::Bounce] {
+            let m = m(curve);
+            // from the pose to rest, all there a quarter of the way in
+            assert_eq!(m.at(0, 1, 0.0), from, "{curve:?}");
+            assert_eq!(m.at(0, 1, 1.0), CharPose::REST, "{curve:?}");
+            assert_eq!(m.at(0, 1, 0.25).opacity, 1.0);
+            // one after another
+            let later = CharMotion { step: 1.0, ..m };
+            assert_eq!((later.at(0, 2, 0.5), later.at(1, 2, 0.5)), (CharPose::REST, from));
+        }
+        let path = |curve| (1..100).map(move |i| m(curve).at(0, 1, i as f32 / 100.0)).collect::<Vec<_>>();
+        // a spring goes past rest (larger than life, below its place) and comes back more than once
+        let spring = path(CharCurve::Elastic);
+        let crossings = spring.windows(2).filter(|w| (w[0].scale > 1.0) != (w[1].scale > 1.0)).count();
+        assert!(spring.iter().any(|p| p.scale > 1.2 && p.offset[1] > 0.2) && crossings >= 3, "{crossings}");
+        // a ball never goes past the ground; it touches it and leaves it again three times
+        let ball = path(CharCurve::Bounce);
+        assert!(ball.iter().all(|p| p.offset[1] <= 1e-4 && p.scale <= 1.0 + 1e-4));
+        let hits =
+            ball.windows(3).filter(|w| w[1].offset[1] > w[0].offset[1] && w[1].offset[1] > w[2].offset[1]).count();
+        assert_eq!(hits, 3);
     }
 
     #[test]

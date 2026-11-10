@@ -266,6 +266,19 @@ fn layers_ok(spec: &RenderSpec, at: &str, layers: &[crate::Layer]) -> Result<(),
                     ));
                 }
             }
+            if let Some(h) = &text.highlight {
+                keys_ok(&format!("{path}.content.highlight.progress"), &h.progress, layer.dur)?;
+            }
+            if let Some(d) = &text.draw {
+                let at = format!("{path}.content.draw");
+                keys_ok(&format!("{at}.progress"), &d.progress, layer.dur)?;
+                if !(d.width.is_finite() && d.width > 0.0 && d.width <= 0.5) {
+                    return Err(bad(format!("{at}.width"), "must be above 0 and at most 0.5 em"));
+                }
+                if !(d.step.is_finite() && d.step >= 0.0) {
+                    return Err(bad(format!("{at}.step"), "must be zero or more"));
+                }
+            }
         }
         keys_ok(&format!("{path}.transform.position"), &layer.transform.position, layer.dur)?;
         keys_ok(&format!("{path}.transform.scale"), &layer.transform.scale, layer.dur)?;

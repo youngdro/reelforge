@@ -530,6 +530,58 @@ pub struct TitleStyle {
     /// all of them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub counter: Option<Counter>,
+    /// Another colour for what is being said (karaoke).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub karaoke: Option<Karaoke>,
+}
+
+/// Part of a title in another colour as it is said: a voice goes through its characters at an
+/// even pace, white space left out.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Karaoke {
+    /// The colour of what is lit, straight sRGB.
+    pub color: [f32; 4],
+    /// What is lit.
+    #[serde(default)]
+    pub mode: KaraokeMode,
+    /// When the voice starts, from the clip's start.
+    #[serde(default, skip_serializing_if = "Tick::is_zero")]
+    pub start: Tick,
+    /// How long the voice takes; absent, until the clip ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<Tick>,
+}
+
+/// What a karaoke title lights.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum KaraokeMode {
+    /// Everything said so far, the edge passing smoothly through the character being said.
+    #[default]
+    Sweep,
+    /// The word being said, alone (a Chinese character is a word of its own).
+    Word,
+    /// The line being said, alone.
+    Line,
+}
+
+impl KaraokeMode {
+    /// Every mode, in menu order.
+    pub const ALL: [KaraokeMode; 3] = [KaraokeMode::Sweep, KaraokeMode::Word, KaraokeMode::Line];
+
+    /// The name commands use.
+    pub fn name(self) -> &'static str {
+        match self {
+            KaraokeMode::Sweep => "sweep",
+            KaraokeMode::Word => "word",
+            KaraokeMode::Line => "line",
+        }
+    }
+
+    /// The mode a command names.
+    pub fn parse(name: &str) -> Option<KaraokeMode> {
+        KaraokeMode::ALL.into_iter().find(|m| m.name() == name)
+    }
 }
 
 fn is_zero(v: &f32) -> bool {
@@ -576,6 +628,7 @@ impl Default for TitleStyle {
             italic: false,
             underline: false,
             counter: None,
+            karaoke: None,
         }
     }
 }
@@ -596,6 +649,7 @@ impl TitleStyle {
             italic: self.italic,
             underline: self.underline,
             counter: self.counter,
+            karaoke: self.karaoke,
             ..look.clone()
         }
     }
@@ -1048,6 +1102,15 @@ impl Project {
                         }
                         if let Some(why) = style.counter.as_ref().and_then(Counter::problem) {
                             return bad(why);
+                        }
+                        if let Some(k) = &style.karaoke
+                            && (k.start < Tick::ZERO
+                                || k.duration.is_some_and(|d| d <= Tick::ZERO)
+                                || !k.color.iter().all(|v| v.is_finite()))
+                        {
+                            return bad(
+                                "karaoke needs a colour, a start at or after the clip's and a length above nothing",
+                            );
                         }
                         if let Some(font) = &style.font
                             && self.media.get(font).is_none_or(|m| m.kind != MediaKind::Font)

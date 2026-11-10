@@ -437,6 +437,8 @@ struct Title {
     leading: f32,
     italic: bool,
     underline: bool,
+    /// What is being said takes another colour: what is lit, and the colour as on screen.
+    karaoke: Option<(reelforge_model::KaraokeMode, [u8; 3])>,
 }
 
 impl EditorApp {
@@ -3176,6 +3178,9 @@ impl EditorApp {
                     leading: style.leading * 100.0,
                     italic: style.italic,
                     underline: style.underline,
+                    karaoke: style
+                        .karaoke
+                        .map(|k| (k.mode, [k.color[0], k.color[1], k.color[2]].map(|v| (v * 255.0).round() as u8))),
                 }),
                 _ => None,
             },
@@ -3414,6 +3419,27 @@ impl EditorApp {
                             // boxes per line need a box
                             t.boxed |= t.line_boxes;
                             commit = true;
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        let mut on = t.karaoke.is_some();
+                        if ui.toggle_value(&mut on, s.karaoke).on_hover_text(s.karaoke_tip).changed() {
+                            t.karaoke = on.then_some((reelforge_model::KaraokeMode::Sweep, [255, 214, 26]));
+                            commit = true;
+                        }
+                        if let Some((mode, rgb)) = &mut t.karaoke {
+                            let at = reelforge_model::KaraokeMode::ALL.iter().position(|m| m == mode).unwrap_or(0);
+                            egui::ComboBox::from_id_salt("karaoke").selected_text(s.karaoke_modes[at]).show_ui(
+                                ui,
+                                |ui| {
+                                    for (m, name) in reelforge_model::KaraokeMode::ALL.into_iter().zip(s.karaoke_modes)
+                                    {
+                                        commit |= ui.selectable_value(mode, m, name).changed();
+                                    }
+                                },
+                            );
+                            // sent once the picker is let go
+                            ui.color_edit_button_srgb(rgb);
                         }
                     });
                 });
@@ -4134,7 +4160,7 @@ impl EditorApp {
                                 |ui| {
                                     ui.selectable_value(&mut picked, None, s.anim_none);
                                     for (k, name) in AnimKind::ALL.into_iter().zip(names.iter()) {
-                                        if (!k.titles_only() || titled) && (!k.shapes_only() || shaped) {
+                                        if (!k.titles_only() || titled) && (!k.drawn_only() || shaped || titled) {
                                             ui.selectable_value(&mut picked, Some(k), *name);
                                         }
                                     }
@@ -4286,7 +4312,8 @@ impl EditorApp {
             }
         }
         // a colour is committed once the pointer lets go of the picker
-        let picked = self.inspector.as_ref().is_some_and(|e| e.color != current.color);
+        let lit = |i: &Inspector| i.title.as_ref().and_then(|t| t.karaoke).map(|k| k.1);
+        let picked = self.inspector.as_ref().is_some_and(|e| e.color != current.color || lit(e) != lit(&current));
         commit |= picked && !ui.ctx().egui_is_using_pointer();
         for (cmd, params) in actions {
             if cmd == "clip.pickChromaKey" {
@@ -4400,6 +4427,15 @@ impl EditorApp {
                 }
                 if was.is_some_and(|w| w.underline != t.underline) {
                     params["underline"] = json!(t.underline);
+                }
+                if was.is_some_and(|w| w.karaoke != t.karaoke) {
+                    params["karaoke"] = match t.karaoke {
+                        Some((mode, rgb)) => {
+                            let [r, g, b] = rgb.map(|v| f32::from(v) / 255.0);
+                            json!({"mode": mode.name(), "color": [r, g, b, 1.0]})
+                        }
+                        None => Value::Null,
+                    };
                 }
             }
             if self.execute("clip.set", params).is_err() {

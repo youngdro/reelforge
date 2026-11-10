@@ -97,6 +97,13 @@ from its foot, a badge that swings open on its edge). All of them are keyframed 
 and price go wherever the card goes, turn as it turns and are seen in the same perspective. And a clip travels along
 a path instead of standing in one place (`clip.setPath`): a smooth curve through points, at an even speed, facing the
 way it goes if asked. In the editor they are under 3D & anchor in a clip's inspector.
+A title's words move one after another as its characters do (`wordFade`, `wordRise`, `wordPop`; a Chinese character
+is a word of its own), and its lines (`lineRise`); characters spring up past their size and back (`charElastic`) or
+fall and bounce (`charBounce`), and any clip does the same as a whole (`elastic`, `drop`). A title is written on
+(`draw`): a pen follows each character's outline before its ink comes in. And what is being said takes another colour
+(`karaoke` on `clip.set`, the Karaoke box by a title's style): everything said so far, the edge passing smoothly
+through the character being said, or the word or line being said alone. Give one caption a karaoke and
+`captions.restyle` gives it to the rest, each over its own length.
 See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Video and audio codecs and containers are FilmCraft's clean-room, pure-Rust crates

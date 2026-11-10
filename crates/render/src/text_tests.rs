@@ -322,6 +322,7 @@ fn characters_move_one_after_another_about_their_own_centres() {
         curve,
         pose,
         reverse: false,
+        unit: TextUnit::Char,
     };
     let hidden = CharPose { opacity: 0.0, ..CharPose::REST };
 
@@ -550,4 +551,222 @@ fn a_title_stretched_turned_or_anchored_is_drawn_flat_and_placed() {
     t.layers[0].transform.turn = Some(Turn::held(0.0, -50.0));
     let door = ink_box(&draw(&t, 1.0));
     assert!(door[0].abs_diff(W / 2) <= 6 && door[3] - door[1] > (b[3] - b[1]) * 13 / 10, "{door:?} {b:?}");
+}
+
+#[test]
+fn words_and_lines_move_as_one() {
+    let plain = white("HH HH", 60.0);
+    let w = ink_box(&draw(&spec_with(plain.clone()), 1.0));
+    let mid = (w[0] + w[2]) / 2;
+    let shrunk = |unit| CharMotion {
+        progress: Animated::Constant(0.0),
+        step: 0.0,
+        curve: CharCurve::Settle,
+        pose: CharPose { scale: 0.5, ..CharPose::REST },
+        reverse: false,
+        unit,
+    };
+    // the box of the ink right of the middle
+    let right = |img: &Image| {
+        let mut b = [u32::MAX, 0];
+        for y in 0..img.height {
+            for x in mid..img.width {
+                if img.pixels[(y * img.width + x) as usize][0] > 0.05 {
+                    b = [b[0].min(x), b[1].max(x + 1)];
+                }
+            }
+        }
+        b
+    };
+    let whole = right(&draw(&spec_with(plain.clone()), 1.0));
+    // each letter half its size about its own centre: the second word is as wide as it was, less
+    // half a letter; the word as one about its centre: half as wide, in the same place
+    let mut t = plain.clone();
+    t.chars = vec![shrunk(TextUnit::Char)];
+    assert!(!spec_with(t.clone()).required_features().contains("text/7"));
+    let by_char = right(&draw(&spec_with(t.clone()), 1.0));
+    t.chars = vec![shrunk(TextUnit::Word)];
+    let s = spec_with(t.clone());
+    assert!(s.required_features().contains("text/7") && validate(&s).is_ok());
+    let by_word = right(&draw(&s, 1.0));
+    let width = |b: [u32; 2]| (b[1] - b[0]) as f32;
+    assert!((width(by_word) - width(whole) / 2.0).abs() <= 2.0, "{whole:?} {by_word:?}");
+    assert!(width(by_char) > width(by_word) + 8.0, "{by_char:?} {by_word:?}");
+    assert!(((by_word[0] + by_word[1]) as i32 - (whole[0] + whole[1]) as i32).abs() <= 2);
+    // one after another: half way, the first word is in place and nothing of the second shows
+    t.chars = vec![CharMotion {
+        progress: Animated::Constant(0.5),
+        step: 1.0,
+        pose: CharPose { offset: [0.0, 0.5], opacity: 0.0, ..CharPose::REST },
+        ..shrunk(TextUnit::Word)
+    }];
+    let half = ink_box(&draw(&spec_with(t.clone()), 1.0));
+    assert_eq!((half[0], half[1], half[3]), (w[0], w[1], w[3]));
+    assert!(half[2] < mid, "{half:?} {w:?}");
+
+    // two lines, each shrunk about its own middle: both stay centred, each half as wide
+    let mut t = white("HHHH\nHH", 50.0);
+    let lines = |img: &Image| {
+        let b = ink_box(img);
+        let split = (b[1] + b[3]) / 2;
+        let row = |y0: u32, y1: u32| {
+            let mut r = [u32::MAX, 0];
+            for y in y0..y1 {
+                for x in 0..img.width {
+                    if img.pixels[(y * img.width + x) as usize][0] > 0.05 {
+                        r = [r[0].min(x), r[1].max(x + 1)];
+                    }
+                }
+            }
+            r
+        };
+        (row(b[1], split), row(split, b[3]))
+    };
+    let (top, bottom) = lines(&draw(&spec_with(t.clone()), 1.0));
+    t.chars = vec![shrunk(TextUnit::Line)];
+    let (small_top, small_bottom) = lines(&draw(&spec_with(t), 1.0));
+    for (was, is) in [(top, small_top), (bottom, small_bottom)] {
+        assert!((width(is) - width(was) / 2.0).abs() <= 2.0, "{was:?} {is:?}");
+        assert!(((is[0] + is[1]) as i32 - (was[0] + was[1]) as i32).abs() <= 2, "{was:?} {is:?}");
+    }
+}
+
+#[test]
+fn what_is_said_takes_another_colour() {
+    let plain = white("HHHH", 60.0);
+    let whole = draw(&spec_with(plain.clone()), 1.0);
+    let w = ink_box(&whole);
+    let said = |unit, progress: f32| TextHighlight {
+        progress: Animated::Constant(progress),
+        color: Color([1.0, 0.0, 0.0, 1.0]),
+        unit,
+    };
+    // red where the voice has been: pixels with red and no green
+    let red = |img: &Image| {
+        let mut b = [u32::MAX, 0, 0];
+        for y in 0..img.height {
+            for x in 0..img.width {
+                let p = img.pixels[(y * img.width + x) as usize];
+                if p[0] > 0.9 && p[1] < 0.1 {
+                    b = [b[0].min(x), b[1].max(x + 1), b[2] + 1];
+                }
+            }
+        }
+        b
+    };
+    let mut t = plain.clone();
+    t.highlight = Some(said(TextUnit::Char, 0.5));
+    let s = spec_with(t.clone());
+    assert!(s.required_features().contains("text/7") && validate(&s).is_ok());
+    let half = draw(&s, 1.0);
+    // the same ink, the left half of it red
+    assert_eq!(ink(&half), ink(&whole));
+    let r = red(&half);
+    let mid = (w[0] + w[2]) / 2;
+    assert!(r[0] <= w[0] + 2 && r[1].abs_diff(mid) <= 6, "{w:?} {r:?}");
+    // the edge is inside a letter when the voice is: three eighths of the way, half the second H
+    t.highlight = Some(said(TextUnit::Char, 0.375));
+    let inside = red(&draw(&spec_with(t.clone()), 1.0));
+    assert!(inside[1] + 10 < r[1] && inside[1] > w[0] + (w[2] - w[0]) / 4 + 2, "{inside:?} {r:?}");
+    // none before it starts, all at the end
+    t.highlight = Some(said(TextUnit::Char, 0.0));
+    assert_eq!(draw(&spec_with(t.clone()), 1.0).pixels, whole.pixels);
+    t.highlight = Some(said(TextUnit::Char, 1.0));
+    let all = draw(&spec_with(t.clone()), 1.0);
+    assert!(all.pixels.iter().all(|p| p[1] < 1e-3) && red(&all)[0] <= w[0] + 2 && red(&all)[1] + 2 >= w[2]);
+
+    // by the word: the one the voice is in, alone, and none once it is over
+    let mut t = white("HH HH", 60.0);
+    let w = ink_box(&draw(&spec_with(t.clone()), 1.0));
+    let mid = (w[0] + w[2]) / 2;
+    t.highlight = Some(said(TextUnit::Word, 0.1));
+    let first = red(&draw(&spec_with(t.clone()), 1.0));
+    assert!(first[0] <= w[0] + 2 && first[1] < mid, "{w:?} {first:?}");
+    t.highlight = Some(said(TextUnit::Word, 0.6));
+    let second = red(&draw(&spec_with(t.clone()), 1.0));
+    assert!(second[0] > mid && second[1] + 2 >= w[2], "{w:?} {second:?}");
+    t.highlight = Some(said(TextUnit::Word, 1.0));
+    assert_eq!(red(&draw(&spec_with(t.clone()), 1.0))[2], 0);
+
+    // by the line, and a sweep on the second line leaves the first all said
+    let mut t = white("HH\nHH", 50.0);
+    let b = ink_box(&draw(&spec_with(t.clone()), 1.0));
+    let rows = |img: &Image| {
+        let split = (b[1] + b[3]) / 2;
+        let count = |y0: u32, y1: u32| {
+            (y0..y1)
+                .flat_map(|y| (0..img.width).map(move |x| (x, y)))
+                .filter(|(x, y)| {
+                    let p = img.pixels[(y * img.width + x) as usize];
+                    p[0] > 0.9 && p[1] < 0.1
+                })
+                .count()
+        };
+        (count(b[1], split), count(split, b[3]))
+    };
+    t.highlight = Some(said(TextUnit::Line, 0.6));
+    let (top, bottom) = rows(&draw(&spec_with(t.clone()), 1.0));
+    assert!(top == 0 && bottom > 100, "{top} {bottom}");
+    t.highlight = Some(said(TextUnit::Char, 0.75));
+    let (top, half_bottom) = rows(&draw(&spec_with(t.clone()), 1.0));
+    assert!(top > 100 && half_bottom > 40 && half_bottom < bottom * 2 / 3, "{top} {half_bottom} {bottom}");
+
+    // it moves with time
+    t.highlight = Some(TextHighlight {
+        progress: Animated::Keys(vec![
+            Key { t: Tick::ZERO, v: 0.0, ease: Ease::Linear },
+            Key { t: Tick::from_seconds(0.5), v: 1.0, ease: Ease::Linear },
+        ]),
+        ..said(TextUnit::Char, 0.0)
+    });
+    let s = spec_with(t);
+    assert!(validate(&s).is_ok());
+    let at = |t: Tick| rows(&render_frame(&s, t, 1.0, &NoMedia, Quality::Final).unwrap().0);
+    let (early, late) = (at(Tick::from_seconds(0.125)), at(Tick::from_seconds(0.375)));
+    assert!(early.0 > 0 && early.1 == 0 && late.0 > early.0 && late.1 > 0, "{early:?} {late:?}");
+}
+
+#[test]
+fn a_title_is_written_on_by_a_pen() {
+    let plain = white("HHHH", 100.0);
+    let whole = draw(&spec_with(plain.clone()), 1.0);
+    let w = ink_box(&whole);
+    let written = |progress: f32| TextDraw { progress: Animated::Constant(progress), width: 0.02, step: 1.0 };
+    let mut t = plain.clone();
+    t.draw = Some(written(1.0));
+    let s = spec_with(t.clone());
+    assert!(s.required_features().contains("text/7") && validate(&s).is_ok());
+    // done, it is the text as it is; before it starts, nothing
+    assert_eq!(draw(&s, 1.0).pixels, whole.pixels);
+    t.draw = Some(written(0.0));
+    assert_eq!(ink(&draw(&spec_with(t.clone()), 1.0)), 0.0);
+    // one after another: half way the first two letters are whole and nothing of the others shows
+    t.draw = Some(written(0.5));
+    let half = draw(&spec_with(t.clone()), 1.0);
+    let h = ink_box(&half);
+    let mid = (w[0] + w[2]) / 2;
+    assert!((h[0], h[1], h[3]) == (w[0], w[1], w[3]) && h[2] < mid, "{w:?} {h:?}");
+    assert!((ink(&half) - ink(&whole) / 2.0).abs() < ink(&whole) * 0.02);
+    // a little into the third letter: a thin line round part of its outline, where the letter
+    // will be, and far less ink than the letter has
+    t.draw = Some(written(0.5 + 0.15 / 4.0));
+    let third = draw(&spec_with(t.clone()), 1.0);
+    let b = ink_box(&third);
+    let more = ink(&third) - ink(&half);
+    assert!(b[2] > mid + 4 && b[2] < w[2] - (w[2] - w[0]) / 5, "{w:?} {b:?}");
+    assert!(more > 20.0 && more < ink(&whole) / 4.0 * 0.5, "{more} of {}", ink(&whole) / 4.0);
+    // later the ink comes in behind the pen: more than the line alone, less than the letter
+    t.draw = Some(written(0.5 + 0.85 / 4.0));
+    let filling = ink(&draw(&spec_with(t.clone()), 1.0)) - ink(&half);
+    assert!(filling > more * 1.5 && filling < ink(&whole) / 4.0, "{filling} {more}");
+    // the pen draws in the outline's colour when the text has one
+    t.stroke = Some(TextStroke { color: Color([0.0, 1.0, 0.0, 1.0]), width: 4.0 });
+    t.draw = Some(written(0.15 / 4.0));
+    let green = draw(&spec_with(t.clone()), 1.0);
+    assert!(green.pixels.iter().any(|p| p[1] > 0.9 && p[0] < 0.1) && ink(&green) < 1.0);
+    // a pen too wide or a step below nothing is refused
+    for (width, step) in [(0.0, 1.0), (0.6, 1.0), (0.04, -1.0), (f32::NAN, 0.0)] {
+        t.draw = Some(TextDraw { progress: Animated::Constant(0.5), width, step });
+        assert!(validate(&spec_with(t.clone())).is_err(), "{width} {step}");
+    }
 }

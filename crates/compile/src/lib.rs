@@ -351,6 +351,8 @@ fn lower_tracks(
                         }),
                         reveal: motion::reveal(clip, &shape),
                         chars: motion::chars(clip, &shape),
+                        draw: motion::written(clip, &shape),
+                        highlight: motion::said(clip, &shape),
                         font: style.font.as_ref().map(|f| asset_for(f)).transpose()?,
                         tracking: style.tracking,
                         leading: style.leading,

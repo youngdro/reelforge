@@ -453,6 +453,16 @@
           "const": "hop",
           "description": "To `pose` and back in the first half of every round, at rest in the second.",
           "type": "string"
+        },
+        {
+          "const": "elastic",
+          "description": "With `text/7`: from `pose` to rest once, swinging past rest and back several times, less\neach time, like something on a spring.",
+          "type": "string"
+        },
+        {
+          "const": "bounce",
+          "description": "With `text/7`: from `pose` to rest once, falling faster and faster, then bouncing back\ntowards `pose` three times, less each time, like a dropped ball.",
+          "type": "string"
         }
       ]
     },
@@ -480,6 +490,10 @@
           "description": "How much later each character starts than the one before. For `settle` and `spring`, in\nunits of one character's own time: 0 moves them all together, 1 starts each as the one\nbefore arrives. For `wave` and `hop`, in rounds.",
           "format": "float",
           "type": "number"
+        },
+        "unit": {
+          "$ref": "#/$defs/TextUnit",
+          "description": "With `text/7`: what moves as one, about its own centre, where this says \"character\"."
         }
       },
       "required": [
@@ -1000,6 +1014,17 @@
               "$ref": "#/$defs/Color",
               "description": "Fill colour."
             },
+            "draw": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TextDraw"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `text/7`: the text is written on, each character's outline drawn by a pen before its\nfill comes in."
+            },
             "font": {
               "description": "A `font` asset; absent means the renderer's bundled default face (Noto Sans SC, which also\ncovers Latin). Characters the face lacks fall back to the other faces the renderer has.",
               "type": [
@@ -1017,6 +1042,17 @@
                 }
               ],
               "description": "With `text/2`: the fill fades from `color` at the block's top to this at its bottom."
+            },
+            "highlight": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TextHighlight"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `text/7`: part of the text takes another colour as it is said (karaoke)."
             },
             "italic": {
               "description": "With `text/4`: slanted; the face's own italic when it has one, otherwise sheared.",
@@ -1768,6 +1804,55 @@
       ],
       "type": "object"
     },
+    "TextDraw": {
+      "additionalProperties": false,
+      "description": "A text written on (`text/7`).",
+      "properties": {
+        "progress": {
+          "$ref": "#/$defs/Animated",
+          "description": "0, nothing shows, to 1, the text as it is. In between the characters are written one\nafter another: a pen follows each one's outline, then its fill, outlines and shadow fade\nin and the pen's line goes."
+        },
+        "step": {
+          "description": "How much later each character starts than the one before, in units of one character's\nown time: 0 writes them all together, 1 starts each as the one before is done.",
+          "format": "float",
+          "type": "number"
+        },
+        "width": {
+          "description": "The pen's width in ems. It draws in the colour of the text's outline, or of its fill when\nit has none.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "progress",
+        "width",
+        "step"
+      ],
+      "type": "object"
+    },
+    "TextHighlight": {
+      "additionalProperties": false,
+      "description": "Part of a text in another colour as it is said (`text/7`).",
+      "properties": {
+        "color": {
+          "$ref": "#/$defs/Color",
+          "description": "The fill of what is highlighted, in place of the text's own colour or gradient."
+        },
+        "progress": {
+          "$ref": "#/$defs/Animated",
+          "description": "How much of the text has been said: 0, none of it, to 1, all of it, counted in characters,\nwhite space left out."
+        },
+        "unit": {
+          "$ref": "#/$defs/TextUnit",
+          "description": "`char`: everything said so far, the edge passing smoothly through the character being\nsaid. `word` and `line`: the word or line being said, alone; none before 0 or from 1 on."
+        }
+      },
+      "required": [
+        "progress",
+        "color"
+      ],
+      "type": "object"
+    },
     "TextShadow": {
       "additionalProperties": false,
       "description": "A shadow beneath text.",
@@ -1818,6 +1903,26 @@
         "width"
       ],
       "type": "object"
+    },
+    "TextUnit": {
+      "description": "What of a text moves as one, or is said as one (`text/7`).",
+      "oneOf": [
+        {
+          "const": "char",
+          "description": "Each character.",
+          "type": "string"
+        },
+        {
+          "const": "word",
+          "description": "Each word: characters with no white space between them. A Chinese character or a kana is\na word of its own, together with the punctuation that follows it.",
+          "type": "string"
+        },
+        {
+          "const": "line",
+          "description": "Each line, as the text is laid out.",
+          "type": "string"
+        }
+      ]
     },
     "Tick": {
       "description": "A position or a duration in ticks.",

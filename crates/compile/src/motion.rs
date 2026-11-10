@@ -20,17 +20,17 @@
 use reelforge_model::{
     Clip, Ease as MEase, Fades, Fx, FxChannel, FxSample, Key as MKey, Offset, Prop, Steadied, Timing, TransitionKind,
 };
-use reelforge_renderspec::{Animated, CharCurve, CharMotion, CharPose, Ease, Key};
+use reelforge_renderspec::{Animated, CharCurve, CharMotion, CharPose, Ease, Key, TextDraw, TextHighlight, TextUnit};
 use reelforge_time::Tick;
 
 /// Whether an animation preset changes `p`.
 fn moves(kind: reelforge_model::AnimKind, p: Prop) -> bool {
     use reelforge_model::AnimKind::*;
     match p {
-        Prop::Opacity => !kind.titles_only() && !kind.shapes_only(),
+        Prop::Opacity => !kind.titles_only() && !kind.drawn_only(),
         Prop::X => matches!(kind, SlideLeft | SlideRight),
-        Prop::Y => matches!(kind, SlideUp | SlideDown),
-        Prop::Scale => matches!(kind, ZoomIn | ZoomOut | Pop | Spin),
+        Prop::Y => matches!(kind, SlideUp | SlideDown | Drop),
+        Prop::Scale => matches!(kind, ZoomIn | ZoomOut | Pop | Spin | Elastic),
         Prop::Rotation => matches!(kind, Spin),
         Prop::RotationX => kind == FlipX,
         Prop::RotationY => kind == FlipY,
@@ -60,36 +60,53 @@ pub fn chars(clip: &Clip, shape: &Shape) -> Vec<CharMotion> {
     let key = |t: Tick, v: f32| Key { t, v, ease: Ease::Linear };
     let len = shape.len;
     let (a, b) = clip.anim.spans(len);
-    // where a character waits before it comes in, and goes as it leaves
-    let pose = |kind: AnimKind| -> Option<(CharCurve, CharPose)> {
+    // where a character (or a word, or a line) waits before it comes in, and goes as it leaves;
+    // how it travels, and how much later each starts than the one before
+    let pose = |kind: AnimKind| -> Option<(CharCurve, CharPose, TextUnit, f32)> {
         let hidden = CharPose { opacity: 0.0, ..CharPose::REST };
+        let (below, above) = (CharPose { offset: [0.0, 0.6], ..hidden }, CharPose { offset: [0.0, -0.6], ..hidden });
+        let nothing = CharPose { scale: 0.0, ..hidden };
         match kind {
-            AnimKind::CharFade => Some((CharCurve::Settle, hidden)),
-            AnimKind::CharRise => Some((CharCurve::Settle, CharPose { offset: [0.0, 0.6], ..hidden })),
-            AnimKind::CharDrop => Some((CharCurve::Settle, CharPose { offset: [0.0, -0.6], ..hidden })),
-            AnimKind::CharPop => Some((CharCurve::Spring, CharPose { scale: 0.0, ..hidden })),
+            AnimKind::CharFade => Some((CharCurve::Settle, hidden, TextUnit::Char, 0.35)),
+            AnimKind::CharRise => Some((CharCurve::Settle, below, TextUnit::Char, 0.35)),
+            AnimKind::CharDrop => Some((CharCurve::Settle, above, TextUnit::Char, 0.35)),
+            AnimKind::CharPop => Some((CharCurve::Spring, nothing, TextUnit::Char, 0.35)),
+            AnimKind::WordFade => Some((CharCurve::Settle, hidden, TextUnit::Word, 0.5)),
+            AnimKind::WordRise => Some((CharCurve::Settle, below, TextUnit::Word, 0.5)),
+            AnimKind::WordPop => Some((CharCurve::Spring, nothing, TextUnit::Word, 0.5)),
+            AnimKind::LineRise => Some((CharCurve::Settle, below, TextUnit::Line, 0.6)),
+            // a spring and a ball take their time: each starts well before the one before is still
+            AnimKind::CharElastic => Some((CharCurve::Elastic, nothing, TextUnit::Char, 0.15)),
+            AnimKind::CharBounce => {
+                Some((CharCurve::Bounce, CharPose { offset: [0.0, -1.2], ..hidden }, TextUnit::Char, 0.15))
+            }
             _ => None,
         }
     };
     let mut out = vec![];
-    if let Some((curve, pose)) = clip.anim.enter.and_then(|x| pose(x.kind))
+    if let Some((curve, pose, unit, step)) = clip.anim.enter.and_then(|x| pose(x.kind))
         && a > Tick::ZERO
     {
         let mut keys = vec![key(Tick::ZERO, 0.0), key(a, 1.0)];
         if a < len {
             keys.push(key(len, 1.0));
         }
-        out.push(CharMotion { progress: Animated::Keys(keys), step: 0.35, curve, pose, reverse: false });
+        out.push(CharMotion { progress: Animated::Keys(keys), step, curve, pose, reverse: false, unit });
     }
-    if let Some((curve, pose)) = clip.anim.exit.and_then(|x| pose(x.kind))
+    if let Some((curve, pose, unit, step)) = clip.anim.exit.and_then(|x| pose(x.kind))
         && b > Tick::ZERO
     {
+        // going out nothing springs or bounces: it leaves the way it would have settled
+        let curve = match curve {
+            CharCurve::Elastic | CharCurve::Bounce => CharCurve::Settle,
+            c => c,
+        };
         let mut keys = vec![key(len - b, 1.0), key(len, 0.0)];
         if b < len {
             keys.insert(0, key(Tick::ZERO, 1.0));
         }
         // the first character goes first
-        out.push(CharMotion { progress: Animated::Keys(keys), step: 0.35, curve, pose, reverse: true });
+        out.push(CharMotion { progress: Animated::Keys(keys), step, curve, pose, reverse: true, unit });
     }
     if let Some(l) = clip.anim.repeat
         && l.kind.titles_only()
@@ -103,9 +120,62 @@ pub fn chars(clip: &Clip, shape: &Shape) -> Vec<CharMotion> {
         // so it runs from the first to the last
         let rounds = l.phase(len) as f32;
         let progress = Animated::Keys(vec![key(Tick::ZERO, 0.0), key(len, rounds)]);
-        out.push(CharMotion { progress, step, curve, pose, reverse: false });
+        out.push(CharMotion { progress, step, curve, pose, reverse: false, unit: TextUnit::Char });
     }
     out
+}
+
+/// How a title is written on over its layer, when it comes in or goes out with `draw`: a pen
+/// follows each character's outline and its ink comes in behind. `None` when it does neither.
+pub fn written(clip: &Clip, shape: &Shape) -> Option<TextDraw> {
+    use reelforge_model::AnimKind::Draw;
+    let len = shape.len;
+    let (a, b) = clip.anim.spans(len);
+    let enter = clip.anim.enter.filter(|x| x.kind == Draw && a > Tick::ZERO).map(|_| a);
+    let exit = clip.anim.exit.filter(|x| x.kind == Draw && b > Tick::ZERO).map(|_| b);
+    if enter.is_none() && exit.is_none() {
+        return None;
+    }
+    let key = |t: Tick, v: f32| Key { t, v, ease: Ease::Linear };
+    let mut keys = vec![];
+    if let Some(a) = enter {
+        keys.extend([key(Tick::ZERO, 0.0), key(a, 1.0)]);
+    }
+    if let Some(b) = exit {
+        keys.extend([key(len - b, 1.0), key(len, 0.0)]);
+    }
+    keys.dedup_by_key(|k| k.t);
+    Some(TextDraw { progress: Animated::Keys(keys), width: 0.025, step: 0.4 })
+}
+
+/// What of a title takes its karaoke colour over its layer: nothing before the voice starts,
+/// then more and more of it (or the word or line the voice is in), in a straight line over the
+/// time the voice takes.
+pub fn said(clip: &Clip, shape: &Shape) -> Option<TextHighlight> {
+    use reelforge_model::KaraokeMode;
+    let reelforge_model::ClipContent::Text { style, .. } = &clip.content else { return None };
+    let k = style.karaoke?;
+    let from = (shape.lead + k.start).max(Tick::ZERO);
+    let takes = k.duration.unwrap_or(clip.duration - k.start).max(Tick(1));
+    let color = reelforge_renderspec::Color(k.color);
+    let unit = match k.mode {
+        KaraokeMode::Sweep => TextUnit::Char,
+        KaraokeMode::Word => TextUnit::Word,
+        KaraokeMode::Line => TextUnit::Line,
+    };
+    if from >= shape.len {
+        // the layer is over before the voice starts
+        return Some(TextHighlight { progress: Animated::Constant(-1.0), color, unit });
+    }
+    // as far as the voice gets before the layer ends
+    let to = (from + takes).min(shape.len);
+    let reached = ((to - from).0 as f64 / takes.0 as f64) as f32;
+    let mut keys = vec![Key { t: from, v: 0.0, ease: Ease::Linear }, Key { t: to, v: reached, ease: Ease::Linear }];
+    // a word is not lit before the voice gets to it
+    if from > Tick::ZERO && k.mode != KaraokeMode::Sweep {
+        keys.insert(0, Key { t: Tick::ZERO, v: -1.0, ease: Ease::Hold });
+    }
+    Some(TextHighlight { progress: Animated::Keys(keys), color, unit })
 }
 
 /// How much of a title shows over its layer (`reveal`), when it types in or erases itself out: 0
