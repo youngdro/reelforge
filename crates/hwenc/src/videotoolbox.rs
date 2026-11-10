@@ -175,9 +175,8 @@ impl Encoder {
             let pairs = cw.min(stride / 2);
             for (row, (us, vs)) in yuv.u.chunks_exact(cw).zip(yuv.v.chunks_exact(cw)).take(ch).enumerate() {
                 let line = std::slice::from_raw_parts_mut(chroma.add(row * stride), pairs * 2);
-                for (px, (u, v)) in line.chunks_exact_mut(2).zip(us.iter().zip(vs)) {
-                    px[0] = *u;
-                    px[1] = *v;
+                for (px, (u, v)) in line.as_chunks_mut::<2>().0.iter_mut().zip(us.iter().zip(vs)) {
+                    *px = [*u, *v];
                 }
             }
             CVPixelBufferUnlockBaseAddress(&buffer, flags);
