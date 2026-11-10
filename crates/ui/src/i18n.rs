@@ -76,6 +76,12 @@ impl Lang {
         if name == "Look" {
             return self.strings().track_look.into();
         }
+        // Voice-over, Voice-over 2, …
+        if let Some(rest) = name.strip_prefix(reelforge_engine::VOICEOVER_TRACK)
+            && (rest.is_empty() || rest.strip_prefix(' ').is_some_and(|n| n.chars().all(|c| c.is_ascii_digit())))
+        {
+            return format!("{}{rest}", self.strings().voiceover);
+        }
         let Some((word, n)) = name.split_once(' ') else { return name.to_string() };
         if !n.chars().all(|c| c.is_ascii_digit()) {
             return name.to_string();
@@ -2009,6 +2015,8 @@ mod tests {
         assert_eq!(Lang::Zh.command("nope"), "");
         assert_eq!(Lang::Ja.track_name("Video 3"), "動画 3");
         assert_eq!(Lang::Ja.track_name("Captions"), "字幕");
+        assert_eq!(Lang::Zh.track_name("Voice-over 2"), "配音 2");
+        assert_eq!(Lang::Zh.track_name("Voice-overs"), "Voice-overs");
         assert_eq!(Lang::Zh.track_name("Stickers"), "贴纸");
         assert_eq!(Lang::Zh.track_name("Look"), "滤镜");
     }
