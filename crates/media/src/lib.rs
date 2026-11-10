@@ -15,6 +15,7 @@
 
 pub mod analysis;
 pub mod between;
+pub mod decor;
 pub mod export;
 pub mod formats;
 pub mod library;

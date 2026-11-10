@@ -88,7 +88,12 @@ impl Footage {
         if let Some(a) = self.lotties.lock().expect("lottie lock").get(&k) {
             return a.clone();
         }
-        let opened = self.read_lottie(asset).map(Arc::new);
+        // a library decoration is in the program itself, the browser's too
+        let opened = match crate::decor::of(&asset.uri) {
+            Some(_) => crate::decor::open(&asset.uri),
+            None => self.read_lottie(asset),
+        }
+        .map(Arc::new);
         self.lotties.lock().expect("lottie lock").insert(k, opened.clone());
         opened
     }

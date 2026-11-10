@@ -15,6 +15,7 @@ mod captions;
 mod commands;
 mod compound;
 mod cut;
+mod decor;
 pub mod listen;
 mod outline;
 mod params;

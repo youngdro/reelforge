@@ -613,6 +613,21 @@ fn stickers_and_effects_land_over_the_picture() {
     // dropped on a track with room, it stays there
     app.add_item(&assets::Item::Sticker("heart"), Tick::from_seconds(3.5), Some(videos_track(&app, 1)));
     assert_eq!(videos(&app)[1].len(), 2);
+    // an animated decoration goes over whatever shows there: a Lottie clip, as long as it says
+    app.add_item(&assets::Item::Decor("tapRing"), Tick::ZERO, None);
+    let ring = app.selected.clone().unwrap();
+    assert_eq!(videos(&app).len(), 4);
+    assert_eq!(videos(&app)[3], std::slice::from_ref(&ring));
+    let p = app.project();
+    let m = p.media.values().find(|m| m.kind == reelforge_model::MediaKind::Lottie).unwrap();
+    assert_eq!((m.name.as_str(), m.uri.as_str()), ("点击提示", "library:decor/tapRing"));
+    assert_eq!(p.clip(&ring).unwrap().1.duration, Tick::SECOND * 4);
+    // dropped on a track with room it stays there; with none, it goes above as before
+    app.add_item(&assets::Item::Decor("tapRing"), Tick::from_seconds(8.0), Some(videos_track(&app, 1)));
+    assert_eq!(videos(&app)[1].len(), 3);
+    app.add_item(&assets::Item::Decor("tapRing"), Tick::from_seconds(8.0), Some(videos_track(&app, 1)));
+    assert_eq!((videos(&app)[1].len(), videos(&app).len()), (3, 4));
+    assert_eq!(app.project().media.values().filter(|m| m.kind == reelforge_model::MediaKind::Lottie).count(), 1);
 }
 
 #[test]

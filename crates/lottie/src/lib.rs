@@ -81,6 +81,36 @@ pub fn is_lottie(name: &str, bytes: &[u8]) -> bool {
         && ["\"layers\"", "\"fr\"", "\"ip\"", "\"op\"", "\"v\""].iter().filter(|k| head.contains(*k)).count() >= 2
 }
 
+/// Gives the fills and strokes of a Bodymovin document that are called one of `colours`' names
+/// (their `nm`) that colour, red, green and blue from 0 to 1, in place of their own, animated or
+/// not. Returns how many were given one. This is how an animation drawn in placeholder colours
+/// takes a brand's: its author names the fills "primary" and "secondary".
+pub fn tint(doc: &mut Value, colours: &[(&str, [f32; 3])]) -> usize {
+    match doc {
+        Value::Array(items) => items.iter_mut().map(|item| tint(item, colours)).sum(),
+        Value::Object(fields) => {
+            let painted = matches!(fields.get("ty").and_then(Value::as_str), Some("fl" | "st"));
+            let name = fields.get("nm").and_then(Value::as_str);
+            let colour = name.and_then(|name| colours.iter().find(|(n, _)| *n == name)).map(|(_, c)| *c);
+            let mut given = 0;
+            if let (true, Some([r, g, b])) = (painted, colour) {
+                fields.insert("c".to_string(), serde_json::json!({"a": 0, "k": [r, g, b, 1.0]}));
+                given = 1;
+            }
+            given + fields.values_mut().map(|v| tint(v, colours)).sum::<usize>()
+        }
+        _ => 0,
+    }
+}
+
+/// A Bodymovin JSON file with its named fills and strokes given `colours` ([`tint`]); `None` if
+/// it is not JSON.
+pub fn tinted(json: &str, colours: &[(&str, [f32; 3])]) -> Option<String> {
+    let mut doc: Value = serde_json::from_str(json).ok()?;
+    tint(&mut doc, colours);
+    Some(doc.to_string())
+}
+
 impl Animation {
     /// Reads `bytes`: Bodymovin JSON, or a dotLottie archive (its first animation).
     pub fn open(bytes: &[u8], files: &dyn Files) -> Result<Animation, String> {

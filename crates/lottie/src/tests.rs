@@ -148,3 +148,26 @@ fn text_is_drawn_from_the_letter_shapes_in_the_file_with_its_outline_over_or_und
     let a = Animation::open(json("").replace(r#""t":"II""#, r#""t":"IX""#).as_bytes(), &NoFiles).unwrap();
     assert_eq!(a.unsupported(), ["text whose letter shapes are not in the file"]);
 }
+
+#[test]
+fn fills_and_strokes_called_by_name_are_given_other_colours() {
+    // two squares side by side: the left one's fill is called "primary", the right one's is not
+    let json = r#"{"v":"5.7.0","fr":30,"ip":0,"op":30,"w":100,"h":100,"layers":[
+      {"ty":4,"ind":1,"ip":0,"op":30,"st":0,"ks":{},"shapes":[
+        {"ty":"gr","it":[{"ty":"rc","p":{"a":0,"k":[25,50]},"s":{"a":0,"k":[30,30]},"r":{"a":0,"k":0}},
+          {"ty":"fl","nm":"primary","c":{"a":1,"k":[{"t":0,"s":[1,0,0,1]},{"t":30,"s":[1,1,0,1]}]},"o":{"a":0,"k":100}}]},
+        {"ty":"gr","nm":"primary","it":[{"ty":"rc","p":{"a":0,"k":[75,50]},"s":{"a":0,"k":[30,30]},"r":{"a":0,"k":0}},
+          {"ty":"fl","nm":"paper","c":{"a":0,"k":[1,1,1,1]},"o":{"a":0,"k":100}}]}]}]}"#;
+    let mut doc: Value = serde_json::from_str(json).unwrap();
+    assert_eq!(tint(&mut doc, &[("primary", [0.0, 0.0, 1.0]), ("secondary", [0.0, 1.0, 0.0])]), 1);
+    let a = Animation::open(doc.to_string().as_bytes(), &NoFiles).unwrap();
+    for frame in [0.0, 20.0] {
+        let f = a.render(frame, 100, 100);
+        assert_eq!(pixel(&f, 100, 25, 50), [0, 0, 255, 255]);
+        assert_eq!(pixel(&f, 100, 75, 50), [255, 255, 255, 255]);
+    }
+    // nothing by those names: nothing changes
+    let before = doc.clone();
+    assert_eq!(tint(&mut doc, &[("accent", [0.0; 3])]), 0);
+    assert_eq!(doc, before);
+}

@@ -85,6 +85,10 @@ see-through where they draw nothing, going round again while their clip lasts, d
 on the machine or in the browser. Shapes, strokes, gradients, trim paths, repeaters, masks, mattes, precompositions,
 pictures and glyph text are drawn; expressions, effects, layer styles, text animators, blend modes and 3D layers are
 not, and importing a file that uses them says so (`unsupported` in `media.import`'s answer, a note in the status bar).
+Twenty decorations drawn for the editor come with it as Lottie animations (`decor.list`: confetti, fireworks,
+sparkles, a tap ring, a bouncing arrow, an underline and a ring drawn by hand, falling coins, a flame…), free to use
+and needing no files. `decor.add` puts one over the picture in the brand's colours (or the ones given, or its own red
+and yellow); in the editor they are under Animated in the Stickers tab, each playing while the pointer is over it.
 See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Video and audio codecs and containers are FilmCraft's clean-room, pure-Rust crates
@@ -143,6 +147,8 @@ cargo run -q -p reelforge-cli -- exec cut.reel.json promo.add '{"kind": "checkli
 cargo run -q -p reelforge-cli -- exec cut.reel.json promo.set '{"clip": "c9", "lines": ["持久保湿 12 小时", "敏感肌适用", "无香精"]}' --save   # other words: the piece is made again to fit them
 cargo run -q -p reelforge-cli -- exec ad.reel.json storyboard.apply '{"storyboard": "flashSale", "copy": {"price": 59, "oldPrice": 89}}' --save   # a whole flash-sale video planned ahead: scenes, pieces, music (storyboard.list has six)
 cargo run -q -p reelforge-cli -- exec ad.reel.json storyboard.fill '{"copy": {"discount": "直降 30 元", "stock": 12}}' --save   # other copy: every piece written from it is made again
+cargo run -q -p reelforge-cli -- exec ad.reel.json decor.add '{"decor": "confettiBurst", "start": {"seconds": 12}}' --save   # confetti over the closing scene, in the brand's colours (decor.list has twenty animated decorations)
+cargo run -q -p reelforge-cli -- exec ad.reel.json decor.add '{"decor": "circleMark", "start": {"seconds": 6}, "x": 0.1, "y": 0.2, "color": [1, 0.8, 0.2]}' --save   # a ring drawn by hand round the price
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t1", "shape": {"kind": "star", "points": 16, "inner": 0.8, "size": [300, 300], "fill": {"type": "radial", "from": [1, 0.8, 0.2], "to": [1, 0.4, 0]}}}' --save   # a shape of your own
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setKey '{"clip": "c5", "prop": "scale", "at": {"seconds": 4}, "value": 1.3, "ease": "inOut"}' --save
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setEase '{"clip": "c5", "at": {"seconds": 4}, "ease": [0.3, 1.5, 0.6, 1]}' --save   # on from that key: past the next one and back

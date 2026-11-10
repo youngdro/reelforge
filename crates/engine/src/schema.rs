@@ -286,7 +286,39 @@ pub fn input_schema(id: &str) -> Option<Value> {
     Some(match id {
         "commands.list" | "project.inspect" | "project.outline" | "project.new" | "edit.undo" | "edit.redo"
         | "title.templates" | "sound.library" | "timeline.list" | "fx.list" | "sticker.library" | "voice.list"
-        | "template.list" | "template.slots" | "promo.list" | "brand.get" => object(vec![], &[]),
+        | "template.list" | "template.slots" | "promo.list" | "brand.get" | "decor.list" => object(vec![], &[]),
+        "decor.add" => object(
+            vec![
+                (
+                    "decor",
+                    json!({"enum": reelforge_media::decor::DECOR.iter().map(|d| d.id).collect::<Vec<_>>(), "description": "A library decoration (see decor.list)."}),
+                ),
+                ("start", time("Where it starts on the timeline; 0 by default.")),
+                ("duration", time("How long it shows; as decor.list says by default.")),
+                (
+                    "track",
+                    json!({"type": "string", "description": "A video track with room there; by default a free one above whatever shows then, or a new one."}),
+                ),
+                ("color", color("Its main colour, where it has one; the brand's primary, or its own red.")),
+                ("color2", color("The colour beside it, where it has one; the brand's secondary, or its own yellow.")),
+                ("x", num("Horizontal offset as a share of the canvas width; 0 (centred) by default.")),
+                ("y", num("Vertical offset as a share of the canvas height; 0 is centred, positive is down.")),
+                (
+                    "scale",
+                    json!({"type": "number", "exclusiveMinimum": 0, "description": "Size; 1 fits the canvas. As decor.list says by default."}),
+                ),
+                ("rotation", num("Clockwise, degrees.")),
+                (
+                    "opacity",
+                    json!({"type": "number", "minimum": 0, "maximum": 1, "description": "How solid it is; 1 by default."}),
+                ),
+                (
+                    "name",
+                    json!({"type": "string", "description": "What the project's media calls it; its English name by default."}),
+                ),
+            ],
+            &["decor"],
+        ),
         "sound.add" => object(
             vec![
                 (

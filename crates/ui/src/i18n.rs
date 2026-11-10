@@ -581,6 +581,14 @@ pub(crate) struct Strings {
     pub(crate) tab_effects: &'static str,
     /// The library's stickers, in `reelforge_media::stickers::STICKERS` order.
     pub(crate) sticker_names: [&'static str; 20],
+    /// What heads the animated decorations among the stickers.
+    pub(crate) sec_decor: &'static str,
+    /// How the animated decorations are tried and used.
+    pub(crate) decor_tip: &'static str,
+    /// The parts of the stickers tab: stickers and shapes, animated decorations, ready-made pieces.
+    pub(crate) sticker_parts: [&'static str; 3],
+    /// The library's decorations, in `reelforge_media::decor::DECOR` order.
+    pub(crate) decor_names: [&'static str; 20],
     /// The picture effects, in `FxKind::ALL` order.
     pub(crate) fx_names: [&'static str; 17],
     /// What effects do: move, light, focus and colour.
@@ -755,6 +763,8 @@ static EN: Strings = Strings {
         ("clip.setFx", "Effects"),
         ("fx.list", "List effects"),
         ("sticker.library", "Sticker library"),
+        ("decor.list", "Decoration library"),
+        ("decor.add", "Add decoration"),
         ("clip.setVoice", "Voice"),
         ("clip.setDenoise", "Reduce noise"),
         ("voice.list", "List voices"),
@@ -1331,6 +1341,31 @@ static EN: Strings = Strings {
     sound_music: "MUSIC",
     sound_free: "Made by reelforge itself: free to use anywhere.",
     tab_stickers: "Stickers",
+    sec_decor: "Animated decorations",
+    decor_tip: "Hover to see one move; click to add it at the playhead, or drag it to the timeline.",
+    sticker_parts: ["Stickers", "Animated", "Promo"],
+    decor_names: [
+        "Confetti burst",
+        "Confetti rain",
+        "Fireworks",
+        "Sparkles",
+        "Star burst",
+        "Heart burst",
+        "Tap here",
+        "Pulse",
+        "Bouncing arrow",
+        "Swipe up",
+        "Emphasis strokes",
+        "Drawn underline",
+        "Drawn circle",
+        "Drawn check",
+        "Falling coins",
+        "Flame",
+        "Lightning strike",
+        "Shaking gift",
+        "Ticking clock",
+        "Hopping dots",
+    ],
     tab_effects: "Effects",
     sticker_names: [
         "Heart",
@@ -1537,6 +1572,8 @@ static ZH: Strings = Strings {
         ("clip.setFx", "特效"),
         ("fx.list", "列出特效"),
         ("sticker.library", "贴纸库"),
+        ("decor.list", "动效装饰库"),
+        ("decor.add", "添加动效装饰"),
         ("clip.setVoice", "变声"),
         ("clip.setDenoise", "降噪"),
         ("voice.list", "列出变声"),
@@ -2087,6 +2124,31 @@ static ZH: Strings = Strings {
     sound_music: "配乐",
     sound_free: "由 reelforge 自己合成，可免费用于任何地方。",
     tab_stickers: "贴纸",
+    sec_decor: "动效装饰",
+    decor_tip: "指针移上去可预览动画；点击加到播放头处，或拖到时间线上。",
+    sticker_parts: ["贴纸", "动效装饰", "营销组件"],
+    decor_names: [
+        "彩纸喷发",
+        "彩纸雨",
+        "烟花",
+        "闪烁星光",
+        "星星迸发",
+        "爱心迸发",
+        "点击提示",
+        "脉冲光圈",
+        "跳动箭头",
+        "上滑提示",
+        "强调线",
+        "手绘下划线",
+        "手绘圈重点",
+        "打勾",
+        "金币掉落",
+        "火焰",
+        "闪电",
+        "礼盒晃动",
+        "时钟走动",
+        "跳动圆点",
+    ],
     tab_effects: "特效",
     sticker_names: [
         "爱心",
@@ -2261,6 +2323,7 @@ mod tests {
         }
         assert_eq!(reelforge_media::library::SOUNDS.len(), EN.sound_names.len());
         assert_eq!(reelforge_media::stickers::STICKERS.len(), EN.sticker_names.len());
+        assert_eq!(reelforge_media::decor::DECOR.len(), EN.decor_names.len());
         assert_eq!(reelforge_model::FxKind::ALL.len(), EN.fx_names.len());
         assert_eq!(reelforge_model::VoiceKind::ALL.len(), EN.voice_names.len());
         assert_eq!(reelforge_engine::title_templates().len(), EN.template_names.len());

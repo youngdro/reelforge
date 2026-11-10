@@ -3220,3 +3220,79 @@ fn captions_written_from_the_copy_follow_it_until_changed_by_hand() {
     let p = s.project();
     assert_eq!(Project::from_json(&p.to_json()).unwrap(), *p);
 }
+
+#[test]
+fn a_library_decoration_is_a_lottie_clip_over_the_picture_in_the_brand_s_colours() {
+    let mut s = Session::default();
+    let v = video_track(&s);
+    let list = s.execute("decor.list", &json!({})).unwrap();
+    let list = list["decor"].as_array().unwrap();
+    assert_eq!(list.len(), 20);
+    let rain = list.iter().find(|d| d["id"] == "confettiRain").unwrap();
+    assert_eq!(
+        (&rain["plays"], &rain["scale"], &rain["colours"]),
+        (&json!("round"), &json!(null), &json!(["color", "color2"]))
+    );
+    s.execute("clip.add", &json!({"track": v, "color": [0, 0, 0, 1], "duration": {"seconds": 5}})).unwrap();
+
+    // as drawn: its own colours, its own length and size, on a track above the picture
+    let a = s.execute("decor.add", &json!({"decor": "pulse", "start": {"seconds": 1}})).unwrap();
+    let p = s.project();
+    let m = &p.media[a["media"].as_str().unwrap()];
+    assert_eq!((m.uri.as_str(), m.kind, m.size), ("library:decor/pulse", MediaKind::Lottie, Some([1080, 1080])));
+    assert_eq!(
+        (m.name.as_str(), m.duration, m.sha256.as_ref().map(String::len)),
+        ("Pulse", Some(Tick::from_seconds(1.5)), Some(64))
+    );
+    let (ti, clip) = p.clip(a["clip"].as_str().unwrap()).unwrap();
+    let track = &p.tracks[ti];
+    assert_eq!(track.kind, TrackKind::Video);
+    assert!(ti > p.tracks.iter().position(|t| t.id == v).unwrap());
+    assert_eq!(
+        (clip.start, clip.duration, clip.transform.scale),
+        (Tick::from_seconds(1.0), Tick::from_seconds(3.0), 0.3)
+    );
+    let over = track.id.clone();
+
+    // again beside it: the same media, the same track; over it: the next track up
+    let b = s
+        .execute("decor.add", &json!({"decor": "pulse", "start": {"seconds": 4}, "duration": {"seconds": 1}}))
+        .unwrap();
+    assert_eq!((&b["media"], &b["track"]), (&a["media"], &json!(over)));
+    let c =
+        s.execute("decor.add", &json!({"decor": "pulse", "start": {"seconds": 2}, "x": 0.2, "scale": 0.5})).unwrap();
+    assert_eq!(&c["media"], &a["media"]);
+    assert_ne!(c["track"], json!(over));
+    assert_eq!(s.project().media.len(), 1);
+    // a track that is named must have room, and be for pictures
+    let full = s.execute("decor.add", &json!({"decor": "pulse", "start": {"seconds": 2}, "track": over}));
+    assert!(matches!(full, Err(EngineError::Refused(_))), "{full:?}");
+    let t = s.execute("track.add", &json!({"kind": "text"})).unwrap();
+    assert!(s.execute("decor.add", &json!({"decor": "pulse", "track": t["track"]})).is_err());
+    assert!(s.execute("decor.add", &json!({"decor": "kazoo"})).is_err());
+    assert!(s.execute("decor.add", &json!({"decor": "pulse", "duration": 0})).is_err());
+
+    // the brand's colours where it has them; told ones over the brand's; each look its own media
+    s.execute("brand.set", &json!({"primary": [0, 0, 1, 1], "secondary": [0, 1, 0, 1]})).unwrap();
+    let uri = |s: &Session, v: &serde_json::Value| s.project().media[v["media"].as_str().unwrap()].uri.clone();
+    let d = s.execute("decor.add", &json!({"decor": "pulse", "start": {"seconds": 6}})).unwrap();
+    assert_eq!(uri(&s, &d), "library:decor/pulse?primary=0000ff");
+    let e = s.execute("decor.add", &json!({"decor": "flame", "start": {"seconds": 6}, "color": [1, 0.5, 0]})).unwrap();
+    assert_eq!(uri(&s, &e), "library:decor/flame?primary=ff8000&secondary=00ff00");
+    assert_ne!(s.project().media[d["media"].as_str().unwrap()].sha256, m.sha256);
+
+    // one that covers: larger than fitting by how much the canvas is taller than it
+    let f = s.execute("decor.add", &json!({"decor": "confettiRain", "start": {"seconds": 8}})).unwrap();
+    let p = s.project();
+    let m = &p.media[f["media"].as_str().unwrap()];
+    assert_eq!(m.size, Some([1440, 1920]));
+    let scale = p.clip(f["clip"].as_str().unwrap()).unwrap().1.transform.scale;
+    assert!((scale - (1920.0 / 1920.0) / (1080.0 / 1440.0)).abs() < 1e-4, "{scale}");
+
+    // it all compiles, the animations as lottie assets, and one step takes one back
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let assets = spec["assets"].as_object().unwrap_or_else(|| panic!("{spec}"));
+    assert_eq!(assets.values().filter(|a| a["kind"] == "lottie").count(), 4);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.project().clip(f["clip"].as_str().unwrap()).is_none());
+}
