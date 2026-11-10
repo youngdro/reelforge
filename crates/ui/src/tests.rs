@@ -1088,3 +1088,99 @@ fn a_lottie_animation_dropped_on_the_editor_is_placed_and_says_what_it_cannot_dr
     app.import_bytes("package.json", br#"{"name": "x"}"#.to_vec(), true);
     assert_eq!(app.project().media.len(), media);
 }
+
+#[test]
+fn the_inspector_keeps_its_width_whatever_is_selected() {
+    use eframe::egui;
+    for lang in crate::i18n::Lang::ALL {
+        let mut app = EditorApp::new(Session::default()).with_lang(lang);
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx, lang == crate::i18n::Lang::Ja);
+        let text = first_track(&app, reelforge_model::TrackKind::Text);
+        let video = first_track(&app, reelforge_model::TrackKind::Video);
+        let title = app.execute("clip.add", json!({"track": text, "text": "Hello", "start": 0})).unwrap();
+        let solid = app.execute("clip.add", json!({"track": video, "color": [1, 0, 0], "start": 0})).unwrap();
+        for clip in [title, solid] {
+            app.selected = clip["clip"].as_str().map(str::to_string);
+            let mut widths = Vec::new();
+            for _ in 0..12 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))),
+                    ..Default::default()
+                };
+                let mut width = 0.0;
+                ctx.run_ui(input, |ui| {
+                    let shown = egui::Panel::right("inspector")
+                        .default_size(290.0)
+                        .resizable(true)
+                        .frame(crate::theme::island(12))
+                        .show(ui, |ui| app.inspector(ui));
+                    width = shown.response.rect.width();
+                })
+                .textures_delta
+                .clear();
+                widths.push(width);
+            }
+            // as wide as it was made, frame after frame: a row that asks for more than there is
+            // widens the panel by that much every frame
+            assert!(widths.iter().all(|w| (w - widths[0]).abs() < 0.5 && *w < 300.0), "{lang:?} {clip}: {widths:?}");
+        }
+    }
+}
+
+#[test]
+fn scrolling_over_the_picture_moves_it_and_keeps_some_of_it_in_sight() {
+    use eframe::egui;
+    let mut app = EditorApp::new(Session::default());
+    let ctx = egui::Context::default();
+    crate::theme::install(&ctx, false);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0));
+    let frame = |app: &mut EditorApp, events: Vec<egui::Event>| {
+        let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+        ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| app.preview(ui, 16.0));
+        })
+        .textures_delta
+        .clear();
+    };
+    let wheel = |delta: egui::Vec2, modifiers: egui::Modifiers| egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta,
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Unknown,
+        modifiers,
+    };
+    frame(&mut app, vec![egui::Event::PointerMoved(egui::pos2(450.0, 300.0))]);
+    frame(&mut app, vec![]);
+    assert_eq!((app.pan, app.zoom), (egui::Vec2::ZERO, 1.0));
+    // the picture goes the way the content is scrolled
+    frame(&mut app, vec![wheel(egui::vec2(30.0, -60.0), egui::Modifiers::NONE)]);
+    for _ in 0..30 {
+        frame(&mut app, vec![]);
+    }
+    assert!((app.pan - egui::vec2(30.0, -60.0)).length() < 2.0 && app.zoom == 1.0, "{:?} {}", app.pan, app.zoom);
+    // with the zoom modifier the wheel enlarges it, and does not move it by the scroll
+    let before = app.pan;
+    frame(&mut app, vec![wheel(egui::vec2(0.0, 40.0), egui::Modifiers::COMMAND)]);
+    for _ in 0..30 {
+        frame(&mut app, vec![]);
+    }
+    assert!(app.zoom > 1.0 && (app.pan.y - before.y).abs() < 40.0, "{:?} {}", app.pan, app.zoom);
+    // however far it is scrolled, some of the picture stays on the stage
+    for _ in 0..40 {
+        frame(&mut app, vec![wheel(egui::vec2(0.0, -500.0), egui::Modifiers::NONE)]);
+    }
+    for _ in 0..30 {
+        frame(&mut app, vec![]);
+    }
+    let lit = app.lit.expect("a picture was drawn");
+    assert!(lit.frame.bottom() >= 16.0 + 60.0 && lit.frame.bottom() < 200.0, "{:?}", lit.frame);
+    // and away from the picture the wheel is not its business
+    let before = app.pan;
+    frame(&mut app, vec![egui::Event::PointerGone]);
+    frame(&mut app, vec![wheel(egui::vec2(0.0, 50.0), egui::Modifiers::NONE)]);
+    for _ in 0..10 {
+        frame(&mut app, vec![]);
+    }
+    assert_eq!(app.pan, before);
+}

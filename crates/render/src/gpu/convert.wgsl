@@ -71,6 +71,48 @@ fn fs_glow(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     return vec4(linear_to_srgb(c.r), linear_to_srgb(c.g), linear_to_srgb(c.b), 1.0);
 }
 
+// ---- frost: the picture as frosted glass over it shows it ----
+
+// The frost's side in texels (`FROST` in mod.rs).
+const FROST_SIDE: f32 = 96.0;
+const FROST_TAPS: i32 = 16;
+// One deviation of the blur, as a part of the picture's longer side.
+const FROST_SPREAD: f32 = 0.025;
+// The frost is the picture and this much of each of its sides around it (`FROST_ROOM` in mod.rs),
+// where its light ends softly.
+const FROST_ROOM: f32 = 0.125;
+
+// A texel of the frost is the picture near it, blurred: taps on a grid out to two and a half
+// deviations, weighed by a Gaussian, where there is no picture nothing. It leaves as sRGB with
+// premultiplied alpha (what egui draws), so it lies over whatever is around the picture.
+@fragment
+fn fs_frost(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let size = vec2<f32>(textureDimensions(frame));
+    let at = (pos.xy / FROST_SIDE * (1.0 + 2.0 * FROST_ROOM) - FROST_ROOM) * size;
+    let spread = FROST_SPREAD * max(size.x, size.y);
+    var sum = vec4(0.0);
+    var weight = 0.0;
+    for (var j = 0; j < FROST_TAPS; j++) {
+        for (var i = 0; i < FROST_TAPS; i++) {
+            let d = (vec2(f32(i), f32(j)) + 0.5) / f32(FROST_TAPS) * 5.0 - 2.5;
+            let w = exp(-0.5 * dot(d, d));
+            let p = at + d * spread;
+            if p.x >= 0.0 && p.y >= 0.0 && p.x < size.x && p.y < size.y {
+                sum += w * clamp(textureLoad(frame, vec2<i32>(p), 0), vec4(0.0), vec4(1.0));
+            }
+            weight += w;
+        }
+    }
+    // the outermost texels are empty: drawn past its edge, a texture repeats them
+    let edge = min(min(pos.x, pos.y), min(FROST_SIDE - pos.x, FROST_SIDE - pos.y));
+    if sum.a <= 0.0 || edge < 1.0 {
+        return vec4(0.0);
+    }
+    let c = clamp(sum.rgb / sum.a, vec3(0.0), vec3(1.0));
+    let a = sum.a / weight;
+    return vec4(vec3(linear_to_srgb(c.r), linear_to_srgb(c.g), linear_to_srgb(c.b)) * a, a);
+}
+
 // ---- encoder input: Y', Cb, Cr planes, four 8-bit samples per word ----
 
 struct Dims {

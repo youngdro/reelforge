@@ -662,3 +662,30 @@ fn the_glow_is_the_frame_far_out_of_focus() {
     assert!((0..w as usize).all(|x| red(x) < 200 && row[x * 4 + 3] == 255), "{row:?}");
     assert!((1..w as usize).all(|x| red(x).abs_diff(red(x - 1)) < 60), "{row:?}");
 }
+
+#[test]
+fn the_frost_is_the_frame_blurred_with_room_around_it() {
+    let Some(mut g) = gpu() else { return };
+    // one colour all over: the frost is that colour where the picture is, and fades out around it
+    let mut s = base(64, 36);
+    s.layers.push(layer("all", LayerContent::Solid { color: Color([0.5, 0.25, 0.0, 1.0]) }));
+    g.render(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Final).expect("renders");
+    let (_, _, frame) = g.read_srgba8().expect("reads back");
+    let (w, h, frost) = g.read_rgba8(g.frost().expect("a frame was drawn")).expect("reads back");
+    assert_eq!((w, h), (super::FROST, super::FROST));
+    let at = |x: u32, y: u32| &frost[((y * w + x) * 4) as usize..][..4];
+    let middle = at(w / 2, h / 2);
+    assert!(middle.iter().zip(&frame[..4]).all(|(a, b)| a.abs_diff(*b) <= 1), "{middle:?} of {:?}", &frame[..4]);
+    // the picture's left edge is `FROST_ROOM` of its width in: half of the light there
+    let edge = (super::FROST_ROOM / (1.0 + 2.0 * super::FROST_ROOM) * w as f32) as u32;
+    let alpha = |x: u32| at(x, h / 2)[3];
+    assert!((90..=165).contains(&alpha(edge)), "{}", alpha(edge));
+    assert!((0..w / 2).all(|x| alpha(x) <= alpha(x + 1)), "{:?}", (0..w).map(alpha).collect::<Vec<_>>());
+    // premultiplied, and nothing at the very edge
+    assert!(at(edge, h / 2)[0] < middle[0]);
+    for i in 0..w {
+        for px in [at(i, 0), at(i, h - 1), at(0, i), at(w - 1, i)] {
+            assert_eq!(px, [0; 4]);
+        }
+    }
+}
