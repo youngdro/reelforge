@@ -710,6 +710,7 @@ mod tests {
                 kind: MediaKind::Video,
                 duration: Some(Tick::SECOND * 10),
                 size: Some([1920, 1080]),
+                folder: None,
             },
         );
         p.tracks[0].clips.push(clip("c20", Tick::ZERO, Tick::SECOND * 2, ClipContent::media("m9", Tick::SECOND)));
@@ -739,6 +740,7 @@ mod tests {
                 kind: MediaKind::Image,
                 duration: None,
                 size: None,
+                folder: None,
             },
         );
         p.tracks[0].clips.push(clip("c20", Tick::ZERO, Tick::SECOND, ClipContent::media("m9", Tick::ZERO)));
@@ -844,6 +846,7 @@ mod tests {
                 kind: MediaKind::Video,
                 duration: Some(Tick::SECOND * 10),
                 size: Some([1080, 1920]),
+                folder: None,
             },
         );
         let mut below = clip("c10", Tick::ZERO, Tick::SECOND * 4, ClipContent::media("m9", Tick::ZERO));

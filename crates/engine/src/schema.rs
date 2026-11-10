@@ -305,6 +305,26 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["name"],
         ),
+        "media.set" => object(
+            vec![
+                (
+                    "media",
+                    json!({
+                        "description": "Media id, such as m1, or several to file under a folder at once.",
+                        "oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}, "minItems": 1}],
+                    }),
+                ),
+                ("name", ident("The file's new name in the media panel (one file at a time).")),
+                (
+                    "folder",
+                    json!({
+                        "type": ["string", "null"],
+                        "description": "The folder to file the media under (it appears when first used); null takes it out of its folder.",
+                    }),
+                ),
+            ],
+            &["media"],
+        ),
         "media.remove" => object(vec![("media", ident("Media id, such as m1."))], &["media"]),
         "timeline.remove" => object(vec![("timeline", ident("Timeline id; the current one by default."))], &[]),
         "timeline.cut" => object(

@@ -1001,6 +1001,52 @@ fn media_leaves_the_project_only_when_no_clip_uses_it() {
 }
 
 #[test]
+fn media_is_renamed_and_filed_under_folders_that_last_while_used() {
+    let mut s = Session::default();
+    let mut ids = Vec::new();
+    for name in ["beach.mp4", "street.mp4", "logo.png"] {
+        let r = s
+            .execute(
+                "media.import",
+                &json!({"path": format!("/nowhere/{name}"), "kind": "video", "sha256": "ab".repeat(32)}),
+            )
+            .unwrap();
+        ids.push(r["media"]["id"].as_str().unwrap().to_string());
+    }
+    // several at once; the folder is there because they are in it
+    let r = s.execute("media.set", &json!({"media": [ids[0], ids[1]], "folder": " B-roll "})).unwrap();
+    assert_eq!(r["folders"], json!(["B-roll"]));
+    assert_eq!(s.project().media[&ids[0]].folder.as_deref(), Some("B-roll"));
+    assert_eq!(s.project().media[&ids[2]].folder, None);
+    // one is renamed and moved in one step
+    let r = s.execute("media.set", &json!({"media": ids[2], "name": "Logo", "folder": "Brand"})).unwrap();
+    assert_eq!(r["folders"], json!(["B-roll", "Brand"]));
+    assert_eq!(s.project().media[&ids[2]].name, "Logo");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!((s.project().media[&ids[2]].name.as_str(), &s.project().media[&ids[2]].folder), ("logo.png", &None));
+    // taking the last file out leaves no folder behind
+    s.execute("media.set", &json!({"media": ids[0], "folder": null})).unwrap();
+    let r = s.execute("media.set", &json!({"media": [ids[1]], "folder": null})).unwrap();
+    assert_eq!(r["folders"], json!([]));
+    // a project file written before folders reads as it did, and one without folders says nothing of them
+    assert!(!serde_json::to_string(&*s.project()).unwrap().contains("folder"));
+
+    for bad in [
+        json!({"media": ids[0]}),
+        json!({"media": [], "folder": "x"}),
+        json!({"media": [ids[0], ids[1]], "name": "both"}),
+        json!({"media": ids[0], "name": "  "}),
+        json!({"media": ids[0], "folder": ""}),
+        json!({"media": ids[0], "folder": "x".repeat(41)}),
+        json!({"media": ids[0], "folder": 3}),
+        json!({"media": "m999", "folder": "x"}),
+        json!({"folder": "x"}),
+    ] {
+        assert!(s.execute("media.set", &bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
 fn clips_copy_paste_duplicate_and_shift_together() {
     let mut s = Session::default();
     let a = add_red(&mut s, 0.0, 1.0);

@@ -193,7 +193,16 @@ fn read_draft(proj: &mut Project, draft: &Value, folder: Option<&str>) -> Result
         let duration = if m.kind == MediaKind::Image { None } else { m.duration };
         proj.media.insert(
             id.clone(),
-            Media { id: id.clone(), name: m.name, uri: m.path, sha256, kind: m.kind, duration, size: m.size },
+            Media {
+                id: id.clone(),
+                name: m.name,
+                uri: m.path,
+                sha256,
+                kind: m.kind,
+                duration,
+                size: m.size,
+                folder: None,
+            },
         );
         media_of.insert(path, id.clone());
         Some(id)

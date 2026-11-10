@@ -123,6 +123,15 @@ pub struct Media {
     /// Picture size, for video and images.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<[u32; 2]>,
+    /// The folder of the media panel it is filed under, if any. A folder is nothing but this name:
+    /// it is there while some media has it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+}
+
+impl Media {
+    /// The longest a folder's name can be, in characters.
+    pub const FOLDER_NAME_MAX: usize = 40;
 }
 
 /// Media kinds.
