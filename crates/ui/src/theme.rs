@@ -33,6 +33,8 @@ pub(crate) mod color {
     pub const VIDEO: Color32 = Color32::from_rgb(0x3b, 0x68, 0xc9);
     pub const TEXT_CLIP: Color32 = Color32::from_rgb(0xb9, 0x78, 0x2e);
     pub const AUDIO: Color32 = Color32::from_rgb(0x27, 0x95, 0x6c);
+    /// Adjustment clips: effects and colour for what is below.
+    pub const FX: Color32 = Color32::from_rgb(0x7c, 0x55, 0xc8);
 }
 
 /// Icon glyphs from the bundled Phosphor subset; usable in any text. Not every one is used on every
@@ -90,6 +92,9 @@ pub(crate) mod icon {
     pub const BRUSH: &str = "\u{e6f0}";
     pub const CLOCK: &str = "\u{e19a}";
     pub const CROP: &str = "\u{e1d4}";
+    pub const STICKER: &str = "\u{e5ac}";
+    pub const SPARKLE: &str = "\u{e6a2}";
+    pub const SLIDERS: &str = "\u{e432}";
 }
 
 static ICONS: &[u8] = include_bytes!("../fonts/phosphor-icons.ttf");

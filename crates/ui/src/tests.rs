@@ -324,3 +324,51 @@ fn the_captions_list_splits_and_joins_what_was_typed_in_one_step() {
     );
     assert_eq!(words(&app)[1], "拜拜");
 }
+
+#[test]
+fn stickers_and_effects_land_over_the_picture() {
+    use crate::{assets, i18n};
+    use reelforge_model::{FxKind, TrackKind};
+    let mut app = EditorApp::new(Session::default());
+    let video = app.project().tracks.iter().find(|t| t.kind == TrackKind::Video).unwrap().id.clone();
+    app.execute("clip.add", json!({"track": video, "color": [1, 0, 0, 1], "start": 0, "duration": {"seconds": 6}}))
+        .unwrap();
+    let videos = |app: &EditorApp| -> Vec<Vec<String>> {
+        let p = app.project();
+        p.tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Video)
+            .map(|t| t.clips.iter().map(|c| c.id.clone()).collect())
+            .collect()
+    };
+    // the picture's track is taken there: the sticker gets a track above, named in the interface's
+    // language
+    app.lang = i18n::Lang::Zh;
+    app.add_item(&assets::Item::Sticker("star"), Tick::ZERO, None);
+    let sticker = app.selected.clone().unwrap();
+    assert_eq!(videos(&app).len(), 2);
+    assert_eq!(videos(&app)[1], std::slice::from_ref(&sticker));
+    assert_eq!(app.project().media.values().next().unwrap().name, "星星");
+    // an effect goes above that again, as an adjustment clip that is selected
+    app.add_item(&assets::Item::Effect(Some(FxKind::Shake)), Tick::ZERO, None);
+    let fx = app.selected.clone().unwrap();
+    assert_eq!(videos(&app).len(), 3);
+    let p = app.project();
+    let (_, clip) = p.clip(&fx).unwrap();
+    assert!(clip.is_adjustment());
+    assert_eq!(clip.fx.iter().map(|f| f.kind).collect::<Vec<_>>(), [FxKind::Shake]);
+    assert_eq!(clip.duration, assets::OVERLAY_LENGTH);
+    // where the top track has room, the next one shares it
+    app.add_item(&assets::Item::Effect(None), Tick::from_seconds(4.0), None);
+    assert_eq!(videos(&app).len(), 3);
+    assert_eq!(videos(&app)[2].len(), 2);
+    // dropped on a track with room, it stays there
+    app.add_item(&assets::Item::Sticker("heart"), Tick::from_seconds(3.5), Some(videos_track(&app, 1)));
+    assert_eq!(videos(&app)[1].len(), 2);
+}
+
+/// The id of the `n`th video track from the bottom.
+fn videos_track(app: &EditorApp, n: usize) -> String {
+    let p = app.project();
+    p.tracks.iter().filter(|t| t.kind == reelforge_model::TrackKind::Video).nth(n).unwrap().id.clone()
+}

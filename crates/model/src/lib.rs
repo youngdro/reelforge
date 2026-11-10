@@ -20,6 +20,7 @@ use thiserror::Error;
 pub mod anim;
 pub mod color;
 pub mod export;
+pub mod fx;
 pub mod look;
 pub mod timeline;
 pub mod timing;
@@ -28,6 +29,7 @@ pub mod transition;
 pub use anim::{AnimKind, Animation, Animations, Ease, Key, Keys, Offset, Prop};
 pub use color::{Adjust, ColorGrade, Filter, FilterKind, LutUse};
 pub use export::{Codec, ExportSettings, Quality, Resolution};
+pub use fx::{Fx, FxChannel, FxGroup, FxKind, FxSample};
 pub use look::{BlendMode, Crop, Look, Mask, MaskKind};
 pub use timeline::{Timeline, TimelineInfo};
 pub use timing::{CurvePoint, CurvePreset, Timing};
@@ -213,6 +215,10 @@ pub struct Clip {
     /// Crop, mirror, mask and blend (picture clips).
     #[serde(default, skip_serializing_if = "Look::is_empty")]
     pub look: Look,
+    /// Picture effects that play while the clip lasts: on the clip itself, or, on an adjustment
+    /// clip, on everything on the tracks below.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fx: Vec<Fx>,
 }
 
 fn yes() -> bool {
@@ -273,6 +279,11 @@ fn one() -> f32 {
 }
 
 impl Clip {
+    /// Whether it is an adjustment layer: nothing to see, effects and colour for what is below.
+    pub fn is_adjustment(&self) -> bool {
+        matches!(self.content, ClipContent::Adjustment)
+    }
+
     /// The clip's span on the timeline.
     pub fn range(&self) -> TimeRange {
         TimeRange::new(self.start, self.duration)
@@ -340,6 +351,9 @@ pub enum ClipContent {
         #[serde(default)]
         style: TitleStyle,
     },
+    /// An adjustment layer: it shows nothing itself; its effects ([`Clip::fx`]) and its colour
+    /// (filter and adjustments) apply to the clips on the tracks below it while it lasts.
+    Adjustment,
 }
 
 /// How a title looks beyond its words, size and colour.
@@ -664,6 +678,9 @@ impl Project {
                         return Err(ModelError::UnknownMedia(clip.id.clone(), l.media.clone()));
                     }
                 }
+                if let Some(why) = clip.fx.iter().find_map(Fx::problem) {
+                    return motion(why);
+                }
                 if clip.transition.is_some_and(|t| t.duration <= Tick::ZERO) {
                     return motion("a transition must have a positive length");
                 }
@@ -697,6 +714,12 @@ impl Project {
                         }
                     }
                     ClipContent::Solid { .. } => track.kind == TrackKind::Video,
+                    ClipContent::Adjustment => {
+                        if clip.color.lut.is_some() {
+                            return motion("an adjustment clip takes a filter and adjustments, not a lookup table");
+                        }
+                        track.kind == TrackKind::Video
+                    }
                     ClipContent::Text { size, style, .. } => {
                         let bad = |why| Err(ModelError::BadStyle(clip.id.clone(), why));
                         if !(*size > 0.0 && size.is_finite()) {
@@ -764,6 +787,7 @@ mod tests {
             keep_pitch: true,
             color: Default::default(),
             look: Default::default(),
+            fx: vec![],
         }
     }
 

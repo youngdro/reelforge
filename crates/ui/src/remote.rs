@@ -436,6 +436,8 @@ impl Remote {
             project
                 .media
                 .values()
+                // library sounds and stickers are made here, not kept by the server
+                .filter(|m| !m.uri.starts_with(reelforge_media::library::SCHEME))
                 .filter_map(|m| Some((m.sha256.clone()?, m.name.clone())))
                 .filter(|(sha, _)| s.have.insert(sha.clone()))
                 .collect()

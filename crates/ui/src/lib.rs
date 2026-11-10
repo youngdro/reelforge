@@ -243,6 +243,10 @@ struct Inspector {
     grade: Option<GradeEdit>,
     /// Picture clips: blend, mask, and for videos and pictures crop and mirror.
     look: Option<LookEdit>,
+    /// Picture clips: the effects that play on them (or, on an adjustment clip, on what is below).
+    fx: Option<Vec<reelforge_model::Fx>>,
+    /// An adjustment clip: nothing to place, only effects and colour.
+    adjustment: bool,
 }
 
 /// A picture clip's crop, mirror, blend and mask, as the inspector edits it.
@@ -842,8 +846,17 @@ impl EditorApp {
     /// Adds a clip (`params` for a track id) to `track` when it takes it there, else to the lowest
     /// track of `kind` with room, else to a new track of that kind. Selects the new clip.
     fn put(&mut self, kind: TrackKind, track: Option<String>, params: impl Fn(&str) -> Value) -> bool {
+        self.put_from(kind, track, false, params)
+    }
+
+    /// [`put`](Self::put), trying the highest track first when `over`: what goes over the picture
+    /// (a sticker, an effect) belongs above it.
+    fn put_from(&mut self, kind: TrackKind, track: Option<String>, over: bool, params: impl Fn(&str) -> Value) -> bool {
         let mut tracks: Vec<String> =
             self.project().tracks.iter().filter(|t| t.kind == kind).map(|t| t.id.clone()).collect();
+        if over {
+            tracks.reverse();
+        }
         if let Some(t) = track {
             tracks.retain(|x| *x != t);
             tracks.insert(0, t);
@@ -897,6 +910,18 @@ impl EditorApp {
                         p["template"] = json!(id);
                     }
                     p
+                });
+            }
+            assets::Item::Sticker(id) => {
+                let (id, name) = (*id, item.label(&self.project(), s));
+                self.put_from(TrackKind::Video, track, true, move |t| {
+                    json!({"track": t, "sticker": id, "name": name, "start": at, "duration": assets::OVERLAY_LENGTH})
+                });
+            }
+            assets::Item::Effect(kind) => {
+                let fx: Vec<&str> = kind.iter().map(|k| k.name()).collect();
+                self.put_from(TrackKind::Video, track, true, move |t| {
+                    json!({"track": t, "adjustment": true, "fx": fx, "start": at, "duration": assets::OVERLAY_LENGTH})
                 });
             }
         }
@@ -1742,6 +1767,7 @@ impl EditorApp {
             _ => false,
         };
         let picture = p.clip(&id).is_some_and(|(ti, _)| p.tracks[ti].kind != TrackKind::Audio);
+        let adjustment = clip.is_adjustment();
         // values are read, and keyframes set, where the playhead is (held inside the clip)
         let at = p.canvas.fps.snap(self.playhead);
         let local = (at - clip.start).max(Tick::ZERO).min(clip.duration);
@@ -1762,7 +1788,7 @@ impl EditorApp {
             opacity: clip.value_at(Prop::Opacity, local),
             color: match &clip.content {
                 ClipContent::Text { color, .. } | ClipContent::Solid { color } => Some(*color),
-                ClipContent::Media { .. } => None,
+                ClipContent::Media { .. } | ClipContent::Adjustment => None,
             },
             volume: has_sound.then(|| clip.value_at(Prop::VolumeDb, local)),
             fades: has_sound.then(|| [clip.fade.fade_in.seconds() as f32, clip.fade.fade_out.seconds() as f32]),
@@ -1797,7 +1823,9 @@ impl EditorApp {
                 lut_strength: clip.color.lut.as_ref().map_or(1.0, |l| l.strength),
                 adjust: clip.adjust_at(local).values(),
             }),
-            look: picture.then(|| LookEdit {
+            fx: picture.then(|| clip.fx.clone()),
+            adjustment,
+            look: (picture && !adjustment).then(|| LookEdit {
                 media: matches!(&clip.content, ClipContent::Media { media, .. }
                         if p.media.get(media).is_some_and(|m| m.kind != MediaKind::Audio)),
                 crop: Prop::CROP.map(|p| clip.value_at(p, local) * 100.0),
@@ -1821,11 +1849,13 @@ impl EditorApp {
                 }),
                 _ => None,
             },
-            anim: picture.then(|| [anim_of(clip.anim.enter), anim_of(clip.anim.exit)]),
-            transition: p.clip(&id).filter(|(ti, _)| p.tracks[*ti].kind == TrackKind::Video).map(|(ti, _)| {
-                let touching = p.tracks[ti].clips.iter().any(|c| c.end() == clip.start);
-                (clip.transition.map(|t| (t.kind, t.duration.seconds() as f32)), touching)
-            }),
+            anim: (picture && !adjustment).then(|| [anim_of(clip.anim.enter), anim_of(clip.anim.exit)]),
+            transition: p.clip(&id).filter(|(ti, _)| p.tracks[*ti].kind == TrackKind::Video && !adjustment).map(
+                |(ti, _)| {
+                    let touching = p.tracks[ti].clips.iter().any(|c| c.end() == clip.start && !c.is_adjustment());
+                    (clip.transition.map(|t| (t.kind, t.duration.seconds() as f32)), touching)
+                },
+            ),
         };
         // reloaded when the project changes (a drag in the preview, undo, another editor) or the
         // playhead moves
@@ -1842,6 +1872,7 @@ impl EditorApp {
             },
             ClipContent::Text { .. } => (icon::TEXT, s.kind_title),
             ClipContent::Solid { .. } => (icon::COLOUR, s.kind_colour),
+            ClipContent::Adjustment => (icon::SLIDERS, s.kind_adjustment),
         };
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(glyph).size(18.0).color(theme::color::ACCENT));
@@ -1986,29 +2017,42 @@ impl EditorApp {
                 });
                 ui.add_space(6.0);
             }
-            theme::section(ui, s.sec_transform, |ui| {
-                egui::Grid::new("transform").num_columns(3).spacing([10.0, 6.0]).show(ui, |ui| {
-                    let rows = [
-                        (Prop::X, s.pos_x, &mut edit.x, 0.005, -2.0..=2.0, ""),
-                        (Prop::Y, s.pos_y, &mut edit.y, 0.005, -2.0..=2.0, ""),
-                        (Prop::Scale, s.scale, &mut edit.scale, 0.01, 0.0..=10.0, "×"),
-                        (Prop::Rotation, s.rotation, &mut edit.rotation, 0.5, -360.0..=360.0, "°"),
-                        (Prop::Opacity, s.opacity, &mut edit.opacity, 0.01, 0.0..=1.0, ""),
-                    ];
-                    for (prop, name, v, speed, range, suffix) in rows {
-                        ui.label(egui::RichText::new(name).color(theme::color::WEAK));
-                        let r = ui.add_sized(
-                            [ui.available_width() - 26.0, 24.0],
-                            egui::DragValue::new(v).speed(speed).range(range).suffix(suffix),
-                        );
-                        commit |= r.drag_stopped() || (r.changed() && !r.dragged());
-                        if key_button(ui, mark_of(prop)) {
-                            actions.push(toggle(prop, mark_of(prop)));
+            if edit.adjustment {
+                ui.label(egui::RichText::new(s.fx_adjustment_hint).small().color(theme::color::WEAK));
+            }
+            let adjustment = edit.adjustment;
+            if let Some(list) = edit.fx.as_mut().filter(|_| adjustment) {
+                ui.add_space(6.0);
+                if let Some(a) = fx_section(ui, s, &id, list) {
+                    actions.push(a);
+                }
+                ui.add_space(6.0);
+            }
+            if !adjustment {
+                theme::section(ui, s.sec_transform, |ui| {
+                    egui::Grid::new("transform").num_columns(3).spacing([10.0, 6.0]).show(ui, |ui| {
+                        let rows = [
+                            (Prop::X, s.pos_x, &mut edit.x, 0.005, -2.0..=2.0, ""),
+                            (Prop::Y, s.pos_y, &mut edit.y, 0.005, -2.0..=2.0, ""),
+                            (Prop::Scale, s.scale, &mut edit.scale, 0.01, 0.0..=10.0, "×"),
+                            (Prop::Rotation, s.rotation, &mut edit.rotation, 0.5, -360.0..=360.0, "°"),
+                            (Prop::Opacity, s.opacity, &mut edit.opacity, 0.01, 0.0..=1.0, ""),
+                        ];
+                        for (prop, name, v, speed, range, suffix) in rows {
+                            ui.label(egui::RichText::new(name).color(theme::color::WEAK));
+                            let r = ui.add_sized(
+                                [ui.available_width() - 26.0, 24.0],
+                                egui::DragValue::new(v).speed(speed).range(range).suffix(suffix),
+                            );
+                            commit |= r.drag_stopped() || (r.changed() && !r.dragged());
+                            if key_button(ui, mark_of(prop)) {
+                                actions.push(toggle(prop, mark_of(prop)));
+                            }
+                            ui.end_row();
                         }
-                        ui.end_row();
-                    }
+                    });
                 });
-            });
+            }
             if let Some(g) = &mut edit.grade {
                 ui.add_space(6.0);
                 let changed = |r: &egui::Response| r.drag_stopped() || (r.changed() && !r.dragged());
@@ -2050,46 +2094,55 @@ impl EditorApp {
                             }
                         });
                         ui.end_row();
-                        ui.label(egui::RichText::new(s.lut).color(theme::color::WEAK));
-                        ui.horizontal(|ui| {
-                            let luts: Vec<(&str, &str)> = p
-                                .media
-                                .values()
-                                .filter(|m| m.kind == MediaKind::Lut)
-                                .map(|m| (m.id.as_str(), m.name.as_str()))
-                                .collect();
-                            if luts.is_empty() {
-                                ui.label(egui::RichText::new(s.lut_hint).color(theme::color::WEAK).small());
-                                return;
-                            }
-                            let shown = g
-                                .lut
-                                .as_deref()
-                                .and_then(|l| luts.iter().find(|(id, _)| *id == l))
-                                .map_or(s.none, |(_, name)| *name);
-                            let mut picked = g.lut.clone();
-                            egui::ComboBox::from_id_salt("lut").selected_text(shown).width(92.0).show_ui(ui, |ui| {
-                                ui.selectable_value(&mut picked, None, s.none);
-                                for (lid, name) in &luts {
-                                    ui.selectable_value(&mut picked, Some(lid.to_string()), *name);
+                        // an adjustment clip takes no lookup table
+                        if !adjustment {
+                            ui.label(egui::RichText::new(s.lut).color(theme::color::WEAK));
+                            ui.horizontal(|ui| {
+                                let luts: Vec<(&str, &str)> = p
+                                    .media
+                                    .values()
+                                    .filter(|m| m.kind == MediaKind::Lut)
+                                    .map(|m| (m.id.as_str(), m.name.as_str()))
+                                    .collect();
+                                if luts.is_empty() {
+                                    ui.label(egui::RichText::new(s.lut_hint).color(theme::color::WEAK).small());
+                                    return;
+                                }
+                                let shown = g
+                                    .lut
+                                    .as_deref()
+                                    .and_then(|l| luts.iter().find(|(id, _)| *id == l))
+                                    .map_or(s.none, |(_, name)| *name);
+                                let mut picked = g.lut.clone();
+                                egui::ComboBox::from_id_salt("lut").selected_text(shown).width(92.0).show_ui(
+                                    ui,
+                                    |ui| {
+                                        ui.selectable_value(&mut picked, None, s.none);
+                                        for (lid, name) in &luts {
+                                            ui.selectable_value(&mut picked, Some(lid.to_string()), *name);
+                                        }
+                                    },
+                                );
+                                if picked != g.lut {
+                                    actions.push(("clip.setColor", json!({"clip": id, "lut": picked})));
+                                }
+                                if g.lut.is_some() {
+                                    let r = ui.add(
+                                        egui::DragValue::new(&mut g.lut_strength)
+                                            .speed(0.01)
+                                            .range(0.0..=1.0)
+                                            .max_decimals(2),
+                                    );
+                                    if changed(&r) {
+                                        actions.push((
+                                            "clip.setColor",
+                                            json!({"clip": id, "lutStrength": g.lut_strength}),
+                                        ));
+                                    }
                                 }
                             });
-                            if picked != g.lut {
-                                actions.push(("clip.setColor", json!({"clip": id, "lut": picked})));
-                            }
-                            if g.lut.is_some() {
-                                let r = ui.add(
-                                    egui::DragValue::new(&mut g.lut_strength)
-                                        .speed(0.01)
-                                        .range(0.0..=1.0)
-                                        .max_decimals(2),
-                                );
-                                if changed(&r) {
-                                    actions.push(("clip.setColor", json!({"clip": id, "lutStrength": g.lut_strength})));
-                                }
-                            }
-                        });
-                        ui.end_row();
+                            ui.end_row();
+                        }
                         for (i, (name, lo, hi)) in Adjust::RANGES.into_iter().enumerate() {
                             ui.label(egui::RichText::new(s.adjust_names[i]).color(theme::color::WEAK));
                             ui.horizontal(|ui| {
@@ -2101,7 +2154,8 @@ impl EditorApp {
                                     actions.push(("clip.setColor", json!({"clip": id, name: g.adjust[i], "at": at})));
                                 }
                                 let prop = Prop::ADJUST[i];
-                                if key_button(ui, mark_of(prop)) {
+                                // an adjustment clip's colour steps in and out; it has no keyframes
+                                if !adjustment && key_button(ui, mark_of(prop)) {
                                     actions.push(toggle(prop, mark_of(prop)));
                                 }
                             });
@@ -2396,6 +2450,12 @@ impl EditorApp {
                         }
                     });
                 });
+            }
+            if let Some(list) = edit.fx.as_mut().filter(|_| !adjustment) {
+                ui.add_space(6.0);
+                if let Some(a) = fx_section(ui, s, &id, list) {
+                    actions.push(a);
+                }
             }
             if let Some((current_t, touching)) = &mut edit.transition {
                 ui.add_space(6.0);
@@ -2841,6 +2901,68 @@ const IMPORTABLE: &[&str] = &[
     "mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "webp", "gif", "mp3", "wav", "m4a", "aac", "flac", "ogg",
     "opus", "cube", "srt", "json",
 ];
+
+/// The inspector's list of a clip's picture effects: each with its strength and pace, one to
+/// remove it, and a menu to add another. Returns the command that makes the list what it now is.
+fn fx_section(
+    ui: &mut egui::Ui,
+    s: &i18n::Strings,
+    clip: &str,
+    list: &mut Vec<reelforge_model::Fx>,
+) -> Option<(&'static str, Value)> {
+    use reelforge_model::{Fx, FxGroup, FxKind};
+    let mut changed = false;
+    theme::section(ui, s.sec_fx, |ui| {
+        let mut gone = None;
+        let done = |r: &egui::Response| r.drag_stopped() || (r.changed() && !r.dragged());
+        egui::Grid::new("fx").num_columns(4).spacing([8.0, 6.0]).show(ui, |ui| {
+            for (i, fx) in list.iter_mut().enumerate() {
+                ui.label(assets::fx_name(fx.kind, s));
+                let r = ui.add(
+                    egui::DragValue::new(&mut fx.strength)
+                        .speed(0.01)
+                        .range(0.0..=1.0)
+                        .custom_formatter(|v, _| format!("{:.0} %", v * 100.0))
+                        .custom_parser(|t| {
+                            t.trim().trim_end_matches('%').trim().parse::<f64>().ok().map(|v| v / 100.0)
+                        }),
+                );
+                changed |= done(&r);
+                r.on_hover_text(s.fx_strength);
+                if fx.kind.has_speed() {
+                    let r = ui.add(
+                        egui::DragValue::new(&mut fx.speed).speed(0.01).range(0.25..=4.0).suffix("×").max_decimals(2),
+                    );
+                    changed |= done(&r);
+                    r.on_hover_text(s.fx_speed);
+                } else {
+                    ui.label("");
+                }
+                if ui.small_button(icon::DELETE).on_hover_text(s.fx_remove).clicked() {
+                    gone = Some(i);
+                }
+                ui.end_row();
+            }
+        });
+        if let Some(i) = gone {
+            list.remove(i);
+            changed = true;
+        }
+        ui.menu_button(format!("{}  {}", icon::ADD, s.fx_add), |ui| {
+            for (title, group) in s.fx_groups.into_iter().zip([FxGroup::Motion, FxGroup::Light, FxGroup::Focus]) {
+                ui.label(egui::RichText::new(title).small().color(theme::color::WEAK));
+                for kind in FxKind::ALL.into_iter().filter(|k| k.group() == group) {
+                    if ui.button(assets::fx_name(kind, s)).clicked() {
+                        list.push(Fx::new(kind));
+                        changed = true;
+                        ui.close();
+                    }
+                }
+            }
+        });
+    });
+    changed.then(|| ("clip.setFx", json!({"clip": clip, "fx": list})))
+}
 
 fn is_draft(name: &str) -> bool {
     let file = name.rsplit(['/', '\\']).next().unwrap_or(name).to_ascii_lowercase();

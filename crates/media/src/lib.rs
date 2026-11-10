@@ -14,6 +14,7 @@
 pub mod export;
 pub mod library;
 mod shrunk;
+pub mod stickers;
 pub mod stretch;
 pub mod webcodecs;
 mod yuv;
@@ -231,6 +232,17 @@ impl Footage {
         self.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// A still image; a library sticker is drawn the first time it is asked for.
+    fn still(&self, asset_id: &str, asset: &Asset, at: Tick) -> Result<Option<Arc<Image>>, String> {
+        if let Some(id) = stickers::id_of(&asset.uri)
+            && !self.stills.has(&asset.sha256)
+            && let Some(px) = stickers::render(id, stickers::SIZE)
+        {
+            self.stills.insert(&asset.sha256, Image::from_srgba8(stickers::SIZE, stickers::SIZE, &px));
+        }
+        self.stills.picture(asset_id, asset, at)
+    }
+
     fn source(&self, asset: &Asset) -> Option<SharedSource> {
         let k = key(asset);
         if let Some(s) = self.sources.lock().expect("sources lock").get(&k) {
@@ -322,7 +334,7 @@ impl Footage {
     pub fn thumbnail(&self, asset: &Asset, at: Tick, height: u32) -> Result<Option<Thumbnail>, String> {
         match asset.kind {
             AssetKind::Image => {
-                let Some(img) = self.stills.picture("", asset, Tick::ZERO)? else { return Ok(None) };
+                let Some(img) = self.still("", asset, Tick::ZERO)? else { return Ok(None) };
                 Ok(Some(Thumbnail::shrink(img.width, img.height, &img.to_srgba8(), height)))
             }
             AssetKind::Video => {
@@ -388,7 +400,7 @@ impl MediaSource for Footage {
 
     fn picture(&self, asset_id: &str, asset: &Asset, at: Tick) -> Result<Option<Arc<Image>>, String> {
         match asset.kind {
-            AssetKind::Image => self.stills.picture(asset_id, asset, at),
+            AssetKind::Image => self.still(asset_id, asset, at),
             AssetKind::Video => {
                 if let Some(img) =
                     self.prepared.lock().expect("prepared lock").get(&key(asset)).and_then(|m| m.get(&at))

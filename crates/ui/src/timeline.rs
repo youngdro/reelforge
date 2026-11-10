@@ -974,6 +974,12 @@ fn paint_clip(
             let swatch = Color32::from_rgb((c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8);
             (icon::COLOUR, words.kind_colour.to_string(), swatch.lerp_to_gamma(color::VIDEO, 0.35))
         }
+        ClipContent::Adjustment => {
+            // what it does, in a word or two
+            let names: Vec<&str> = clip.fx.iter().map(|fx| crate::assets::fx_name(fx.kind, words)).collect();
+            let label = if names.is_empty() { words.kind_adjustment.to_string() } else { names.join(" · ") };
+            (if names.is_empty() { icon::SLIDERS } else { icon::SPARKLE }, label, color::FX)
+        }
     };
     if dim {
         fill = fill.gamma_multiply(0.45);
