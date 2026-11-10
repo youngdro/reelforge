@@ -245,8 +245,9 @@ export function rf_save(name, bytes) {
         async fn prepare(&mut self, spec: &RenderSpec, media: &Footage, t: reelforge_time::Tick) {
             let plan = plan_frame(spec, t, 1.0);
             // clips that ended give their decoders back
-            self.open.retain(|id, _| plan.layers.iter().any(|l| &l.id == id));
-            for layer in &plan.layers {
+            let layers: Vec<_> = plan.media_layers().into_iter().map(|(_, l)| l).collect();
+            self.open.retain(|id, _| layers.iter().any(|l| &l.id == id));
+            for layer in layers {
                 let PlannedSource::Media { asset, at } = &layer.source else { continue };
                 let Some(def) = spec.assets.get(asset).filter(|d| d.kind == AssetKind::Video) else { continue };
                 if !self.open.contains_key(&layer.id) {

@@ -25,6 +25,10 @@ pub struct Timeline {
     /// Its marks while another timeline is being edited.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub markers: Vec<crate::Marker>,
+    /// Made by joining clips into a compound clip, not as a cut of its own: taken away again
+    /// when its last compound clip is taken apart.
+    #[serde(default, skip_serializing_if = "crate::is_no")]
+    pub compound: bool,
 }
 
 /// A timeline as listed: id, name, length and whether it is the one being edited.
@@ -38,6 +42,8 @@ pub struct TimelineInfo {
     pub duration: Tick,
     /// Whether it is the one in [`Project::tracks`].
     pub current: bool,
+    /// Whether it was made for a compound clip ([`Timeline::compound`]).
+    pub compound: bool,
 }
 
 /// The end of the last clip on these tracks.
@@ -71,6 +77,7 @@ impl Project {
                 name: String::new(),
                 duration: self.duration(),
                 current: true,
+                compound: false,
             }];
         }
         self.timelines
@@ -82,6 +89,7 @@ impl Project {
                     name: t.name.clone(),
                     duration: if current { self.duration() } else { tracks_duration(&t.tracks) },
                     current,
+                    compound: t.compound,
                 }
             })
             .collect()
@@ -97,6 +105,7 @@ impl Project {
                 name: name.into(),
                 tracks: Vec::new(),
                 markers: Vec::new(),
+                compound: false,
             });
             self.timeline = id;
         }
@@ -124,13 +133,99 @@ impl Project {
     /// A copy of the current timeline's tracks under fresh ids.
     pub fn copy_tracks(&mut self) -> Vec<Track> {
         let mut tracks = self.tracks.clone();
+        let mut groups = std::collections::BTreeMap::new();
         for t in &mut tracks {
             t.id = self.mint("t");
             for c in &mut t.clips {
                 c.id = self.mint("c");
+                if let Some(g) = &c.group {
+                    c.group = Some(groups.entry(g.clone()).or_insert_with(|| self.mint("g")).clone());
+                }
             }
         }
         tracks
+    }
+
+    /// The tracks of timeline `id`, wherever they are: the project's for the one being edited.
+    /// (A project that never had a second timeline has one with the empty id.)
+    pub fn tracks_of(&self, id: &str) -> Option<&[Track]> {
+        if id == self.timeline {
+            return Some(&self.tracks);
+        }
+        self.timelines.iter().find(|t| t.id == id).map(|t| t.tracks.as_slice())
+    }
+
+    /// The timelines the compound clips of timeline `id` play.
+    fn played_by(&self, id: &str) -> impl Iterator<Item = &str> {
+        self.tracks_of(id)
+            .into_iter()
+            .flatten()
+            .flat_map(|t| &t.clips)
+            .filter_map(|c| c.compound().map(|(timeline, _)| timeline))
+    }
+
+    /// Whether playing timeline `from` plays timeline `to`: one of its compound clips plays it,
+    /// directly or through others.
+    pub fn timeline_reaches(&self, from: &str, to: &str) -> bool {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut todo: Vec<&str> = self.played_by(from).collect();
+        while let Some(id) = todo.pop() {
+            if id == to {
+                return true;
+            }
+            if seen.insert(id) {
+                todo.extend(self.played_by(id));
+            }
+        }
+        false
+    }
+
+    /// A timeline with a compound clip that plays timeline `id`, and that clip: the one being
+    /// edited if it has one, else the first that does.
+    pub fn player_of(&self, id: &str) -> Option<(&str, &Clip)> {
+        let parked =
+            self.timelines.iter().filter(|t| t.id != self.timeline).map(|t| (t.id.as_str(), t.tracks.as_slice()));
+        std::iter::once((self.timeline.as_str(), self.tracks.as_slice())).chain(parked).find_map(
+            |(timeline, tracks)| {
+                let mut clips = tracks.iter().flat_map(|t| &t.clips);
+                clips.find(|c| c.compound().is_some_and(|(played, _)| played == id)).map(|c| (timeline, c))
+            },
+        )
+    }
+
+    /// Whether timeline `id` has anything to hear: a clip of a video or a sound file, in it or in
+    /// a timeline its compound clips play.
+    pub fn timeline_sounds(&self, id: &str) -> bool {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut todo = vec![id];
+        while let Some(id) = todo.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            for c in self.tracks_of(id).into_iter().flatten().flat_map(|t| &t.clips) {
+                match &c.content {
+                    crate::ClipContent::Media { media, silent: false, .. }
+                        if self.media.get(media).is_some_and(|m| m.kind != crate::MediaKind::Image) =>
+                    {
+                        return true;
+                    }
+                    crate::ClipContent::Compound { timeline, .. } => todo.push(timeline),
+                    _ => {}
+                }
+            }
+        }
+        false
+    }
+
+    /// The compound clips anywhere in the project that play timeline `id`.
+    pub fn compounds_of(&self, id: &str) -> Vec<&Clip> {
+        let parked = self.timelines.iter().flat_map(|t| &t.tracks);
+        self.tracks
+            .iter()
+            .chain(parked)
+            .flat_map(|t| &t.clips)
+            .filter(|c| c.compound().is_some_and(|(timeline, _)| timeline == id))
+            .collect()
     }
 }
 
@@ -146,7 +241,13 @@ mod tests {
         let first = p.timeline.clone();
         let copy = p.copy_tracks();
         let id = p.mint("s");
-        p.timelines.push(super::Timeline { id: id.clone(), name: "Timeline 2".into(), tracks: copy, markers: vec![] });
+        p.timelines.push(super::Timeline {
+            id: id.clone(),
+            name: "Timeline 2".into(),
+            tracks: copy,
+            markers: vec![],
+            compound: false,
+        });
         p.check().unwrap();
         let before = p.tracks.clone();
         assert!(p.switch_timeline(&id));

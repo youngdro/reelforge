@@ -315,6 +315,12 @@ pub fn input_schema(id: &str) -> Option<Value> {
                     "adjustment",
                     json!({"type": "boolean", "description": "An adjustment clip (video tracks): it shows nothing; its `fx` and its colour (clip.setColor) work on the tracks below while it lasts."}),
                 ),
+                (
+                    "timeline",
+                    ident(
+                        "Another timeline of the project (timeline.list), placed as a compound clip on a video track: its picture and sound as one clip.",
+                    ),
+                ),
                 ("fx", fx("Picture effects the clip starts with.")),
             ];
             props.extend(title_props());
@@ -466,6 +472,34 @@ pub fn input_schema(id: &str) -> Option<Value> {
             ],
             &["clips", "by"],
         ),
+        "clip.group" => object(
+            vec![(
+                "clips",
+                json!({"type": "array", "items": {"type": "string"}, "minItems": 2, "description": "The clips to group."}),
+            )],
+            &["clips"],
+        ),
+        "clip.ungroup" => object(
+            vec![(
+                "clips",
+                json!({"description": "A clip id or a list of them; the whole group of each is dissolved.", "oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}, "minItems": 1}]}),
+            )],
+            &["clips"],
+        ),
+        "clip.compound" => object(
+            vec![
+                (
+                    "clips",
+                    json!({"description": "A clip id or a list of them; at least one shows a picture or text.", "oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}, "minItems": 1}]}),
+                ),
+                (
+                    "name",
+                    json!({"type": "string", "description": "What the compound clip's timeline is called; Compound 1, 2, … by default."}),
+                ),
+            ],
+            &["clips"],
+        ),
+        "clip.uncompound" => object(vec![("clip", ident("The compound clip's id."))], &["clip"]),
         "clip.copy" | "clip.duplicate" => object(
             vec![(
                 "clips",

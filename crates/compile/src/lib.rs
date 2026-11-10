@@ -15,8 +15,8 @@ use reelforge_model::{
     Timing, TitleAlign, Track, TrackKind, TransitionKind,
 };
 use reelforge_renderspec::{
-    Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Blend, Color, Crop, CropKeys, Ease, Effect, Fit,
-    Key, Layer, LayerContent, MaskShape, Output, Probe, RenderSpec, ShapeMask, ShapeMaskKeys, SpeedKey, TextAlign,
+    Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Blend, Color, Comp, Crop, CropKeys, Ease, Effect,
+    Fit, Key, Layer, LayerContent, MaskShape, Output, Probe, RenderSpec, ShapeMask, ShapeMaskKeys, SpeedKey, TextAlign,
     TextBackground, TextContent, TextShadow, TextStroke, TimeMap, Transform, VideoCodec, VideoEncoding, effects,
     validate,
 };
@@ -131,8 +131,45 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
         }),
     });
 
-    let step = c.fps.frame_duration();
     let mut assets: BTreeMap<String, Asset> = BTreeMap::new();
+    let mut comps: BTreeMap<String, Comp> = BTreeMap::new();
+    let (layers, audio) = lower_tracks(project, &project.tracks, options, &mut assets, &mut comps)?;
+    spec.layers = layers;
+    spec.audio = audio;
+    spec.comps = comps;
+    spec.assets = assets;
+    spec.engine.features = spec.required_features().into_iter().collect();
+    validate(&spec).map_err(|e| CompileError::Invalid(e.to_string()))?;
+    Ok(spec)
+}
+
+/// Lowers the clips of `tracks`, a timeline of `project`, into layers (bottom first) and audio
+/// clips. The timelines its compound clips play are lowered first, into `comps` under their ids;
+/// media goes into `assets`.
+fn lower_tracks(
+    project: &Project,
+    tracks: &[Track],
+    options: &CompileOptions,
+    assets: &mut BTreeMap<String, Asset>,
+    comps: &mut BTreeMap<String, Comp>,
+) -> Result<(Vec<Layer>, Vec<AudioClip>), CompileError> {
+    let c = &project.canvas;
+    let step = c.fps.frame_duration();
+    for clip in tracks.iter().flat_map(|t| &t.clips) {
+        let Some((timeline, _)) = clip.compound() else { continue };
+        if comps.contains_key(timeline) {
+            continue;
+        }
+        let inner = project
+            .tracks_of(timeline)
+            .ok_or_else(|| CompileError::Model(format!("clip {:?} plays an unknown timeline", clip.id)))?;
+        // held while it is lowered, so a timeline that played itself would end here
+        comps.insert(timeline.to_string(), Comp::default());
+        let (layers, audio) = lower_tracks(project, inner, options, assets, comps)?;
+        comps.insert(timeline.to_string(), Comp { layers, audio });
+    }
+    let mut layers: Vec<Layer> = Vec::new();
+    let mut audio: Vec<AudioClip> = Vec::new();
     let mut asset_for = |media_id: &str| -> Result<String, CompileError> {
         let m = &project.media[media_id];
         if !assets.contains_key(media_id) {
@@ -167,10 +204,10 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
         Ok(media_id.to_string())
     };
 
-    for (ti, track) in project.tracks.iter().enumerate() {
+    for (ti, track) in tracks.iter().enumerate() {
         let cuts = transitions(track);
         // the adjustment clips above this track
-        let above: Vec<&Clip> = project.tracks[ti + 1..]
+        let above: Vec<&Clip> = tracks[ti + 1..]
             .iter()
             .filter(|t| t.kind == TrackKind::Video && !t.hidden)
             .flat_map(|t| t.clips.iter().filter(|c| c.is_adjustment()))
@@ -199,6 +236,8 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                     }));
                 }
                 let media = matches!(clip.content, ClipContent::Media { .. });
+                // what is cropped, mirrored and put out of focus like a picture
+                let pictured = clip.is_picture();
                 let crop_keyed = Prop::CROP.iter().any(|p| clip.keyed(*p));
                 let content = match &clip.content {
                     ClipContent::Media { media, .. } => LayerContent::Media {
@@ -207,6 +246,10 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                         fit: Fit::Contain,
                     },
                     ClipContent::Solid { color } => LayerContent::Solid { color: Color(*color) },
+                    // its timeline's picture, from where the clip starts in it
+                    ClipContent::Compound { timeline, source_in } => {
+                        LayerContent::Comp { comp: timeline.clone(), from: *source_in - shape.lead }
+                    }
                     ClipContent::Adjustment => unreachable!("an adjustment clip is not a picture"),
                     ClipContent::Text { text, size, color, style } => LayerContent::Text(TextContent {
                         weight: style.weight,
@@ -270,7 +313,7 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                         .into(),
                         asset: None,
                     });
-                    spec.layers.push(Layer {
+                    layers.push(Layer {
                         id: format!("{}~backdrop", clip.id),
                         at: clip.start - shape.lead,
                         dur: shape.len,
@@ -292,7 +335,7 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                         fx,
                     });
                 }
-                spec.layers.push(Layer {
+                layers.push(Layer {
                     id: clip.id.clone(),
                     at: clip.start - shape.lead,
                     dur: shape.len,
@@ -305,14 +348,14 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                     opacity: motion::lower(clip, Prop::Opacity, &shape, step),
                     blend: blend(clip.look.blend),
                     mask: None,
-                    crop: (media && !crop_keyed && !clip.look.crop.is_zero()).then(|| {
+                    crop: (pictured && !crop_keyed && !clip.look.crop.is_zero()).then(|| {
                         let c = clip.look.crop;
                         Crop { left: c.left, top: c.top, right: c.right, bottom: c.bottom }
                     }),
-                    flip_x: media && clip.look.flip_x,
-                    flip_y: media && clip.look.flip_y,
+                    flip_x: pictured && clip.look.flip_x,
+                    flip_y: pictured && clip.look.flip_y,
                     shape_mask: clip.look.mask.map(shape_mask),
-                    crop_keys: (media && crop_keyed).then(|| {
+                    crop_keys: (pictured && crop_keyed).then(|| {
                         let [left, top, right, bottom] = Prop::CROP.map(|p| motion::lower(clip, p, &shape, step));
                         CropKeys { left, top, right, bottom }
                     }),
@@ -336,7 +379,7 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                         fx.extend(above_fx(clip, &shape, &covers, step));
                         fx.extend(distort_fx(clip, &shape, step));
                         // out of focus: pictures only, and one blur a layer
-                        if media
+                        if pictured
                             && !fx.iter().any(|e| e.id == effects::BLUR)
                             && let Some(radius) = motion::fx_channel(clip, &shape, FxChannel::Blur, step)
                         {
@@ -353,7 +396,7 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                 if let Some((kind, half)) = cuts[i]
                     && let Some(color) = kind.dip()
                 {
-                    spec.layers.push(Layer {
+                    layers.push(Layer {
                         id: format!("{}~dip", clip.id),
                         at: clip.start - half,
                         dur: half * 2,
@@ -392,9 +435,10 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                 // backwards, sound plays like tape run the other way
                 let keep_pitch = clip.keep_pitch && !time.reverses() && (time.speed != 1.0 || !time.ramp.is_empty());
                 let pitch = if time.reverses() { 0.0 } else { clip.voice.semitones() };
-                spec.audio.push(AudioClip {
+                audio.push(AudioClip {
                     id: clip.id.clone(),
                     asset: asset_for(media)?,
+                    comp: None,
                     at: clip.start,
                     dur: clip.duration,
                     time,
@@ -404,12 +448,27 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                     fx: sound_fx(&clip.voice),
                 });
             }
+            // a compound clip plays its timeline's mix, as loud as the clip is set
+            if !track.muted
+                && let Some((timeline, source_in)) = clip.compound()
+                && comps.get(timeline).is_some_and(|c| !c.audio.is_empty())
+            {
+                audio.push(AudioClip {
+                    id: clip.id.clone(),
+                    asset: String::new(),
+                    comp: Some(timeline.to_string()),
+                    at: clip.start,
+                    dur: clip.duration,
+                    time: TimeMap { source_in, speed: 1.0, ramp: vec![] },
+                    gain_db: motion::lower(clip, Prop::VolumeDb, &Shape::of(clip), step),
+                    keep_pitch: false,
+                    pitch: 0.0,
+                    fx: vec![],
+                });
+            }
         }
     }
-    spec.assets = assets;
-    spec.engine.features = spec.required_features().into_iter().collect();
-    validate(&spec).map_err(|e| CompileError::Invalid(e.to_string()))?;
-    Ok(spec)
+    Ok((layers, audio))
 }
 
 /// A clip's colour as effects: its filter, its lookup table, then its own adjustments.
@@ -625,6 +684,7 @@ mod tests {
             look: Default::default(),
             fx: vec![],
             voice: Default::default(),
+            group: None,
         }
     }
 

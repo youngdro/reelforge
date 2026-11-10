@@ -54,6 +54,24 @@ pub struct RenderSpec {
     /// Sound, mixed together.
     #[serde(default)]
     pub audio: Vec<AudioClip>,
+    /// Compositions by id (feature `comp/1`): each a picture and a sound made of layers and
+    /// audio clips of its own, shown by [`LayerContent::Comp`] layers and played by audio clips
+    /// that name it. Ids are local to this spec.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub comps: BTreeMap<String, Comp>,
+}
+
+/// A composition: an edit inside the edit (a compound clip's timeline). Its picture is as large
+/// as the output and see-through where no layer draws; its time starts at 0.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Comp {
+    /// Picture layers, bottom first.
+    #[serde(default)]
+    pub layers: Vec<Layer>,
+    /// Sound, mixed together.
+    #[serde(default)]
+    pub audio: Vec<AudioClip>,
 }
 
 /// What a renderer must provide to draw this spec.
@@ -447,6 +465,16 @@ pub enum LayerContent {
     },
     /// Set text (feature `text/1`).
     Text(TextContent),
+    /// The picture of a composition (feature `comp/1`): drawn first, on a see-through frame the
+    /// size of the output, then placed, cropped, masked and given this layer's effects as one
+    /// picture.
+    Comp {
+        /// The composition's id in [`RenderSpec::comps`].
+        comp: String,
+        /// The composition's instant shown at the layer's start; it runs at speed 1 from there.
+        #[serde(default)]
+        from: Tick,
+    },
 }
 
 /// Source time for a media layer or audio clip: `source = source_in + ∫ speed dt` from the owner's
@@ -927,8 +955,13 @@ pub mod effects {
 pub struct AudioClip {
     /// Id, unique among audio clips.
     pub id: String,
-    /// A `video` or `audio` asset.
+    /// A `video` or `audio` asset. Empty when the clip plays a composition.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub asset: String,
+    /// The composition whose mix it plays instead of an asset (feature `comp/1`), from
+    /// `time.source_in` at speed 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comp: Option<String>,
     /// When it starts on the output timeline.
     pub at: Tick,
     /// How long it plays; positive.
@@ -1097,13 +1130,17 @@ impl RenderSpec {
             assets: BTreeMap::new(),
             layers: Vec::new(),
             audio: Vec::new(),
+            comps: BTreeMap::new(),
         }
     }
 
     /// Every feature id this spec needs: its declared features plus each effect id used.
     pub fn required_features(&self) -> BTreeSet<String> {
         let mut out: BTreeSet<String> = self.engine.features.iter().cloned().collect();
-        for layer in &self.layers {
+        if !self.comps.is_empty() {
+            out.insert("comp/1".to_string());
+        }
+        for layer in self.layers.iter().chain(self.comps.values().flat_map(|c| &c.layers)) {
             if let LayerContent::Text(t) = &layer.content {
                 out.insert("text/1".to_string());
                 if t.needs_v2() {
@@ -1147,7 +1184,7 @@ impl RenderSpec {
         if self.output.video.as_ref().is_some_and(|v| v.size.is_some()) {
             out.insert("encode.size/1".to_string());
         }
-        for a in &self.audio {
+        for a in self.audio.iter().chain(self.comps.values().flat_map(|c| &c.audio)) {
             out.extend(a.time.features().map(str::to_string));
             if a.keep_pitch && (a.time.speed != 1.0 || !a.time.ramp.is_empty()) {
                 out.insert("audio.stretch/1".to_string());

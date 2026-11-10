@@ -121,12 +121,19 @@
       "description": "Sound from an asset.",
       "properties": {
         "asset": {
-          "description": "A `video` or `audio` asset.",
+          "description": "A `video` or `audio` asset. Empty when the clip plays a composition.",
           "type": "string"
         },
         "at": {
           "$ref": "#/$defs/Tick",
           "description": "When it starts on the output timeline."
+        },
+        "comp": {
+          "description": "The composition whose mix it plays instead of an asset (feature `comp/1`), from\n`time.source_in` at speed 1.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "dur": {
           "$ref": "#/$defs/Tick",
@@ -168,7 +175,6 @@
       },
       "required": [
         "id",
-        "asset",
         "at",
         "dur"
       ],
@@ -409,6 +415,29 @@
       "maxItems": 4,
       "minItems": 4,
       "type": "array"
+    },
+    "Comp": {
+      "additionalProperties": false,
+      "description": "A composition: an edit inside the edit (a compound clip's timeline). Its picture is as large\nas the output and see-through where no layer draws; its time starts at 0.",
+      "properties": {
+        "audio": {
+          "default": [],
+          "description": "Sound, mixed together.",
+          "items": {
+            "$ref": "#/$defs/AudioClip"
+          },
+          "type": "array"
+        },
+        "layers": {
+          "default": [],
+          "description": "Picture layers, bottom first.",
+          "items": {
+            "$ref": "#/$defs/Layer"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
     },
     "Crop": {
       "additionalProperties": false,
@@ -947,6 +976,30 @@
             "color"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The picture of a composition (feature `comp/1`): drawn first, on a see-through frame the\nsize of the output, then placed, cropped, masked and given this layer's effects as one\npicture.",
+          "properties": {
+            "comp": {
+              "description": "The composition's id in [`RenderSpec::comps`].",
+              "type": "string"
+            },
+            "from": {
+              "$ref": "#/$defs/Tick",
+              "default": 0,
+              "description": "The composition's instant shown at the layer's start; it runs at speed 1 from there."
+            },
+            "type": {
+              "const": "comp",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "comp"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -1425,6 +1478,13 @@
         "$ref": "#/$defs/AudioClip"
       },
       "type": "array"
+    },
+    "comps": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Comp"
+      },
+      "description": "Compositions by id (feature `comp/1`): each a picture and a sound made of layers and\naudio clips of its own, shown by [`LayerContent::Comp`] layers and played by audio clips\nthat name it. Ids are local to this spec.",
+      "type": "object"
     },
     "engine": {
       "$ref": "#/$defs/EngineRequirements",

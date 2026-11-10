@@ -65,7 +65,30 @@ pub enum PlannedSource {
     Solid([f32; 4]),
     /// Text, laid out and drawn by the compositor.
     Text(Box<TextContent>),
+    /// A composition's frame, drawn first on a see-through frame of its own and then placed as a
+    /// picture: its layers at its own instant, at the size of the frame it goes into.
+    Comp(Box<FramePlan>),
 }
+
+impl FramePlan {
+    /// Every layer that shows a picture of an asset, the ones inside compositions included, each
+    /// with the frame it is drawn into.
+    pub fn media_layers(&self) -> Vec<(&FramePlan, &PlannedLayer)> {
+        let mut out = Vec::new();
+        for layer in &self.layers {
+            match &layer.source {
+                PlannedSource::Media { .. } => out.push((self, layer)),
+                PlannedSource::Comp(inner) => out.extend(inner.media_layers()),
+                PlannedSource::Solid(_) | PlannedSource::Text(_) => {}
+            }
+        }
+        out
+    }
+}
+
+/// How deep compositions may show compositions: a spec that passed validation has no loop, and
+/// one that did not stops here.
+const DEPTH: usize = 8;
 
 /// A 2-D affine map `[a, b, c, d, e, f]`: `x' = a x + b y + c`, `y' = d x + e y + f`.
 pub type Affine = [f32; 6];
@@ -136,8 +159,21 @@ pub fn plan_frame(spec: &RenderSpec, t: Tick, scale: f32) -> FramePlan {
     let o = &spec.output;
     let width = ((o.width as f32 * scale).round() as u32).max(1);
     let height = ((o.height as f32 * scale).round() as u32).max(1);
+    let layers = plan_layers(spec, &spec.layers, t, [width, height], 0);
+    FramePlan { t, width, height, background: premultiply_srgb(o.background.0), layers }
+}
+
+/// The layers of `all` on screen at `t`, for a frame of `size` pixels.
+fn plan_layers(
+    spec: &RenderSpec,
+    all: &[reelforge_renderspec::Layer],
+    t: Tick,
+    size: [u32; 2],
+    depth: usize,
+) -> Vec<PlannedLayer> {
+    let [width, height] = size;
     let mut layers = Vec::new();
-    for layer in &spec.layers {
+    for layer in all {
         if t < layer.at || t >= layer.at + layer.dur {
             continue;
         }
@@ -154,6 +190,17 @@ pub fn plan_frame(spec: &RenderSpec, t: Tick, scale: f32) -> FramePlan {
                     text.reveal = Some(Animated::Constant(r.sample(local).clamp(0.0, 1.0)));
                 }
                 (PlannedSource::Text(Box::new(text)), Fit::Contain)
+            }
+            LayerContent::Comp { comp, from } => {
+                let (Some(inner), true) = (spec.comps.get(comp), depth < DEPTH) else { continue };
+                let at = *from + local;
+                let layers = plan_layers(spec, &inner.layers, at, size, depth + 1);
+                if layers.is_empty() {
+                    // past its end, or between its clips: nothing to place
+                    continue;
+                }
+                let frame = FramePlan { t: at, width, height, background: [0.0; 4], layers };
+                (PlannedSource::Comp(Box::new(frame)), Fit::Contain)
             }
         };
         let pos = layer.transform.position.sample(local);
@@ -173,17 +220,17 @@ pub fn plan_frame(spec: &RenderSpec, t: Tick, scale: f32) -> FramePlan {
                 .collect(),
             lut: layer.fx.iter().find(|fx| fx.id == effects::LUT).and_then(|fx| fx.asset.clone()),
             crop: match (&layer.content, layer.crop_keys.as_ref().map(|k| k.sample(local)).or(layer.crop)) {
-                (LayerContent::Media { .. }, Some(c)) => [c.left, c.top, c.right, c.bottom],
+                (LayerContent::Media { .. } | LayerContent::Comp { .. }, Some(c)) => [c.left, c.top, c.right, c.bottom],
                 _ => [0.0; 4],
             },
             flip: match &layer.content {
-                LayerContent::Media { .. } => [layer.flip_x, layer.flip_y],
+                LayerContent::Media { .. } | LayerContent::Comp { .. } => [layer.flip_x, layer.flip_y],
                 _ => [false; 2],
             },
             shape: layer.shape_mask.map(|m| layer.shape_mask_keys.as_ref().map_or(m, |k| k.sample(m, local))),
         });
     }
-    FramePlan { t, width, height, background: premultiply_srgb(o.background.0), layers }
+    layers
 }
 
 #[cfg(test)]

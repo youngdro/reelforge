@@ -1549,3 +1549,145 @@ fn a_colour_is_keyed_out_and_pictures_are_distorted() {
     assert_eq!((at(1.0), at(3.5)), (0.0, 0.0));
     assert!((at(2.5) - 0.05).abs() < 1e-6);
 }
+
+#[test]
+fn clips_are_grouped_and_joined_into_a_compound_clip() {
+    let mut s = Session::default();
+    let v = video_track(&s);
+    let track = |s: &Session, kind: TrackKind| s.project().tracks.iter().find(|t| t.kind == kind).unwrap().id.clone();
+    let (text, sound) = (track(&s, TrackKind::Text), track(&s, TrackKind::Audio));
+    let id = |v: &serde_json::Value, key: &str| v[key].as_str().unwrap().to_string();
+    let secs = |x: f64| json!({ "seconds": x });
+    // a video with sound from 1 s to 7 s, a title over it from 2 s to 4 s, a red card at 8 s
+    let m = id(
+        &s.execute(
+            "media.import",
+            &json!({"path": "/nowhere/v.mp4", "kind": "video", "duration": secs(6.0), "sha256": "ef".repeat(32)}),
+        )
+        .unwrap()["media"],
+        "id",
+    );
+    let a = id(&s.execute("clip.add", &json!({"track": v, "media": m, "start": secs(1.0)})).unwrap(), "clip");
+    let t = id(
+        &s.execute("clip.add", &json!({"track": text, "text": "Hi", "start": secs(2.0), "duration": secs(2.0)}))
+            .unwrap(),
+        "clip",
+    );
+    let red = add_red(&mut s, 8.0, 2.0);
+    let group = |s: &Session, c: &str| s.project().clip(c).unwrap().1.group.clone();
+
+    // a group is two clips or more, and a clip is in one group at a time
+    assert!(s.execute("clip.group", &json!({"clips": [a]})).is_err());
+    let g = id(&s.execute("clip.group", &json!({"clips": [a, t]})).unwrap(), "group");
+    assert_eq!((group(&s, &a), group(&s, &t)), (Some(g.clone()), Some(g.clone())));
+    s.execute("clip.group", &json!({"clips": [t, red]})).unwrap();
+    assert_eq!(group(&s, &a), None, "what is left of a group of two is no group");
+    assert!(group(&s, &t).is_some() && group(&s, &t) == group(&s, &red));
+    // any member dissolves it
+    let freed = s.execute("clip.ungroup", &json!({"clips": t})).unwrap();
+    assert_eq!(freed["clips"].as_array().unwrap().len(), 2);
+    assert_eq!((group(&s, &t), group(&s, &red)), (None, None));
+    assert!(s.execute("clip.ungroup", &json!({"clips": [t]})).is_err());
+    // copies of grouped clips are a group of their own
+    let g = id(&s.execute("clip.group", &json!({"clips": [a, t]})).unwrap(), "group");
+    let copies = s.execute("clip.duplicate", &json!({"clips": [a, t]})).unwrap();
+    let copies: Vec<String> = copies["clips"].as_array().unwrap().iter().map(|c| id(c, "clip")).collect();
+    assert!(group(&s, &copies[0]).is_some_and(|c| c != g) && group(&s, &copies[0]) == group(&s, &copies[1]));
+    s.execute("edit.undo", &json!({})).unwrap();
+    s.execute("clip.ungroup", &json!({"clips": a})).unwrap();
+
+    // sound alone is no compound clip
+    let alone = id(&s.execute("clip.add", &json!({"track": sound, "media": m, "start": secs(20.0)})).unwrap(), "clip");
+    assert!(s.execute("clip.compound", &json!({"clips": alone})).is_err());
+    s.execute("edit.undo", &json!({})).unwrap();
+
+    // the video and its title become one clip where the video was, playing a timeline of their own
+    let made = s.execute("clip.compound", &json!({"clips": [a, t], "name": "Intro"})).unwrap();
+    let (cc, inner) = (id(&made, "clip"), id(&made, "timeline"));
+    assert_eq!(made["track"], json!(v));
+    let p = s.project();
+    let (_, clip) = p.clip(&cc).unwrap();
+    assert_eq!((clip.start, clip.duration), (Tick::SECOND, Tick::SECOND * 6));
+    assert_eq!(clip.compound(), Some((inner.as_str(), Tick::ZERO)));
+    assert!(p.clip(&a).is_none() && p.clip(&t).is_none() && p.clip(&red).is_some());
+    let tracks = p.tracks_of(&inner).unwrap();
+    assert_eq!(tracks.iter().map(|t| t.kind).collect::<Vec<_>>(), [TrackKind::Video, TrackKind::Text]);
+    assert_eq!((tracks[0].clips[0].id.as_str(), tracks[0].clips[0].start), (a.as_str(), Tick::ZERO));
+    assert_eq!((tracks[1].clips[0].id.as_str(), tracks[1].clips[0].start), (t.as_str(), Tick::SECOND));
+    let list = s.execute("timeline.list", &json!({})).unwrap();
+    let listed = list["timelines"].as_array().unwrap();
+    assert_eq!(listed.len(), 2);
+    assert_eq!((&listed[1]["name"], &listed[1]["compound"]), (&json!("Intro"), &json!(true)));
+    assert_eq!(listed[1]["duration"], json!(Tick::SECOND * 6));
+    assert!(listed[0].get("compound").is_none());
+
+    // the renderer gets a composition, a layer that shows it and a clip that plays its mix
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let comp = &spec["comps"][&inner];
+    assert_eq!((&comp["layers"][0]["id"], &comp["layers"][1]["id"]), (&json!(a), &json!(t)));
+    assert_eq!(comp["audio"][0]["id"], json!(a));
+    assert_eq!(spec["layers"][0]["content"], json!({"type": "comp", "comp": inner, "from": 0}));
+    assert_eq!((&spec["audio"][0]["id"], &spec["audio"][0]["comp"]), (&json!(cc), &json!(inner)));
+    assert!(spec["audio"][0].get("asset").is_none());
+    assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("comp/1")));
+
+    // it is a clip like any other: trimmed and split it goes on from where it is in its timeline
+    s.execute("clip.trim", &json!({"clip": cc, "start": secs(2.0)})).unwrap();
+    assert_eq!(s.project().clip(&cc).unwrap().1.compound(), Some((inner.as_str(), Tick::SECOND)));
+    assert!(s.execute("clip.trim", &json!({"clip": cc, "start": secs(0.5)})).is_err(), "before its timeline starts");
+    let right = id(&s.execute("clip.split", &json!({"clip": cc, "at": secs(4.0)})).unwrap(), "right");
+    assert_eq!(s.project().clip(&right).unwrap().1.compound(), Some((inner.as_str(), Tick::SECOND * 3)));
+    s.execute("clip.set", &json!({"clip": cc, "opacity": 0.5, "x": 0.1, "scale": 0.8})).unwrap();
+    s.execute("clip.setFx", &json!({"clip": cc, "fx": ["glitch"]})).unwrap();
+    s.execute("clip.setCrop", &json!({"clip": cc, "flipX": true, "left": 0.1})).unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let layer = &spec["layers"][0];
+    assert_eq!((&layer["flip_x"], &layer["crop"]["left"]), (&json!(true), &json!(0.1f32)));
+    assert_eq!(spec["layers"][1]["content"]["from"], json!(Tick::SECOND * 3));
+    assert_eq!(spec["audio"][1]["time"]["source_in"], json!(Tick::SECOND * 3));
+
+    // a played timeline stays, and no timeline plays inside itself
+    assert!(s.execute("timeline.remove", &json!({"timeline": inner})).is_err());
+    let first = s.project().timeline.clone();
+    s.execute("timeline.switch", &json!({"timeline": inner})).unwrap();
+    let inside = video_track(&s);
+    for outer in [&inner, &first] {
+        let err = s.execute("clip.add", &json!({"track": inside, "timeline": outer, "start": secs(30.0)}));
+        assert!(err.is_err(), "{outer}");
+    }
+    s.execute("timeline.switch", &json!({"timeline": first})).unwrap();
+
+    // taken apart, the part it played is back on the tracks, cut as the clip was
+    assert!(s.execute("clip.uncompound", &json!({"clip": red})).is_err());
+    let out = s.execute("clip.uncompound", &json!({"clip": cc})).unwrap();
+    let out = out["clips"].as_array().unwrap();
+    assert_eq!(out.len(), 2);
+    assert_eq!((&out[0]["track"], &out[1]["track"]), (&json!(v), &json!(text)));
+    let p = s.project();
+    let (_, video) = p.clip(out[0]["clip"].as_str().unwrap()).unwrap();
+    assert_eq!((video.start, video.duration), (Tick::SECOND * 2, Tick::SECOND * 2));
+    assert!(matches!(&video.content, ClipContent::Media { source_in, .. } if *source_in == Tick::SECOND));
+    let (_, title) = p.clip(out[1]["clip"].as_str().unwrap()).unwrap();
+    assert_eq!((title.start, title.duration), (Tick::SECOND * 2, Tick::SECOND * 2));
+    assert!(p.clip(&cc).is_none() && p.tracks_of(&inner).is_some(), "the other half still plays it");
+    // the last of its clips takes the timeline with it
+    let out = s.execute("clip.uncompound", &json!({"clip": right})).unwrap();
+    assert_eq!(out["clips"].as_array().unwrap().len(), 1, "the title was over before this half");
+    let p = s.project();
+    let (_, rest) = p.clip(out["clips"][0]["clip"].as_str().unwrap()).unwrap();
+    assert_eq!((rest.start, rest.duration), (Tick::SECOND * 4, Tick::SECOND * 3));
+    assert!(matches!(&rest.content, ClipContent::Media { source_in, .. } if *source_in == Tick::SECOND * 3));
+    assert!(p.tracks_of(&inner).is_none() && p.timelines.len() == 1);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.project().tracks_of(&inner).is_some());
+
+    // a timeline made as a cut of its own is placed with clip.add, and stays when taken apart
+    s.execute("timeline.add", &json!({"name": "Outro"})).unwrap();
+    let outro = s.project().timeline.clone();
+    add_red(&mut s, 0.0, 3.0);
+    s.execute("timeline.switch", &json!({"timeline": first})).unwrap();
+    let placed = s.execute("clip.add", &json!({"track": v, "timeline": outro, "start": secs(40.0)})).unwrap();
+    assert_eq!(placed["duration"], json!(Tick::SECOND * 3));
+    s.execute("clip.uncompound", &json!({"clip": placed["clip"]})).unwrap();
+    assert!(s.project().tracks_of(&outro).is_some());
+}

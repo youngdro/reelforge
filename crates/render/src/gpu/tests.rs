@@ -536,3 +536,60 @@ fn distortions_read_the_same_places_on_both() {
     s.layers.push(l);
     same(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Final);
 }
+
+#[test]
+fn compositions_match_however_they_are_placed() {
+    let pic = picture(50, 30);
+    let mut s = base(96, 72);
+    with_picture(&mut s, Fit::Contain);
+    // inside: the picture turned, a see-through square multiplied over part of it, and a title
+    let mut inside = s.layers.pop().unwrap();
+    inside.transform.rotation = Animated::Constant(10.0);
+    inside.transform.scale = Animated::Constant(0.8);
+    let mut square = layer("sq", LayerContent::Solid { color: Color([0.9, 0.5, 0.2, 0.8]) });
+    square.blend = Blend::Multiply;
+    square.transform.scale = Animated::Constant(0.5);
+    square.transform.position = Animated::Constant([0.15, -0.1]);
+    let title = layer("t", LayerContent::Text(TextContent::new("Ab".to_string(), 30.0, Color([1.0; 4]))));
+    s.comps.insert("k".into(), Comp { layers: vec![inside, square, title], audio: vec![] });
+
+    let mut behind = layer("behind", LayerContent::Solid { color: Color([0.2, 0.7, 0.3, 1.0]) });
+    behind.transform.scale = Animated::Constant(0.7);
+    s.layers.push(behind);
+    s.layers.push(layer("c", LayerContent::Comp { comp: "k".into(), from: Tick::ZERO }));
+    let media = Pictures(pic);
+    same(&s, Tick::ZERO, 1.0, &media, Quality::Final);
+    same(&s, Tick::ZERO, 0.5, &media, Quality::Final);
+
+    // faded, moved, cropped, mirrored, masked, with effects of its own, blended by the shader
+    let c = &mut s.layers[1];
+    c.opacity = Animated::Constant(0.6);
+    c.transform = Transform {
+        position: Animated::Constant([0.1, 0.05]),
+        scale: Animated::Constant(0.8),
+        rotation: Animated::Constant(-15.0),
+    };
+    c.crop = Some(Crop { left: 0.1, top: 0.0, right: 0.05, bottom: 0.2 });
+    c.flip_x = true;
+    c.fx = vec![fx_of(effects::GRADE, &[("contrast", 0.2)]), fx_of(effects::WAVE, &[("amount", 0.03)])];
+    c.blend = Blend::Multiply;
+    same(&s, Tick::ZERO, 1.0, &media, Quality::Final);
+    // blurred: its picture is made on the CPU for both
+    s.layers[1].fx = vec![fx_of(effects::BLUR, &[("radius", 0.03)])];
+    s.layers[1].blend = Blend::Normal;
+    same(&s, Tick::ZERO, 1.0, &media, Quality::Final);
+
+    // a composition that shows another, twice
+    let mut twice = Comp::default();
+    for (i, x) in [-0.25f32, 0.25].into_iter().enumerate() {
+        let mut l = layer(&format!("k{i}"), LayerContent::Comp { comp: "k".into(), from: Tick::ZERO });
+        l.transform.scale = Animated::Constant(0.5);
+        l.transform.position = Animated::Constant([x, 0.0]);
+        l.opacity = Animated::Constant(1.0 - 0.3 * i as f32);
+        twice.layers.push(l);
+    }
+    s.comps.insert("two".into(), twice);
+    s.layers[1].fx.clear();
+    s.layers[1].content = LayerContent::Comp { comp: "two".into(), from: Tick::ZERO };
+    same(&s, Tick::ZERO, 1.0, &media, Quality::Final);
+}

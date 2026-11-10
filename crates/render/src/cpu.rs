@@ -106,6 +106,15 @@ pub(crate) fn resolve(
                 }
             }
         }
+        PlannedSource::Comp(inner) => {
+            // the composition's own frame, then a picture like any other
+            let (pic, drawn) = composite(spec, inner, media, quality)?;
+            report.placeholders.extend(drawn.placeholders);
+            match blur_radius(layer) {
+                Some(r) => Resolved::Picture(Arc::new(crate::image::blurred(&pic, r))),
+                None => Resolved::Picture(Arc::new(pic)),
+            }
+        }
         PlannedSource::Text(text) => {
             let k = plan.width as f32 / spec.output.width as f32;
             let family = match &text.font {
@@ -141,7 +150,7 @@ pub fn draft_shrink(asset: &reelforge_renderspec::Asset, plan: &FramePlan, layer
 }
 
 /// The radius of `layer`'s `blur.gaussian@1`, as a fraction of its picture's shorter side.
-fn blur_radius(layer: &PlannedLayer) -> Option<f32> {
+pub(crate) fn blur_radius(layer: &PlannedLayer) -> Option<f32> {
     let (_, params) = layer.fx.iter().find(|(id, _)| id == effects::BLUR)?;
     let r = params.iter().find(|(k, _)| k == "radius").map_or(0.02, |(_, v)| *v);
     (r > 0.0).then_some(r)

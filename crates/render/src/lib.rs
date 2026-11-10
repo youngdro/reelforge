@@ -55,6 +55,7 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "color.grade@1",
     "color.lut@1",
     "color.saturation@1",
+    "comp/1",
     "crop/1",
     "crop/2",
     "distort.glitch@1",
@@ -165,6 +166,11 @@ pub fn layer_outlines(spec: &RenderSpec, t: Tick, media: &dyn MediaSource) -> Ve
                     },
                 };
                 let (w, h) = layer.visible(size.0 as f32, size.1 as f32);
+                corners(layer.matrix(w, h, target), w, h)
+            }
+            PlannedSource::Comp(_) => {
+                // a composition's picture is a frame
+                let (w, h) = layer.visible(target[0], target[1]);
                 corners(layer.matrix(w, h, target), w, h)
             }
             PlannedSource::Text(_) => {
@@ -424,6 +430,62 @@ mod tests {
         ));
         let (_, report) = render_frame(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Draft).unwrap();
         assert_eq!(report.placeholders.len(), 1);
+    }
+
+    #[test]
+    fn a_composition_is_drawn_first_and_placed_as_one_picture() {
+        // inside: red over the right half's middle (x 20..40), green beside and over it (x 10..30)
+        let mut s = spec();
+        let red = s.layers.remove(0);
+        let mut green = red.clone();
+        green.id = "green".into();
+        green.content = LayerContent::Solid { color: Color([0.0, 1.0, 0.0, 1.0]) };
+        green.transform.position = Animated::Constant([0.0, 0.0]);
+        let mut shown = red.clone();
+        shown.id = "c".into();
+        shown.content = LayerContent::Comp { comp: "k".into(), from: Tick::ZERO };
+        shown.transform = Transform::default();
+        shown.opacity = Animated::Constant(0.5);
+        s.comps.insert("k".into(), Comp { layers: vec![red, green], audio: vec![] });
+        s.layers.push(shown);
+        validate(&s).unwrap();
+        assert!(s.required_features().contains("comp/1") && unsupported_features(&s).is_empty());
+        let draw = |s: &RenderSpec| render_frame(s, Tick::ZERO, 1.0, &NoMedia, Quality::Final).unwrap().0;
+        let img = draw(&s);
+        // half see-through as one picture: where green covers red, no red shows through it
+        assert_eq!(px(&img, 25, 10), [0, 188, 188, 255]);
+        assert_eq!(px(&img, 35, 10), [188, 0, 188, 255]);
+        assert_eq!(px(&img, 15, 10), [0, 188, 188, 255]);
+        // and see-through where it draws nothing
+        assert_eq!(px(&img, 5, 10), [0, 0, 255, 255]);
+        assert_eq!(px(&img, 25, 2), [0, 0, 255, 255]);
+
+        // placed like a picture: half the size about the centre, mirrored
+        s.layers[0].transform.scale = Animated::Constant(0.5);
+        s.layers[0].flip_x = true;
+        let img = draw(&s);
+        assert_eq!(px(&img, 35, 10), [0, 0, 255, 255]);
+        // red was at x 20..40 of 40: mirrored 0..20, halved about x 20: 10..20
+        assert_eq!(px(&img, 12, 10), [188, 0, 188, 255]);
+        assert_eq!(px(&img, 22, 10), [0, 188, 188, 255]);
+
+        // it runs from `from`: green is gone after half a second of the composition
+        s.layers[0].transform.scale = Animated::Constant(1.0);
+        s.layers[0].flip_x = false;
+        s.comps.get_mut("k").unwrap().layers[1].dur = Tick(Tick::SECOND.0 / 2);
+        s.layers[0].content = LayerContent::Comp { comp: "k".into(), from: Tick(Tick::SECOND.0 / 2) };
+        let img = draw(&s);
+        assert_eq!(px(&img, 15, 10), [0, 0, 255, 255]);
+        assert_eq!(px(&img, 25, 10), [188, 0, 188, 255]);
+        // past the composition's last layer there is nothing to draw, and no layer is planned
+        s.layers[0].content = LayerContent::Comp { comp: "k".into(), from: Tick::SECOND * 3 };
+        assert!(plan_frame(&s, Tick::ZERO, 1.0).layers.is_empty());
+
+        // a composition that shows itself is refused
+        let mut looped = s.clone();
+        let again = looped.layers[0].clone();
+        looped.comps.get_mut("k").unwrap().layers.push(again);
+        assert!(validate(&looped).is_err());
     }
 
     #[test]

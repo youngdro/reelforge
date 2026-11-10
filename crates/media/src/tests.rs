@@ -208,6 +208,7 @@ fn sound_is_mixed_with_gain_and_written_as_aac() {
     spec.audio.push(AudioClip {
         id: "tone".into(),
         asset: "a".into(),
+        comp: None,
         at: Tick::ZERO,
         dur: Tick::SECOND,
         time: TimeMap::default(),
@@ -314,6 +315,7 @@ fn faster_sound_keeps_its_pitch_when_asked() {
     let clip = |keep_pitch| AudioClip {
         id: "tone".into(),
         asset: "a".into(),
+        comp: None,
         at: Tick::ZERO,
         dur: Tick::SECOND,
         time: TimeMap::new(Tick::ZERO, 2.0),
@@ -362,6 +364,7 @@ fn sound_plays_backwards_ramps_and_holds() {
     let clip = |time: TimeMap, keep_pitch| AudioClip {
         id: "tone".into(),
         asset: "a".into(),
+        comp: None,
         at: Tick::ZERO,
         dur: Tick::SECOND,
         time,
@@ -424,6 +427,7 @@ fn a_voice_moves_in_pitch_and_keeps_its_length() {
     let clip = |pitch: f32, speed: f64, keep_pitch, fx| AudioClip {
         id: "tone".into(),
         asset: "a".into(),
+        comp: None,
         at: Tick::from_seconds(0.25),
         dur: Tick::SECOND,
         time: TimeMap::new(Tick::ZERO, speed),
@@ -651,4 +655,59 @@ fn pictures_made_ahead_are_the_ones_drawn_and_only_a_few_are_kept() {
     let still = Asset { kind: AssetKind::Image, ..asset.clone() };
     assert!(!media.prefetch(&still, frame(0), 1), "only videos are made ahead");
     media.warm(&asset, frame(10));
+}
+
+#[test]
+fn a_composition_plays_its_own_mix_under_the_clips_gain() {
+    let wav = temp("comp-tone.wav");
+    std::fs::write(&wav, tone_wav(44_100, 2.0)).expect("write wav");
+    let mut spec = two_colours();
+    spec.assets.insert(
+        "a".into(),
+        Asset {
+            kind: AssetKind::Audio,
+            sha256: sha(5),
+            uri: wav.to_string_lossy().into_owned(),
+            of: None,
+            probe: None,
+        },
+    );
+    let clip = |id: &str, asset: &str, comp: Option<&str>, at: Tick, dur: Tick, from: Tick, db: f32| AudioClip {
+        id: id.into(),
+        asset: asset.into(),
+        comp: comp.map(str::to_string),
+        at,
+        dur,
+        time: TimeMap { source_in: from, ..TimeMap::default() },
+        gain_db: Animated::Constant(db),
+        keep_pitch: false,
+        pitch: 0.0,
+        fx: vec![],
+    };
+    let half = Tick(Tick::SECOND.0 / 2);
+    // inside: the tone for its first second. Outside: that from half a second in, for a second,
+    // starting at 1 s, 6 dB down
+    let inside = clip("tone", "a", None, Tick::ZERO, Tick::SECOND, Tick::ZERO, 0.0);
+    spec.comps.insert("k".into(), Comp { layers: vec![], audio: vec![inside] });
+    spec.audio.push(clip("c", "", Some("k"), Tick::SECOND, Tick::SECOND, half, -6.0));
+    reelforge_renderspec::validate(&spec).expect("valid");
+    assert!(reelforge_render::unsupported_features(&spec).is_empty());
+    let footage = Footage::new();
+    let m = export::mix(&spec, &footage, 48_000, 0, 96_000).expect("mix");
+    let full = 16000.0 / 32768.0 / 2f32.sqrt();
+    let down = full * 10f32.powf(-6.0 / 20.0);
+    assert_eq!(rms(&m[0][..48_000]), 0.0, "nothing before the clip");
+    assert!((rms(&m[0][48_000..72_000]) - down).abs() < 0.02, "{} vs {down}", rms(&m[0][48_000..72_000]));
+    assert_eq!(rms(&m[0][72_100..]), 0.0, "the composition's tone is over");
+    // mixed in pieces it is the same sound
+    let mut pieces = Vec::new();
+    for start in (0..96_000).step_by(7_000) {
+        let n = 7_000.min(96_000 - start);
+        pieces.extend(export::mix(&spec, &footage, 48_000, start as i64, n).expect("mix")[0].iter().copied());
+    }
+    assert_eq!(pieces, m[0]);
+    // an effect on the clip works on the mix
+    spec.audio[0].fx = vec![AudioEffect::Echo { delay: Tick(Tick::SECOND.0 / 4), decay: 0.5, repeats: 2 }];
+    let echoed = export::mix(&spec, &footage, 48_000, 0, 96_000).expect("mix");
+    assert!(rms(&echoed[0][74_000..84_000]) > 0.01, "the echo rings on after the tone");
 }
