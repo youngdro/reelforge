@@ -196,6 +196,12 @@ pub fn storyboards() -> &'static [Storyboard] {
             include_str!("../storyboards/beforeAfter.json"),
             include_str!("../storyboards/roundup.json"),
             include_str!("../storyboards/storeVisit.json"),
+            include_str!("../storyboards/painSolution.json"),
+            include_str!("../storyboards/unboxing.json"),
+            include_str!("../storyboards/reviews.json"),
+            include_str!("../storyboards/liveTeaser.json"),
+            include_str!("../storyboards/holidaySale.json"),
+            include_str!("../storyboards/howTo.json"),
         ]
         .into_iter()
         .map(|text| serde_json::from_str(text).expect("a storyboard"))

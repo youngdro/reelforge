@@ -1,0 +1,269 @@
+{
+ "id": "reviews",
+ "name": {
+  "en": "Customer reviews",
+  "zh": "好评合集",
+  "ja": "レビューまとめ"
+ },
+ "about": {
+  "en": "The score and the sales up front, then three buyers in their own words",
+  "zh": "先亮评分和销量，再放三条买家原话，用口碑说服人",
+  "ja": "評価と販売数を最初に見せ、購入者 3 人の声で伝える"
+ },
+ "music": "ambient",
+ "fields": [
+  {
+   "id": "product",
+   "text": {
+    "en": "Thermo Cup Pro",
+    "zh": "保温杯 Pro",
+    "ja": "サーモカップ Pro"
+   }
+  },
+  {
+   "id": "rating",
+   "number": 4.9
+  },
+  {
+   "id": "reviews",
+   "text": {
+    "en": "23,000 reviews",
+    "zh": "2.3 万条好评",
+    "ja": "レビュー 2.3 万件"
+   }
+  },
+  {
+   "id": "sold",
+   "number": 100000
+  },
+  {
+   "id": "review1",
+   "text": {
+    "en": "Still hot at lunch. I've stopped buying coffee out.",
+    "zh": "中午打开还烫嘴，再也不用买外带咖啡了。",
+    "ja": "お昼でもまだ熱い。外でコーヒーを買わなくなりました。"
+   }
+  },
+  {
+   "id": "reviewer1",
+   "text": {
+    "en": "Mia",
+    "zh": "小鹿",
+    "ja": "ミカ"
+   }
+  },
+  {
+   "id": "review2",
+   "text": {
+    "en": "Lives in my bag and has never leaked once.",
+    "zh": "天天扔包里，一次都没漏过。",
+    "ja": "毎日バッグに入れても一度も漏れません。"
+   }
+  },
+  {
+   "id": "reviewer2",
+   "text": {
+    "en": "Leo",
+    "zh": "阿泽",
+    "ja": "レン"
+   }
+  },
+  {
+   "id": "review3",
+   "text": {
+    "en": "Bought one, then three more for the family.",
+    "zh": "自己买了一个，又给家里人带了三个。",
+    "ja": "1 つ買って、家族にも 3 つ追加しました。"
+   }
+  },
+  {
+   "id": "reviewer3",
+   "text": {
+    "en": "Ana",
+    "zh": "安安",
+    "ja": "アン"
+   }
+  },
+  {
+   "id": "closing",
+   "text": {
+    "en": "See why they love it",
+    "zh": "口碑不会骗人",
+    "ja": "愛される理由を、あなたも"
+   }
+  },
+  {
+   "id": "cta",
+   "text": {
+    "en": "Shop now",
+    "zh": "立即抢购",
+    "ja": "今すぐ購入"
+   }
+  },
+  {
+   "id": "hint",
+   "text": {
+    "en": "Tap the link below",
+    "zh": "点击下方小黄车",
+    "ja": "下のリンクをタップ"
+   }
+  }
+ ],
+ "scenes": [
+  {
+   "id": "hook",
+   "seconds": 3.5,
+   "shot": {
+    "en": "The product, hero shot",
+    "zh": "产品主视觉",
+    "ja": "商品のメインカット"
+   },
+   "fx": "zoomIn",
+   "voice": {
+    "en": "{product}: {rating} out of 5 from {reviews}.",
+    "zh": "{product}，{reviews}，评分 {rating}。",
+    "ja": "{product}、{reviews}で {rating} 点。"
+   },
+   "pieces": [
+    {
+     "kind": "rating",
+     "at": 0.2,
+     "value": "{rating}",
+     "text": {
+      "en": "{n} / 5",
+      "zh": "{n} 分",
+      "ja": "{n} 点"
+     },
+     "lines": [
+      "{reviews}"
+     ],
+     "y": -0.25,
+     "scale": 0.9
+    },
+    {
+     "kind": "salesCounter",
+     "at": 0.8,
+     "value": "{sold}",
+     "text": {
+      "en": "{n}+ sold",
+      "zh": "已售 {n}+",
+      "ja": "{n}+ 個販売"
+     },
+     "y": 0.1
+    }
+   ]
+  },
+  {
+   "id": "review1",
+   "seconds": 4.0,
+   "shot": {
+    "en": "A buyer's photo or clip",
+    "zh": "买家秀 1",
+    "ja": "購入者の写真や動画 1"
+   },
+   "cut": "wipeLeft",
+   "voice": {
+    "en": "{review1}",
+    "zh": "{review1}",
+    "ja": "{review1}"
+   },
+   "pieces": [
+    {
+     "kind": "reviewBubble",
+     "at": 0.3,
+     "text": "{review1}",
+     "lines": [
+      "{reviewer1}"
+     ],
+     "y": 0.13
+    }
+   ]
+  },
+  {
+   "id": "review2",
+   "seconds": 4.0,
+   "shot": {
+    "en": "Another buyer's photo or clip",
+    "zh": "买家秀 2",
+    "ja": "購入者の写真や動画 2"
+   },
+   "cut": "wipeRight",
+   "voice": {
+    "en": "{review2}",
+    "zh": "{review2}",
+    "ja": "{review2}"
+   },
+   "pieces": [
+    {
+     "kind": "reviewBubble",
+     "at": 0.3,
+     "text": "{review2}",
+     "lines": [
+      "{reviewer2}"
+     ],
+     "y": 0.13
+    }
+   ]
+  },
+  {
+   "id": "review3",
+   "seconds": 4.0,
+   "shot": {
+    "en": "A third buyer's photo or clip",
+    "zh": "买家秀 3",
+    "ja": "購入者の写真や動画 3"
+   },
+   "cut": "wipeLeft",
+   "voice": {
+    "en": "{review3}",
+    "zh": "{review3}",
+    "ja": "{review3}"
+   },
+   "pieces": [
+    {
+     "kind": "reviewBubble",
+     "at": 0.3,
+     "text": "{review3}",
+     "lines": [
+      "{reviewer3}"
+     ],
+     "y": 0.13
+    }
+   ]
+  },
+  {
+   "id": "cta",
+   "seconds": 3.5,
+   "backdrop": "brand",
+   "sweep": "up",
+   "voice": {
+    "en": "{closing}. {hint}.",
+    "zh": "{closing}，{hint}。",
+    "ja": "{closing}。{hint}。"
+   },
+   "pieces": [
+    {
+     "kind": "endCard",
+     "at": 0.1,
+     "text": "{closing}",
+     "lines": [
+      "{reviews}"
+     ],
+     "y": -0.22
+    },
+    {
+     "kind": "buyButton",
+     "at": 0.7,
+     "text": "{cta}",
+     "y": -0.01
+    },
+    {
+     "kind": "arrowHint",
+     "at": 1.0,
+     "text": "{hint}",
+     "y": 0.14
+    }
+   ]
+  }
+ ]
+}

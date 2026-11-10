@@ -1,0 +1,300 @@
+{
+ "id": "unboxing",
+ "name": {
+  "en": "Unboxing review",
+  "zh": "开箱测评",
+  "ja": "開封レビュー"
+ },
+ "about": {
+  "en": "Open the box, look closely, try it, and give a verdict with a score",
+  "zh": "拆箱、看细节、上手实测，最后给出结论和评分",
+  "ja": "箱を開け、細部を見て、使ってみて、評価とともに結論を伝える"
+ },
+ "music": "lofi",
+ "fields": [
+  {
+   "id": "hook",
+   "text": {
+    "en": "Is it worth the hype?",
+    "zh": "网红款到底值不值？",
+    "ja": "話題のあれ、本当にいい？"
+   }
+  },
+  {
+   "id": "product",
+   "text": {
+    "en": "Thermo Cup Pro",
+    "zh": "保温杯 Pro",
+    "ja": "サーモカップ Pro"
+   }
+  },
+  {
+   "id": "spec1",
+   "text": {
+    "en": "Holds: 500 ml",
+    "zh": "容量：500 ml",
+    "ja": "容量：500 ml"
+   }
+  },
+  {
+   "id": "spec2",
+   "text": {
+    "en": "Liner: 316 steel",
+    "zh": "材质：316 不锈钢",
+    "ja": "素材：316 ステンレス"
+   }
+  },
+  {
+   "id": "spec3",
+   "text": {
+    "en": "Weight: 210 g",
+    "zh": "重量：210 克",
+    "ja": "重さ：210 g"
+   }
+  },
+  {
+   "id": "result",
+   "number": 12
+  },
+  {
+   "id": "resultNote",
+   "text": {
+    "en": "hours and still hot",
+    "zh": "小时后依然烫手",
+    "ja": "時間後もあたたかい"
+   }
+  },
+  {
+   "id": "rating",
+   "number": 4.8
+  },
+  {
+   "id": "verdict",
+   "text": {
+    "en": "Worth every penny",
+    "zh": "值得入手",
+    "ja": "買う価値あり"
+   }
+  },
+  {
+   "id": "price",
+   "number": 129
+  },
+  {
+   "id": "closing",
+   "text": {
+    "en": "My pick this year",
+    "zh": "今年的心头好",
+    "ja": "今年のイチオシ"
+   }
+  },
+  {
+   "id": "cta",
+   "text": {
+    "en": "Shop now",
+    "zh": "立即抢购",
+    "ja": "今すぐ購入"
+   }
+  },
+  {
+   "id": "hint",
+   "text": {
+    "en": "Tap the link below",
+    "zh": "点击下方小黄车",
+    "ja": "下のリンクをタップ"
+   }
+  }
+ ],
+ "scenes": [
+  {
+   "id": "hook",
+   "seconds": 3.0,
+   "shot": {
+    "en": "The sealed box in your hands",
+    "zh": "手拿未拆封的包装",
+    "ja": "未開封の箱を手に持つ"
+   },
+   "fx": "zoomIn",
+   "voice": {
+    "en": "{hook}",
+    "zh": "{hook}",
+    "ja": "{hook}"
+   },
+   "pieces": [
+    {
+     "kind": "hookQuestion",
+     "at": 0.2,
+     "text": "{hook}",
+     "y": -0.05
+    }
+   ]
+  },
+  {
+   "id": "unbox",
+   "seconds": 4.5,
+   "shot": {
+    "en": "Opening the box, everything laid out",
+    "zh": "拆箱过程，配件摆开",
+    "ja": "箱を開けて中身を並べる"
+   },
+   "cut": "pageTurn",
+   "voice": {
+    "en": "Here is {product}, straight out of the box.",
+    "zh": "{product}到手，先拆箱。",
+    "ja": "{product}が届いたので開けてみます。"
+   },
+   "pieces": [
+    {
+     "kind": "lowerThird",
+     "at": 0.4,
+     "text": "{product}",
+     "lines": [
+      {
+       "en": "Unboxing",
+       "zh": "开箱实拍",
+       "ja": "開封してみた"
+      }
+     ],
+     "y": 0.2
+    }
+   ]
+  },
+  {
+   "id": "details",
+   "seconds": 5.0,
+   "shot": {
+    "en": "Details up close",
+    "zh": "细节特写",
+    "ja": "細部のアップ"
+   },
+   "cut": "dissolve",
+   "voice": {
+    "en": "{spec1}. {spec2}. {spec3}.",
+    "zh": "{spec1}，{spec2}，{spec3}。",
+    "ja": "{spec1}。{spec2}。{spec3}。"
+   },
+   "pieces": [
+    {
+     "kind": "specTable",
+     "at": 0.3,
+     "lines": [
+      "{spec1}",
+      "{spec2}",
+      "{spec3}"
+     ],
+     "y": 0.1
+    }
+   ]
+  },
+  {
+   "id": "test",
+   "seconds": 5.0,
+   "shot": {
+    "en": "Trying it for real",
+    "zh": "上手实测",
+    "ja": "実際に使ってみる"
+   },
+   "sweep": "right",
+   "voice": {
+    "en": "The test: {result} {resultNote}.",
+    "zh": "实测 {result} {resultNote}。",
+    "ja": "試した結果、{result} {resultNote}。"
+   },
+   "pieces": [
+    {
+     "kind": "bigNumber",
+     "at": 0.6,
+     "value": "{result}",
+     "text": "{n}",
+     "lines": [
+      "{resultNote}"
+     ],
+     "y": -0.22,
+     "scale": 0.8
+    }
+   ]
+  },
+  {
+   "id": "verdict",
+   "seconds": 4.0,
+   "shot": {
+    "en": "You with the product, giving the verdict",
+    "zh": "手持产品说结论",
+    "ja": "商品を持って結論を話す"
+   },
+   "cut": "lightLeak",
+   "voice": {
+    "en": "My score: {rating}. {verdict}.",
+    "zh": "我给 {rating} 分，{verdict}。",
+    "ja": "評価は {rating} 点。{verdict}。"
+   },
+   "pieces": [
+    {
+     "kind": "rating",
+     "at": 0.2,
+     "value": "{rating}",
+     "text": {
+      "en": "{n} / 5",
+      "zh": "{n} 分",
+      "ja": "{n} 点"
+     },
+     "lines": [
+      "{verdict}"
+     ],
+     "y": -0.25,
+     "scale": 0.9
+    },
+    {
+     "kind": "priceTag",
+     "at": 0.9,
+     "text": {
+      "en": "${n}",
+      "zh": "¥{n}",
+      "ja": "¥{n}"
+     },
+     "value": "{price}",
+     "y": 0.1,
+     "scale": 0.8
+    }
+   ]
+  },
+  {
+   "id": "cta",
+   "seconds": 3.0,
+   "backdrop": "brand",
+   "sweep": "up",
+   "voice": {
+    "en": "{closing}. {hint}.",
+    "zh": "{closing}，{hint}。",
+    "ja": "{closing}。{hint}。"
+   },
+   "pieces": [
+    {
+     "kind": "endCard",
+     "at": 0.1,
+     "text": "{closing}",
+     "lines": [
+      {
+       "en": "${price} at the link",
+       "zh": "到手价 ¥{price}",
+       "ja": "リンクから ¥{price}"
+      }
+     ],
+     "y": -0.22
+    },
+    {
+     "kind": "buyButton",
+     "at": 0.7,
+     "text": "{cta}",
+     "y": -0.01
+    },
+    {
+     "kind": "arrowHint",
+     "at": 1.0,
+     "text": "{hint}",
+     "y": 0.14
+    }
+   ]
+  }
+ ]
+}

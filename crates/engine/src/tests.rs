@@ -3112,7 +3112,7 @@ fn a_lottie_animation_is_imported_and_placed_like_a_video_that_goes_round() {
 #[test]
 fn every_storyboard_is_built_in_each_language_on_any_canvas_and_compiles() {
     let boards = s_list("zh");
-    assert_eq!(boards.len(), 6);
+    assert_eq!(boards.len(), 12);
     for (i, lang) in ["zh", "en", "ja"].into_iter().enumerate() {
         let canvas = [[1080, 1920], [1920, 1080], [1080, 1080]][i];
         for board in &s_list(lang) {

@@ -109,6 +109,7 @@ render_export {"path": "out.mp4"}
 
 ```text
 storyboard_list {"lang": "zh"}                    → launch, flashSale, bogo, beforeAfter, roundup, storeVisit
+                                                    painSolution, unboxing, reviews, liveTeaser, holidaySale, howTo
 brand_set {"primary": [0.05, 0.35, 0.95]}         → the pieces and backdrops take the brand's colours
 storyboard_apply {"storyboard": "launch", "copy": {"product": "云朵拖鞋", "price": 59, "oldPrice": 89}}
                                                   → slots 1–4, scenes (each with `shot`: what to film, and

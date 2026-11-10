@@ -60,8 +60,9 @@ everything set on it; a picture of another shape is scaled to cover the frame, a
 to fill), and `clip.replace` swaps the file of any one clip. In the editor they are on the drafts page and
 in the Templates tab on the left: pick one, then drop your files in. Any timeline becomes a template by
 marking its picture clips as slots (`template.mark`, or a clip's menu).
-A storyboard is a whole marketing video planned ahead: six are built in (`storyboard.list`: a product
-launch, a flash sale, buy one get one, before and after, a roundup of three, a shop to visit). Each is
+A storyboard is a whole marketing video planned ahead: twelve are built in (`storyboard.list`: a product
+launch, a flash sale, buy one get one, before and after, a roundup of three, a shop to visit, a problem
+and its fix, an unboxing, buyers' reviews, a livestream teaser, a holiday sale, three steps). Each is
 scenes in order, with a slot for your picture and a marker saying what to film, ready-made pieces over
 it (price tags, checklists, coupons, buy buttons), transitions, music and the line to say. Its words are
 fields with names (`product`, `price`, `cta`), in English, Chinese or Japanese: `storyboard.apply` builds
@@ -169,7 +170,7 @@ cargo run -q -p reelforge-cli -- exec cut.reel.json promo.add '{"kind": "priceTa
 cargo run -q -p reelforge-cli -- exec cut.reel.json brand.set '{"primary": [0.05, 0.35, 0.95], "secondary": [1, 0.85, 0.3]}' --save   # ready-made pieces take the brand's colours from here on
 cargo run -q -p reelforge-cli -- exec cut.reel.json promo.add '{"kind": "checklist", "lines": ["持久保湿 12 小时", "敏感肌适用"], "compound": true}' --save   # a list, folded into one clip (→ c9)
 cargo run -q -p reelforge-cli -- exec cut.reel.json promo.set '{"clip": "c9", "lines": ["持久保湿 12 小时", "敏感肌适用", "无香精"]}' --save   # other words: the piece is made again to fit them
-cargo run -q -p reelforge-cli -- exec ad.reel.json storyboard.apply '{"storyboard": "flashSale", "copy": {"price": 59, "oldPrice": 89}}' --save   # a whole flash-sale video planned ahead: scenes, pieces, music (storyboard.list has six)
+cargo run -q -p reelforge-cli -- exec ad.reel.json storyboard.apply '{"storyboard": "flashSale", "copy": {"price": 59, "oldPrice": 89}}' --save   # a whole flash-sale video planned ahead: scenes, pieces, music (storyboard.list has twelve)
 cargo run -q -p reelforge-cli -- exec ad.reel.json storyboard.fill '{"copy": {"discount": "直降 30 元", "stock": 12}}' --save   # other copy: every piece written from it is made again
 cargo run -q -p reelforge-cli -- exec ad.reel.json decor.add '{"decor": "confettiBurst", "start": {"seconds": 12}}' --save   # confetti over the closing scene, in the brand's colours (decor.list has twenty animated decorations)
 cargo run -q -p reelforge-cli -- exec ad.reel.json decor.add '{"decor": "circleMark", "start": {"seconds": 6}, "x": 0.1, "y": 0.2, "color": [1, 0.8, 0.2]}' --save   # a ring drawn by hand round the price
