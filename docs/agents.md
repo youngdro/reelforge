@@ -63,6 +63,8 @@ The same operations are a plain HTTP API and a shell command:
 curl -s localhost:7878/v1/ops                                         # every operation and its schema
 curl -s -X POST localhost:7878/v1/ops/clip.split -d '{"clip":"c4","at":{"seconds":2}}'
 reelforge-cli call project.outline --project cut.reel.json            # on a file, no server
+reelforge-cli exec cut.reel.json audio.beats '{"clip": "c5"}' --save  # any operation; --save writes it back
+reelforge-cli run cut.reel.json steps.jsonl --save                    # one {"id", "params"} per line
 reelforge-cli call render.frame at=1.5s --server http://127.0.0.1:7878 -o frame.png
 ```
 
@@ -88,6 +90,9 @@ reelforge-cli call render.frame at=1.5s --server http://127.0.0.1:7878 -o frame.
 - **Files.** `media_import` takes a path on the server's disk. A client on another machine first
   sends the bytes with `PUT /v1/media/{sha256}?name=clip.mp4`, then imports the path it gets back.
   Fonts (`.ttf`, `.otf`), LUTs (`.cube`) and Lottie animations (`.json`, `.lottie`) are media as well.
+  A video with a transparency channel (ProRes 4444 `.mov`, or VP9 `.webm` with alpha) imports as
+  any video and shows the tracks below where it is see-through, so motion rendered by another tool
+  can be laid over the edit.
 - **Saving.** With a project file, every edit is written to it as it commits. `project_save` with
   `path` writes a copy.
 
@@ -186,7 +191,7 @@ path is taken away (`points: null`).
 | Feature | Tools |
 | --- | --- |
 | Cutting and arranging | `clip_add`, `clip_split`, `clip_trim`, `clip_move`, `clip_remove` (`ripple`), `clip_roll`, `clip_slip`, `clip_shift`, `clip_copy` / `clip_paste` / `clip_duplicate`, `timeline_cut`, `track_add` / `track_set` / `track_move`, `marker_*` |
-| Placement and keyframes | `clip_set` (x, y, scale, rotation, opacity, volume; at `at` once keyframed), `clip_setKey`, `clip_setEase` (named curves or a cubic Bézier), `clip_removeKey`, `clip_clearKeys` |
+| Placement and keyframes | `clip_add` lands a clip placed (x, y, scale, rotation, opacity, volume, and the stretch, turn in space, anchor and motion blur below), `clip_set` (the same, at `at` once keyframed), `clip_setKey`, `clip_setEase` (named curves or a cubic Bézier), `clip_removeKey`, `clip_clearKeys` |
 | 3D, anchor, following and paths | `clip_set` with `scaleX` / `scaleY` (stretch one way), `rotationX` / `rotationY` (degrees: tipped back, swung like a door; keyframable like the rest with `clip_setKey`), `perspective` (how far the eye is, in frame heights: 2 by default, less is stronger), `anchorX` / `anchorY` (the point of the clip that `x`, `y` place and that it scales and turns about, as fractions from its top left; the picture stays where it was unless `keep: false`), `clip_setParent` (`clip`, `parent` or null: the clip is placed inside its parent and goes, scales and turns with it, in its perspective; it stays where it shows unless `keep: false`), `clip_setPath` (`points` in canvas coordinates or null, `closed`, `orient`, `start`, `duration`, `ease`: the clip travels the smooth curve through them at an even speed instead of standing at x, y), `clip_setAnimation` kinds `flipX` / `flipY` (in and out) and loops `flip` / `tilt` |
 | Motion blur | `clip_set` with `motionBlur`: true (a film camera's shutter, half of each frame's time), a number 0 to 2 for a shorter or longer smear, false to turn it off. The clip is smeared along its own movement (keyframes, animations, transitions, a path, a parent's movement) and sharp at rest; set it on the clips that move fast, a title flying in, a product sliding across, a badge spinning |
 | Speed and smoothness | `clip_setSpeed` (`frames`: repeat, blend or flow for frames in between), `clip_setSpeedCurve` (`curve`: a preset or points), `clip_setReverse`, `clip_freeze`, `clip_stabilize` (measures the camera's path) and `clip_setStabilize` |
@@ -203,7 +208,7 @@ path is taken away (`points: null`).
 | Text that moves and karaoke | `clip_setAnimation` kinds for titles: `wordFade`, `wordRise`, `wordPop` (word by word; a Chinese character is a word of its own, with the punctuation after it), `lineRise` (line by line), `charElastic` (each character springs up past its size and back), `charBounce` (each falls and bounces), `draw` (written on: a pen follows each character's outline, then its ink comes in; give it a second or two). For any clip: `elastic` (grows in on a spring), `drop` (falls in and bounces). `clip_set` with `karaoke` (`color`, yellow unless given; `mode`: `sweep` colours everything said so far, `word` or `line` the one being said alone; `start` and `duration`, the whole clip unless given; null removes it). The voice goes through the characters at an even pace. `captions_restyle` copies a caption's karaoke to the others, each over its own length |
 | Captions | `captions_transcribe` (local Whisper on the server), `captions_add`, `captions_import` / `captions_export` (SubRip; `line: 2` for a second language), `captions_list`, `captions_split`, `captions_merge`, `captions_replace`, `captions_restyle`, `captions_shift` |
 | Talking-head cleanup | `audio_cutPauses`, `captions_fillers`, `captions_cutFillers` |
-| Sound | `sound_library` / `sound_add`, `clip_setVoice` / `voice_list`, `clip_setDenoise`, `audio_denoise`, `audio_normalize`, `audio_beats` (a marker on each beat), `audio_duck`, `clip_detachAudio` |
+| Sound | `sound_library` / `sound_add`, `clip_setVoice` / `voice_list`, `clip_setDenoise`, `audio_denoise`, `audio_normalize`, `audio_beats` (a marker on each beat), `audio_duck`, `clip_detachAudio`; voice-over: `voice_speak` (Kokoro text to speech on the server) and `voiceover_add` (places spoken lines on Voice-over tracks) |
 | Groups and compound clips | `clip_group`, `clip_ungroup`, `clip_compound`, `clip_uncompound`, `timeline_list` / `timeline_switch` |
 | Timelines and templates (剪同款) | `timeline_add` / `timeline_switch` / …, `template_list`, `template_apply`, `template_slots`, `template_fill`, `template_mark`, `clip_replace` |
 | Storyboards (whole marketing videos planned ahead) | `storyboard_list` (launch, flashSale, bogo, beforeAfter, roundup, storeVisit: scenes with what to film and the line to say, the fields of the copy; `lang` en, zh or ja), `storyboard_apply` (`copy` by field name, `media` for the scenes' pictures in order, `seconds`, `captions`; builds slots, pieces, transitions, markers and music in one step), `storyboard_fill` (other words or numbers for fields: every piece written from them is made again), `storyboard_copy`; pictures go in with `template_fill` |
