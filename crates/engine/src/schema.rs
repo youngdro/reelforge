@@ -350,7 +350,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ),
                 (
                     "kind",
-                    json!({"enum": ["video", "image", "audio", "lut", "font"], "description": "Measured from the file when it is reachable."}),
+                    json!({"enum": ["video", "image", "audio", "lut", "font", "lottie"], "description": "Measured from the file when it is reachable."}),
                 ),
                 ("name", json!({"type": "string", "description": "Display name; the file name by default."})),
                 ("duration", time("Length, when the file cannot be measured.")),

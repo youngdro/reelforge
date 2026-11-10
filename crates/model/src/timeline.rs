@@ -211,7 +211,7 @@ impl Project {
             for c in self.tracks_of(id).into_iter().flatten().flat_map(|t| &t.clips) {
                 match &c.content {
                     crate::ClipContent::Media { media, silent: false, .. }
-                        if self.media.get(media).is_some_and(|m| m.kind != crate::MediaKind::Image) =>
+                        if self.media.get(media).is_some_and(|m| m.kind.sounds()) =>
                     {
                         return true;
                     }

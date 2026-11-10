@@ -257,8 +257,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "media.import",
         label: "Import Media",
-        params: r#"{"path": string, "kind"?: "video"|"image"|"audio"|"lut"|"font", "name"?: string, "duration"?: time, "size"?: [w, h], "sha256"?: hex}"#,
-        doc: "Adds a file to the project's media. When the file is reachable, hashes it and measures its kind, picture size and length (any value passed wins). A font (.ttf, .otf, .ttc) is named after its family and style, and is set on titles with clip.set `font`.",
+        params: r#"{"path": string, "kind"?: "video"|"image"|"audio"|"lut"|"font"|"lottie", "name"?: string, "duration"?: time, "size"?: [w, h], "sha256"?: hex}"#,
+        doc: "Adds a file to the project's media. When the file is reachable, hashes it and measures its kind, picture size and length (any value passed wins). A font (.ttf, .otf, .ttc) is named after its family and style, and is set on titles with clip.set `font`. A Lottie animation (Bodymovin .json, or a dotLottie .lottie archive) is placed with clip.add like a video: it is see-through where it draws nothing, goes round again when its clip is longer than it is, and is drawn as sharp as its `size` (its own, or larger so that its longer side is 1080); `unsupported` in the answer lists what the file uses that is not drawn (expressions, effects…).",
         edits: true,
         enabled: always,
         run: media_import,
@@ -1193,6 +1193,7 @@ fn kind_from_path(path: &str) -> Option<MediaKind> {
         "mp3" | "wav" | "m4a" | "aac" | "flac" | "ogg" | "opus" => Some(MediaKind::Audio),
         "cube" => Some(MediaKind::Lut),
         "ttf" | "otf" | "ttc" => Some(MediaKind::Font),
+        "json" | "lottie" => Some(MediaKind::Lottie),
         _ => None,
     }
 }
@@ -1203,7 +1204,7 @@ fn media_import(s: &mut Session, v: &Value) -> CmdResult {
     let asked: Option<MediaKind> = match p.opt_str("kind")? {
         Some(k) => Some(
             serde_json::from_value(json!(k))
-                .map_err(|_| EngineError::Params("`kind` must be video, image, audio, lut or font".into()))?,
+                .map_err(|_| EngineError::Params("`kind` must be video, image, audio, lut, font or lottie".into()))?,
         ),
         None => None,
     };
@@ -1255,14 +1256,18 @@ fn media_import(s: &mut Session, v: &Value) -> CmdResult {
             AssetKind::Video => MediaKind::Video,
             AssetKind::Image => MediaKind::Image,
             AssetKind::Lut => MediaKind::Lut,
+            AssetKind::Lottie => MediaKind::Lottie,
             _ => MediaKind::Audio,
         },
         (None, None) => kind_from_path(&path)
             .ok_or_else(|| EngineError::Params("cannot tell the kind from the extension; pass `kind`".into()))?,
     };
+    // what the file uses that is not drawn (a Lottie animation's expressions, effects…)
+    let mut unsupported: Vec<String> = Vec::new();
     if let Some(pr) = probed {
         size = size.or(pr.size);
         duration = duration.or(pr.duration);
+        unsupported = pr.notes;
     }
     if let Some(h) = &sha256
         && (h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit()))
@@ -1300,7 +1305,10 @@ fn media_import(s: &mut Session, v: &Value) -> CmdResult {
         }
         let id = proj.mint("m");
         let m = Media { id: id.clone(), name, uri: path, sha256, kind, duration, size, folder: None };
-        let out = json!({ "media": serde_json::to_value(&m).expect("serialises") });
+        let mut out = json!({ "media": serde_json::to_value(&m).expect("serialises") });
+        if !unsupported.is_empty() {
+            out["unsupported"] = json!(unsupported);
+        }
         proj.media.insert(id, m);
         Ok(out)
     })
@@ -1861,7 +1869,8 @@ fn clip_slip(s: &mut Session, v: &Value) -> CmdResult {
         let ClipContent::Media { media, .. } = &clip.content else {
             return Err(EngineError::Params("only video and sound clips slip".into()));
         };
-        let length = proj.media.get(media).and_then(|m| m.duration);
+        // what goes round again has no end to stop at
+        let length = proj.media.get(media).filter(|m| !m.kind.loops()).and_then(|m| m.duration);
         let span = clip.timing().map(|t| Tick(t.travel(clip.duration).0.abs())).unwrap_or(Tick::ZERO);
         let clip = proj.clip_mut(&id).expect("found");
         let ClipContent::Media { source_in, speed, .. } = &mut clip.content else { unreachable!() };
@@ -2574,7 +2583,7 @@ fn sticker_library(_: &mut Session, _: &Value) -> CmdResult {
 fn sounding<'a>(proj: &'a mut Project, id: &str) -> Result<&'a mut Clip, EngineError> {
     let (_, clip) = proj.clip(id).ok_or_else(|| not_found("clip", id))?;
     let sound = matches!(&clip.content, ClipContent::Media { media, silent: false, .. }
-        if proj.media.get(media).is_some_and(|m| m.kind != MediaKind::Image));
+        if proj.media.get(media).is_some_and(|m| m.kind.sounds()));
     if !sound {
         return Err(EngineError::Params("this clip has no sound".into()));
     }
@@ -3358,7 +3367,7 @@ fn clip_freeze(s: &mut Session, v: &Value) -> CmdResult {
             return Err(EngineError::Params("freeze frames are made from clips on a video track".into()));
         }
         let is_video = matches!(&clip.content, ClipContent::Media { media, .. }
-            if proj.media.get(media).is_some_and(|m| m.kind == MediaKind::Video));
+            if proj.media.get(media).is_some_and(|m| m.kind.moves()));
         let Some(timing) = clip.timing().filter(|_| is_video) else {
             return Err(EngineError::Params("only video clips can freeze".into()));
         };

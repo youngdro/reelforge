@@ -1200,6 +1200,7 @@ fn paint_clip(
             let glyph = match m.map(|m| m.kind) {
                 Some(MediaKind::Image) => icon::IMAGE,
                 Some(MediaKind::Audio) => icon::MUSIC,
+                Some(MediaKind::Lottie) => icon::SPARKLE,
                 _ => icon::VIDEO,
             };
             let fill = if kind == TrackKind::Audio { color::AUDIO } else { color::VIDEO };
@@ -1490,7 +1491,8 @@ pub(crate) fn slip_range(p: &Project, c: &reelforge_model::Clip) -> Option<(Tick
     if *speed <= 0.0 {
         return None;
     }
-    let length = p.media.get(media)?.duration?;
+    // what goes round again has no end to keep within
+    let length = p.media.get(media).filter(|m| !m.kind.loops())?.duration?;
     let span = c.timing().map(|t| Tick(t.travel(c.duration).0.abs()))?;
     let lo = Tick(-source_in.0).scale(1.0 / speed);
     let hi = (length - span - *source_in).scale(1.0 / speed);

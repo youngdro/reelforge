@@ -206,6 +206,7 @@ fn lower_tracks(
                         MediaKind::Audio => AssetKind::Audio,
                         MediaKind::Lut => AssetKind::Lut,
                         MediaKind::Font => AssetKind::Font,
+                        MediaKind::Lottie => AssetKind::Lottie,
                     },
                     sha256,
                     uri: m.uri.clone(),
@@ -505,9 +506,7 @@ fn lower_tracks(
             }
             let sound = !track.muted
                 && match &clip.content {
-                    ClipContent::Media { media, silent, .. } => {
-                        !silent && project.media[media].kind != MediaKind::Image
-                    }
+                    ClipContent::Media { media, silent, .. } => !silent && project.media[media].kind.sounds(),
                     _ => false,
                 };
             // a freeze frame is silent

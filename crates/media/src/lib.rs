@@ -4,6 +4,8 @@
 //!   `reelforge-render`: still images, and video decoded by FilmCraft's clean-room codecs (H.264,
 //!   HEVC, VP8/9, AV1, ProRes, … in MP4/MOV, Matroska/WebM, MXF, MPEG-TS, AVI). It also reads the
 //!   sound of video and audio assets for the export mix.
+//! - Lottie animations (Bodymovin JSON, dotLottie) are footage too: any instant of one is drawn
+//!   as a picture, as sharp as asked ([`lottie`]).
 //! - [`probe_path`] and [`probe_bytes`] measure a file at import: kind, picture size, length.
 //! - [`Footage::thumbnail`] and [`Footage::audio`] give the timeline its pictures and waveforms.
 //! - [`export::export`] draws every frame of a RenderSpec and writes an H.264 + AAC MP4.
@@ -16,6 +18,7 @@ pub mod between;
 pub mod export;
 pub mod formats;
 pub mod library;
+pub mod lottie;
 pub mod picture;
 mod shrunk;
 pub mod sound;
@@ -55,6 +58,8 @@ pub struct Probe {
     pub has_audio: bool,
     /// What a font is called: its family, and its style when not the regular one.
     pub family: Option<String>,
+    /// What the file uses that is not drawn, in words (a Lottie animation's expressions, effects…).
+    pub notes: Vec<String>,
 }
 
 fn to_ft(t: Tick) -> filmcraft_time::Tick {
@@ -84,17 +89,26 @@ fn probe_source(src: &SharedSource) -> Result<Probe, String> {
             .filter(|f| f.is_valid()),
         has_audio: !info.audio_streams.is_empty(),
         family: None,
+        notes: Vec::new(),
     })
 }
 
 /// Measures a file in memory (`name` gives the extension, for formats that need one).
 pub fn probe_bytes(name: &str, bytes: Arc<[u8]>) -> Result<Probe, String> {
+    if lottie::is_lottie(name) {
+        return lottie::open(&bytes, None).map(|a| lottie::probe(&a));
+    }
     probe_source(&filmcraft_codecs::open_bytes(name, bytes).map_err(|e| e.to_string())?)
 }
 
 /// Measures a file on disk, reading only what the container index needs.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn probe_path(path: &std::path::Path) -> Result<Probe, String> {
+    if lottie::is_lottie(&path.to_string_lossy()) {
+        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let folder = path.parent().map(|p| p.to_string_lossy().into_owned());
+        return lottie::open(&bytes, folder).map(|a| lottie::probe(&a));
+    }
     probe_source(&open_path(path)?)
 }
 
@@ -164,6 +178,11 @@ pub struct Footage {
     ahead: Mutex<HashMap<String, Vec<Made>>>,
     /// Pictures made between frames, and what they were made from, by asset key and size.
     tween: Mutex<HashMap<String, Tween>>,
+    /// Lottie animations by asset key; `None` remembers a file that could not be read.
+    lotties: Mutex<HashMap<String, Option<Arc<reelforge_lottie::Animation>>>>,
+    /// The last pictures drawn of each animation, by asset key and size, oldest first, each with
+    /// the instant it shows (in sixty-fourths of the animation's frames).
+    lottie_made: Mutex<HashMap<String, Vec<lottie::Drawn>>>,
 }
 
 /// How many pictures [`Footage::prefetch`] keeps per asset. Full-size pictures are large (a
@@ -215,6 +234,7 @@ impl Footage {
                 fps: None,
                 has_audio: false,
                 family,
+                notes: Vec::new(),
             });
         }
         if is_lut(name) {
@@ -228,7 +248,14 @@ impl Footage {
                 fps: None,
                 has_audio: false,
                 family: None,
+                notes: Vec::new(),
             });
+        }
+        if lottie::is_lottie(name) {
+            let animation = lottie::open(&bytes, None)?;
+            let probe = lottie::probe(&animation);
+            self.insert_lottie(sha256, animation);
+            return Ok(probe);
         }
         let bytes: Arc<[u8]> = bytes.into();
         let src = filmcraft_codecs::open_bytes(name, bytes.clone()).map_err(|e| e.to_string())?;
@@ -282,6 +309,8 @@ impl Footage {
         self.tween.lock().expect("tween lock").clear();
         self.fonts.lock().expect("fonts lock").clear();
         self.luts.lock().expect("luts lock").clear();
+        self.lotties.lock().expect("lottie lock").clear();
+        self.lottie_made.lock().expect("lottie lock").clear();
         self.bump();
     }
 
@@ -408,6 +437,7 @@ impl Footage {
                 let frame = src.video_frame(FrameRequest { time: to_ft(at), scale }).map_err(|e| e.to_string())?;
                 Ok(Some(Thumbnail::shrink(frame.width, frame.height, &frame.to_rgba8(), height)))
             }
+            AssetKind::Lottie => Ok(self.lottie_thumbnail(asset, at, height)),
             _ => Ok(None),
         }
     }
@@ -481,6 +511,7 @@ impl MediaSource for Footage {
                 }
                 self.decode_picture(asset, &k, at, 1)
             }
+            AssetKind::Lottie => self.lottie_picture(asset, at, 1),
             _ => Ok(None),
         }
     }
@@ -492,6 +523,10 @@ impl MediaSource for Footage {
         at: Tick,
         shrink: u32,
     ) -> Result<Option<Arc<Image>>, String> {
+        if asset.kind == AssetKind::Lottie {
+            // drawn at the smaller size, not drawn large and shrunk
+            return self.lottie_picture(asset, at, shrink);
+        }
         if asset.kind != AssetKind::Video || shrink <= 1 {
             return self.picture(asset_id, asset, at);
         }

@@ -72,6 +72,11 @@ The people in a video or picture are cut out without a green screen (智能抠�
 people box in a clip's look, keeps them and makes the rest see-through, so the tracks below show around them. A small
 segmentation model bundled with the editor (`reelforge-matte`) looks at each picture as it is drawn, in pure Rust on
 the machine or in the browser; it is made for a person facing the camera, and its outlines are soft.
+Lottie animations (Bodymovin `.json`, dotLottie `.lottie`) are imported like any other file and placed like a video:
+see-through where they draw nothing, going round again while their clip lasts, drawn in pure Rust (`reelforge-lottie`)
+on the machine or in the browser. Shapes, strokes, gradients, trim paths, repeaters, masks, mattes, precompositions,
+pictures and glyph text are drawn; expressions, effects, layer styles, text animators, blend modes and 3D layers are
+not, and importing a file that uses them says so (`unsupported` in `media.import`'s answer, a note in the status bar).
 See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Video and audio codecs and containers are FilmCraft's clean-room, pure-Rust crates

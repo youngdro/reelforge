@@ -1037,6 +1037,7 @@ impl EditorApp {
             reelforge_renderspec::AssetKind::Image => "image",
             reelforge_renderspec::AssetKind::Lut => "lut",
             reelforge_renderspec::AssetKind::Font => "font",
+            reelforge_renderspec::AssetKind::Lottie => "lottie",
             _ => "audio",
         };
         let mut params = json!({ "path": name, "kind": kind, "sha256": sha });
@@ -1049,7 +1050,11 @@ impl EditorApp {
         if let Some(d) = probe.duration {
             params["duration"] = json!(d);
         }
-        if let Ok(v) = self.execute("media.import", params) {
+        if let Ok(mut v) = self.execute("media.import", params) {
+            // the engine did not read the file here: what it uses that is not drawn was measured with it
+            if !probe.notes.is_empty() {
+                v["unsupported"] = json!(probe.notes);
+            }
             self.imported(&v, place);
         }
     }
@@ -1205,6 +1210,14 @@ impl EditorApp {
             }
         } else {
             self.status = fill(self.s().added_to_media, &[&m.name]);
+        }
+        // an animation that uses what is not drawn says so, rather than looking wrong in silence
+        let missing: Vec<&str> = imported["unsupported"]
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).map(|n| self.lang.lottie_note(n)).collect())
+            .unwrap_or_default();
+        if !missing.is_empty() {
+            self.status = fill(self.s().lottie_partial, &[&m.name, &missing.join(self.s().list_comma)]);
         }
     }
 
@@ -2077,8 +2090,9 @@ impl EditorApp {
                 MediaKind::Video => icon::VIDEO,
                 MediaKind::Image => icon::IMAGE,
                 MediaKind::Audio => icon::MUSIC,
+                MediaKind::Lottie => icon::SPARKLE,
                 // looks and fonts are not placed on a timeline
-                _ => continue,
+                MediaKind::Lut | MediaKind::Font => continue,
             };
             all.push(Entry::new(glyph, m.name.clone(), s.palette_place, Run::Media(id.clone())));
         }
@@ -2498,7 +2512,7 @@ impl EditorApp {
         let sounds = |id: &String| {
             p.clip(id).is_some_and(|(_, c)| match &c.content {
                 ClipContent::Media { media, silent, .. } => {
-                    !silent && p.media.get(media).is_some_and(|m| m.kind != MediaKind::Image)
+                    !silent && p.media.get(media).is_some_and(|m| m.kind.sounds())
                 }
                 ClipContent::Compound { timeline, .. } => p.timeline_sounds(timeline),
                 _ => false,
@@ -2948,7 +2962,7 @@ impl EditorApp {
             return;
         };
         let has_sound = match &clip.content {
-            ClipContent::Media { media, .. } => p.media.get(media).is_some_and(|m| m.kind != MediaKind::Image),
+            ClipContent::Media { media, .. } => p.media.get(media).is_some_and(|m| m.kind.sounds()),
             ClipContent::Compound { timeline, .. } => p.timeline_sounds(timeline),
             _ => false,
         };
@@ -3087,6 +3101,7 @@ impl EditorApp {
             ClipContent::Media { media, .. } => match p.media.get(media).map(|m| m.kind) {
                 Some(MediaKind::Image) => (icon::IMAGE, s.kind_picture),
                 Some(MediaKind::Audio) => (icon::MUSIC, s.kind_sound),
+                Some(MediaKind::Lottie) => (icon::SPARKLE, "Lottie"),
                 _ => (icon::VIDEO, s.kind_video),
             },
             ClipContent::Text { .. } => (icon::TEXT, s.kind_title),
@@ -4492,11 +4507,11 @@ fn placement_at(c: &reelforge_model::Clip, at: Tick) -> ClipTransform {
 /// What Import offers: video, pictures, sound, LUTs, fonts, captions and CapCut drafts.
 const IMPORTABLE: &[&str] = &[
     "mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "webp", "gif", "mp3", "wav", "m4a", "aac", "flac", "ogg",
-    "opus", "cube", "ttf", "otf", "ttc", "srt", "json",
+    "opus", "cube", "ttf", "otf", "ttc", "srt", "json", "lottie",
 ];
 
 /// What fills a template's slot or takes a clip's place: video and pictures.
-const PICTURES: &[&str] = &["mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "webp", "gif"];
+const PICTURES: &[&str] = &["mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "webp", "gif", "json", "lottie"];
 
 /// What a title's font button offers.
 const FONTS: &[&str] = &["ttf", "otf", "ttc"];

@@ -612,6 +612,8 @@ pub(super) static JA: Strings = Strings {
     media_in_use: "{} 個のクリップが使用中です。先にそれらを削除してください",
     media_removed: "{} をプロジェクトから削除しました",
     added_to_media: "{} を素材に追加しました",
+    lottie_partial: "{} を追加しました。描画されない要素: {}",
+    list_comma: "、",
     text_default: "デフォルトテキスト",
     text_basic: "基本",
     item_tip: "クリックで再生ヘッドに追加、またはタイムラインへドラッグ",

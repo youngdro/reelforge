@@ -176,7 +176,7 @@ impl Filter {
     fn admits(self, kind: MediaKind) -> bool {
         match self {
             Filter::All => !matches!(kind, MediaKind::Lut | MediaKind::Font),
-            Filter::Video => kind == MediaKind::Video,
+            Filter::Video => kind.moves(),
             Filter::Image => kind == MediaKind::Image,
             Filter::Audio => kind == MediaKind::Audio,
         }
@@ -639,7 +639,11 @@ impl AssetPanel {
                 None if off => {}
                 None => {
                     wanted.push(m);
-                    let glyph = if m.kind == MediaKind::Video { icon::VIDEO } else { icon::IMAGE };
+                    let glyph = match m.kind {
+                        MediaKind::Video => icon::VIDEO,
+                        MediaKind::Lottie => icon::SPARKLE,
+                        _ => icon::IMAGE,
+                    };
                     painter.text(thumb.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(22.0), color::WEAK);
                 }
             },
@@ -648,6 +652,7 @@ impl AssetPanel {
         let glyph = match m.kind {
             MediaKind::Video => icon::VIDEO,
             MediaKind::Image => icon::IMAGE,
+            MediaKind::Lottie => icon::SPARKLE,
             _ => icon::MUSIC,
         };
         badge(&painter, thumb.left_top() + vec2(5.0, 5.0), Align2::LEFT_TOP, glyph, color::TEXT, None);

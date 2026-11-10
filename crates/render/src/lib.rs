@@ -73,6 +73,7 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "frames.flow/1",
     "key.chroma@1",
     "key.person@1",
+    "lottie/1",
     "mask.shape/1",
     "mask.shape/2",
     "shape/1",
