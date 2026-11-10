@@ -23,6 +23,18 @@ fn color(doc: &str) -> Value {
     })
 }
 
+fn storyboard_lang() -> Value {
+    json!({"enum": crate::storyboard::Lang::NAMES, "description": "The language of names and of the copy a storyboard comes with; zh by default."})
+}
+
+fn storyboard_copy(doc: &str) -> Value {
+    json!({
+        "type": "object",
+        "description": format!("{doc} Such as {{\"product\": \"保温杯\", \"price\": 129}}."),
+        "additionalProperties": {"type": ["string", "number"]},
+    })
+}
+
 fn ident(doc: &str) -> Value {
     json!({"type": "string", "description": doc})
 }
@@ -938,6 +950,53 @@ pub fn input_schema(id: &str) -> Option<Value> {
             props.push(("compound", json!({"type": "boolean", "description": "Fold it into one compound clip, which promo.set can give other words later."})));
             object(props, &["kind"])
         }
+        "storyboard.list" | "storyboard.copy" => object(vec![("lang", storyboard_lang())], &[]),
+        "storyboard.apply" => object(
+            vec![
+                (
+                    "storyboard",
+                    json!({"enum": crate::storyboard::storyboards().iter().map(|b| b.id.as_str()).collect::<Vec<_>>(), "description": "Which storyboard (see storyboard.list)."}),
+                ),
+                (
+                    "copy",
+                    storyboard_copy(
+                        "Words and numbers for its fields, by name; those not given keep what the storyboard comes with.",
+                    ),
+                ),
+                (
+                    "media",
+                    json!({
+                        "type": "array",
+                        "items": {"type": ["string", "null"]},
+                        "minItems": 1,
+                        "description": "Media ids for the scenes' pictures, in order; null skips one.",
+                    }),
+                ),
+                ("lang", storyboard_lang()),
+                (
+                    "seconds",
+                    json!({"type": "number", "exclusiveMinimum": 0, "description": "How long the whole runs: half to twice the storyboard's own length, each scene in proportion."}),
+                ),
+                (
+                    "captions",
+                    json!({"type": "boolean", "description": "Also write each scene's line to say as captions."}),
+                ),
+                ("name", ident("The new timeline's name, when the storyboard gets a timeline of its own.")),
+            ],
+            &["storyboard"],
+        ),
+        "storyboard.fill" => object(
+            vec![
+                (
+                    "copy",
+                    storyboard_copy(
+                        "The fields to change, by name (storyboard.copy lists them); a name the copy does not have yet is added.",
+                    ),
+                ),
+                ("lang", storyboard_lang()),
+            ],
+            &["copy"],
+        ),
         "promo.get" => object(vec![("clip", ident("Clip id, such as c9."))], &["clip"]),
         "brand.set" => object(
             vec![

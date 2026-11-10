@@ -60,6 +60,14 @@ everything set on it; a picture of another shape is scaled to cover the frame, a
 to fill), and `clip.replace` swaps the file of any one clip. In the editor they are on the drafts page and
 in the Templates tab on the left: pick one, then drop your files in. Any timeline becomes a template by
 marking its picture clips as slots (`template.mark`, or a clip's menu).
+A storyboard is a whole marketing video planned ahead: six are built in (`storyboard.list`: a product
+launch, a flash sale, buy one get one, before and after, a roundup of three, a shop to visit). Each is
+scenes in order, with a slot for your picture and a marker saying what to film, ready-made pieces over
+it (price tags, checklists, coupons, buy buttons), transitions, music and the line to say. Its words are
+fields with names (`product`, `price`, `cta`), in English, Chinese or Japanese: `storyboard.apply` builds
+one from your copy and `storyboard.fill` gives fields other words later, and every piece written from
+them is made again to fit. In the editor they are under Storyboards in the Templates tab, with the copy
+as a form to type over.
 A shaky shot is held steady (防抖): `clip.stabilize` watches the frames a video clip shows, follows how the
 camera moved from each to the next, and keeps that path with the clip; the picture is then moved and
 turned against the shake and drawn just large enough that its edges stay out of sight. How much goes
@@ -133,6 +141,8 @@ cargo run -q -p reelforge-cli -- exec cut.reel.json promo.add '{"kind": "priceTa
 cargo run -q -p reelforge-cli -- exec cut.reel.json brand.set '{"primary": [0.05, 0.35, 0.95], "secondary": [1, 0.85, 0.3]}' --save   # ready-made pieces take the brand's colours from here on
 cargo run -q -p reelforge-cli -- exec cut.reel.json promo.add '{"kind": "checklist", "lines": ["持久保湿 12 小时", "敏感肌适用"], "compound": true}' --save   # a list, folded into one clip (→ c9)
 cargo run -q -p reelforge-cli -- exec cut.reel.json promo.set '{"clip": "c9", "lines": ["持久保湿 12 小时", "敏感肌适用", "无香精"]}' --save   # other words: the piece is made again to fit them
+cargo run -q -p reelforge-cli -- exec ad.reel.json storyboard.apply '{"storyboard": "flashSale", "copy": {"price": 59, "oldPrice": 89}}' --save   # a whole flash-sale video planned ahead: scenes, pieces, music (storyboard.list has six)
+cargo run -q -p reelforge-cli -- exec ad.reel.json storyboard.fill '{"copy": {"discount": "直降 30 元", "stock": 12}}' --save   # other copy: every piece written from it is made again
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t1", "shape": {"kind": "star", "points": 16, "inner": 0.8, "size": [300, 300], "fill": {"type": "radial", "from": [1, 0.8, 0.2], "to": [1, 0.4, 0]}}}' --save   # a shape of your own
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setKey '{"clip": "c5", "prop": "scale", "at": {"seconds": 4}, "value": 1.3, "ease": "inOut"}' --save
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setEase '{"clip": "c5", "at": {"seconds": 4}, "ease": [0.3, 1.5, 0.6, 1]}' --save   # on from that key: past the next one and back

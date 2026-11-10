@@ -105,6 +105,29 @@ render_frame {"at": {"seconds": 1}, "scale": 0.3}  → look, then fix
 render_export {"path": "out.mp4"}
 ```
 
+## A marketing video from a storyboard
+
+```text
+storyboard_list {"lang": "zh"}                    → launch, flashSale, bogo, beforeAfter, roundup, storeVisit
+brand_set {"primary": [0.05, 0.35, 0.95]}         → the pieces and backdrops take the brand's colours
+storyboard_apply {"storyboard": "launch", "copy": {"product": "云朵拖鞋", "price": 59, "oldPrice": 89}}
+                                                  → slots 1–4, scenes (each with `shot`: what to film, and
+                                                    `voice`: the line to say), pieces, copy
+media_import … then template_fill {"media": ["m4", "m5", "m6", "m7"]}
+storyboard_fill {"copy": {"cta": "马上带一双回家", "price": 49.9}}
+                                                  → the button is as wide as its new words, the tag counts to 49.9
+voiceover_add with the scenes' `voice` lines, or storyboard_apply with "captions": true
+render_frame {"at": {"seconds": 14}, "scale": 0.3} → look, then fix: promo_set moves or rewrites one piece
+```
+
+A storyboard is laid out for an upright 9:16 frame, its pieces clear of the bottom fifth where
+apps put their own buttons and captions. On a wider canvas the pieces keep to a column down the
+middle, smaller. A field a piece counts to (`price`, `stock`, `rating`) must be a number. A piece
+told its words directly (`promo_set` with `text`) no longer follows its field. Captions written by
+`captions: true` follow the copy too, until one is changed by hand. The built-in font
+covers Chinese and Latin; for Japanese copy import a font and make it the brand's (`brand_set`)
+before building.
+
 ## What each feature calls
 
 | Feature | Tools |
@@ -125,6 +148,7 @@ render_export {"path": "out.mp4"}
 | Sound | `sound_library` / `sound_add`, `clip_setVoice` / `voice_list`, `clip_setDenoise`, `audio_denoise`, `audio_normalize`, `audio_beats` (a marker on each beat), `audio_duck`, `clip_detachAudio` |
 | Groups and compound clips | `clip_group`, `clip_ungroup`, `clip_compound`, `clip_uncompound`, `timeline_list` / `timeline_switch` |
 | Timelines and templates (剪同款) | `timeline_add` / `timeline_switch` / …, `template_list`, `template_apply`, `template_slots`, `template_fill`, `template_mark`, `clip_replace` |
+| Storyboards (whole marketing videos planned ahead) | `storyboard_list` (launch, flashSale, bogo, beforeAfter, roundup, storeVisit: scenes with what to film and the line to say, the fields of the copy; `lang` en, zh or ja), `storyboard_apply` (`copy` by field name, `media` for the scenes' pictures in order, `seconds`, `captions`; builds slots, pieces, transitions, markers and music in one step), `storyboard_fill` (other words or numbers for fields: every piece written from them is made again), `storyboard_copy`; pictures go in with `template_fill` |
 | Media | `media_import`, `media_set` (rename, folders), `media_remove` |
 | CapCut / 剪映 drafts | `capcut_import` |
 | Looking and exporting | `render_frame`, `render_compile`, `project_setCanvas`, `project_setExport`, `project_setCover`, `render_export` (`format`: mp4, gif, m4a, wav), `render_jobs` |

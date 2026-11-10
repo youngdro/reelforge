@@ -23,6 +23,7 @@ mod promo;
 mod remix;
 mod schema;
 mod shared;
+mod storyboard;
 mod templates;
 mod voiceover;
 
@@ -40,6 +41,7 @@ pub use promo::made_of;
 pub use remix::{TimelineTemplate, is_empty_slot, slot_colour, slot_states, timeline_template, timeline_templates};
 pub use schema::input_schema;
 pub use shared::{Change, SharedSession};
+pub use storyboard::{Field, Lang, Said, Scene, Storyboard, field_label, scene_label, storyboards};
 pub use templates::{TitleTemplate, title_template, title_templates};
 pub use voiceover::{Spoken, VOICEOVER_TRACK, spoken_lines};
 

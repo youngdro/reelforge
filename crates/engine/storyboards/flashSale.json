@@ -1,0 +1,250 @@
+{
+ "id": "flashSale",
+ "name": {
+  "en": "Flash sale",
+  "zh": "限时折扣",
+  "ja": "タイムセール"
+ },
+ "about": {
+  "en": "The discount up front, the two prices side by side, how little is left, and a button",
+  "zh": "先亮折扣，再对比两个价格，强调库存紧张，最后引导下单",
+  "ja": "割引を最初に見せ、価格を比べ、残りわずかを伝えて購入へ"
+ },
+ "music": "upbeat",
+ "fields": [
+  {
+   "id": "offer",
+   "text": {
+    "en": "Flash sale",
+    "zh": "限时秒杀",
+    "ja": "タイムセール"
+   }
+  },
+  {
+   "id": "discount",
+   "text": {
+    "en": "-40%",
+    "zh": "-40%",
+    "ja": "-40%"
+   }
+  },
+  {
+   "id": "oldPrice",
+   "number": 199
+  },
+  {
+   "id": "price",
+   "number": 119
+  },
+  {
+   "id": "claimed",
+   "number": 87
+  },
+  {
+   "id": "stock",
+   "number": 36
+  },
+  {
+   "id": "coupon",
+   "number": 20
+  },
+  {
+   "id": "couponRule",
+   "text": {
+    "en": "On orders over 99",
+    "zh": "满 99 可用",
+    "ja": "99 以上で使える"
+   }
+  },
+  {
+   "id": "deadline",
+   "text": {
+    "en": "Ends Sunday at midnight",
+    "zh": "活动截至本周日 24:00",
+    "ja": "今週日曜 24:00 まで"
+   }
+  },
+  {
+   "id": "closing",
+   "text": {
+    "en": "Gone when it's gone",
+    "zh": "手慢无",
+    "ja": "なくなり次第終了"
+   }
+  },
+  {
+   "id": "cta",
+   "text": {
+    "en": "Shop now",
+    "zh": "立即抢购",
+    "ja": "今すぐ購入"
+   }
+  },
+  {
+   "id": "hint",
+   "text": {
+    "en": "Tap the link below",
+    "zh": "点击下方小黄车",
+    "ja": "下のリンクをタップ"
+   }
+  }
+ ],
+ "scenes": [
+  {
+   "id": "hook",
+   "seconds": 2.5,
+   "shot": {
+    "en": "The product, close up",
+    "zh": "产品特写",
+    "ja": "商品のアップ"
+   },
+   "fx": "zoomIn",
+   "voice": {
+    "en": "{offer}: {discount}!",
+    "zh": "{offer}，直降 {discount}！",
+    "ja": "{offer}、{discount}！"
+   },
+   "pieces": [
+    {
+     "kind": "discountBadge",
+     "at": 0.1,
+     "text": "{discount}",
+     "scale": 1.5,
+     "y": -0.05
+    },
+    {
+     "kind": "banner",
+     "at": 0.4,
+     "text": "{offer}",
+     "y": -0.38
+    }
+   ]
+  },
+  {
+   "id": "price",
+   "seconds": 5.0,
+   "shot": {
+    "en": "The product in use",
+    "zh": "产品使用画面",
+    "ja": "商品を使っているところ"
+   },
+   "cut": "fadeWhite",
+   "voice": {
+    "en": "Was {oldPrice}, now {price}.",
+    "zh": "原价 {oldPrice}，现在只要 {price}。",
+    "ja": "通常 {oldPrice} 円が、今だけ {price} 円。"
+   },
+   "pieces": [
+    {
+     "kind": "priceCompare",
+     "at": 0.2,
+     "values": [
+      "{oldPrice}",
+      "{price}"
+     ],
+     "lines": [
+      {
+       "en": "Was",
+       "zh": "原价",
+       "ja": "通常価格"
+      },
+      {
+       "en": "Now",
+       "zh": "秒杀价",
+       "ja": "セール価格"
+      }
+     ],
+     "text": {
+      "en": "Save ${n}",
+      "zh": "立省 ¥{n}",
+      "ja": "¥{n} お得"
+     },
+     "y": -0.02
+    },
+    {
+     "kind": "flashProgress",
+     "at": 1.2,
+     "value": "{claimed}",
+     "text": {
+      "en": "{n}% claimed",
+      "zh": "已抢 {n}%",
+      "ja": "{n}% 販売済み"
+     },
+     "y": 0.2
+    }
+   ]
+  },
+  {
+   "id": "urgency",
+   "seconds": 4.0,
+   "shot": {
+    "en": "Quick cuts of other angles, or the box",
+    "zh": "多角度快切，或包装特写",
+    "ja": "別アングルの早いカット、またはパッケージ"
+   },
+   "sweep": "right",
+   "voice": {
+    "en": "Only {stock} left, and a {coupon} coupon on top.",
+    "zh": "库存只剩 {stock} 件，还能叠加 {coupon} 元券。",
+    "ja": "残り {stock} 点、さらに {coupon} 円クーポン。"
+   },
+   "pieces": [
+    {
+     "kind": "lowStock",
+     "at": 0.2,
+     "value": "{stock}",
+     "text": {
+      "en": "Only {n} left",
+      "zh": "仅剩 {n} 件",
+      "ja": "残り {n} 点"
+     },
+     "y": -0.3
+    },
+    {
+     "kind": "coupon",
+     "at": 0.5,
+     "value": "{coupon}",
+     "text": "{couponRule}",
+     "lines": [
+      "{deadline}"
+     ],
+     "y": 0.05
+    }
+   ]
+  },
+  {
+   "id": "cta",
+   "seconds": 3.5,
+   "backdrop": "brand",
+   "sweep": "up",
+   "voice": {
+    "en": "{closing}. {hint}.",
+    "zh": "{closing}，{hint}。",
+    "ja": "{closing}。{hint}。"
+   },
+   "pieces": [
+    {
+     "kind": "endCard",
+     "at": 0.1,
+     "text": "{closing}",
+     "lines": [
+      "{deadline}"
+     ],
+     "y": -0.22
+    },
+    {
+     "kind": "buyButton",
+     "at": 0.7,
+     "text": "{cta}",
+     "y": -0.01
+    },
+    {
+     "kind": "arrowHint",
+     "at": 1.0,
+     "text": "{hint}",
+     "y": 0.14
+    }
+   ]
+  }
+ ]
+}

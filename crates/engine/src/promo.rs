@@ -302,11 +302,14 @@ fn told(v: &Value, fps: reelforge_time::FrameRate, was: Made) -> Result<Made, En
     let p = P::new(v, fps);
     let promo = known(&was.kind)?;
     let mut made = was;
+    // what is told here is no longer written from the project's copy
     if let Some(text) = p.opt_str("text")? {
         made.text = text.to_string();
+        made.forms.text = None;
     }
     if v.get("lines").is_some() {
         made.lines = p.strings("lines")?;
+        made.forms.lines = None;
     }
     if made.lines.len() > 6 || made.lines.iter().any(|l| l.chars().count() > 200) {
         return Err(wrong("lines", "at most 6 lines of at most 200 characters"));
@@ -317,12 +320,14 @@ fn told(v: &Value, fps: reelforge_time::FrameRate, was: Made) -> Result<Made, En
     }
     if let Some(value) = p.opt_f64("value")? {
         made.value = Some(value as f32);
+        made.forms.value = None;
     }
     if made.value.is_some_and(|v| v.abs() >= 1e12) {
         return Err(wrong("value", "a number"));
     }
     if let Some(values) = numbers(v, "values", 4)? {
         made.values = values;
+        made.forms.values = None;
     }
     if let Some(from) = p.opt_f64("from")? {
         made.from = from as f32;
@@ -483,6 +488,7 @@ pub(crate) fn promo_add(s: &mut Session, v: &Value) -> CmdResult {
         duration: dur,
         font: brand.font,
         logo: brand.logo,
+        forms: Default::default(),
     };
     let made = told(v, fps(s), comes)?;
     s.edit("Add Promo", |proj| {

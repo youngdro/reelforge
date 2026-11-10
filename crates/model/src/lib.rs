@@ -31,7 +31,7 @@ pub mod transition;
 pub mod voice;
 
 pub use anim::{AnimKind, Animation, Animations, Ease, Key, Keys, Loop, LoopKind, Offset, Prop};
-pub use brand::{Brand, Made};
+pub use brand::{Brand, CopyField, CopyLine, Forms, Made, fields_in, is_field_name, written};
 pub use color::{Adjust, ColorGrade, Filter, FilterKind, LutUse};
 pub use export::{Codec, ExportSettings, Quality, Resolution};
 pub use fx::{Fx, FxChannel, FxGroup, FxKind, FxSample};
@@ -79,6 +79,13 @@ pub struct Project {
     /// The colours, face and mark the ready-made pieces are made in.
     #[serde(default, skip_serializing_if = "Brand::is_empty")]
     pub brand: Brand,
+    /// The project's copy by name (a storyboard's fields: the hook, the product's name, the
+    /// price), which ready-made pieces are written from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copy: Vec<CopyField>,
+    /// The captions written from the copy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copy_lines: Vec<CopyLine>,
 }
 
 /// A mark on a timeline: a place to come back to, and to snap to.
@@ -700,6 +707,8 @@ impl Project {
             markers: Vec::new(),
             cover: None,
             brand: Brand::default(),
+            copy: Vec::new(),
+            copy_lines: Vec::new(),
         };
         p.tracks = timeline::empty_tracks(&mut p);
         p
@@ -776,6 +785,14 @@ impl Project {
         }
         if self.timelines.is_empty() != self.timeline.is_empty() {
             return Err(ModelError::BadTimeline("the current timeline is not in the list"));
+        }
+        for (i, field) in self.copy.iter().enumerate() {
+            if !is_field_name(&field.name) || self.copy[..i].iter().any(|f| f.name == field.name) {
+                return Err(ModelError::BadBrand(format!(
+                    "the copy's field {:?} is misnamed or named twice",
+                    field.name
+                )));
+            }
         }
         for t in &self.timelines {
             if !ids.insert(t.id.clone()) {

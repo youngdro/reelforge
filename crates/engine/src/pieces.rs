@@ -533,7 +533,24 @@ fn bar(length: f32, width: f32, color: [f32; 4]) -> Shape {
 
 /// About how wide `text` is set at `size`: a full em for a wide character, less for a narrow one.
 fn wide(text: &str, size: f32) -> f32 {
-    text.chars().map(|c| if c.is_ascii() { if c == ' ' { 0.3 } else { 0.6 } } else { 1.0 }).sum::<f32>() * size
+    // as bold letters run; a little over rather than under, so that words stay on their plate
+    let em = |c: char| match c {
+        ' ' => 0.26,
+        'i' | 'j' | 'l' | 'I' | '.' | ',' | ':' | ';' | '!' | '\'' | '|' => 0.31,
+        'f' | 't' | 'r' | '(' | ')' | '-' | '/' => 0.42,
+        'm' | 'w' | 'M' | 'W' | '@' | '%' => 0.92,
+        'A'..='Z' => 0.68,
+        c if c.is_ascii() => 0.6,
+        _ => 1.0,
+    };
+    text.chars().map(em).sum::<f32>() * size
+}
+
+/// The letter size, `size` or less, at which `text` is about `most` wide: long words are set
+/// smaller before they run off their plate, down to a little over half the size.
+fn fit(text: &str, size: f32, most: f32) -> f32 {
+    let needs = wide(text, size);
+    if needs <= most { size } else { (size * most / needs).max(size * 0.55) }
 }
 
 /// The digits after the point a number is shown with.
@@ -623,7 +640,10 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
             star.fill = Some(Fill::Radial { from: lighter(accent, 0.3), to: accent });
             vec![
                 Part::shape(star).enter(AnimKind::Pop).looped(LoopKind::Heartbeat).turned(-12.0),
-                Part::text(text(), 104.0, over(accent)).enter(AnimKind::Pop).looped(LoopKind::Heartbeat).turned(-12.0),
+                Part::text(text(), fit(&ask.text, 104.0, 300.0), over(accent))
+                    .enter(AnimKind::Pop)
+                    .looped(LoopKind::Heartbeat)
+                    .turned(-12.0),
             ]
         }
         "banner" => vec![
@@ -633,7 +653,7 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
                 ..plate([980.0, 180.0], 90.0, accent)
             })
             .enter(AnimKind::SlideRight),
-            Part::text(text(), 92.0, over(accent)).enter(AnimKind::CharPop),
+            Part::text(text(), fit(&ask.text, 92.0, 860.0), over(accent)).enter(AnimKind::CharPop),
         ],
         "countdown" => {
             // it counts down from its value to nothing, at the speed of a clock
@@ -674,7 +694,7 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
                 ..Shape::new(ShapeKind::Ellipse, [320.0, 320.0], accent)
             })
             .enter(AnimKind::Draw),
-            Part::text(text(), 104.0, accent).enter(AnimKind::CharPop),
+            Part::text(text(), fit(&ask.text, 104.0, 250.0), accent).enter(AnimKind::CharPop),
         ],
         "coupon" => {
             let mut v = vec![
@@ -689,14 +709,14 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
                     .enter(AnimKind::Pop)
                     .after(0.15)
                     .counting(Some(counter(ask.value.unwrap_or(50.0), false, false, Ease::OUT, quick))),
-                Part::text(text(), 62.0, over(accent))
+                Part::text(text(), fit(&ask.text, 62.0, 520.0), over(accent))
                     .at(190.0, if n > 0 { -38.0 } else { 0.0 })
                     .enter(AnimKind::Fade)
                     .after(0.3),
             ];
             if n > 0 {
                 v.push(
-                    Part::text(line(0), 40.0, faded(over(accent), 0.85))
+                    Part::text(line(0), fit(&line(0), 40.0, 520.0), faded(over(accent), 0.85))
                         .at(190.0, 48.0)
                         .enter(AnimKind::Fade)
                         .after(0.4),
@@ -736,7 +756,7 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
             vec![
                 Part::shape(bar(800.0, 44.0, faded(WHITE, 0.3))).at(0.0, 40.0).enter(AnimKind::Fade),
                 Part::shape(filled).at(0.0, 40.0).enter(AnimKind::Draw).over(1.2),
-                Part::text(text(), 64.0, WHITE)
+                Part::text(text(), fit(&ask.text, 64.0, 900.0), WHITE)
                     .at(0.0, -50.0)
                     .enter(AnimKind::Fade)
                     .counting(ask.value.map(|v| counter(v, false, false, Ease::OUT, quick))),
@@ -753,20 +773,24 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
             star.fill = Some(Fill::Radial { from: lighter(accent, 0.3), to: accent });
             vec![
                 Part::shape(star).enter(AnimKind::Pop).looped(LoopKind::Swing).turned(-10.0),
-                Part::text(text(), 84.0, over(accent)).enter(AnimKind::Pop).looped(LoopKind::Swing).turned(-10.0),
+                Part::text(text(), fit(&ask.text, 84.0, 350.0), over(accent))
+                    .enter(AnimKind::Pop)
+                    .looped(LoopKind::Swing)
+                    .turned(-10.0),
             ]
         }
         "lowStock" => {
             let to = ask.value.unwrap_or(3.0);
+            let size = fit(&ask.text, 80.0, 800.0);
             vec![
                 Part::shape(Shape {
                     stroke: Some(Stroke { color: accent, width: 6.0 }),
                     shadow: shadow(),
-                    ..plate([wide(&ask.text, 80.0) + 150.0, 150.0], 75.0, [0.08, 0.08, 0.1, 0.9])
+                    ..plate([wide(&ask.text, size) + 150.0, 150.0], 75.0, [0.08, 0.08, 0.1, 0.9])
                 })
                 .enter(AnimKind::ZoomIn)
                 .looped(LoopKind::Heartbeat),
-                Part::text(text(), 80.0, lighter(accent, 0.25))
+                Part::text(text(), size, lighter(accent, 0.25))
                     .enter(AnimKind::Fade)
                     .looped(LoopKind::Heartbeat)
                     .counting(Some(counter(to, false, false, Ease::OUT, Some(secs(1.5).min(dur))))),
@@ -782,7 +806,13 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
             {
                 let (y, wait) = (-150.0 + i as f32 * 130.0, i as f64 * 0.35);
                 let length = (520.0 * value.abs() / most).max(40.0);
-                v.push(Part::text(line(i), 50.0, WHITE).boxed(230.0).at(-355.0, y).enter(AnimKind::Fade).after(wait));
+                v.push(
+                    Part::text(line(i), fit(&line(i), 50.0, 220.0), WHITE)
+                        .boxed(230.0)
+                        .at(-355.0, y)
+                        .enter(AnimKind::Fade)
+                        .after(wait),
+                );
                 v.push(
                     Part::shape(bar(length, tall, colour))
                         .at(-220.0 + length / 2.0, y)
@@ -803,7 +833,7 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
                 );
             }
             v.push(
-                Part::text(text(), 100.0, second)
+                Part::text(text(), fit(&ask.text, 100.0, 900.0), second)
                     .at(0.0, 140.0)
                     .enter(AnimKind::Pop)
                     .after(1.0)
@@ -819,7 +849,9 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
             let widths: Vec<f32> = words.iter().map(|w| wide(w, size) + size * 1.7).collect();
             let tall = size * 2.1;
             let mut v = vec![];
-            for (i, at) in flow(&widths, 1000.0, 22.0, tall + 26.0).into_iter().enumerate() {
+            // pills that bounce need more room between rows
+            let apart = tall + if follow { 64.0 } else { 26.0 };
+            for (i, at) in flow(&widths, 1000.0, 22.0, apart).into_iter().enumerate() {
                 let wait = i as f64 * 0.2;
                 let pill = if follow {
                     glossy([widths[i], tall], tall / 2.0, accent, 0.0)
@@ -851,13 +883,17 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
             star.fill = Some(Fill::Radial { from: lighter(accent, 0.3), to: accent });
             vec![
                 Part::shape(star).enter(AnimKind::Spin).looped(LoopKind::Heartbeat),
-                Part::text(text(), 112.0, second).enter(AnimKind::Pop).looped(LoopKind::Heartbeat).turned(-8.0),
+                Part::text(text(), fit(&ask.text, 112.0, 250.0), second)
+                    .enter(AnimKind::Pop)
+                    .looped(LoopKind::Heartbeat)
+                    .turned(-8.0),
             ]
         }
         "callout" => {
             let (reach, rise) = (130.0, 116.0);
             let length = f32::hypot(reach, rise);
-            let w = wide(&ask.text, 46.0) + 70.0;
+            let letters = fit(&ask.text, 46.0, 600.0);
+            let w = wide(&ask.text, letters) + 70.0;
             // it leans away from the middle of the frame, unless its label would run off the edge
             let left = match ask.side {
                 Some(side) => side == Side::Left,
@@ -889,7 +925,7 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
                     .enter(AnimKind::ZoomIn)
                     .over(0.3)
                     .after(0.45),
-                Part::text(text(), 46.0, INK)
+                Part::text(text(), letters, INK)
                     .at(dir * (reach + w / 2.0 - 12.0), -rise)
                     .enter(AnimKind::Fade)
                     .over(0.3)
@@ -897,16 +933,29 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
             ]
         }
         "checklist" => {
-            let step = 112.0;
-            let mut v = vec![Part::shape(plate([840.0, n as f32 * step + 64.0], 36.0, DARK)).enter(AnimKind::Fade)];
-            for (i, words) in ask.lines.iter().enumerate() {
+            // a row of long words is set smaller, and past that takes the rows it needs
+            let rows: Vec<(String, f32, f32)> = ask
+                .lines
+                .iter()
+                .map(|words| {
+                    let said = format!("✓  {words}");
+                    let size = fit(&said, 58.0, 715.0).max(44.0);
+                    let wraps = (wide(&said, size) / 715.0).ceil().clamp(1.0, 3.0);
+                    (said, size, 112.0 + (wraps - 1.0) * size * 1.3)
+                })
+                .collect();
+            let tall: f32 = rows.iter().map(|r| r.2).sum();
+            let mut v = vec![Part::shape(plate([840.0, tall + 64.0], 36.0, DARK)).enter(AnimKind::Fade)];
+            let mut top = -tall / 2.0;
+            for (i, (said, size, high)) in rows.into_iter().enumerate() {
                 v.push(
-                    Part::text(format!("✓  {words}"), 58.0, WHITE)
+                    Part::text(said, size, WHITE)
                         .boxed(730.0)
-                        .at(0.0, row(i, n, step))
+                        .at(0.0, top + high / 2.0)
                         .enter(AnimKind::SlideRight)
                         .after(0.2 + i as f64 * 0.22),
                 );
+                top += high;
             }
             v
         }
@@ -992,7 +1041,7 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
             let mut v = vec![
                 Part::shape(plate([900.0, 160.0], 14.0, DARK)).enter(AnimKind::SlideRight),
                 Part::shape(plate([14.0, 160.0], 7.0, accent)).at(-443.0, 0.0).enter(AnimKind::SlideUp),
-                Part::text(text(), 66.0, WHITE)
+                Part::text(text(), fit(&ask.text, 66.0, 790.0), WHITE)
                     .boxed(800.0)
                     .at(10.0, if n > 0 { -30.0 } else { 0.0 })
                     .enter(AnimKind::SlideRight)
@@ -1000,7 +1049,7 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
             ];
             if n > 0 {
                 v.push(
-                    Part::text(line(0), 40.0, faded(WHITE, 0.85))
+                    Part::text(line(0), fit(&line(0), 40.0, 790.0), faded(WHITE, 0.85))
                         .boxed(800.0)
                         .at(10.0, 38.0)
                         .enter(AnimKind::SlideRight)
@@ -1036,7 +1085,12 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
                 Part::shape(bar(340.0, 10.0, accent)).at(0.0, 128.0).enter(AnimKind::Draw).after(0.3),
             ];
             if n > 0 {
-                v.push(Part::text(line(0), 66.0, WHITE).at(0.0, 210.0).enter(AnimKind::SlideUp).after(0.5));
+                v.push(
+                    Part::text(line(0), fit(&line(0), 66.0, 960.0), WHITE)
+                        .at(0.0, 210.0)
+                        .enter(AnimKind::SlideUp)
+                        .after(0.5),
+                );
             }
             v
         }
@@ -1051,14 +1105,19 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
                     .enter(AnimKind::Pop)
                     .after(0.15)
                     .styled(|s| s.italic = true),
-                Part::text(text(), 66.0, INK).boxed(620.0).at(100.0, 0.0).enter(AnimKind::Fade).after(0.25),
+                Part::text(text(), fit(&ask.text, 66.0, 610.0), INK)
+                    .boxed(620.0)
+                    .at(100.0, 0.0)
+                    .enter(AnimKind::Fade)
+                    .after(0.25),
             ]
         }
         "buyButton" => {
-            let w = (wide(&ask.text, 70.0) + 220.0).max(460.0);
+            let size = fit(&ask.text, 70.0, 760.0);
+            let w = (wide(&ask.text, size) + 220.0).max(460.0);
             vec![
                 Part::shape(glossy([w, 150.0], 75.0, accent, 0.0)).enter(AnimKind::Pop).looped(LoopKind::Heartbeat),
-                Part::text(text(), 70.0, over(accent)).enter(AnimKind::Pop).looped(LoopKind::Heartbeat),
+                Part::text(text(), size, over(accent)).enter(AnimKind::Pop).looped(LoopKind::Heartbeat),
             ]
         }
         "arrowHint" => {
@@ -1101,12 +1160,16 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
             let top = -tall / 2.0;
             let mut v = vec![
                 Part::shape(Shape { shadow: shadow(), ..plate([900.0, tall], 38.0, WHITE) }).enter(AnimKind::SlideUp),
-                Part::text(text(), 74.0, INK).boxed(780.0).at(0.0, top + 92.0).enter(AnimKind::Fade).after(0.15),
+                Part::text(text(), fit(&ask.text, 74.0, 770.0), INK)
+                    .boxed(780.0)
+                    .at(0.0, top + 92.0)
+                    .enter(AnimKind::Fade)
+                    .after(0.15),
                 Part::shape(bar(120.0, 10.0, accent)).at(-330.0, top + 152.0).enter(AnimKind::Draw).after(0.25),
             ];
             for (i, words) in ask.lines.iter().enumerate() {
                 v.push(
-                    Part::text(words.clone(), 44.0, GREY)
+                    Part::text(words.clone(), fit(words, 44.0, 770.0), GREY)
                         .boxed(780.0)
                         .at(0.0, top + 214.0 + i as f32 * step)
                         .enter(AnimKind::SlideUp)
@@ -1136,15 +1199,24 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
                 mark.fit = Some(0.3);
                 v.push(mark);
             }
-            v.push(Part::shape(bar(160.0, 10.0, second)).at(0.0, -110.0).enter(AnimKind::Draw).after(0.2));
-            v.push(Part::text(text(), 112.0, WHITE).wrapped(950.0).enter(AnimKind::CharRise).over(0.9).after(0.1));
+            // words a little too long are set smaller; longer ones take rows, and the bar above
+            // and the line below make room for them
+            let size = fit(&ask.text, 112.0, 940.0).max(92.0);
+            let more = ((wide(&ask.text, size) / 940.0).ceil().clamp(1.0, 4.0) - 1.0) * size * 0.66;
+            v.push(Part::shape(bar(160.0, 10.0, second)).at(0.0, -110.0 - more).enter(AnimKind::Draw).after(0.2));
+            v.push(Part::text(text(), size, WHITE).wrapped(950.0).enter(AnimKind::CharRise).over(0.9).after(0.1));
             if n > 0 {
-                v.push(Part::text(line(0), 46.0, over(accent)).at(0.0, 150.0).enter(AnimKind::Pop).after(0.8).styled(
-                    |s| {
-                        s.background = Some(accent);
-                        s.radius = 0.5;
-                    },
-                ));
+                let small = fit(&line(0), 46.0, 900.0);
+                v.push(
+                    Part::text(line(0), small, over(accent))
+                        .at(0.0, 150.0 + more)
+                        .enter(AnimKind::Pop)
+                        .after(0.8)
+                        .styled(|s| {
+                            s.background = Some(accent);
+                            s.radius = 0.5;
+                        }),
+                );
             }
             v
         }

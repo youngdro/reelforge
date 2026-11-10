@@ -3005,3 +3005,218 @@ fn a_lottie_animation_is_imported_and_placed_like_a_video_that_goes_round() {
     assert_eq!(s.revision(), before);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn every_storyboard_is_built_in_each_language_on_any_canvas_and_compiles() {
+    let boards = s_list("zh");
+    assert_eq!(boards.len(), 6);
+    for (i, lang) in ["zh", "en", "ja"].into_iter().enumerate() {
+        let canvas = [[1080, 1920], [1920, 1080], [1080, 1080]][i];
+        for board in &s_list(lang) {
+            let id = board["id"].as_str().unwrap();
+            let mut s = Session::default();
+            s.execute("project.setCanvas", &json!({"width": canvas[0], "height": canvas[1]})).unwrap();
+            let before = s.revision();
+            let out = s
+                .execute("storyboard.apply", &json!({"storyboard": id, "lang": lang, "captions": true}))
+                .unwrap_or_else(|e| panic!("{id} in {lang}: {e}"));
+            // a slot for each scene with a picture, a marker for each scene, every piece folded
+            let scenes = board["scenes"].as_array().unwrap();
+            assert_eq!(out["slots"].as_array().unwrap().len() as u64, board["slots"].as_u64().unwrap(), "{id}");
+            assert_eq!(out["scenes"].as_array().unwrap().len(), scenes.len());
+            let p = s.project();
+            assert_eq!(p.markers.len(), scenes.len());
+            let planned: usize = scenes.iter().map(|sc| sc["pieces"].as_array().unwrap().len()).sum();
+            assert_eq!(out["pieces"].as_array().unwrap().len(), planned);
+            for piece in out["pieces"].as_array().unwrap() {
+                assert!(crate::made_of(&p, piece["clip"].as_str().unwrap()).is_some(), "{id}: {piece}");
+            }
+            // as long as it says, with the music cut to it
+            let length = Tick::from_seconds(board["seconds"].as_f64().unwrap());
+            assert!((p.duration().0 - length.0).abs() < Tick::from_seconds(0.05).0, "{id}");
+            // the copy is the storyboard's, in the language asked for, and nothing is left unwritten
+            let fields = board["fields"].as_array().unwrap();
+            assert_eq!(p.copy.len(), fields.len());
+            for (kept, field) in p.copy.iter().zip(fields) {
+                assert_eq!(kept.name, field["name"].as_str().unwrap());
+                assert!(field["label"].as_str().unwrap() != kept.name, "{id}: {} has no label", kept.name);
+            }
+            let texts = p.timelines.iter().flat_map(|t| &t.tracks).chain(&p.tracks).flat_map(|t| &t.clips);
+            for clip in texts {
+                if let ClipContent::Text { text, .. } = &clip.content {
+                    assert!(!text.replace("{n}", "").contains('{'), "{id} in {lang}: {text:?} was left unwritten");
+                }
+            }
+            for scene in out["scenes"].as_array().unwrap() {
+                assert!(!scene["voice"].as_str().unwrap_or("").contains('{'), "{id}: {scene}");
+            }
+            s.execute("render.compile", &json!({})).unwrap_or_else(|e| panic!("{id} in {lang}: {e}"));
+            // one undo step for the lot
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert!(s.project().tracks.iter().all(|t| t.clips.is_empty()) && s.project().copy.is_empty());
+            assert!(s.revision() > before);
+        }
+    }
+}
+
+fn s_list(lang: &str) -> Vec<Value> {
+    let mut s = Session::default();
+    s.execute("storyboard.list", &json!({"lang": lang})).unwrap()["storyboards"].as_array().unwrap().clone()
+}
+
+#[test]
+fn a_storyboard_s_copy_is_filled_by_name_and_its_pieces_are_made_again() {
+    let mut s = Session::default();
+    let inside = |s: &Session, clip: &str| -> Vec<String> {
+        let p = s.project();
+        let (timeline, _) = crate::made_of(&p, clip).unwrap();
+        let clips = p.tracks_of(timeline).unwrap().iter().flat_map(|t| &t.clips);
+        clips
+            .filter_map(|c| if let ClipContent::Text { text, .. } = &c.content { Some(text.clone()) } else { None })
+            .collect()
+    };
+    let piece = |out: &Value, kind: &str| -> String {
+        let all = out["pieces"].as_array().unwrap();
+        all.iter().find(|p| p["kind"] == kind).unwrap()["clip"].as_str().unwrap().to_string()
+    };
+    // built with some of the copy given; the rest is the storyboard's own
+    let out = s
+        .execute(
+            "storyboard.apply",
+            &json!({"storyboard": "launch", "copy": {"product": "云朵拖鞋", "price": 59, "oldPrice": "89"}}),
+        )
+        .unwrap();
+    let (third, tag, button, strike) =
+        (piece(&out, "lowerThird"), piece(&out, "priceTag"), piece(&out, "buyButton"), piece(&out, "strikePrice"));
+    assert!(inside(&s, &third).contains(&"云朵拖鞋".to_string()));
+    assert_eq!(crate::made_of(&s.project(), &tag).unwrap().1.value, Some(59.0));
+    assert_eq!(inside(&s, &strike), ["¥89"]);
+    assert_eq!(inside(&s, &button), ["立即抢购"]);
+    let voice = out["scenes"][1]["voice"].as_str().unwrap();
+    assert!(voice.starts_with("云朵拖鞋，"), "{voice}");
+    let copy = s.execute("storyboard.copy", &json!({})).unwrap();
+    let product = copy["copy"].as_array().unwrap().iter().find(|f| f["name"] == "product").unwrap().clone();
+    assert_eq!(
+        (product["label"].as_str(), product["value"].as_str(), product["pieces"].as_u64()),
+        (Some("商品名"), Some("云朵拖鞋"), Some(1))
+    );
+
+    // a clip is set like any other, then fields are filled: what is written from them is made again
+    s.execute("clip.set", &json!({"clip": button, "y": 0.3})).unwrap();
+    let before = s.revision();
+    let filled = s
+        .execute(
+            "storyboard.fill",
+            &json!({"copy": {"cta": "马上带一双回家", "price": 49.9, "product": "云朵拖鞋 2.0"}}),
+        )
+        .unwrap();
+    assert_eq!(filled["pieces"], json!(3));
+    assert_eq!(s.revision(), before + 1);
+    assert_eq!(inside(&s, &button), ["马上带一双回家"]);
+    assert_eq!(crate::made_of(&s.project(), &tag).unwrap().1.value, Some(49.9));
+    assert!(inside(&s, &third).contains(&"云朵拖鞋 2.0".to_string()));
+    assert_eq!(inside(&s, &strike), ["¥89"]);
+    assert_eq!(s.project().clip(&button).unwrap().1.transform.y, 0.3);
+    s.execute("render.compile", &json!({})).unwrap();
+    // it survives saving
+    let p = s.project();
+    assert_eq!(Project::from_json(&p.to_json()).unwrap(), *p);
+    // one undo step
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(inside(&s, &button), ["立即抢购"]);
+    s.execute("edit.redo", &json!({})).unwrap();
+
+    // a field a piece counts to is a number, or nothing changes
+    let before = s.revision();
+    let e = s.execute("storyboard.fill", &json!({"copy": {"price": "四十九"}})).unwrap_err().to_string();
+    assert!(e.contains("`price`") && e.contains("number"), "{e}");
+    assert!(s.execute("storyboard.fill", &json!({"copy": {}})).is_err());
+    assert!(s.execute("storyboard.fill", &json!({"copy": {"no good": "x"}})).is_err());
+    assert!(s.execute("storyboard.fill", &json!({"copy": {"n": "x"}})).is_err());
+    assert!(s.execute("storyboard.fill", &json!({"copy": {"cta": ["x"]}})).is_err());
+    assert_eq!(s.revision(), before);
+    // a field nothing is written from yet is kept for later
+    let filled = s.execute("storyboard.fill", &json!({"copy": {"shop": "南山店"}})).unwrap();
+    assert_eq!(filled["pieces"], json!(0));
+    assert!(s.project().copy.iter().any(|f| f.name == "shop" && f.value == "南山店"));
+
+    // a piece told its words directly is no longer written from the field
+    s.execute("promo.set", &json!({"clip": button, "text": "去看看"})).unwrap();
+    let filled = s.execute("storyboard.fill", &json!({"copy": {"cta": "不再跟着变"}})).unwrap();
+    assert_eq!(filled["pieces"], json!(0));
+    assert_eq!(inside(&s, &button), ["去看看"]);
+
+    // a second storyboard goes on a timeline of its own and shares the copy by name
+    let first = s.project().timeline.clone();
+    let second =
+        s.execute("storyboard.apply", &json!({"storyboard": "flashSale", "lang": "en", "seconds": 12})).unwrap();
+    assert_ne!(second["timeline"].as_str().unwrap(), first);
+    assert!((s.project().duration().seconds() - 12.0).abs() < 0.05);
+    assert_eq!(s.project().copy.iter().filter(|f| f.name == "product").count(), 1);
+    // what cannot be built is refused
+    assert!(s.execute("storyboard.apply", &json!({"storyboard": "nothing"})).is_err());
+    assert!(s.execute("storyboard.apply", &json!({"storyboard": "launch", "seconds": 300})).is_err());
+    assert!(s.execute("storyboard.apply", &json!({"storyboard": "launch", "lang": "fr"})).is_err());
+    assert!(s.execute("storyboard.apply", &json!({"storyboard": "launch", "copy": {"price": "free"}})).is_err());
+}
+
+#[test]
+fn a_storyboard_takes_the_person_s_pictures_in_scene_order() {
+    let mut s = Session::default();
+    let mut files = vec![];
+    for n in 0..4 {
+        let m = s
+            .execute(
+                "media.import",
+                &json!({"path": format!("/nowhere/{n}.mp4"), "kind": "video", "duration": {"seconds": 8}, "sha256": format!("{n:02x}").repeat(32)}),
+            )
+            .unwrap();
+        files.push(m["media"]["id"].as_str().unwrap().to_string());
+    }
+    let out = s.execute("storyboard.apply", &json!({"storyboard": "launch", "media": files})).unwrap();
+    assert_eq!(out["empty"], json!(0));
+    let p = s.project();
+    for (slot, file) in out["slots"].as_array().unwrap().iter().zip(&files) {
+        assert_eq!(slot["media"].as_str(), Some(file.as_str()));
+        let (_, clip) = p.clip(slot["clips"][0].as_str().unwrap()).unwrap();
+        assert!(matches!(&clip.content, ClipContent::Media { media, .. } if media == file));
+    }
+    // the last scene has no picture of the person's: a backdrop in the brand's colour
+    let last = p.tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| &t.clips);
+    assert!(last.into_iter().any(|c| c.slot.is_none() && matches!(c.content, ClipContent::Shape { .. })));
+}
+
+#[test]
+fn captions_written_from_the_copy_follow_it_until_changed_by_hand() {
+    let mut s = Session::default();
+    let out = s.execute("storyboard.apply", &json!({"storyboard": "launch", "captions": true})).unwrap();
+    let said = |s: &Session| -> Vec<String> {
+        let p = s.project();
+        let track = p.tracks.iter().find(|t| t.name == crate::CAPTIONS_TRACK).unwrap();
+        track
+            .clips
+            .iter()
+            .filter_map(|c| if let ClipContent::Text { text, .. } = &c.content { Some(text.clone()) } else { None })
+            .collect()
+    };
+    // a caption for each scene's line, as the scenes say them
+    let voices: Vec<String> =
+        out["scenes"].as_array().unwrap().iter().map(|sc| sc["voice"].as_str().unwrap().to_string()).collect();
+    assert_eq!(said(&s), voices);
+    assert_eq!(said(&s)[3], "新品首发 · 限时尝鲜价，到手只要 129 元。");
+    // the price is filled: its caption says the new one; the others are as they were
+    let filled = s.execute("storyboard.fill", &json!({"copy": {"price": 119}})).unwrap();
+    assert_eq!((filled["pieces"].as_u64(), filled["captions"].as_u64()), (Some(1), Some(1)));
+    assert_eq!(said(&s)[3], "新品首发 · 限时尝鲜价，到手只要 119 元。");
+    assert_eq!(said(&s)[0], voices[0]);
+    // one changed by hand is left alone from then on
+    let hook = s.project().copy_lines[0].clip.clone();
+    s.execute("clip.set", &json!({"clip": hook, "text": "还在喝凉水？"})).unwrap();
+    let filled = s.execute("storyboard.fill", &json!({"copy": {"hook": "杯子不保温？"}})).unwrap();
+    assert_eq!(filled["captions"].as_u64(), Some(0));
+    assert_eq!(said(&s)[0], "还在喝凉水？");
+    assert_eq!(s.project().copy_lines.len(), voices.len() - 1);
+    // and it survives saving
+    let p = s.project();
+    assert_eq!(Project::from_json(&p.to_json()).unwrap(), *p);
+}

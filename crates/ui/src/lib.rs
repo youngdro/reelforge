@@ -40,6 +40,7 @@ mod remix;
 pub mod remote;
 mod spoken;
 mod stage;
+mod storyboard;
 mod strips;
 mod theme;
 mod timeline;
@@ -1331,6 +1332,36 @@ impl EditorApp {
         }
     }
 
+    /// Builds built-in storyboard `id`, written in the interface's language: on this timeline
+    /// when nothing is on it yet, else on a new one. Its slots wait for pictures and videos and its
+    /// copy to be typed over, both in the templates tab.
+    fn use_storyboard(&mut self, id: &str) {
+        let s = self.s();
+        let lang = storyboard::lang(self.lang);
+        let Some(board) = reelforge_engine::storyboards().iter().find(|b| b.id == id) else { return };
+        let name = board.name.get(lang);
+        let params = json!({"storyboard": id, "lang": self.lang.code(), "name": name});
+        if let Ok(v) = self.execute("storyboard.apply", params) {
+            self.set_playing(false);
+            self.selected = None;
+            self.also.clear();
+            self.playhead = Tick::ZERO;
+            self.timeline_name.clear();
+            self.assets.show_storyboards();
+            let slots = v["slots"].as_array().map_or(0, Vec::len);
+            self.status = fill(s.board_used, &[&name, &slots.to_string()]);
+        }
+    }
+
+    /// Gives field `name` of the project's copy other words; the pieces written from it are made
+    /// again.
+    fn fill_copy(&mut self, name: &str, words: &str) {
+        let s = self.s();
+        if let Ok(v) = self.execute("storyboard.fill", json!({"copy": {name: words}, "lang": self.lang.code()})) {
+            self.status = fill(s.copy_filled, &[&v["pieces"].as_u64().unwrap_or(0).to_string()]);
+        }
+    }
+
     /// Asks for pictures and videos for the empty slots of the timeline's template.
     fn pick_fill(&mut self, ctx: &egui::Context) {
         self.into = None;
@@ -2476,6 +2507,10 @@ impl EditorApp {
             .default_width(280.0)
             .show(ctx, |ui| {
                 for (i, t) in list.iter().enumerate() {
+                    // a ready-made piece's inside is gone into from its clip, not listed here
+                    if !t.current && p.timelines.iter().any(|x| x.id == t.id && x.made.is_some()) {
+                        continue;
+                    }
                     ui.horizontal(|ui| {
                         let name = self.timeline_label(&t.name, i);
                         let r = ui.selectable_label(t.current, format!("{}  {name}", icon::FILM));
@@ -2736,7 +2771,13 @@ impl EditorApp {
             {
                 self.leave_compound();
             }
-            let label = if list.len() > 1 { format!("{shown}  ({}/{})", current + 1, list.len()) } else { shown };
+            // ready-made pieces folded into clips are timelines too, but not ones to count here
+            let piece = |id: &str| p.timelines.iter().any(|t| t.id == id && t.made.is_some());
+            let own: Vec<usize> = (0..list.len()).filter(|i| !piece(&list[*i].id)).collect();
+            let label = match own.iter().position(|i| *i == current) {
+                Some(at) if own.len() > 1 => format!("{shown}  ({}/{})", at + 1, own.len()),
+                _ => shown,
+            };
             if theme::tool(ui, icon::FILM, &label, s.timelines_tip, true).clicked() {
                 self.timelines_open = !self.timelines_open;
                 self.timeline_name.clear();
@@ -5014,6 +5055,8 @@ impl eframe::App for EditorApp {
             }
             Some(assets::Action::Captions(ask)) => self.captions_ask(ask, &ctx),
             Some(assets::Action::Template(id)) => self.use_template(id),
+            Some(assets::Action::Storyboard(id)) => self.use_storyboard(id),
+            Some(assets::Action::Copy(name, words)) => self.fill_copy(&name, &words),
             Some(assets::Action::Fill) => self.pick_fill(&ctx),
             None => {}
         }
