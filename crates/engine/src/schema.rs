@@ -151,7 +151,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
     let clip = || ("clip", ident("Clip id, such as c4."));
     Some(match id {
         "commands.list" | "project.inspect" | "project.new" | "edit.undo" | "edit.redo" | "title.templates"
-        | "sound.library" | "timeline.list" | "fx.list" | "sticker.library" => object(vec![], &[]),
+        | "sound.library" | "timeline.list" | "fx.list" | "sticker.library" | "voice.list" => object(vec![], &[]),
         "sound.add" => object(
             vec![
                 (
@@ -309,6 +309,34 @@ pub fn input_schema(id: &str) -> Option<Value> {
         "clip.setFx" => object(
             vec![clip(), ("fx", fx("The clip's effects from now on; an empty list removes them."))],
             &["clip", "fx"],
+        ),
+        "clip.setVoice" => object(
+            vec![
+                clip(),
+                (
+                    "voice",
+                    json!({"enum": ["high", "low", "chipmunk", "monster", "robot", "phone", "megaphone", "echo", null], "description": "A ready-made voice (voice.list); null takes it off."}),
+                ),
+                (
+                    "pitch",
+                    json!({"type": "number", "minimum": -12, "maximum": 12, "description": "Semitones up (negative: down), on top of the voice's own; the sound keeps its length."}),
+                ),
+            ],
+            &["clip"],
+        ),
+        "clip.setDenoise" => object(
+            vec![
+                clip(),
+                (
+                    "amount",
+                    json!({"type": "number", "minimum": 0, "maximum": 1, "description": "How much noise is taken out; 0 turns it off."}),
+                ),
+                (
+                    "floor",
+                    json!({"type": "array", "items": {"type": "number"}, "minItems": 24, "maxItems": 24, "description": "The noise: its power density in dB in 24 bands evenly spaced on a log scale from 60 Hz to 16 kHz. audio.denoise measures it; without it the clip's own is kept."}),
+                ),
+            ],
+            &["clip", "amount"],
         ),
         "captions.import" => object(
             vec![

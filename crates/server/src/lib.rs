@@ -16,7 +16,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use reelforge_engine::{EngineError, Session, SharedSession, input_schema, parse_time, registry};
+use reelforge_engine::{EngineError, Session, SharedSession, input_schema, listen, parse_time, registry};
 use reelforge_media::{Footage, Renderer};
 use reelforge_model::Project;
 use reelforge_render::{Quality, render_frame};
@@ -143,6 +143,17 @@ pub fn ops() -> Vec<Op> {
         read_only: true,
         destructive: false,
     });
+    // the tools that listen to the media before they edit
+    for tool in &listen::TOOLS {
+        out.push(Op {
+            name: tool.name,
+            title: tool.title,
+            doc: tool.doc.to_string(),
+            schema: listen::tool_schema(tool.name).expect("every tool has a schema"),
+            read_only: false,
+            destructive: false,
+        });
+    }
     out
 }
 
@@ -273,6 +284,15 @@ impl Hub {
                 };
                 self.save_to(&path).map_err(CallError::Failed)?;
                 Ok(Output::Json(json!({"saved": path})))
+            }
+            id if listen::TOOLS.iter().any(|t| t.name == id) => {
+                // listened to outside the session's lock, then carried out as one edit
+                let plan =
+                    listen::plan(id, &self.shared.project(), &self.footage, params).map_err(CallError::Failed)?;
+                if !plan.steps.is_empty() {
+                    self.shared.execute("edit.batch", &plan.batch(), by)?;
+                }
+                Ok(Output::Json(plan.found))
             }
             id => Ok(Output::Json(self.shared.execute(id, params, by)?)),
         }

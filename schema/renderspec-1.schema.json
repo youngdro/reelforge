@@ -132,6 +132,13 @@
           "$ref": "#/$defs/Tick",
           "description": "How long it plays; positive."
         },
+        "fx": {
+          "description": "What is done to the sound, in order, before its gain (feature `audio.fx/1`).",
+          "items": {
+            "$ref": "#/$defs/AudioEffect"
+          },
+          "type": "array"
+        },
         "gain_db": {
           "$ref": "#/$defs/Animated",
           "default": 0.0,
@@ -144,6 +151,11 @@
         "keep_pitch": {
           "description": "At a speed other than 1, stretch the sound in time keeping its pitch (feature\n`audio.stretch/1`) instead of resampling it, which moves the pitch with the speed.",
           "type": "boolean"
+        },
+        "pitch": {
+          "description": "Semitones the sound is moved up (negative: down) without changing how long it lasts\n(feature `audio.pitch/1`). Sound played backwards ignores it.",
+          "format": "float",
+          "type": "number"
         },
         "time": {
           "$ref": "#/$defs/TimeMap",
@@ -174,6 +186,124 @@
           "const": "opus",
           "description": "Opus.",
           "type": "string"
+        }
+      ]
+    },
+    "AudioEffect": {
+      "description": "One thing done to a clip's sound. Each is a function of the clip's own samples, counted from\nits start (what came before the clip is silence), so a mix made in pieces matches one made\nwhole.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Steady background noise taken out. The sound is cut into frames of 1024 samples half a\nframe apart; in each, what does not rise above the noise is turned down.",
+          "properties": {
+            "amount": {
+              "description": "How much is taken out, from 0 (nothing) to 1.",
+              "format": "float",
+              "type": "number"
+            },
+            "floor": {
+              "description": "The noise: its power density in dB (full scale squared per hertz) in each of\n[`AudioEffect::NOISE_BANDS`] bands evenly spaced on a log scale from 60 Hz to 16 kHz,\nthe first and last taking what lies beyond.",
+              "items": {
+                "format": "float",
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "denoise",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "floor",
+            "amount"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Only what lies between two frequencies is kept, as through a telephone.",
+          "properties": {
+            "high": {
+              "description": "The highest frequency kept, in Hz.",
+              "format": "float",
+              "type": "number"
+            },
+            "low": {
+              "description": "The lowest frequency kept, in Hz.",
+              "format": "float",
+              "type": "number"
+            },
+            "type": {
+              "const": "band",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "low",
+            "high"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The sound multiplied by a sine wave (ring modulation): a robot's voice.",
+          "properties": {
+            "hz": {
+              "description": "The sine's frequency in Hz.",
+              "format": "float",
+              "type": "number"
+            },
+            "mix": {
+              "description": "How much of the result is the modulated sound, from 0 to 1.",
+              "format": "float",
+              "type": "number"
+            },
+            "type": {
+              "const": "ring",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "hz",
+            "mix"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The sound again, later and quieter, a number of times.",
+          "properties": {
+            "decay": {
+              "description": "How loud each repeat is next to the one before, from 0 to 1.",
+              "format": "float",
+              "type": "number"
+            },
+            "delay": {
+              "$ref": "#/$defs/Tick",
+              "description": "The time between repeats."
+            },
+            "repeats": {
+              "description": "How many repeats, from 1 to 8.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "echo",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "delay",
+            "decay",
+            "repeats"
+          ],
+          "type": "object"
         }
       ]
     },

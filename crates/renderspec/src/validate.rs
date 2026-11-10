@@ -229,8 +229,54 @@ pub fn validate(spec: &RenderSpec) -> Result<(), ValidationError> {
         asset_of_kind(spec, &format!("{path}.asset"), &clip.asset, &[AssetKind::Video, AssetKind::Audio])?;
         time_ok(&format!("{path}.time"), &clip.time, clip.dur)?;
         keys_ok(&format!("{path}.gain_db"), &clip.gain_db, clip.dur)?;
+        if !(clip.pitch.is_finite() && (-24.0..=24.0).contains(&clip.pitch)) {
+            return Err(bad(format!("{path}.pitch"), "must be from -24 to 24 semitones"));
+        }
+        for (j, fx) in clip.fx.iter().enumerate() {
+            audio_fx_ok(&format!("{path}.fx[{j}]"), fx)?;
+        }
     }
     Ok(())
+}
+
+fn audio_fx_ok(path: &str, fx: &crate::AudioEffect) -> Result<(), ValidationError> {
+    use crate::AudioEffect as E;
+    let unit = |name: &str, v: f32| {
+        if v.is_finite() && (0.0..=1.0).contains(&v) {
+            Ok(())
+        } else {
+            Err(bad(format!("{path}.{name}"), "must be from 0 to 1"))
+        }
+    };
+    match fx {
+        E::Denoise { floor, amount } => {
+            if floor.len() != E::NOISE_BANDS || floor.iter().any(|v| !v.is_finite()) {
+                return Err(bad(format!("{path}.floor"), format!("must be {} numbers", E::NOISE_BANDS)));
+            }
+            unit("amount", *amount)
+        }
+        E::Band { low, high } => {
+            if !(low.is_finite() && high.is_finite() && *low >= 0.0 && low < high) {
+                return Err(bad(path, "`low` must be at least 0 and below `high`"));
+            }
+            Ok(())
+        }
+        E::Ring { hz, mix } => {
+            if !(hz.is_finite() && *hz > 0.0 && *hz <= 20_000.0) {
+                return Err(bad(format!("{path}.hz"), "must be above 0 and at most 20000"));
+            }
+            unit("mix", *mix)
+        }
+        E::Echo { delay, decay, repeats } => {
+            if *delay <= Tick::ZERO || *delay > Tick(2 * reelforge_time::TICKS_PER_SECOND) {
+                return Err(bad(format!("{path}.delay"), "must be above 0 and at most 2 seconds"));
+            }
+            if !(1..=8).contains(repeats) {
+                return Err(bad(format!("{path}.repeats"), "must be from 1 to 8"));
+            }
+            unit("decay", *decay)
+        }
+    }
 }
 
 fn asset_of_kind(spec: &RenderSpec, path: &str, id: &str, kinds: &[AssetKind]) -> Result<(), ValidationError> {

@@ -381,6 +381,7 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                 let time = time_map(&timing, Tick::ZERO);
                 // backwards, sound plays like tape run the other way
                 let keep_pitch = clip.keep_pitch && !time.reverses() && (time.speed != 1.0 || !time.ramp.is_empty());
+                let pitch = if time.reverses() { 0.0 } else { clip.voice.semitones() };
                 spec.audio.push(AudioClip {
                     id: clip.id.clone(),
                     asset: asset_for(media)?,
@@ -389,6 +390,8 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                     time,
                     gain_db: motion::lower(clip, Prop::VolumeDb, &Shape::of(clip), step),
                     keep_pitch,
+                    pitch,
+                    fx: sound_fx(&clip.voice),
                 });
             }
         }
@@ -531,6 +534,25 @@ fn shape(clip: &Clip, into: Option<(TransitionKind, Tick)>, out: Option<(Transit
     Shape { lead, len: lead + clip.duration + tail, overlays, frames: vec![], canvas: [1.0, 1.0] }
 }
 
+/// What a clip's changed voice does to its sound, in the order it is done: noise out first, then
+/// the voice's own parts.
+fn sound_fx(voice: &reelforge_model::Voice) -> Vec<reelforge_renderspec::AudioEffect> {
+    use reelforge_model::VoicePart;
+    use reelforge_renderspec::AudioEffect;
+    let mut out = Vec::new();
+    if let Some(d) = voice.denoise.as_ref().filter(|d| d.amount > 0.0) {
+        out.push(AudioEffect::Denoise { floor: d.floor.clone(), amount: d.amount });
+    }
+    for part in voice.kind.map_or(&[][..], |k| k.parts()) {
+        out.push(match *part {
+            VoicePart::Band(low, high) => AudioEffect::Band { low, high },
+            VoicePart::Ring(hz, mix) => AudioEffect::Ring { hz, mix },
+            VoicePart::Echo(delay, decay, repeats) => AudioEffect::Echo { delay, decay, repeats },
+        });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -554,6 +576,7 @@ mod tests {
             color: Default::default(),
             look: Default::default(),
             fx: vec![],
+            voice: Default::default(),
         }
     }
 

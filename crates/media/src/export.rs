@@ -691,11 +691,79 @@ fn tape(
     Ok(Some(out))
 }
 
+/// `n` samples of `clip`'s own sound from `from` samples after its start, before its effects and
+/// its gain: in [`CHANNELS`] channels, silent before the clip's start and after its end (it is
+/// `len` samples long). `None` when it has no sound.
+fn clip_sound(
+    media: &Footage,
+    asset: &reelforge_renderspec::Asset,
+    clip: &reelforge_renderspec::AudioClip,
+    rate: u32,
+    len: i64,
+    from: i64,
+    n: usize,
+) -> Result<Option<Vec<Vec<f32>>>, String> {
+    let (lo, hi) = (from.max(0), (from + n as i64).min(len));
+    if hi <= lo {
+        return Ok(Some(vec![vec![0.0; n]; CHANNELS]));
+    }
+    let m = (hi - lo) as usize;
+    let at_sample = |t: Tick, rate: u32| (t.0 as i128 * rate as i128 / TICKS_PER_SECOND as i128) as i64;
+    let time = &clip.time;
+    let speed = time.speed;
+    let offset = |i: i64| Tick((i as i128 * TICKS_PER_SECOND as i128 / rate as i128) as i64);
+    let src = if clip.pitch != 0.0 && !time.reverses() {
+        // read faster (or slower), which moves the pitch, and stretched back to its length
+        let tape = if clip.keep_pitch || !time.ramp.is_empty() { 1.0 } else { speed };
+        let ratio = 2f64.powf(f64::from(clip.pitch) / 12.0) * tape;
+        let src_rate = ((rate as f64 / ratio).round() as u32).max(1);
+        let src_in = time.source_in.0 as f64 * src_rate as f64 / TICKS_PER_SECOND as f64;
+        let position = |i: i64| {
+            if time.ramp.is_empty() {
+                (src_in + i as f64 * speed * src_rate as f64 / rate as f64).round() as i64
+            } else {
+                at_sample(time.source_at(offset(i)), src_rate)
+            }
+        };
+        crate::stretch::stretched(media, asset, position, lo, m, src_rate)
+    } else if clip.keep_pitch && !time.reverses() && (speed != 1.0 || !time.ramp.is_empty()) {
+        // read at the output rate and stretched in time
+        let src_in = at_sample(time.source_in, rate);
+        let position = |i: i64| {
+            if time.ramp.is_empty() {
+                src_in + (i as f64 * speed).round() as i64
+            } else {
+                at_sample(time.source_at(offset(i)), rate)
+            }
+        };
+        crate::stretch::stretched(media, asset, position, lo, m, rate)
+    } else if time.ramp.is_empty() && speed > 0.0 {
+        // the source read at `rate / speed` advances `speed` source seconds per output second
+        let src_rate = ((rate as f64 / speed).round() as u32).max(1);
+        media.audio(asset, at_sample(time.source_in, src_rate) + lo, m, src_rate)
+    } else {
+        tape(media, asset, |i| time.source_at(offset(i)), lo, m, rate)
+    };
+    let Some(src) = src? else { return Ok(None) };
+    if src.is_empty() {
+        return Ok(None);
+    }
+    let mut out = vec![vec![0f32; n]; CHANNELS];
+    for (c, ch) in out.iter_mut().enumerate() {
+        let s = &src[c.min(src.len() - 1)];
+        let k = s.len().min(m);
+        ch[(lo - from) as usize..][..k].copy_from_slice(&s[..k]);
+    }
+    Ok(Some(out))
+}
+
 /// The stereo mix of `frames` samples from output sample `start`.
 ///
 /// A clip at another speed is stretched in time keeping its pitch when it asks to
 /// (`keep_pitch`, [`crate::stretch`]), and otherwise read resampled, its pitch moving with the
-/// speed as on tape; played backwards it is always read like tape. A freeze frame is silent.
+/// speed as on tape; played backwards it is always read like tape. A freeze frame is silent. A
+/// clip's pitch is moved by reading it faster or slower and stretching it back (`audio.pitch/1`),
+/// and its effects ([`crate::sound`]) are done before its gain.
 pub fn mix(
     spec: &RenderSpec,
     media: &Footage,
@@ -713,39 +781,15 @@ pub fn mix(
         if a >= b {
             continue;
         }
-        let time = &clip.time;
-        if time.holds() {
+        if clip.time.holds() {
             // a freeze frame is silent
             continue;
         }
-        let speed = time.speed;
         let n = (b - a) as usize;
-        let offset = |i: i64| Tick((i as i128 * TICKS_PER_SECOND as i128 / rate as i128) as i64);
-        let src = if clip.keep_pitch && !time.reverses() && (speed != 1.0 || !time.ramp.is_empty()) {
-            // read at the output rate and stretched in time
-            let src_in = at_sample(time.source_in);
-            let position = |i: i64| {
-                if time.ramp.is_empty() {
-                    src_in + (i as f64 * speed).round() as i64
-                } else {
-                    at_sample(time.source_at(offset(i)))
-                }
-            };
-            crate::stretch::stretched(media, asset, position, a - c0, n, rate)
-        } else if time.ramp.is_empty() && speed > 0.0 {
-            // the source read at `rate / speed` advances `speed` source seconds per output second
-            let src_rate = ((rate as f64 / speed).round() as u32).max(1);
-            let src_in = (time.source_in.0 as i128 * src_rate as i128 / TICKS_PER_SECOND as i128) as i64;
-            media.audio(asset, src_in + (a - c0), n, src_rate)
-        } else {
-            tape(media, asset, |i| time.source_at(offset(i)), a - c0, n, rate)
-        };
-        let Some(src) = src.map_err(ExportError::Media)? else {
+        let read = |from: i64, n: usize| clip_sound(media, asset, clip, rate, c1 - c0, from, n);
+        let Some(src) = crate::sound::processed(&read, &clip.fx, a - c0, n, rate).map_err(ExportError::Media)? else {
             continue;
         };
-        if src.is_empty() {
-            continue;
-        }
         for i in 0..n {
             let rel = Tick(((a - c0 + i as i64) as i128 * TICKS_PER_SECOND as i128 / rate as i128) as i64);
             let gain = 10f32.powf(clip.gain_db.sample(rel) / 20.0);

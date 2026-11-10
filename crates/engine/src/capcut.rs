@@ -139,6 +139,7 @@ fn blank_clip(id: String, start: Tick, duration: Tick, content: ClipContent) -> 
         color: Default::default(),
         look: Default::default(),
         fx: vec![],
+        voice: Default::default(),
     }
 }
 

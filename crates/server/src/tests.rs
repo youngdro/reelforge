@@ -291,3 +291,162 @@ fn browsers_send_media_and_fetch_it_back() {
     let r = agent.get(format!("{base}/v1/media/{other}")).header("Authorization", "Bearer k").call().unwrap();
     assert_eq!(r.status(), 404);
 }
+
+/// A 48 kHz mono WAV of `seconds` of `sample(i)`.
+fn wav(seconds: f32, sample: impl Fn(usize) -> f32) -> Vec<u8> {
+    let n = (48_000.0 * seconds) as u32;
+    let mut b = Vec::new();
+    b.extend(b"RIFF");
+    b.extend((36 + n * 2).to_le_bytes());
+    b.extend(b"WAVEfmt ");
+    b.extend(16u32.to_le_bytes());
+    b.extend(1u16.to_le_bytes());
+    b.extend(1u16.to_le_bytes());
+    b.extend(48_000u32.to_le_bytes());
+    b.extend(96_000u32.to_le_bytes());
+    b.extend(2u16.to_le_bytes());
+    b.extend(16u16.to_le_bytes());
+    b.extend(b"data");
+    b.extend((n * 2).to_le_bytes());
+    for i in 0..n as usize {
+        b.extend(((sample(i).clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+    }
+    b
+}
+
+/// A number from -1 to 1, the same every run.
+fn hiss(i: usize) -> f32 {
+    let mut z = (i as u64).wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    (((z ^ (z >> 31)) >> 40) as f32 / (1u64 << 23) as f32) - 1.0
+}
+
+#[test]
+fn tools_listen_and_then_edit() {
+    let tone = |hz: f32, i: usize| (std::f32::consts::TAU * hz * i as f32 / 48_000.0).sin();
+    // a voice from 1 s to 2 s and from 4 s to 5 s, over hiss
+    let voice = temp("voice.wav");
+    std::fs::write(
+        &voice,
+        wav(6.0, |i| {
+            let t = i as f32 / 48_000.0;
+            let speaking = (1.0..2.0).contains(&t) || (4.0..5.0).contains(&t);
+            0.01 * hiss(i) + if speaking { 0.1 * tone(220.0, i) } else { 0.0 }
+        }),
+    )
+    .unwrap();
+    // a song at 120 beats a minute: a kick every half second from a quarter second in
+    let song = temp("song.wav");
+    std::fs::write(
+        &song,
+        wav(8.0, |i| {
+            let since = (i + 36_000) % 24_000;
+            0.6 * (-(since as f32) / 900.0).exp() * tone(60.0, since) + 0.002 * hiss(i)
+        }),
+    )
+    .unwrap();
+
+    let hub = Hub::new(Session::default());
+    let json = |out: Result<Output, CallError>| match out.expect("ok") {
+        Output::Json(v) => v,
+        Output::Png { .. } => panic!("json"),
+    };
+    let import = |path: &std::path::Path| {
+        json(hub.call("media.import", &json!({"path": path})))["media"]["id"].as_str().unwrap().to_string()
+    };
+    let (voice_media, song_media) = (import(&voice), import(&song));
+    let a1 = json(hub.call("track.add", &json!({"kind": "audio"})))["track"].as_str().unwrap().to_string();
+    let a2 = json(hub.call("track.add", &json!({"kind": "audio"})))["track"].as_str().unwrap().to_string();
+    let add = |track: &str, media: &str| {
+        json(hub.call("clip.add", &json!({"track": track, "media": media, "start": 0})))["clip"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let (voice_clip, song_clip) = (add(&a1, &voice_media), add(&a2, &song_media));
+    let clip = |id: &str| serde_json::to_value(hub.session().project().clip(id).unwrap().1).unwrap();
+
+    // the tools are operations like any other, with schemas
+    for name in ["audio.normalize", "audio.beats", "audio.duck", "audio.denoise"] {
+        let op = crate::find_op(name).expect(name);
+        assert_eq!(op.schema["type"], "object");
+        assert!(!op.read_only);
+    }
+
+    // noise: measured from the gaps, kept on the clip, and heard to be gone
+    let before = json(hub.call("audio.denoise", &json!({"clip": voice_clip})));
+    assert!((before["noiseDb"].as_f64().unwrap() - -47.8).abs() < 3.0, "{before}");
+    let kept = clip(&voice_clip)["voice"]["denoise"].clone();
+    assert!((kept["amount"].as_f64().unwrap() - 0.7).abs() < 1e-6);
+    assert_eq!(kept["floor"].as_array().unwrap().len(), 24);
+    let spec = reelforge_compile::compile(&hub.session().project(), &Default::default()).unwrap();
+    let cleaned = reelforge_media::export::mix(&spec, &hub.footage, 48_000, 2 * 48_000 + 4800, 48_000).unwrap();
+    let level = |x: &[f32]| (x.iter().map(|s| s * s).sum::<f32>() / x.len() as f32).sqrt();
+    // of the hiss between the words (0.01 / √3, with the song muted here) little is left
+    let mut alone = spec.clone();
+    alone.audio.retain(|a| a.id == voice_clip);
+    let quiet = reelforge_media::export::mix(&alone, &hub.footage, 48_000, 2 * 48_000 + 4800, 48_000).unwrap();
+    assert!(level(&quiet[0]) < 0.01 / 3f32.sqrt() * 0.2, "{}", level(&quiet[0]));
+    assert!(level(&cleaned[0]) > 0.01, "the song still plays");
+    // turned off again, and back with one undo
+    json(hub.call("audio.denoise", &json!({"clip": voice_clip, "amount": 0})));
+    assert!(clip(&voice_clip).get("voice").is_none());
+    hub.call("edit.undo", &json!({})).unwrap();
+    assert!((clip(&voice_clip)["voice"]["denoise"]["amount"].as_f64().unwrap() - 0.7).abs() < 1e-6);
+
+    // beats: 120 a minute, a marker on each, replaced when asked again and gone when cleared
+    let found = json(hub.call("audio.beats", &json!({"clip": song_clip})));
+    assert!((found["bpm"].as_f64().unwrap() - 120.0).abs() < 2.0, "{found}");
+    let markers = || hub.session().project().markers.clone();
+    assert_eq!(markers().len() as u64, found["beats"].as_u64().unwrap());
+    assert!((14..=16).contains(&markers().len()), "{}", markers().len());
+    for m in markers() {
+        let beat = (m.at.0 as f64 / reelforge_time::TICKS_PER_SECOND as f64 - 0.25) / 0.5;
+        assert!((beat - beat.round()).abs() * 0.5 < 0.04 && m.note == "♪", "{:?}", m.at);
+    }
+    let half = json(hub.call("audio.beats", &json!({"clip": song_clip, "every": 2})));
+    assert_eq!(markers().len() as u64, half["beats"].as_u64().unwrap());
+    assert!((7..=8).contains(&markers().len()));
+    json(hub.call("audio.beats", &json!({"clip": song_clip, "clear": true})));
+    assert!(markers().is_empty());
+    assert!(matches!(hub.call("audio.beats", &json!({"clip": voice_clip})), Err(CallError::Failed(_))));
+
+    // ducking: the song goes down 12 dB under each of the two stretches of voice, and asking
+    // twice does not take it down twice
+    for _ in 0..2 {
+        let ducked = json(hub.call("audio.duck", &json!({"clip": song_clip})));
+        assert_eq!((ducked["spans"].as_u64(), ducked["under"][0].as_str()), (Some(2), Some(voice_clip.as_str())));
+        let keys = clip(&song_clip)["keys"]["volumeDb"].as_array().unwrap().clone();
+        assert_eq!(keys.len(), 8, "{keys:?}");
+        let at = |i: usize| keys[i]["t"].as_i64().unwrap() as f64 / reelforge_time::TICKS_PER_SECOND as f64;
+        let values: Vec<f64> = keys.iter().map(|k| k["v"].as_f64().unwrap()).collect();
+        assert_eq!(values, [0.0, -12.0, -12.0, 0.0, 0.0, -12.0, -12.0, 0.0]);
+        assert!((at(1) - 0.9).abs() < 0.06 && (at(2) - 2.1).abs() < 0.06, "{} {}", at(1), at(2));
+        assert!((at(0) - (at(1) - 0.2)).abs() < 0.01 && (at(3) - (at(2) + 0.5)).abs() < 0.01);
+    }
+    assert!(matches!(hub.call("audio.duck", &json!({"clip": song_clip, "under": []})), Err(CallError::Failed(_))));
+
+    // loudness: both reach the target as they are heard, the ducked one by moving its keys
+    let levelled = json(hub.call("audio.normalize", &json!({"clips": [voice_clip], "target": -16})));
+    let change = levelled["clips"][0]["changeDb"].as_f64().unwrap();
+    assert!(change > 3.0, "{levelled}");
+    assert!((clip(&voice_clip)["volume_db"].as_f64().unwrap() - change).abs() < 0.11, "{}", clip(&voice_clip));
+    let again = json(hub.call("audio.normalize", &json!({"clips": [voice_clip], "target": -16})));
+    assert!(again["clips"][0]["changeDb"].as_f64().unwrap().abs() < 0.3, "{again}");
+    assert!((again["clips"][0]["lufs"].as_f64().unwrap() - -16.0).abs() < 0.3);
+    let all = json(hub.call("audio.normalize", &json!({})));
+    assert_eq!(all["clips"].as_array().unwrap().len(), 2);
+    let keys = clip(&song_clip)["keys"]["volumeDb"].as_array().unwrap().clone();
+    let song_change =
+        all["clips"].as_array().unwrap().iter().find(|c| c["clip"] == song_clip.as_str()).unwrap()["changeDb"]
+            .as_f64()
+            .unwrap();
+    assert!((keys[1]["v"].as_f64().unwrap() - (song_change - 12.0)).abs() < 0.11 && keys.len() == 8);
+
+    // what cannot be heard is said, and nothing changes
+    let revision = hub.session().revision();
+    assert!(matches!(hub.call("audio.denoise", &json!({"clip": "nope"})), Err(CallError::Failed(_))));
+    assert!(matches!(hub.call("audio.normalize", &json!({"target": 3})), Err(CallError::Failed(_))));
+    assert_eq!(hub.session().revision(), revision);
+}

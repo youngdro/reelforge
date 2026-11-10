@@ -477,6 +477,7 @@ mod tests {
             color: Default::default(),
             look: Default::default(),
             fx: vec![],
+            voice: Default::default(),
         }
     }
 

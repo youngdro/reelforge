@@ -399,6 +399,24 @@ pub(crate) struct Strings {
     pub(crate) export_failed: &'static str,
     pub(crate) cancel: &'static str,
     pub(crate) export_cancelled: &'static str,
+    pub(crate) voice: &'static str,
+    pub(crate) voice_none: &'static str,
+    pub(crate) voice_names: [&'static str; 8],
+    pub(crate) pitch: &'static str,
+    pub(crate) denoise: &'static str,
+    pub(crate) denoise_tip: &'static str,
+    pub(crate) loudness: &'static str,
+    pub(crate) loudness_tip: &'static str,
+    pub(crate) beats: &'static str,
+    pub(crate) beats_tip: &'static str,
+    pub(crate) beats_every: [&'static str; 3],
+    pub(crate) beats_clear: &'static str,
+    pub(crate) duck: &'static str,
+    pub(crate) duck_tip: &'static str,
+    pub(crate) beats_found: &'static str,
+    pub(crate) loudness_done: &'static str,
+    pub(crate) duck_done: &'static str,
+    pub(crate) denoise_done: &'static str,
 }
 
 static EN: Strings = Strings {
@@ -451,6 +469,13 @@ static EN: Strings = Strings {
         ("clip.setFx", "Effects"),
         ("fx.list", "List effects"),
         ("sticker.library", "Sticker library"),
+        ("clip.setVoice", "Voice"),
+        ("clip.setDenoise", "Reduce noise"),
+        ("voice.list", "List voices"),
+        ("audio.normalize", "Level loudness"),
+        ("audio.beats", "Mark beats"),
+        ("audio.duck", "Duck under voice"),
+        ("audio.denoise", "Reduce noise"),
         ("clip.setKey", "Add keyframe"),
         ("clip.removeKey", "Remove keyframe"),
         ("clip.clearKeys", "Clear keyframes"),
@@ -877,6 +902,24 @@ static EN: Strings = Strings {
     export_failed: "Export: {}",
     cancel: "Cancel",
     export_cancelled: "Export cancelled",
+    voice: "Voice",
+    voice_none: "Original",
+    voice_names: ["High", "Deep", "Chipmunk", "Monster", "Robot", "Telephone", "Megaphone", "Echo"],
+    pitch: "Pitch",
+    denoise: "Reduce noise",
+    denoise_tip: "Measures this clip's background noise from its quietest moments and takes it out",
+    loudness: "Level loudness",
+    loudness_tip: "Sets the volume so the selected clips all sound as loud (-14 LUFS)",
+    beats: "Mark beats",
+    beats_tip: "Finds the music's beat and puts markers on it; clips snap to them",
+    beats_every: ["Every beat", "Every 2nd beat", "Every 4th beat"],
+    beats_clear: "Clear beat markers",
+    duck: "Duck under voice",
+    duck_tip: "Lowers this clip wherever the other tracks are heard",
+    beats_found: "{} BPM, {} beats marked",
+    loudness_done: "Loudness levelled on {} clips",
+    duck_done: "Lowered under {} stretches of voice",
+    denoise_done: "Noise measured at {} dB and reduced",
 };
 
 static ZH: Strings = Strings {
@@ -929,6 +972,13 @@ static ZH: Strings = Strings {
         ("clip.setFx", "特效"),
         ("fx.list", "列出特效"),
         ("sticker.library", "贴纸库"),
+        ("clip.setVoice", "变声"),
+        ("clip.setDenoise", "降噪"),
+        ("voice.list", "列出变声"),
+        ("audio.normalize", "响度统一"),
+        ("audio.beats", "踩点"),
+        ("audio.duck", "自动压低配乐"),
+        ("audio.denoise", "降噪"),
         ("clip.setKey", "添加关键帧"),
         ("clip.removeKey", "删除关键帧"),
         ("clip.clearKeys", "清除关键帧"),
@@ -1334,6 +1384,24 @@ static ZH: Strings = Strings {
     export_failed: "导出失败：{}",
     cancel: "取消",
     export_cancelled: "已取消导出",
+    voice: "变声",
+    voice_none: "原声",
+    voice_names: ["高音", "低音", "花栗鼠", "怪兽", "机器人", "电话", "扩音器", "回声"],
+    pitch: "音调",
+    denoise: "降噪",
+    denoise_tip: "从片段最安静的地方测出底噪，再把它去掉",
+    loudness: "响度统一",
+    loudness_tip: "调整音量，让选中的片段听起来一样响（-14 LUFS）",
+    beats: "踩点",
+    beats_tip: "找出音乐的节拍并打上标记，片段会吸附到标记",
+    beats_every: ["每拍", "每两拍", "每四拍"],
+    beats_clear: "清除节拍标记",
+    duck: "人声时压低",
+    duck_tip: "其他轨道有声音时，自动把这个片段的音量压低",
+    beats_found: "{} BPM，已标记 {} 拍",
+    loudness_done: "已统一 {} 个片段的响度",
+    duck_done: "已在 {} 段人声下压低",
+    denoise_done: "测得底噪 {} dB，已降噪",
 };
 
 #[cfg(test)]
@@ -1382,6 +1450,7 @@ mod tests {
         assert_eq!(reelforge_media::library::SOUNDS.len(), EN.sound_names.len());
         assert_eq!(reelforge_media::stickers::STICKERS.len(), EN.sticker_names.len());
         assert_eq!(reelforge_model::FxKind::ALL.len(), EN.fx_names.len());
+        assert_eq!(reelforge_model::VoiceKind::ALL.len(), EN.voice_names.len());
         assert_eq!(reelforge_engine::title_templates().len(), EN.template_names.len());
     }
 
@@ -1424,6 +1493,10 @@ mod tests {
                 s.media_in_use,
                 s.media_removed,
                 s.added_to_media,
+                s.beats_found,
+                s.loudness_done,
+                s.duck_done,
+                s.denoise_done,
             ]
         };
         for l in Lang::ALL {
