@@ -18,12 +18,16 @@ use crate::{CallError, Hub, Output, ops, tool_name};
 /// Protocol revisions this server speaks, newest first.
 pub const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 
-const INSTRUCTIONS: &str = "reelforge is a short-video editor. A project has tracks (video, text, audio) holding clips \
-on a timeline. Call project_inspect first to see track and clip ids, then edit with the clip_* and track_* tools; \
-times are {\"seconds\": s} (or {\"frame\": n}). Every edit is one undo step (edit_undo); edit_batch applies several \
-as one. Look at the result with render_frame, and write the video with render_export (or a GIF or the sound \
-alone: its `format`; project_setCover picks the cover). Titles render Chinese and Latin text with the bundled Noto \
-Sans SC face.";
+const INSTRUCTIONS: &str = "reelforge is a short-video editor (9:16 by default). A project has tracks (video, text, \
+audio) holding clips on a timeline. Call project_outline first: tracks, clips and media with their ids, times in \
+seconds. Times you pass are {\"seconds\": s} or {\"frame\": n} (a bare integer is ticks, 254016000000 a second). \
+Bring files in with media_import (a path on the server's disk), place them with clip_add (which also takes text, \
+a sticker, an adjustment clip and the placement x, y, scale), then edit with the clip_*, track_*, captions_*, \
+audio_* and template_* tools; a parameter a tool does not take is refused, never ignored. Every edit is one undo \
+step (edit_undo); edit_batch runs several as one, and a step can use what an earlier one replied, \"${0.clip}\". \
+Look at the result with render_frame (a PNG) as you go. render_export writes an MP4 (or a GIF or the sound alone: \
+`format`; project_setCover picks the cover); pass wait: false for a long one and follow it with render_jobs. \
+Titles render Chinese and Latin text with the bundled Noto Sans SC face, or a font imported as media.";
 
 fn tool(op: &crate::Op) -> Value {
     json!({

@@ -16,7 +16,9 @@ mod commands;
 mod compound;
 mod cut;
 pub mod listen;
+mod outline;
 mod params;
+mod promo;
 mod remix;
 mod schema;
 mod shared;
@@ -32,6 +34,7 @@ use thiserror::Error;
 pub use captions::{CAPTIONS_TRACK, CAPTIONS_TRACK_2, Cue, format_srt, parse_srt};
 pub use commands::{CommandSpec, media_uses, registry};
 pub use params::parse_time;
+pub use promo::{PROMOS, Promo};
 pub use remix::{TimelineTemplate, is_empty_slot, slot_colour, slot_states, timeline_template, timeline_templates};
 pub use schema::input_schema;
 pub use shared::{Change, SharedSession};
@@ -100,12 +103,13 @@ impl Session {
     /// Runs the command `id` with `params` (an object, or null for none).
     pub fn execute(&mut self, id: &str, params: &Value) -> CmdResult {
         let spec = registry().iter().find(|c| c.id == id).ok_or_else(|| EngineError::Unknown(id.to_string()))?;
-        (spec.enabled)(self).map_err(EngineError::Disabled)?;
         let empty = json!({});
         let params = if params.is_null() { &empty } else { params };
         if !params.is_object() {
             return Err(EngineError::Params("parameters must be a JSON object".into()));
         }
+        schema::check_names(id, params).map_err(EngineError::Params)?;
+        (spec.enabled)(self).map_err(EngineError::Disabled)?;
         (spec.run)(self, params)
     }
 

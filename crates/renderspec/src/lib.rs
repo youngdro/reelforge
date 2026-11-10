@@ -506,6 +506,10 @@ pub enum LayerContent {
     },
     /// Set text (feature `text/1`).
     Text(Box<TextContent>),
+    /// A drawn shape (feature `shape/1`): a box, ellipse, line, polygon, star, price tag or
+    /// arrow, filled and outlined, its outline drawn on over time. Its centre is placed by the
+    /// layer's transform; its size is in output pixels, before the layer's scale.
+    Shape(Box<ShapeContent>),
     /// The picture of a composition (feature `comp/1`): drawn first, on a see-through frame the
     /// size of the output, then placed, cropped, masked and given this layer's effects as one
     /// picture.
@@ -724,6 +728,63 @@ pub struct TextContent {
     /// the layout puts them. Several movements add up. Boxes and underlines stay where they are.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chars: Vec<CharMotion>,
+    /// With `text/6`: a number that changes over time (a price, a count, a clock), written into
+    /// `text` where it says `{n}`, or as the whole text when it does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<NumberText>,
+}
+
+/// A number shown by a text (`text/6`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NumberText {
+    /// The value over the layer's time.
+    pub value: Animated<f32>,
+    /// Digits after the decimal point, 0 to 4.
+    #[serde(default)]
+    pub decimals: u8,
+    /// Thousands separated by commas.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub group: bool,
+    /// Written as a clock of whole seconds: `m:ss`, or `h:mm:ss` from an hour.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub clock: bool,
+}
+
+impl NumberText {
+    /// `value` written as this number is.
+    pub fn format(&self, value: f32) -> String {
+        if self.clock {
+            let s = value.max(0.0).round() as u64;
+            let (h, m, s) = (s / 3600, s / 60 % 60, s % 60);
+            return if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m:02}:{s:02}") };
+        }
+        let d = self.decimals.min(4) as usize;
+        let mut out = format!("{:.*}", d, value.abs() as f64);
+        if self.group {
+            let (whole, rest) = out.split_at(out.find('.').unwrap_or(out.len()));
+            let digits: Vec<char> = whole.chars().collect();
+            let mut g = String::new();
+            for (i, c) in digits.iter().enumerate() {
+                if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                    g.push(',');
+                }
+                g.push(*c);
+            }
+            out = g + rest;
+        }
+        // a value that rounds to zero is not negative
+        if value < 0.0 && out.chars().any(|c| c.is_ascii_digit() && c != '0') {
+            out.insert(0, '-');
+        }
+        out
+    }
+
+    /// `template` with `{n}` replaced by `value`, or the number alone when it has none.
+    pub fn fill(&self, template: &str, value: f32) -> String {
+        let n = self.format(value);
+        if template.contains("{n}") { template.replace("{n}", &n) } else { n }
+    }
 }
 
 /// One way a text's characters move one after another (`text/5`). Characters are counted from
@@ -865,6 +926,7 @@ impl TextContent {
             italic: false,
             underline: false,
             chars: vec![],
+            number: None,
         }
     }
 }
@@ -949,6 +1011,141 @@ impl TextContent {
     pub fn needs_v5(&self) -> bool {
         !self.chars.is_empty()
     }
+
+    /// Whether it uses anything beyond `text/5`.
+    pub fn needs_v6(&self) -> bool {
+        self.number.is_some()
+    }
+}
+
+/// A drawn shape (`shape/1`).
+///
+/// Lengths are in output pixels before the layer's scale. The shape fills a `size` box centred on
+/// the layer's centre; its outline starts at the box's top-left corner (the top of an ellipse,
+/// the left end of a line, the first point of a polygon or star, at the top) and runs clockwise.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ShapeContent {
+    /// Which shape.
+    pub kind: ShapeKind,
+    /// Width and height of its box.
+    pub size: [f32; 2],
+    /// Corner radius of a rectangle or a tag.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub radius: f32,
+    /// Sides of a polygon, points of a star: 3 to 64.
+    #[serde(default = "five")]
+    pub points: u32,
+    /// How far in a star's inner corners are, 0.05 to 1 of the way to its points.
+    #[serde(default = "half_f")]
+    pub inner: f32,
+    /// What fills it; none leaves only the outline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<Paint>,
+    /// The outline, centred on the shape's edge (a line's only ink).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke: Option<ShapeStroke>,
+    /// A soft shadow of the fill and outline, beneath them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<ShapeShadow>,
+    /// The part of the outline drawn, as fractions of its length from its start: an outline that
+    /// draws itself on (its end rising from 0 to 1) or a stroke that runs round it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trim: Option<Trim>,
+    /// How much of the fill shows, 0 to 1 (1 when absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_opacity: Option<Animated<f32>>,
+}
+
+fn five() -> u32 {
+    5
+}
+
+fn half_f() -> f32 {
+    0.5
+}
+
+/// Shapes.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ShapeKind {
+    /// A box, its corners rounded by `radius`.
+    Rectangle,
+    /// An ellipse filling the box.
+    Ellipse,
+    /// A line across the middle of the box, left to right; it shows by its stroke.
+    Line,
+    /// A regular polygon of `points` sides, a corner at the top, stretched to the box.
+    Polygon,
+    /// A star of `points` points, stretched to the box: a burst badge with many.
+    Star,
+    /// A price tag: a box pointed at its left end, with a hole near the point.
+    Tag,
+    /// An arrow pointing right.
+    Arrow,
+}
+
+/// How a shape is filled.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Paint {
+    /// One colour.
+    Solid {
+        /// The colour.
+        color: Color,
+    },
+    /// From one colour to another along a line across the box.
+    Linear {
+        /// The colour where the line starts.
+        from: Color,
+        /// The colour where it ends.
+        to: Color,
+        /// Which way the line runs, degrees clockwise from left-to-right (90: top to bottom).
+        #[serde(default)]
+        angle: f32,
+    },
+    /// From one colour at the box's centre to another at its edge.
+    Radial {
+        /// The colour at the centre.
+        from: Color,
+        /// The colour at the edge (and beyond, in the corners).
+        to: Color,
+    },
+}
+
+/// A shape's outline.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ShapeStroke {
+    /// Colour.
+    pub color: Color,
+    /// Width, centred on the edge.
+    pub width: f32,
+}
+
+/// A shape's shadow.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ShapeShadow {
+    /// Colour.
+    pub color: Color,
+    /// Offset `[right, down]`, on the frame (it does not turn with the shape).
+    pub offset: [f32; 2],
+    /// Softness: the blur's standard deviation.
+    #[serde(default)]
+    pub blur: f32,
+}
+
+/// The part of an outline that is drawn.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Trim {
+    /// Where the drawn part starts, 0 to 1.
+    #[serde(default = "zero")]
+    pub start: Animated<f32>,
+    /// Where it ends, 0 to 1; nothing is drawn where it is not past `start`.
+    #[serde(default = "one")]
+    pub end: Animated<f32>,
 }
 
 fn quarter() -> f32 {
@@ -1356,6 +1553,12 @@ impl RenderSpec {
                 if t.needs_v5() {
                     out.insert("text/5".to_string());
                 }
+                if t.needs_v6() {
+                    out.insert("text/6".to_string());
+                }
+            }
+            if let LayerContent::Shape(_) = &layer.content {
+                out.insert("shape/1".to_string());
             }
             if let LayerContent::Media { time, between, .. } = &layer.content {
                 out.extend(time.features().map(str::to_string));
@@ -1472,6 +1675,27 @@ mod tests {
         assert_eq!(c, Animated::Constant([0.1, 0.2]));
         let k: Animated<[f32; 2]> = serde_json::from_str(r#"[{"t": 0, "v": [0, 0]}]"#).unwrap();
         assert!(matches!(k, Animated::Keys(_)));
+    }
+
+    #[test]
+    fn numbers_are_written_as_prices_counts_and_clocks() {
+        let n = NumberText { value: Animated::Constant(0.0), decimals: 0, group: false, clock: false };
+        assert_eq!(n.format(99.6), "100");
+        assert_eq!(NumberText { decimals: 2, ..n.clone() }.format(129.9), "129.90");
+        let grouped = NumberText { group: true, ..n.clone() };
+        assert_eq!(
+            [grouped.format(999.0), grouped.format(1000.0), grouped.format(1234567.0)],
+            ["999", "1,000", "1,234,567"]
+        );
+        assert_eq!(NumberText { group: true, decimals: 1, ..n.clone() }.format(-12345.67), "-12,345.7");
+        assert_eq!(n.format(-0.2), "0");
+        let clock = NumberText { clock: true, ..n.clone() };
+        assert_eq!(
+            [clock.format(90.0), clock.format(5.4), clock.format(3725.0), clock.format(-3.0)],
+            ["01:30", "00:05", "1:02:05", "00:00"]
+        );
+        assert_eq!(n.fill("¥{n} 起", 59.0), "¥59 起");
+        assert_eq!(n.fill("whatever", 59.0), "59");
     }
 
     #[test]

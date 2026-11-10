@@ -236,9 +236,9 @@ pub(crate) struct Strings {
     pub(crate) anim_none: &'static str,
     pub(crate) anim_length: &'static str,
     /// In [`reelforge_model::AnimKind::ALL`] order.
-    pub(crate) anim_kinds: [&'static str; 14],
+    pub(crate) anim_kinds: [&'static str; 15],
     /// The same presets as they leave.
-    pub(crate) anim_out_kinds: [&'static str; 14],
+    pub(crate) anim_out_kinds: [&'static str; 15],
     pub(crate) anim_loop: &'static str,
     /// Tooltip of a loop's length: one round.
     pub(crate) anim_round: &'static str,
@@ -332,6 +332,19 @@ pub(crate) struct Strings {
     /// `{}`: its number, for a compound clip nobody named.
     pub(crate) compound_n: &'static str,
     pub(crate) kind_compound: &'static str,
+    pub(crate) kind_shape: &'static str,
+    /// Heading over the ready-made promotional pieces.
+    pub(crate) sec_promo: &'static str,
+    /// In `reelforge_engine::PROMOS` order.
+    pub(crate) promo_names: [&'static str; 7],
+    /// Heading over the shapes, and over a shape's own values.
+    pub(crate) sec_shapes: &'static str,
+    /// In [`reelforge_model::ShapeKind::ALL`] order.
+    pub(crate) shape_names: [&'static str; 7],
+    pub(crate) shape_width: &'static str,
+    pub(crate) shape_height: &'static str,
+    pub(crate) shape_radius: &'static str,
+    pub(crate) shape_stroke: &'static str,
     /// `{}`: the timeline that plays the compound clip being edited.
     pub(crate) compound_back: &'static str,
     pub(crate) compound_back_tip: &'static str,
@@ -878,6 +891,7 @@ static EN: Strings = Strings {
         "Letters rise",
         "Letters drop",
         "Letters pop",
+        "Draw on",
     ],
     anim_out_kinds: [
         "Fade out",
@@ -894,6 +908,7 @@ static EN: Strings = Strings {
         "Letters sink",
         "Letters lift",
         "Letters pop out",
+        "Wipe away",
     ],
     anim_loop: "Loop",
     anim_round: "One round",
@@ -1014,6 +1029,23 @@ static EN: Strings = Strings {
     compound_open: "Open compound clip",
     compound_n: "Compound {}",
     kind_compound: "Compound clip",
+    kind_shape: "Shape",
+    sec_promo: "Promo pieces",
+    promo_names: [
+        "Price tag",
+        "Discount badge",
+        "Sale banner",
+        "Countdown",
+        "Sales counter",
+        "Struck-out price",
+        "New stamp",
+    ],
+    sec_shapes: "Shapes",
+    shape_names: ["Rectangle", "Ellipse", "Line", "Polygon", "Star", "Tag", "Arrow"],
+    shape_width: "Width",
+    shape_height: "Height",
+    shape_radius: "Corners",
+    shape_stroke: "Outline",
     compound_back: "Back to {}",
     compound_back_tip: "Leave this compound clip and return to the timeline that plays it",
     compound_inside: "Inside {}: what you change here shows wherever this compound clip is used",
@@ -1595,6 +1627,7 @@ static ZH: Strings = Strings {
         "逐字上浮",
         "逐字下落",
         "逐字弹出",
+        "描边绘制",
     ],
     anim_out_kinds: [
         "渐隐",
@@ -1611,6 +1644,7 @@ static ZH: Strings = Strings {
         "逐字下沉",
         "逐字上飘",
         "逐字缩回",
+        "描边擦除",
     ],
     anim_loop: "循环",
     anim_round: "一轮的时长",
@@ -1710,6 +1744,15 @@ static ZH: Strings = Strings {
     compound_open: "进入复合片段",
     compound_n: "复合片段 {}",
     kind_compound: "复合片段",
+    kind_shape: "形状",
+    sec_promo: "营销组件",
+    promo_names: ["价格标签", "折扣角标", "促销横幅", "倒计时", "销量滚动", "划线原价", "新品印章"],
+    sec_shapes: "形状",
+    shape_names: ["矩形", "椭圆", "线条", "多边形", "星形", "价签", "箭头"],
+    shape_width: "宽度",
+    shape_height: "高度",
+    shape_radius: "圆角",
+    shape_stroke: "描边",
     compound_back: "返回{}",
     compound_back_tip: "离开这个复合片段，回到使用它的时间线",
     compound_inside: "正在编辑{}里面的内容，改动会体现在所有用到它的地方",

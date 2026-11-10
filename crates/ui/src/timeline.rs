@@ -55,6 +55,8 @@ pub(crate) struct TimelineView {
     menu_at: Tick,
     /// How tall a track's row is, in points.
     pub(crate) row: f32,
+    /// How far down the rows are scrolled, in points, when there are more than fit.
+    scroll: f32,
     /// Stretches about to be cut out of the timeline, shown across the lanes of the tracks they
     /// are cut from: every track that is not locked, or the ones named.
     pub(crate) cuts: Vec<(Tick, Tick)>,
@@ -166,6 +168,7 @@ impl Default for TimelineView {
             menu_marker: None,
             menu_at: Tick::ZERO,
             row: ROW,
+            scroll: 0.0,
             cuts: Vec::new(),
             cut_tracks: None,
             touched: Vec::new(),
@@ -247,8 +250,12 @@ impl TimelineView {
         let words = lang.strings();
         let mut out = TimelineOutput::default();
         let row_h = self.row;
-        // only what the rows need: taking all the panel offers would make a resizable panel grow every frame
-        let height = RULER + row_h * p.tracks.len() as f32 + 6.0;
+        // only what the rows need, and no more than the panel has: the rows scroll when there are
+        // more of them than fit
+        let needed = RULER + row_h * p.tracks.len() as f32 + 6.0;
+        let height = needed.min(ui.available_height().floor().max(RULER + row_h + 6.0));
+        let overflow = (needed - height).max(0.0);
+        self.scroll = self.scroll.clamp(0.0, overflow);
         let width = ui.available_width().max(HEADER + 120.0);
         let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click_and_drag());
         let painter = ui.painter_at(rect);
@@ -263,11 +270,30 @@ impl TimelineView {
                 let at = self.offset + ((x - lanes.left()) / self.px_per_second) as f64;
                 self.px_per_second = (self.px_per_second * zoom).clamp(4.0, 1200.0);
                 self.offset = (at - ((x - lanes.left()) / self.px_per_second) as f64).max(0.0);
+            } else if overflow > 0.0 && scroll.y.abs() > scroll.x.abs() {
+                // more rows than fit: the wheel goes through them, and sideways (or with Shift) through time
+                self.scroll = (self.scroll - scroll.y).clamp(0.0, overflow);
             } else if scroll != egui::Vec2::ZERO {
                 let d = if scroll.x.abs() > scroll.y.abs() { scroll.x } else { scroll.y };
                 self.offset = (self.offset - (d / self.px_per_second) as f64).max(0.0);
             }
         }
+        // a clip dragged to the top or bottom edge brings the rows beyond it into view
+        if overflow > 0.0
+            && self.drag.is_some()
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            let edge = 28.0;
+            let (above, below) = (rect.top() + RULER + edge - pos.y, pos.y - (rect.bottom() - edge));
+            let by = if above > 0.0 { -above.min(edge) } else { below.clamp(0.0, edge) };
+            if by != 0.0 {
+                self.scroll = (self.scroll + by * 0.35).clamp(0.0, overflow);
+                ui.ctx().request_repaint();
+            }
+        }
+        // where the first row starts
+        let rows_top = rect.top() + RULER - self.scroll;
+        let body = Rect::from_min_max(egui::pos2(rect.left(), rect.top() + RULER), rect.max);
         // keep the playhead in view while playing
         let view = (lanes.width() / self.px_per_second) as f64;
         if playing && (playhead.seconds() > self.offset + view * 0.95 || playhead.seconds() < self.offset) {
@@ -360,7 +386,7 @@ impl TimelineView {
             .chain((0..p.tracks.len()).filter(|&i| p.tracks[i].kind == TrackKind::Audio))
             .collect();
         let row_at = |y: f32| {
-            let row = ((y - rect.top() - RULER) / row_h).floor();
+            let row = ((y - rows_top) / row_h).floor();
             (row >= 0.0).then(|| order.get(row as usize).copied()).flatten()
         };
         let hit_at = |pos: Pos2| -> Option<Hit> {
@@ -525,8 +551,16 @@ impl TimelineView {
             ui.ctx().request_repaint();
         }
         let mut chosen_at: Option<(Rect, TrackKind)> = None;
+        let rows_ui = &mut ui.new_child(egui::UiBuilder::new().max_rect(body));
+        rows_ui.set_clip_rect(body.intersect(ui.clip_rect()));
         for (row, (index, track)) in order.iter().map(|&i| (i, &p.tracks[i])).enumerate() {
-            let top = rect.top() + RULER + row as f32 * row_h;
+            let top = rows_top + row as f32 * row_h;
+            if top + row_h <= body.top() || top >= body.bottom() {
+                continue;
+            }
+            // rows scrolled under the ruler are cut off at it
+            let painter = painter.with_clip_rect(body);
+            let ui = &mut *rows_ui;
             let row_rect = Rect::from_min_size(egui::pos2(lanes.left(), top), vec2(lanes.width(), row_h));
             // each track is a trough in the panel
             let trough = Rect::from_min_max(row_rect.min + vec2(0.0, 2.0), row_rect.max - vec2(6.0, 2.0));
@@ -756,6 +790,17 @@ impl TimelineView {
             on_lanes.line_segment(line, Stroke::new(1.0, color::ACCENT_2));
         }
 
+        // How far through the rows the view is, when they do not all fit.
+        if overflow > 0.0 {
+            let rail = Rect::from_min_max(egui::pos2(rect.right() - 5.0, body.top() + 3.0), body.max - vec2(2.0, 3.0));
+            let shown = body.height() / (body.height() + overflow);
+            let thumb = Rect::from_min_size(
+                egui::pos2(rail.left(), rail.top() + (rail.height() * (1.0 - shown)) * self.scroll / overflow),
+                vec2(rail.width(), rail.height() * shown),
+            );
+            painter.rect_filled(thumb, CornerRadius::same(2), color::WEAK.gamma_multiply(0.55));
+        }
+
         // What is about to be cut out.
         let on_lanes = painter.with_clip_rect(lanes);
         for (a, b) in &self.cuts {
@@ -768,9 +813,9 @@ impl TimelineView {
                     None => !track.locked,
                 };
                 if cut {
-                    let top = rect.top() + RULER + row as f32 * row_h;
+                    let top = rows_top + row as f32 * row_h;
                     let band = Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, top + row_h));
-                    on_lanes.rect_filled(band, 0.0, color::PLAYHEAD.gamma_multiply(0.3));
+                    on_lanes.with_clip_rect(body).rect_filled(band, 0.0, color::PLAYHEAD.gamma_multiply(0.3));
                 }
             }
         }
@@ -912,7 +957,7 @@ impl TimelineView {
             if response.drag_stopped() {
                 let mut ids: Vec<String> = if *add { selected.to_vec() } else { Vec::new() };
                 for (row, &i) in order.iter().enumerate() {
-                    let top = rect.top() + RULER + row as f32 * row_h;
+                    let top = rows_top + row as f32 * row_h;
                     for c in &p.tracks[i].clips {
                         let r = Rect::from_min_max(
                             egui::pos2(x_of(c.start), top + 5.0),
@@ -1171,6 +1216,10 @@ fn paint_clip(
                 Some(n) => (icon::ADD, crate::i18n::fill(words.slot_n, &[&n.to_string()]), swatch),
                 None => (icon::COLOUR, words.kind_colour.to_string(), swatch.lerp_to_gamma(color::VIDEO, 0.35)),
             }
+        }
+        ClipContent::Shape { shape } => {
+            let i = reelforge_model::ShapeKind::ALL.iter().position(|k| *k == shape.kind).unwrap_or(0);
+            (icon::STICKER, words.shape_names[i].to_string(), color::TEXT_CLIP.lerp_to_gamma(color::VIDEO, 0.5))
         }
         ClipContent::Compound { timeline, .. } => {
             // called what its timeline is called

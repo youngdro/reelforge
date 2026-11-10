@@ -1,6 +1,8 @@
 //! What is on screen at an instant. Pure: no pixels, no IO.
 
-use reelforge_renderspec::{Animated, Between, Blend, Fit, LayerContent, RenderSpec, ShapeMask, TextContent, effects};
+use reelforge_renderspec::{
+    Animated, Between, Blend, Fit, LayerContent, RenderSpec, ShapeContent, ShapeMask, TextContent, Trim, effects,
+};
 use reelforge_time::Tick;
 
 use crate::image::premultiply_srgb;
@@ -67,6 +69,8 @@ pub enum PlannedSource {
     Solid([f32; 4]),
     /// Text, laid out and drawn by the compositor.
     Text(Box<TextContent>),
+    /// A shape, drawn by the compositor; its trim and fill are values of the instant.
+    Shape(Box<ShapeContent>),
     /// A composition's frame, drawn first on a see-through frame of its own and then placed as a
     /// picture: its layers at its own instant, at the size of the frame it goes into.
     Comp(Box<FramePlan>),
@@ -81,7 +85,7 @@ impl FramePlan {
             match &layer.source {
                 PlannedSource::Media { .. } => out.push((self, layer)),
                 PlannedSource::Comp(inner) => out.extend(inner.media_layers()),
-                PlannedSource::Solid(_) | PlannedSource::Text(_) => {}
+                PlannedSource::Solid(_) | PlannedSource::Text(_) | PlannedSource::Shape(_) => {}
             }
         }
         out
@@ -196,7 +200,22 @@ fn plan_layers(
                 for m in &mut text.chars {
                     m.progress = Animated::Constant(m.progress.sample(local));
                 }
+                // and so is the number it shows: written into its words
+                if let Some(n) = text.number.take() {
+                    text.text = n.fill(&text.text, n.value.sample(local));
+                }
                 (PlannedSource::Text(text), Fit::Contain)
+            }
+            LayerContent::Shape(shape) => {
+                let mut shape = shape.clone();
+                if let Some(t) = &shape.trim {
+                    let (a, b) = (t.start.sample(local).clamp(0.0, 1.0), t.end.sample(local).clamp(0.0, 1.0));
+                    shape.trim = Some(Trim { start: Animated::Constant(a), end: Animated::Constant(b) });
+                }
+                if let Some(o) = &shape.fill_opacity {
+                    shape.fill_opacity = Some(Animated::Constant(o.sample(local).clamp(0.0, 1.0)));
+                }
+                (PlannedSource::Shape(shape), Fit::Contain)
             }
             LayerContent::Comp { comp, from } => {
                 let (Some(inner), true) = (spec.comps.get(comp), depth < DEPTH) else { continue };
@@ -270,6 +289,52 @@ mod tests {
         // The content's centre lands on the layer's centre.
         let (cx, cy) = (m[0] * 320.0 + m[1] * 180.0 + m[2], m[3] * 320.0 + m[4] * 180.0 + m[5]);
         assert!((cx - 100.0).abs() < 1e-3 && (cy - 200.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_number_and_a_trim_are_planned_at_the_instant() {
+        use reelforge_renderspec::{Color, Key, NumberText, Paint, ShapeKind, ShapeStroke};
+        fn key(t: f64, v: f32) -> Key<f32> {
+            Key { t: Tick::from_seconds(t), v, ease: Default::default() }
+        }
+        let mut spec = crate::tests::spec();
+        let mut text = TextContent::new("¥{n}", 10.0, Color([1.0; 4]));
+        text.number = Some(NumberText {
+            value: Animated::Keys(vec![key(0.0, 0.0), key(1.0, 100.0)]),
+            decimals: 0,
+            group: false,
+            clock: false,
+        });
+        spec.layers[0].content = LayerContent::Text(Box::new(text));
+        let mut shape = spec.layers[0].clone();
+        shape.id = "shape".into();
+        shape.content = LayerContent::Shape(Box::new(ShapeContent {
+            kind: ShapeKind::Ellipse,
+            size: [10.0, 10.0],
+            radius: 0.0,
+            points: 5,
+            inner: 0.5,
+            fill: Some(Paint::Solid { color: Color([1.0; 4]) }),
+            stroke: Some(ShapeStroke { color: Color([1.0; 4]), width: 2.0 }),
+            shadow: None,
+            trim: Some(Trim {
+                start: Animated::Constant(0.0),
+                end: Animated::Keys(vec![key(0.0, 0.0), key(1.0, 2.0)]),
+            }),
+            fill_opacity: Some(Animated::Keys(vec![key(0.0, 0.0), key(1.0, 1.0)])),
+        }));
+        spec.layers.push(shape);
+        let plan = plan_frame(&spec, Tick::from_seconds(0.25), 1.0);
+        let PlannedSource::Text(t) = &plan.layers[0].source else { panic!() };
+        assert_eq!((t.text.as_str(), &t.number), ("¥25", &None));
+        let PlannedSource::Shape(s) = &plan.layers[1].source else { panic!() };
+        let trim = s.trim.as_ref().unwrap();
+        assert_eq!((&trim.start, &trim.end), (&Animated::Constant(0.0), &Animated::Constant(0.5)));
+        assert_eq!(s.fill_opacity, Some(Animated::Constant(0.25)));
+        // a trim past the whole outline is the whole outline
+        let plan = plan_frame(&spec, Tick::from_seconds(0.9), 1.0);
+        let PlannedSource::Shape(s) = &plan.layers[1].source else { panic!() };
+        assert_eq!(s.trim.as_ref().unwrap().end, Animated::Constant(1.0));
     }
 
     #[test]

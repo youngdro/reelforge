@@ -11,14 +11,15 @@
 use std::collections::BTreeMap;
 
 use reelforge_model::{
-    Adjust, BlendMode, Clip, ClipContent, ClipTransform, Codec, FxChannel, Inbetween, Mask, MaskKind, MediaKind,
-    Project, Prop, Timing, TitleAlign, Track, TrackKind, TransitionKind, export::Format,
+    Adjust, BlendMode, Clip, ClipContent, ClipTransform, Codec, Fill, FxChannel, Inbetween, Mask, MaskKind, MediaKind,
+    Project, Prop, ShapeKind, Timing, TitleAlign, Track, TrackKind, TransitionKind, export::Format,
 };
 use reelforge_renderspec::{
     Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Between, Blend, Color, Comp, Crop, CropKeys,
-    Ease, Effect, Fit, Key, Layer, LayerContent, MaskShape, Output, OutputFormat, Probe, RenderSpec, ShapeMask,
-    ShapeMaskKeys, SpeedKey, TextAlign, TextBackground, TextContent, TextShadow, TextStroke, TimeMap, Transform,
-    VideoCodec, VideoEncoding, effects, validate,
+    Ease, Effect, Fit, Key, Layer, LayerContent, MaskShape, NumberText, Output, OutputFormat, Paint, Probe, RenderSpec,
+    ShapeContent, ShapeKind as SpecShape, ShapeMask, ShapeMaskKeys, ShapeShadow, ShapeStroke, SpeedKey, TextAlign,
+    TextBackground, TextContent, TextShadow, TextStroke, TimeMap, Transform, Trim, VideoCodec, VideoEncoding, effects,
+    validate,
 };
 use reelforge_time::Tick;
 use thiserror::Error;
@@ -272,6 +273,44 @@ fn lower_tracks(
                         },
                     },
                     ClipContent::Solid { color } => LayerContent::Solid { color: Color(*color) },
+                    ClipContent::Shape { shape: sh } => {
+                        let stroked = sh.stroke.as_ref().is_some_and(|s| s.width > 0.0);
+                        let (trim, fill_opacity) = motion::draw(clip, &shape, step, stroked);
+                        LayerContent::Shape(Box::new(ShapeContent {
+                            kind: match sh.kind {
+                                ShapeKind::Rectangle => SpecShape::Rectangle,
+                                ShapeKind::Ellipse => SpecShape::Ellipse,
+                                ShapeKind::Line => SpecShape::Line,
+                                ShapeKind::Polygon => SpecShape::Polygon,
+                                ShapeKind::Star => SpecShape::Star,
+                                ShapeKind::Tag => SpecShape::Tag,
+                                ShapeKind::Arrow => SpecShape::Arrow,
+                            },
+                            size: sh.size,
+                            radius: sh.radius,
+                            points: sh.points,
+                            inner: sh.inner,
+                            fill: sh.fill.as_ref().map(|f| match f {
+                                Fill::Solid { color } => Paint::Solid { color: Color(*color) },
+                                Fill::Linear { from, to, angle } => {
+                                    Paint::Linear { from: Color(*from), to: Color(*to), angle: *angle }
+                                }
+                                Fill::Radial { from, to } => Paint::Radial { from: Color(*from), to: Color(*to) },
+                            }),
+                            stroke: sh
+                                .stroke
+                                .as_ref()
+                                .filter(|s| s.width > 0.0)
+                                .map(|s| ShapeStroke { color: Color(s.color), width: s.width }),
+                            shadow: sh.shadow.as_ref().map(|s| ShapeShadow {
+                                color: Color(s.color),
+                                offset: s.offset,
+                                blur: s.blur,
+                            }),
+                            trim: trim.map(|[start, end]| Trim { start, end }),
+                            fill_opacity,
+                        }))
+                    }
                     // its timeline's picture, from where the clip starts in it
                     ClipContent::Compound { timeline, source_in } => {
                         LayerContent::Comp { comp: timeline.clone(), from: *source_in - shape.lead }
@@ -314,6 +353,12 @@ fn lower_tracks(
                         leading: style.leading,
                         italic: style.italic,
                         underline: style.underline,
+                        number: style.counter.map(|c| NumberText {
+                            value: motion::count(clip, &shape, step).expect("a counter"),
+                            decimals: c.decimals.min(4),
+                            group: c.group,
+                            clock: c.clock,
+                        }),
                         ..TextContent::new(text.clone(), *size, Color(*color))
                     })),
                 };
