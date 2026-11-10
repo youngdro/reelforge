@@ -5,8 +5,8 @@
 //! in and when. `promo.add` gives each a clip, scaled and placed for the project's canvas.
 
 use reelforge_model::{
-    AnimKind, ClipContent, Counter, Ease, Fill, Inbetween, LoopKind, Prop, Shape, ShapeKind, ShapeShadow, Stroke,
-    TitleAlign, TitleStyle, TrackKind,
+    AnimKind, ClipContent, Counter, Ease, Fill, Inbetween, Karaoke, KaraokeMode, LoopKind, Prop, Shape, ShapeKind,
+    ShapeShadow, Stroke, TitleAlign, TitleStyle, TrackKind,
 };
 use reelforge_time::Tick;
 
@@ -69,6 +69,8 @@ pub struct Promo {
     pub millis: i64,
     /// What its parameters mean, in English.
     pub about: &'static str,
+    /// Whether it shows a picture of the project's media it is given (`media`).
+    pub pictured: bool,
 }
 
 const fn piece(
@@ -92,6 +94,7 @@ const fn piece(
         place: [0.0, 0.0],
         millis: 3000,
         about,
+        pictured: false,
     }
 }
 
@@ -323,6 +326,67 @@ pub const PROMOS: &[Promo] = &[
             "Three bands of colour cross the frame, to the `side` asked (right, left, up or down); put its middle on a cut to cover it.",
         )
     },
+    Promo {
+        value: Some(129.0),
+        lines: &["立即抢购"],
+        millis: 4000,
+        pictured: true,
+        ..piece(
+            "productCard",
+            Product,
+            "Product card",
+            "商品卡",
+            "保温杯 Pro",
+            "A card that swings in and rocks, carrying a picture, a name, a price and a button. `text` is the name, `value` the price it counts to, `lines[0]` the button's words; `media` is the picture on it (an image or video of the project).",
+        )
+    },
+    Promo {
+        lines: &["到手价 ¥99"],
+        millis: 4000,
+        ..piece(
+            "flipCard",
+            Price,
+            "Flip card",
+            "翻转卡",
+            "原价 ¥199",
+            "A card that shows `text`, then turns over to show `lines[0]` on its back: the old price and the new, a question and its answer.",
+        )
+    },
+    piece(
+        "posterWords",
+        Titles,
+        "Poster words",
+        "大字报",
+        "全场 五折 起",
+        "Very large words that pop in one after another on a block of colour; a space in `text` starts the next line.",
+    ),
+    Promo {
+        place: [0.0, 0.3],
+        ..piece(
+            "karaokeCaption",
+            Titles,
+            "Highlighted caption",
+            "高亮字幕",
+            "今晚八点 直播间见",
+            "A caption whose words take the main colour as they are said, over the piece's length.",
+        )
+    },
+    piece(
+        "elasticTitle",
+        Titles,
+        "Springy title",
+        "弹性标题",
+        "新品上市",
+        "A title whose characters spring up one after another, over a line that is drawn under it; `lines[0]` is the smaller line below.",
+    ),
+    piece(
+        "handwritten",
+        Titles,
+        "Hand-written title",
+        "手写标题",
+        "Thank you",
+        "A title written on by a pen, with a stroke drawn under it.",
+    ),
 ];
 
 /// Which way a piece leans or points.
@@ -367,6 +431,8 @@ pub(crate) struct Ask {
     pub scale: f32,
     /// The brand's mark, an image among the media.
     pub logo: Option<String>,
+    /// The picture the piece was given to show, an image or video among the media.
+    pub media: Option<String>,
 }
 
 /// Where a property is, moment by moment: a share of the part's length in thousandths, the value
@@ -395,6 +461,11 @@ pub(crate) struct Part {
     pub keys: Vec<(Prop, Moves)>,
     /// A picture's size, as a share of the frame it would fill.
     pub fit: Option<f32>,
+    /// The part of the piece that carries it, by its place in the list (one before it): `at` is
+    /// then counted from where that part sits, and it moves, grows and turns with it.
+    pub carried: Option<usize>,
+    /// Smeared along its way while it moves (motion blur).
+    pub blur: bool,
 }
 
 fn secs(s: f64) -> Tick {
@@ -416,7 +487,38 @@ impl Part {
             wrapped: None,
             keys: Vec::new(),
             fit: None,
+            carried: None,
+            blur: false,
         }
+    }
+
+    /// A picture of the project's media, `fit` of the frame it would fill.
+    fn picture(media: &str, fit: f32) -> Part {
+        let mut part = Part::new(
+            TrackKind::Video,
+            ClipContent::Media {
+                media: media.to_string(),
+                source_in: Tick::ZERO,
+                speed: 1.0,
+                reversed: false,
+                curve: vec![],
+                silent: true,
+                frames: Inbetween::default(),
+            },
+        );
+        part.fit = Some(fit);
+        part
+    }
+
+    /// Carried by the part at `i` of the list.
+    fn on(mut self, i: usize) -> Part {
+        self.carried = Some(i);
+        self
+    }
+
+    fn blurred(mut self) -> Part {
+        self.blur = true;
+        self
     }
 
     fn shape(shape: Shape) -> Part {
@@ -1250,6 +1352,173 @@ pub(crate) fn parts(id: &str, ask: &Ask) -> Option<Vec<Part>> {
                 })
                 .collect()
         }
+        "productCard" => {
+            // everything on the card is carried by it, so it swings in and rocks as one object
+            let (w, h) = (620.0, 860.0);
+            let mut v = vec![
+                Part::shape(Shape { shadow: shadow(), ..plate([w, h], 44.0, WHITE) })
+                    .enter(AnimKind::FlipY)
+                    .over(0.8)
+                    .looped(LoopKind::Tilt)
+                    .blurred(),
+            ];
+            // where the picture goes: the picture, or a block of the piece's colour
+            match &ask.media {
+                Some(media) => v.push(Part::picture(media, 0.5).at(0.0, -150.0).on(0).blurred()),
+                None => v.push(
+                    Part::shape(Shape {
+                        fill: Some(Fill::Linear {
+                            from: lighter(accent, 0.45),
+                            to: lighter(accent, 0.15),
+                            angle: 90.0,
+                        }),
+                        ..plate([w - 80.0, 460.0], 28.0, accent)
+                    })
+                    .at(0.0, -160.0)
+                    .on(0)
+                    .blurred(),
+                ),
+            }
+            v.push(Part::text(text(), fit(&ask.text, 58.0, w - 90.0), INK).at(0.0, 130.0).on(0).blurred());
+            if let Some(price) = ask.value {
+                v.push(Part::text("¥{n}", 96.0, accent).at(0.0, 235.0).on(0).blurred().counting(Some(counter(
+                    price,
+                    false,
+                    false,
+                    Ease::OUT,
+                    quick,
+                ))));
+            }
+            if !line(0).is_empty() {
+                let words = line(0);
+                let wide_ = (wide(&words, 46.0) + 110.0).clamp(240.0, w - 80.0);
+                let at = v.len();
+                v.push(
+                    Part::shape(glossy([wide_, 92.0], 46.0, accent, 90.0))
+                        .at(0.0, 350.0)
+                        .on(0)
+                        .enter(AnimKind::Pop)
+                        .after(0.9)
+                        .looped(LoopKind::Heartbeat)
+                        .blurred(),
+                );
+                v.push(Part::text(words, 46.0, over(accent)).on(at).after(0.9).enter(AnimKind::Fade).blurred());
+            }
+            v
+        }
+        "flipCard" => {
+            // two faces on one spot: the front turns away edge on, and the back turns in from there
+            let (w, h) = (680.0, 300.0);
+            let half = 450;
+            let face = |fill: [f32; 4]| Shape { shadow: shadow(), ..plate([w, h], 36.0, fill) };
+            let hold = |a: f32, b: f32, c: f32| {
+                vec![(0, a, Ease::Linear), (half - 80, a, Ease::IN), (half, b, Ease::OUT), (half + 80, c, Ease::Linear)]
+            };
+            let seen = |a: f32, b: f32| vec![(0, a, Ease::Hold), (half, b, Ease::Hold)];
+            vec![
+                Part::shape(face(WHITE))
+                    .enter(AnimKind::Pop)
+                    .keyed(Prop::RotationY, hold(0.0, 90.0, 90.0))
+                    .keyed(Prop::Opacity, seen(1.0, 0.0))
+                    .blurred(),
+                // what a face carries turns with it but does not fade with it
+                Part::text(text(), fit(&ask.text, 96.0, w - 80.0), GREY)
+                    .on(0)
+                    .enter(AnimKind::Fade)
+                    .over(0.3)
+                    .keyed(Prop::Opacity, seen(1.0, 0.0))
+                    .blurred(),
+                Part::shape(Shape {
+                    fill: Some(Fill::Linear { from: lighter(accent, 0.25), to: accent, angle: 90.0 }),
+                    ..face(accent)
+                })
+                .keyed(Prop::RotationY, hold(-90.0, -90.0, 0.0))
+                .keyed(Prop::Opacity, seen(0.0, 1.0))
+                .blurred(),
+                Part::text(line(0), fit(&line(0), 104.0, w - 80.0), over(accent))
+                    .on(2)
+                    .keyed(Prop::Opacity, seen(0.0, 1.0))
+                    .blurred(),
+            ]
+        }
+        "posterWords" => {
+            // a line a word, each as large as the block lets it be
+            let words: Vec<&str> = ask.text.split_whitespace().collect();
+            let rows = words.len().max(1) as f32;
+            let size = (760.0 / rows).min(300.0);
+            let step = size * 1.08;
+            let tall = step * rows + 110.0;
+            let mut v = vec![
+                Part::shape(Shape { shadow: shadow(), ..plate([900.0, tall], 30.0, accent) })
+                    .turned(-3.0)
+                    .enter(AnimKind::Pop)
+                    .over(0.4),
+            ];
+            for (i, word) in words.iter().enumerate() {
+                let colour = if i % 2 == 1 { second } else { over(accent) };
+                v.push(
+                    Part::text(*word, fit(word, size, 800.0), colour)
+                        .at(0.0, row(i, words.len(), step))
+                        .turned(-3.0)
+                        .enter(AnimKind::WordPop)
+                        .over(0.5)
+                        .after(0.15 + i as f64 * 0.22)
+                        .blurred(),
+                );
+            }
+            v
+        }
+        "karaokeCaption" => {
+            let size = fit(&ask.text, 68.0, 900.0);
+            let wide_ = (wide(&ask.text, size) + 90.0).min(1000.0);
+            vec![
+                Part::shape(plate([wide_, size * 1.9], size * 0.5, DARK)).enter(AnimKind::Fade).over(0.3),
+                Part::text(text(), size, WHITE).enter(AnimKind::Fade).over(0.3).styled(|s| {
+                    s.weight = 700;
+                    s.karaoke = Some(Karaoke {
+                        color: lighter(accent, 0.25),
+                        mode: KaraokeMode::Sweep,
+                        start: secs(0.3).min(Tick(dur.0 / 4)),
+                        duration: Some(Tick(dur.0 * 7 / 10)),
+                    });
+                }),
+            ]
+        }
+        "elasticTitle" => {
+            let size = fit(&ask.text, 150.0, 940.0);
+            let under = (wide(&ask.text, size) * 0.8).clamp(160.0, 900.0);
+            let mut v = vec![
+                Part::text(text(), size, WHITE).enter(AnimKind::CharElastic).over(0.9),
+                Part::shape(bar(under, 14.0, accent)).at(0.0, size * 0.72).enter(AnimKind::Draw).over(0.5).after(0.5),
+            ];
+            if !line(0).is_empty() {
+                v.push(
+                    Part::text(line(0), fit(&line(0), 52.0, 900.0), WHITE)
+                        .at(0.0, size * 0.72 + 80.0)
+                        .enter(AnimKind::WordRise)
+                        .after(0.7)
+                        .styled(|s| s.weight = 500),
+                );
+            }
+            v
+        }
+        "handwritten" => {
+            let size = fit(&ask.text, 170.0, 940.0);
+            let under = (wide(&ask.text, size) * 0.9).clamp(200.0, 940.0);
+            vec![
+                Part::text(text(), size, WHITE).enter(AnimKind::Draw).over(1.6).styled(|s| {
+                    s.weight = 500;
+                    s.italic = true;
+                }),
+                // a quick stroke under it, a little askew
+                Part::shape(bar(under, 12.0, accent))
+                    .at(0.0, size * 0.74)
+                    .turned(-2.0)
+                    .enter(AnimKind::Draw)
+                    .over(0.45)
+                    .after(1.5),
+            ]
+        }
         _ => return None,
     })
 }
@@ -1280,6 +1549,7 @@ impl Promo {
             place: self.place,
             scale: 1.0,
             logo: None,
+            media: None,
         };
         parts(self.id, &ask).map_or(0, |p| p.len())
     }

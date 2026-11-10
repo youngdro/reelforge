@@ -1,4 +1,4 @@
-use reelforge_model::{ClipContent, Fill, Fx, FxKind, MediaKind, Prop, TrackKind};
+use reelforge_model::{AnimKind, ClipContent, Fill, Fx, FxKind, MediaKind, Prop, TrackKind};
 use reelforge_time::Tick;
 use serde_json::json;
 
@@ -2544,7 +2544,7 @@ fn promo_pieces_are_grouped_clips_on_free_tracks_in_one_step() {
     let listed = s.execute("promo.list", &json!({})).unwrap();
     let kinds: Vec<String> =
         listed["promos"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap().to_string()).collect();
-    assert_eq!(kinds.len(), 30);
+    assert_eq!(kinds.len(), 36);
     // the first seven are a shape and a title each
     let kinds = &kinds[..7];
     let tracks = s.project().tracks.len();
@@ -2612,8 +2612,8 @@ fn every_ready_made_piece_is_built_as_listed_and_compiles_on_any_canvas() {
             for c in clips {
                 let clip = p.clip(c["clip"].as_str().unwrap()).unwrap().1;
                 assert_eq!(clip.group.as_deref(), out["group"].as_str());
-                // each part moves, ends with the piece, and is where the piece's own place puts it
-                assert!(clip.anim.enter.is_some() || !clip.keys.is_empty(), "{kind}");
+                // each part moves, of itself or with what carries it, and ends with the piece
+                assert!(clip.anim.enter.is_some() || !clip.keys.is_empty() || clip.parent.is_some(), "{kind}");
                 let long: Tick = serde_json::from_value(out["duration"].clone()).unwrap();
                 assert_eq!(clip.end(), Tick::from_seconds(1.0) + long, "{kind}");
                 assert!(clip.start >= Tick::from_seconds(1.0));
@@ -2895,6 +2895,110 @@ fn the_brand_gives_new_pieces_their_colours_font_and_logo() {
     s.execute("clip.remove", &json!({"clips": clips[0]["clip"]})).unwrap();
     s.execute("media.remove", &json!({"media": logo})).unwrap();
     assert_eq!(s.project().brand.logo, None);
+    s.project().check().unwrap();
+}
+
+#[test]
+fn a_piece_carries_its_parts_and_shows_a_picture() {
+    let mut s = Session::default();
+    let (cw, ch) = (s.project().canvas.width as f32, s.project().canvas.height as f32);
+    let k = cw.min(ch) / 1080.0;
+    // everything on a product card is carried by the card, the button's words by the button
+    let out = s.execute("promo.add", &json!({"kind": "productCard", "start": {"seconds": 1}})).unwrap();
+    let ids: Vec<String> =
+        out["clips"].as_array().unwrap().iter().map(|c| c["clip"].as_str().unwrap().to_string()).collect();
+    assert_eq!(ids.len(), 6);
+    let p = s.project();
+    let part = |i: usize| p.clip(&ids[i]).unwrap().1;
+    let card = part(0);
+    assert_eq!(card.parent, None);
+    assert_eq!(card.anim.enter.map(|a| a.kind), Some(AnimKind::FlipY));
+    assert!(card.transform.motion_blur > 0.0);
+    for i in 1..5 {
+        assert_eq!(part(i).parent.as_deref(), Some(ids[0].as_str()), "part {i}");
+    }
+    assert_eq!(part(5).parent.as_deref(), Some(ids[4].as_str()));
+    // a carried part's place is counted from its carrier's, in shares of the frame
+    let name = part(2);
+    assert!(name.transform.x.abs() < 1e-6 && (name.transform.y - 130.0 * k / ch).abs() < 1e-6);
+    assert_eq!(part(5).transform.y, 0.0);
+    s.execute("render.compile", &json!({})).unwrap();
+    s.project().check().unwrap();
+    // made half as large, the card is: what it carries keeps its share of it
+    let small = s.execute("promo.add", &json!({"kind": "productCard", "scale": 0.5, "x": 0.2})).unwrap();
+    let p = s.project();
+    let small = |i: usize| p.clip(small["clips"][i]["clip"].as_str().unwrap()).unwrap().1;
+    assert!((small(0).transform.scale - 0.5 * k).abs() < 1e-6 && (small(0).transform.x - 0.2).abs() < 1e-6);
+    assert!((small(2).transform.scale - 1.0).abs() < 1e-6, "{}", small(2).transform.scale);
+    assert!((small(2).transform.y - 130.0 * k / ch).abs() < 1e-6 && small(2).transform.x.abs() < 1e-6);
+
+    // a card that flips: each face is carried words and all, and one shows while the other is away
+    let flip = s.execute("promo.add", &json!({"kind": "flipCard"})).unwrap();
+    let p = s.project();
+    let face = |i: usize| p.clip(flip["clips"][i]["clip"].as_str().unwrap()).unwrap().1;
+    assert_eq!(flip["clips"].as_array().unwrap().len(), 4);
+    assert_eq!(face(1).parent.as_deref(), flip["clips"][0]["clip"].as_str());
+    assert_eq!(face(3).parent.as_deref(), flip["clips"][2]["clip"].as_str());
+    for (front, back) in [(0, 2), (1, 3)] {
+        let (seen, hidden) = (&face(front).keys[&Prop::Opacity], &face(back).keys[&Prop::Opacity]);
+        assert_eq!((seen[0].v, seen[1].v, hidden[0].v, hidden[1].v), (1.0, 0.0, 0.0, 1.0));
+        assert_eq!(seen[1].t, hidden[1].t);
+    }
+    let turn = &face(0).keys[&Prop::RotationY];
+    assert_eq!((turn[0].v, turn.last().unwrap().v), (0.0, 90.0));
+    assert_eq!(face(2).keys[&Prop::RotationY].last().unwrap().v, 0.0);
+
+    // the picture a card shows is an image or video of the project
+    let v = video_track(&s);
+    let sticker = s.execute("clip.add", &json!({"track": v, "sticker": "heart"})).unwrap();
+    let picture = match &s.project().clip(sticker["clip"].as_str().unwrap()).unwrap().1.content {
+        ClipContent::Media { media, .. } => media.clone(),
+        _ => panic!(),
+    };
+    let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../render/fonts/NotoSansSC-Bold.subset.ttf");
+    let font = s.execute("media.import", &json!({"path": file})).unwrap()["media"]["id"].as_str().unwrap().to_string();
+    assert!(s.execute("promo.add", &json!({"kind": "productCard", "media": "m99"})).is_err());
+    assert!(s.execute("promo.add", &json!({"kind": "productCard", "media": font})).is_err());
+    assert!(s.execute("promo.add", &json!({"kind": "productCard", "media": 3})).is_err());
+    let out = s.execute("promo.add", &json!({"kind": "productCard", "media": picture, "compound": true})).unwrap();
+    let (clip, timeline) = (out["clip"].as_str().unwrap().to_string(), out["timeline"].as_str().unwrap().to_string());
+    let shown = |s: &Session| {
+        let p = s.project();
+        let inner = p.tracks_of(&timeline).unwrap();
+        // inside, each part is carried by one of the same timeline
+        let ids: Vec<&str> = inner.iter().flat_map(|t| &t.clips).map(|c| c.id.as_str()).collect();
+        assert!(inner.iter().flat_map(|t| &t.clips).skip(1).all(|c| ids.contains(&c.parent.as_deref().unwrap())));
+        let second = &inner[1].clips[0];
+        match &second.content {
+            ClipContent::Media { media, .. } => Some((media.clone(), second.transform.scale)),
+            _ => None,
+        }
+    };
+    assert_eq!(shown(&s), Some((picture.clone(), 0.5 / k)));
+    assert_eq!(s.execute("promo.get", &json!({"clip": clip})).unwrap()["piece"]["media"], json!(picture));
+    s.execute("render.compile", &json!({})).unwrap();
+    // it is taken off and put back like the piece's words; other changes leave it be
+    s.execute("promo.set", &json!({"clip": clip, "media": null})).unwrap();
+    assert_eq!(shown(&s), None);
+    assert!(s.execute("promo.set", &json!({"clip": clip, "media": font})).is_err());
+    assert!(s.execute("promo.set", &json!({"clip": clip, "media": "m99"})).is_err());
+    s.execute("promo.set", &json!({"clip": clip, "media": picture})).unwrap();
+    s.execute("promo.set", &json!({"clip": clip, "text": "随行杯"})).unwrap();
+    assert_eq!(shown(&s).map(|(m, _)| m), Some(picture));
+    s.execute("render.compile", &json!({})).unwrap();
+    s.project().check().unwrap();
+}
+
+#[test]
+fn every_piece_is_made_folded_and_compiles() {
+    let listed = Session::default().execute("promo.list", &json!({})).unwrap();
+    let mut s = Session::default();
+    for (i, promo) in listed["promos"].as_array().unwrap().iter().enumerate() {
+        let start = json!({"seconds": i as f64 * 5.0});
+        let out = s.execute("promo.add", &json!({"kind": promo["id"], "compound": true, "start": start})).unwrap();
+        assert_eq!(out["parts"].as_array().unwrap().len() as u64, promo["clips"].as_u64().unwrap(), "{}", promo["id"]);
+    }
+    s.execute("render.compile", &json!({})).unwrap();
     s.project().check().unwrap();
 }
 

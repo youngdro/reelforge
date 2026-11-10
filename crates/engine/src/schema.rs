@@ -1047,6 +1047,16 @@ pub fn input_schema(id: &str) -> Option<Value> {
                     json!({"enum": crate::pieces::Side::NAMES, "description": "The way it leans, points or moves, for the pieces that do."}),
                 ),
                 (
+                    "media",
+                    if id == "promo.set" {
+                        nullable(ident("An image or video of the project the piece shows; null takes it off."))
+                    } else {
+                        ident(
+                            "An image or video of the project the piece shows, such as m2: the product on productCard.",
+                        )
+                    },
+                ),
+                (
                     "x",
                     num(
                         "Horizontal offset of its centre from the frame's, as a fraction of the width; each piece has its own by default.",

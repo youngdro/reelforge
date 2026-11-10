@@ -165,7 +165,7 @@ cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t1", "m
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t2", "text": "第一句字幕", "size": 72, "start": {"seconds": 0.5}, "duration": {"seconds": 2}}' --save
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setAnimation '{"clip": "c6", "slot": "in", "kind": "pop"}' --save
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setAnimation '{"clip": "c6", "slot": "loop", "kind": "wave"}' --save   # its characters, round and round
-cargo run -q -p reelforge-cli -- exec cut.reel.json promo.add '{"kind": "priceTag", "value": 129.9, "y": -0.2}' --save   # a price tag whose price counts up (promo.list has the other 29: coupons, checklists, ratings, buy buttons, end cards…)
+cargo run -q -p reelforge-cli -- exec cut.reel.json promo.add '{"kind": "priceTag", "value": 129.9, "y": -0.2}' --save   # a price tag whose price counts up (promo.list has the other 35: coupons, checklists, ratings, buy buttons, end cards, a product card that swings in with your picture on it…)
 cargo run -q -p reelforge-cli -- exec cut.reel.json brand.set '{"primary": [0.05, 0.35, 0.95], "secondary": [1, 0.85, 0.3]}' --save   # ready-made pieces take the brand's colours from here on
 cargo run -q -p reelforge-cli -- exec cut.reel.json promo.add '{"kind": "checklist", "lines": ["持久保湿 12 小时", "敏感肌适用"], "compound": true}' --save   # a list, folded into one clip (→ c9)
 cargo run -q -p reelforge-cli -- exec cut.reel.json promo.set '{"clip": "c9", "lines": ["持久保湿 12 小时", "敏感肌适用", "无香精"]}' --save   # other words: the piece is made again to fit them
