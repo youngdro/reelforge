@@ -787,21 +787,39 @@ static REGISTRY: &[CommandSpec] = &[
     },
     CommandSpec {
         id: "promo.list",
-        label: "Promo Pieces",
+        label: "Ready-Made Pieces",
         params: "{}",
-        doc: "The ready-made promotional pieces promo.add makes: their ids, names, default words and numbers.",
+        doc: "The ready-made pieces promo.add makes, by `category` (price, product, titles, action, rhythm): their ids, names, the words, lines and numbers each comes with, where and for how long it shows unless told, how many clips it is made of, and `about`, what its parameters mean.",
         edits: false,
         enabled: always,
         run: crate::promo::promo_list,
     },
     CommandSpec {
         id: "promo.add",
-        label: "Add Promo Piece",
-        params: r#"{"kind": "priceTag"|"discountBadge"|"banner"|"countdown"|"salesCounter"|"strikePrice"|"newArrival", "start"?: time, "duration"?: time, "text"?: string, "value"?: number, "from"?: number, "color"?: [r,g,b,a], "x"?, "y"?, "scale"?}"#,
-        doc: "Adds a ready-made promotional piece (a price tag, a discount badge, a sale banner, a countdown, a sales counter, a struck-out price, a \"new\" stamp) as grouped shape and title clips on free tracks above the others, animated in. `text` replaces its words ({n} is its number), `value` the number it counts to (a countdown counts down from it, a second a second), `from` where counting starts, `color` its main colour; `x`, `y` and `scale` place it. 3 s long from 0 unless `start` and `duration` say otherwise.",
+        label: "Add Ready-Made Piece",
+        params: r#"{"kind": id, "start"?: time, "duration"?: time, "text"?: string, "lines"?: [string], "value"?: number, "values"?: [number], "from"?: number, "color"?: [r,g,b,a], "color2"?: [r,g,b,a], "side"?: "right"|"left"|"up"|"down", "x"?, "y"?, "scale"?, "compound"?: bool}"#,
+        doc: "Adds a ready-made piece for a marketing video (promo.list has them all: price tags, coupons, spend-and-save tiers, flash-sale progress, feature callouts and checklists, spec tables, ratings, reviews, title bars, big numbers, buy buttons, store and end cards, a colour sweep and more) as grouped shape and title clips on free tracks above the others, each animated in. `text` replaces its words ({n} is its number), `lines` its further lines (the rows of a list, or the small print), `value` the number it counts to (a countdown counts down from it, a second a second), `values` the numbers of a piece that compares, `from` where counting starts; `color` is its main colour and `color2` the one beside it (the brand's, see brand.set, or red and yellow); `side` is the way it leans or points; `x`, `y` and `scale` place it. Each piece has its own place and length (3 s for most) unless told; it starts at 0 unless `start` says. `compound: true` folds it into one compound clip (the result is that clip, its `parts` inside; clip.uncompound takes it apart).",
         edits: true,
         enabled: always,
         run: crate::promo::promo_add,
+    },
+    CommandSpec {
+        id: "brand.get",
+        label: "Brand",
+        params: "{}",
+        doc: "The project's brand: its two colours, its font and its logo, those that are set.",
+        edits: false,
+        enabled: always,
+        run: crate::promo::brand_get,
+    },
+    CommandSpec {
+        id: "brand.set",
+        label: "Set Brand",
+        params: r#"{"primary"?: [r,g,b,a] | null, "secondary"?: [r,g,b,a] | null, "font"?: id | null, "logo"?: id | null}"#,
+        doc: "Sets the project's brand, which ready-made pieces (promo.add) made from then on take after: `primary` is their main colour and `secondary` the one beside it, `font` an imported font their words are set in, `logo` an imported picture an end card shows. null clears one; what is not named stays. Pieces already made keep their look.",
+        edits: true,
+        enabled: always,
+        run: crate::promo::brand_set,
     },
     CommandSpec {
         id: "clip.setTransition",
@@ -1395,6 +1413,12 @@ fn media_remove(s: &mut Session, v: &Value) -> CmdResult {
             n => return Err(EngineError::Refused(format!("{n} clip(s) use {id:?}; delete them first"))),
         }
         proj.media.remove(&id);
+        // the brand lets go of it too
+        for held in [&mut proj.brand.font, &mut proj.brand.logo] {
+            if held.as_deref() == Some(id.as_str()) {
+                *held = None;
+            }
+        }
         Ok(json!({ "media": id }))
     })
 }

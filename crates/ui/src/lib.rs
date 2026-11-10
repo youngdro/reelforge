@@ -1413,9 +1413,11 @@ impl EditorApp {
                 });
             }
             assets::Item::Promo(kind) => {
-                // a piece brings its own tracks
-                if let Ok(v) = self.execute("promo.add", json!({"kind": kind, "start": at})) {
-                    self.selected = v["clips"][0]["clip"].as_str().map(str::to_string);
+                // a piece brings its own tracks; one of many parts comes folded into one clip
+                let many = reelforge_engine::PROMOS.iter().any(|p| p.id == *kind && p.clips() > 3);
+                if let Ok(v) = self.execute("promo.add", json!({"kind": kind, "start": at, "compound": many})) {
+                    let clip = if many { &v["clip"] } else { &v["clips"][0]["clip"] };
+                    self.selected = clip.as_str().map(str::to_string);
                 }
             }
             assets::Item::Effect(kind) => {

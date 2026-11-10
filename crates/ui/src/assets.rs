@@ -886,22 +886,31 @@ impl AssetPanel {
                 .zip(s.sticker_names)
                 .filter(|(_, name)| finds(&query, name))
                 .collect();
-            // the promotional pieces and the shapes, as words to click or drag
-            let promos: Vec<(Item, &str)> = reelforge_engine::PROMOS
-                .iter()
-                .map(|p| (Item::Promo(p.id), promo_name(p.id, s)))
-                .filter(|(_, name)| finds(&query, name))
+            // the ready-made pieces, list by list, and the shapes, as words to click or drag
+            let mut lists: Vec<(String, Vec<(Item, &str)>)> = reelforge_engine::Category::ALL
+                .into_iter()
+                .zip(s.promo_categories)
+                .map(|(category, heading)| {
+                    let items = reelforge_engine::PROMOS
+                        .iter()
+                        .filter(|p| p.category == category)
+                        .map(|p| (Item::Promo(p.id), promo_name(p.id, s)))
+                        .filter(|(_, name)| finds(&query, name) || finds(&query, heading))
+                        .collect();
+                    (format!("{} · {heading}", s.sec_promo), items)
+                })
                 .collect();
             let shapes: Vec<(Item, &str)> = reelforge_model::ShapeKind::ALL
                 .into_iter()
                 .map(|k| (Item::Shape(k), shape_name(k, s)))
                 .filter(|(_, name)| finds(&query, name))
                 .collect();
-            if all.is_empty() && promos.is_empty() && shapes.is_empty() {
+            lists.push((s.sec_shapes.to_string(), shapes));
+            if all.is_empty() && lists.iter().all(|(_, items)| items.is_empty()) {
                 nothing_matches(ui, s);
                 return;
             }
-            for (heading, items) in [(s.sec_promo, promos), (s.sec_shapes, shapes)] {
+            for (heading, items) in lists {
                 if items.is_empty() {
                     continue;
                 }

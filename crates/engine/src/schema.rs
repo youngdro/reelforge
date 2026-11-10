@@ -274,7 +274,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
     Some(match id {
         "commands.list" | "project.inspect" | "project.outline" | "project.new" | "edit.undo" | "edit.redo"
         | "title.templates" | "sound.library" | "timeline.list" | "fx.list" | "sticker.library" | "voice.list"
-        | "template.list" | "template.slots" | "promo.list" => object(vec![], &[]),
+        | "template.list" | "template.slots" | "promo.list" | "brand.get" => object(vec![], &[]),
         "sound.add" => object(
             vec![
                 (
@@ -890,19 +890,55 @@ pub fn input_schema(id: &str) -> Option<Value> {
             vec![
                 (
                     "kind",
-                    json!({"enum": crate::promo::PROMOS.iter().map(|p| p.id).collect::<Vec<_>>(), "description": "Which piece (promo.list): a price tag whose price counts up, a discount badge, a sale banner, a countdown clock, a sales counter, a struck-out original price, a new-arrival stamp."}),
+                    json!({"enum": crate::pieces::PROMOS.iter().map(|p| p.id).collect::<Vec<_>>(), "description": "Which piece; promo.list says what each is and what its parameters mean."}),
                 ),
                 ("start", time("Where it starts; 0 by default.")),
-                ("duration", time("How long it shows; 3 s by default.")),
+                ("duration", time("How long it shows; the piece's own length by default, 3 s for most.")),
                 ("text", json!({"type": "string", "description": "Its words; {n} is where its number goes."})),
-                ("value", num("The number it counts to (a price, a count); a countdown's seconds to count down from.")),
-                ("from", num("Where counting starts; 0 by default.")),
-                ("color", color("Its main colour; red by default.")),
-                ("x", num("Horizontal offset of its centre from the frame's, as a fraction of the width.")),
+                (
+                    "lines",
+                    json!({"type": "array", "items": {"type": "string", "maxLength": 200}, "maxItems": 6, "description": "Its further lines: the rows of a list or table, or the smaller words beside the main ones (promo.list says which)."}),
+                ),
+                (
+                    "value",
+                    num(
+                        "The number it counts to (a price, a count, a rating); a countdown's seconds to count down from.",
+                    ),
+                ),
+                (
+                    "values",
+                    json!({"type": "array", "items": {"type": "number"}, "maxItems": 4, "description": "The numbers of a piece that compares, such as the two prices of priceCompare."}),
+                ),
+                ("from", num("Where counting starts; 0 for most.")),
+                ("color", color("Its main colour; the brand's primary, or red.")),
+                ("color2", color("The colour beside it; the brand's secondary, or yellow.")),
+                (
+                    "side",
+                    json!({"enum": crate::pieces::Side::NAMES, "description": "The way it leans, points or moves, for the pieces that do."}),
+                ),
+                (
+                    "x",
+                    num(
+                        "Horizontal offset of its centre from the frame's, as a fraction of the width; each piece has its own by default.",
+                    ),
+                ),
                 ("y", num("Vertical offset, as a fraction of the height.")),
-                ("scale", num("Its size; 1 is as designed for a 1080-wide frame, in proportion for others.")),
+                (
+                    "scale",
+                    num("Its size; 1 is as designed for a frame whose shorter side is 1080, in proportion for others."),
+                ),
+                ("compound", json!({"type": "boolean", "description": "Fold it into one compound clip."})),
             ],
             &["kind"],
+        ),
+        "brand.set" => object(
+            vec![
+                ("primary", nullable(color("The main colour of ready-made pieces."))),
+                ("secondary", nullable(color("The colour beside it."))),
+                ("font", nullable(ident("An imported font, such as m3."))),
+                ("logo", nullable(ident("An imported picture, such as m4."))),
+            ],
+            &[],
         ),
         "clip.setAnimation" => object(
             vec![

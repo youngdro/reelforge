@@ -1,19 +1,21 @@
-//! Shapes, counters and the promotional pieces built from them: price tags, discount badges,
-//! banners, countdowns, sales counters, struck-out prices and "new" stamps (`promo.add`).
+//! Shapes, counters, the brand, and the ready-made pieces built from them (`promo.add`; what
+//! there is and how each is built is in [`crate::pieces`]).
 //!
-//! A piece is ordinary clips, a shape and a title (and a line), grouped so they are picked and
-//! moved together, each on a track above the one before so they lie in order. Everything about
-//! them can be changed afterwards with the usual commands.
+//! A piece is ordinary clips, shapes and titles, grouped so they are picked and moved together,
+//! each on a track above the one before so they lie in order. Everything about them can be
+//! changed afterwards with the usual commands. Asked to, the piece is folded into a compound clip:
+//! one clip on the timeline, its parts inside.
 
 use reelforge_model::{
-    AnimKind, Animation, Clip, ClipContent, ClipTransform, Counter, Ease, Fill, Loop, LoopKind, Project, Shape,
-    ShapeKind, ShapeShadow, Stroke, TitleStyle, Track, TrackKind,
+    Animation, Clip, ClipContent, ClipTransform, Counter, Ease, Fill, Key, Loop, MediaKind, Project, Prop, Shape,
+    ShapeKind, ShapeShadow, Stroke, Track, TrackKind,
 };
 use reelforge_time::Tick;
 use serde_json::{Value, json};
 
 use crate::commands::{fps, not_found};
 use crate::params::P;
+use crate::pieces::{self, Ask, PROMOS, Side};
 use crate::{CmdResult, EngineError, Session};
 
 fn wrong(name: &str, what: &str) -> EngineError {
@@ -195,214 +197,31 @@ pub(crate) fn clip_set_counter(s: &mut Session, v: &Value) -> CmdResult {
     })
 }
 
-/// A ready-made piece.
-pub struct Promo {
-    /// Its id.
-    pub id: &'static str,
-    /// What it is, in English.
-    pub en: &'static str,
-    /// In Chinese.
-    pub zh: &'static str,
-    /// The words it shows unless others are given; `{n}` is its number.
-    pub text: &'static str,
-    /// The number it counts to, if it counts.
-    pub value: Option<f32>,
-}
-
-/// The pieces `promo.add` makes.
-pub const PROMOS: &[Promo] = &[
-    Promo { id: "priceTag", en: "Price tag", zh: "价格标签", text: "¥{n}", value: Some(99.0) },
-    Promo { id: "discountBadge", en: "Discount badge", zh: "折扣角标", text: "-50%", value: None },
-    Promo { id: "banner", en: "Sale banner", zh: "促销横幅", text: "限时特惠", value: None },
-    Promo { id: "countdown", en: "Countdown", zh: "倒计时", text: "{n}", value: Some(10.0) },
-    Promo { id: "salesCounter", en: "Sales counter", zh: "销量滚动", text: "已售 {n}+", value: Some(10000.0) },
-    Promo { id: "strikePrice", en: "Struck-out price", zh: "划线原价", text: "¥199", value: None },
-    Promo { id: "newArrival", en: "New arrival stamp", zh: "新品印章", text: "NEW", value: None },
-];
-
 /// `promo.list`.
 pub(crate) fn promo_list(_: &mut Session, _: &Value) -> CmdResult {
     Ok(json!({
         "promos": PROMOS
             .iter()
-            .map(|p| json!({"id": p.id, "name": p.en, "zh": p.zh, "text": p.text, "value": p.value}))
+            .map(|p| {
+                json!({
+                    "id": p.id,
+                    "category": p.category.name(),
+                    "name": p.en,
+                    "zh": p.zh,
+                    "text": p.text,
+                    "lines": p.lines,
+                    "value": p.value,
+                    "values": p.values,
+                    "from": p.from,
+                    "x": p.place[0],
+                    "y": p.place[1],
+                    "duration": Tick::from_seconds(p.millis as f64 / 1000.0),
+                    "clips": p.clips(),
+                    "about": p.about,
+                })
+            })
             .collect::<Vec<_>>()
     }))
-}
-
-/// One clip of a piece, before it has a place.
-struct Part {
-    track: TrackKind,
-    content: ClipContent,
-    /// Offset from the piece's centre, in canvas pixels, and turn.
-    at: [f32; 2],
-    rotation: f32,
-    enter: Option<AnimKind>,
-    repeat: Option<LoopKind>,
-}
-
-fn title(text: String, size: f32, color: [f32; 4], counter: Option<Counter>) -> ClipContent {
-    ClipContent::Text {
-        text,
-        size,
-        color,
-        style: TitleStyle { weight: 900, wrap: 0.0, counter, ..TitleStyle::default() },
-    }
-}
-
-fn shape_part(shape: Shape, enter: Option<AnimKind>) -> Part {
-    Part {
-        track: TrackKind::Video,
-        content: ClipContent::Shape { shape },
-        at: [0.0; 2],
-        rotation: 0.0,
-        enter,
-        repeat: None,
-    }
-}
-
-fn text_part(content: ClipContent, at: [f32; 2], enter: Option<AnimKind>) -> Part {
-    Part { track: TrackKind::Text, content, at, rotation: 0.0, enter, repeat: None }
-}
-
-const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
-
-/// The clips of piece `id`, bottom first, for a clip `dur` long. `accent` is its main colour.
-fn parts(id: &str, text: String, from: f32, value: Option<f32>, accent: [f32; 4], dur: Tick) -> Option<Vec<Part>> {
-    let shadow = Some(ShapeShadow { color: [0.0, 0.0, 0.0, 0.35], offset: [0.0, 10.0], blur: 14.0 });
-    let lighter =
-        |c: [f32; 4], k: f32| [c[0] + (1.0 - c[0]) * k, c[1] + (1.0 - c[1]) * k, c[2] + (1.0 - c[2]) * k, c[3]];
-    let counter = |to: f32, group: bool, clock: bool, ease: Ease, over: Option<Tick>| Counter {
-        from,
-        to,
-        over,
-        ease,
-        decimals: if to.fract() != 0.0 { 2 } else { 0 },
-        group,
-        clock,
-    };
-    let quick = Some(Tick::from_seconds(1.2).min(dur));
-    Some(match id {
-        "priceTag" => vec![
-            shape_part(
-                Shape {
-                    radius: 28.0,
-                    fill: Some(Fill::Linear { from: lighter(accent, 0.25), to: accent, angle: 90.0 }),
-                    shadow,
-                    ..Shape::new(ShapeKind::Tag, [560.0, 210.0], accent)
-                },
-                Some(AnimKind::Pop),
-            ),
-            text_part(
-                title(text, 120.0, WHITE, value.map(|v| counter(v, false, false, Ease::OUT, quick))),
-                [40.0, 0.0],
-                Some(AnimKind::ZoomIn),
-            ),
-        ],
-        "discountBadge" => {
-            let mut star = Shape {
-                points: 16,
-                inner: 0.82,
-                stroke: Some(Stroke { color: WHITE, width: 8.0 }),
-                shadow,
-                ..Shape::new(ShapeKind::Star, [380.0, 380.0], accent)
-            };
-            star.fill = Some(Fill::Radial { from: lighter(accent, 0.3), to: accent });
-            let mut badge = shape_part(star, Some(AnimKind::Pop));
-            badge.repeat = Some(LoopKind::Heartbeat);
-            badge.rotation = -12.0;
-            let mut words = text_part(title(text, 104.0, WHITE, None), [0.0, 0.0], Some(AnimKind::Pop));
-            words.repeat = Some(LoopKind::Heartbeat);
-            words.rotation = -12.0;
-            vec![badge, words]
-        }
-        "banner" => vec![
-            shape_part(
-                Shape {
-                    radius: 90.0,
-                    fill: Some(Fill::Linear { from: lighter(accent, 0.35), to: accent, angle: 0.0 }),
-                    shadow,
-                    ..Shape::new(ShapeKind::Rectangle, [980.0, 180.0], accent)
-                },
-                Some(AnimKind::SlideRight),
-            ),
-            text_part(title(text, 92.0, WHITE, None), [0.0, 0.0], Some(AnimKind::CharPop)),
-        ],
-        "countdown" => vec![
-            shape_part(
-                Shape {
-                    radius: 36.0,
-                    stroke: Some(Stroke { color: accent, width: 8.0 }),
-                    shadow,
-                    ..Shape::new(ShapeKind::Rectangle, [520.0, 200.0], [0.08, 0.08, 0.1, 0.88])
-                },
-                Some(AnimKind::Draw),
-            ),
-            text_part(
-                title(text, 112.0, WHITE, Some(counter(0.0, false, true, Ease::Linear, None))),
-                [0.0, 0.0],
-                Some(AnimKind::Fade),
-            ),
-        ],
-        "salesCounter" => vec![
-            shape_part(
-                Shape { radius: 80.0, shadow, ..Shape::new(ShapeKind::Rectangle, [700.0, 160.0], WHITE) },
-                Some(AnimKind::ZoomIn),
-            ),
-            text_part(
-                title(
-                    text,
-                    78.0,
-                    accent,
-                    value.map(|v| counter(v, true, false, Ease::OUT, Some(Tick::from_seconds(2.0).min(dur)))),
-                ),
-                [0.0, 0.0],
-                Some(AnimKind::Fade),
-            ),
-        ],
-        "strikePrice" => {
-            let width = text.chars().count() as f32 * 72.0 * 0.62 + 30.0;
-            vec![
-                text_part(title(text, 72.0, [0.6, 0.6, 0.62, 1.0], None), [0.0, 0.0], Some(AnimKind::Fade)),
-                Part {
-                    track: TrackKind::Video,
-                    content: ClipContent::Shape {
-                        shape: Shape {
-                            stroke: Some(Stroke { color: accent, width: 7.0 }),
-                            ..Shape::new(ShapeKind::Line, [width, 0.0], accent)
-                        },
-                    },
-                    at: [0.0, 4.0],
-                    rotation: -8.0,
-                    enter: Some(AnimKind::Draw),
-                    repeat: None,
-                },
-            ]
-        }
-        "newArrival" => vec![
-            shape_part(
-                Shape {
-                    stroke: Some(Stroke { color: accent, width: 12.0 }),
-                    fill: Some(Fill::Solid { color: [accent[0], accent[1], accent[2], 0.18] }),
-                    ..Shape::new(ShapeKind::Ellipse, [320.0, 320.0], accent)
-                },
-                Some(AnimKind::Draw),
-            ),
-            text_part(title(text, 104.0, accent, None), [0.0, 0.0], Some(AnimKind::CharPop)),
-        ],
-        _ => return None,
-    })
-    .map(|mut parts: Vec<Part>| {
-        // a countdown counts down from its value to nothing, at the speed of a clock
-        if id == "countdown"
-            && let Some(Part { content: ClipContent::Text { style, .. }, .. }) = parts.get_mut(1)
-            && let Some(c) = &mut style.counter
-        {
-            let start = value.unwrap_or(10.0);
-            *c = Counter { from: start, to: (start - dur.seconds() as f32).max(0.0), ..*c };
-        }
-        parts
-    })
 }
 
 /// The first track at or above `from` of `kind` that is free from `start` for `dur`, or a new one
@@ -461,59 +280,192 @@ pub(crate) fn plain_clip(id: String, start: Tick, duration: Tick, content: ClipC
     }
 }
 
+/// The numbers `name` lists, at most `most` of them.
+fn numbers(v: &Value, name: &str, most: usize) -> Result<Option<Vec<f32>>, EngineError> {
+    let Some(list) = v.get(name) else { return Ok(None) };
+    let what = format!("a list of at most {most} numbers");
+    let list = list.as_array().filter(|a| a.len() <= most).ok_or_else(|| wrong(name, &what))?;
+    let read = |x: &Value| x.as_f64().filter(|f| f.abs() < 1e12).map(|f| f as f32).ok_or_else(|| wrong(name, &what));
+    list.iter().map(read).collect::<Result<Vec<_>, _>>().map(Some)
+}
+
 /// `promo.add`.
 pub(crate) fn promo_add(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    if p.opt_bool("compound")? != Some(true) {
+        return add(s, v);
+    }
+    // the piece as one clip: its parts made as ever, then folded into a timeline of their own
+    crate::commands::one_step(s, "Add Promo", |s| {
+        let made = add(s, v)?;
+        let clips: Vec<Value> = made["clips"].as_array().expect("clips").iter().map(|c| c["clip"].clone()).collect();
+        let name = PROMOS.iter().find(|x| Some(x.id) == v["kind"].as_str()).expect("a known piece").en;
+        let mut out = crate::compound::clip_compound(s, &json!({ "clips": clips, "name": name }))?;
+        out["parts"] = Value::Array(clips);
+        Ok(out)
+    })
+}
+
+fn add(s: &mut Session, v: &Value) -> CmdResult {
     let p = P::new(v, fps(s));
     let id = p.str("kind")?.to_string();
     let Some(promo) = PROMOS.iter().find(|x| x.id == id) else {
         return Err(wrong("kind", &format!("one of {}", PROMOS.iter().map(|x| x.id).collect::<Vec<_>>().join(", "))));
     };
     let start = p.opt_time("start")?;
-    let dur = p.opt_time("duration")?.unwrap_or(Tick::from_seconds(3.0));
+    let dur = p.opt_time("duration")?.unwrap_or(Tick::from_seconds(promo.millis as f64 / 1000.0));
     if dur <= Tick::ZERO {
         return Err(wrong("duration", "positive"));
     }
     let text = p.opt_str("text")?.unwrap_or(promo.text).to_string();
+    let lines = match v.get("lines") {
+        None => promo.lines.iter().map(|l| l.to_string()).collect(),
+        Some(_) => p.strings("lines")?,
+    };
+    if lines.len() > 6 || lines.iter().any(|l| l.chars().count() > 200) {
+        return Err(wrong("lines", "at most 6 lines of at most 200 characters"));
+    }
+    // a piece that is all lines needs one
+    if lines.is_empty() && promo.text.is_empty() && !promo.lines.is_empty() {
+        return Err(wrong("lines", "at least one line"));
+    }
     let value = p.opt_f64("value")?.map(|v| v as f32).or(promo.value);
     if value.is_some_and(|v| v.abs() >= 1e12) {
         return Err(wrong("value", "a number"));
     }
-    let from = p.opt_f64("from")?.unwrap_or(0.0) as f32;
-    let accent = p.opt_color("color")?.unwrap_or([0.93, 0.16, 0.2, 1.0]);
-    let x = p.opt_f64("x")?.unwrap_or(0.0) as f32;
-    let y = p.opt_f64("y")?.unwrap_or(0.0) as f32;
+    let values = numbers(v, "values", 4)?.unwrap_or_else(|| promo.values.to_vec());
+    let from = p.opt_f64("from")?.map_or(promo.from, |f| f as f32);
+    let (accent, second) = (p.opt_color("color")?, p.opt_color("color2")?);
+    let side = match p.opt_str("side")? {
+        None => None,
+        Some(name) => {
+            Some(Side::parse(name).ok_or_else(|| wrong("side", &format!("one of {}", Side::NAMES.join(", "))))?)
+        }
+    };
+    let x = p.opt_f64("x")?.map_or(promo.place[0], |x| x as f32);
+    let y = p.opt_f64("y")?.map_or(promo.place[1], |y| y as f32);
     let scale = p.opt_f64("scale")?.unwrap_or(1.0) as f32;
     if !(scale > 0.0 && scale <= 20.0) {
         return Err(wrong("scale", "above 0 and at most 20"));
     }
     s.edit("Add Promo", |proj| {
         let start = start.unwrap_or(Tick::ZERO);
-        let parts = parts(&id, text.clone(), from, value, accent, dur).expect("a known piece");
-        // sizes are for a canvas 1080 wide; a larger or smaller one gets them in proportion
-        let k = proj.canvas.width.min(proj.canvas.height) as f32 / 1080.0 * scale;
-        let group = proj.mint("g");
         let (cw, ch) = (proj.canvas.width as f32, proj.canvas.height as f32);
+        // sizes are for a canvas whose shorter side is 1080; a larger or smaller one gets them in
+        // proportion
+        let fit = cw.min(ch) / 1080.0;
+        let k = fit * scale;
+        let brand = proj.brand.clone();
+        let ask = Ask {
+            text: text.clone(),
+            lines: lines.clone(),
+            from,
+            value,
+            values: values.clone(),
+            accent: accent.or(brand.primary).unwrap_or(pieces::RED),
+            second: second.or(brand.secondary).unwrap_or(pieces::YELLOW),
+            side,
+            dur,
+            canvas: [cw / fit, ch / fit],
+            place: [x, y],
+            scale,
+            logo: brand.logo.clone(),
+        };
+        let parts = pieces::parts(&id, &ask).expect("a known piece");
+        let group = proj.mint("g");
         let mut below = 0;
         let mut made = vec![];
-        for part in parts {
-            let ti = free_track(proj, part.track, below, start, dur);
+        for mut part in parts {
+            // a part that comes in late still shows for a quarter of the piece
+            let wait = part.delay.min(Tick(dur.0 / 4 * 3));
+            let (at, long) = (start + wait, dur - wait);
+            let ti = free_track(proj, part.track, below, at, long);
             below = ti + 1;
             let cid = proj.mint("c");
-            let mut clip = plain_clip(cid.clone(), start, dur, part.content);
+            let mut size = k;
+            match &mut part.content {
+                ClipContent::Text { style, size: letters, .. } => {
+                    if style.font.is_none() {
+                        style.font = brand.font.clone();
+                    }
+                    // a title that wraps does so at a share of the frame, whatever its clip's
+                    // scale: the frame's size goes into its letters instead
+                    if let Some(width) = part.boxed.or(part.wrapped) {
+                        pieces::boxed(style, width, ask.canvas[0], part.boxed.is_some());
+                        *letters *= fit;
+                        size = scale;
+                    }
+                }
+                ClipContent::Media { .. } => size = part.fit.unwrap_or(1.0) * scale,
+                _ => {}
+            }
+            let mut clip = plain_clip(cid.clone(), at, long, part.content);
             clip.transform = ClipTransform {
                 x: x + part.at[0] * k / cw,
                 y: y + part.at[1] * k / ch,
-                scale: k,
+                scale: size,
                 rotation: part.rotation,
             };
-            clip.anim.enter =
-                part.enter.map(|kind| Animation { kind, duration: Tick::from_seconds(0.6).min(Tick(dur.0 / 2)) });
+            let enter = part.enter_for.unwrap_or(Tick::from_seconds(0.6)).min(Tick(long.0 / 2));
+            clip.anim.enter = part.enter.map(|kind| Animation { kind, duration: enter });
             clip.anim.repeat = part.repeat.map(|kind| Loop { kind, period: kind.period() });
+            for (prop, keys) in part.keys {
+                let mut list: Vec<Key> = Vec::new();
+                for (share, value, ease) in keys {
+                    let t = Tick(long.0 * share / 1000);
+                    let v = match prop {
+                        Prop::X => clip.transform.x + value * k / cw,
+                        Prop::Y => clip.transform.y + value * k / ch,
+                        _ => value,
+                    };
+                    match list.last_mut() {
+                        Some(last) if last.t == t => *last = Key { t, v, ease },
+                        _ => list.push(Key { t, v, ease }),
+                    }
+                }
+                clip.keys.insert(prop, list);
+            }
             clip.group = Some(group.clone());
             proj.tracks[ti].clips.push(clip);
             proj.tracks[ti].clips.sort_by_key(|c| c.start);
             made.push(json!({"clip": cid, "track": proj.tracks[ti].id}));
         }
         Ok(json!({ "group": group, "clips": made, "start": start, "duration": dur }))
+    })
+}
+
+/// `brand.get`.
+pub(crate) fn brand_get(s: &mut Session, _: &Value) -> CmdResult {
+    Ok(json!({ "brand": s.project.brand }))
+}
+
+/// `brand.set`.
+pub(crate) fn brand_set(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let (primary, secondary) = (p.opt_color_or_null("primary")?, p.opt_color_or_null("secondary")?);
+    let media = |name: &str| match v.get(name) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(id)) => Ok(Some(Some(id.clone()))),
+        Some(_) => Err(wrong(name, "a media id or null")),
+    };
+    let (font, logo) = (media("font")?, media("logo")?);
+    s.edit("Brand", |proj| {
+        let wanted = |id: &Option<Option<String>>, kind: MediaKind, what: &str| match id {
+            Some(Some(id)) => match proj.media.get(id) {
+                None => Err(not_found("media", id)),
+                Some(m) if m.kind != kind => Err(EngineError::Params(format!("media {id:?} is not {what}"))),
+                Some(_) => Ok(()),
+            },
+            _ => Ok(()),
+        };
+        wanted(&font, MediaKind::Font, "a font")?;
+        wanted(&logo, MediaKind::Image, "a picture")?;
+        let b = &mut proj.brand;
+        b.primary = primary.unwrap_or(b.primary);
+        b.secondary = secondary.unwrap_or(b.secondary);
+        b.font = font.unwrap_or(b.font.take());
+        b.logo = logo.unwrap_or(b.logo.take());
+        Ok(json!({ "brand": proj.brand }))
     })
 }
