@@ -121,6 +121,7 @@ render_export {"path": "out.mp4"}
 | Captions | `captions_transcribe` (local Whisper on the server), `captions_add`, `captions_import` / `captions_export` (SubRip; `line: 2` for a second language), `captions_list`, `captions_split`, `captions_merge`, `captions_replace`, `captions_restyle`, `captions_shift` |
 | Talking-head cleanup | `audio_cutPauses`, `captions_fillers`, `captions_cutFillers` |
 | Sound | `sound_library` / `sound_add`, `clip_setVoice` / `voice_list`, `clip_setDenoise`, `audio_denoise`, `audio_normalize`, `audio_beats` (a marker on each beat), `audio_duck`, `clip_detachAudio` |
+| Motion written as code | `script_check`, `script_add`, `script_setParams`, `script_setSource`, `script_get` / `script_list`, `script_detach`: JavaScript that makes shapes, titles and pictures and tweens them on a GSAP-like timeline, run once into ordinary keyframed clips. See [scripts.md](scripts.md) |
 | Groups and compound clips | `clip_group`, `clip_ungroup`, `clip_compound`, `clip_uncompound`, `timeline_list` / `timeline_switch` |
 | Timelines and templates (剪同款) | `timeline_add` / `timeline_switch` / …, `template_list`, `template_apply`, `template_slots`, `template_fill`, `template_mark`, `clip_replace` |
 | Media | `media_import`, `media_set` (rename, folders), `media_remove` |

@@ -2646,3 +2646,176 @@ fn a_voiceover_reads_the_titles_picked_or_the_captions() {
     let v = add_video(&mut s, 2.0);
     assert!(crate::spoken_lines(&s.project(), &[v]).unwrap_err().contains("not a title"));
 }
+
+const CARD: &str = r##"
+export const params = {
+  price: { type: "number", default: 199, label: "Price" },
+  tags: { type: "list", default: ["a", "b"] },
+};
+export function build({ params, canvas, scene, timeline }) {
+  const card = scene.rect({ name: "card", width: 0.8 * canvas.width, height: 400, radius: 40, fill: "#ffffff" });
+  const price = scene.text("¥{n}", { name: "price", size: 160, color: "#ff3b5c",
+                                     counter: { from: 299, to: params.price, duration: 0.6 } });
+  const rule = scene.line({ name: "rule", y: 150, width: 300, stroke: { color: "#999", width: 5 } });
+  const tags = params.tags.map((t, i) => scene.text(t, { x: i * 200, y: 250, size: 40 }));
+  timeline({ defaults: { duration: 0.5, ease: "power2.out" } })
+    .from(card, { y: "+=600", opacity: 0, ease: "back.out(1.4)" })
+    .from(price, { scale: 0, ease: "elastic.out(1, 0.5)", duration: 1 }, "<0.1")
+    .fromTo(rule, { drawEnd: 0 }, { drawEnd: 1 }, "-=0.5")
+    .from(tags, { opacity: 0, stagger: 0.1 }, "-=0.2");
+}
+"##;
+
+#[test]
+fn a_motion_script_builds_grouped_clips_with_keys_in_one_step() {
+    let mut s = Session::default();
+    let (tracks, steps) = (s.project().tracks.len(), s.history().len());
+    let out = s.execute("script.add", &json!({"source": CARD, "start": {"seconds": 2}, "name": "Price card"})).unwrap();
+    let group = out["group"].as_str().unwrap().to_string();
+    let clips = out["clips"].as_array().unwrap();
+    assert_eq!(clips.len(), 5);
+    assert_eq!(s.history().len(), steps + 1);
+    let p = s.project();
+    // each node above the one before, on tracks of its kind, all as long as the piece
+    let at: Vec<usize> = clips.iter().map(|c| p.clip(c["clip"].as_str().unwrap()).unwrap().0).collect();
+    assert!(at.windows(2).all(|w| w[0] < w[1]), "{at:?}");
+    let clip = |i: usize| p.clip(clips[i]["clip"].as_str().unwrap()).unwrap().1;
+    let fps = p.canvas.fps;
+    for i in 0..5 {
+        assert_eq!(clip(i).group.as_deref(), Some(group.as_str()));
+        assert_eq!(clip(i).start, Tick::from_seconds(2.0));
+        assert_eq!(clip(i).duration, out["duration"].as_i64().map(Tick).unwrap());
+        assert!(clip(i).keys.values().flatten().all(|k| fps.snap(k.t) == k.t && k.t <= clip(i).duration));
+    }
+    assert_eq!((clips[0]["node"].as_str(), clips[0]["kind"].as_str()), (Some("card"), Some("shape")));
+    assert!(matches!(&clip(0).content, ClipContent::Shape { shape } if shape.size[1] == 400.0 && shape.radius == 40.0));
+    // a Bézier ease is two keys; pixels have become shares of the canvas
+    let y = &clip(0).keys[&Prop::Y];
+    let h = p.canvas.height as f32;
+    assert_eq!(y.len(), 2);
+    assert!((y[0].v - 600.0 / h).abs() < 1e-6 && y[1].v == 0.0);
+    assert!(matches!(y[0].ease, reelforge_model::Ease::Bezier(b) if b[1] > 1.4));
+    // an elastic one is a key a frame, and the title counts
+    assert_eq!(clip(1).keys[&Prop::Scale].len(), 31);
+    assert!(
+        matches!(&clip(1).content, ClipContent::Text { style, .. } if style.counter.is_some_and(|c| c.to == 199.0))
+    );
+    assert_eq!(clip(2).keys[&Prop::DrawEnd].iter().map(|k| k.v).collect::<Vec<_>>(), [0.0, 1.0]);
+    assert_eq!(p.scripts[&group].name, "Price card");
+    assert_eq!(p.scripts[&group].declared["price"]["label"], json!("Price"));
+    s.execute("render.compile", &json!({})).unwrap();
+    // it is listed and read back
+    let listed = s.execute("script.list", &json!({})).unwrap();
+    assert_eq!(listed["scripts"][0]["group"], json!(group));
+    assert!(listed["scripts"][0].get("source").is_none());
+    let got = s.execute("script.get", &json!({"group": group})).unwrap();
+    assert_eq!(got["source"], json!(CARD));
+    assert_eq!(got["clips"].as_array().unwrap().len(), 5);
+    // one step back and nothing of it is left
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.project().tracks.len(), tracks);
+    assert!(s.project().scripts.is_empty());
+}
+
+#[test]
+fn a_script_s_parameters_and_source_build_its_group_again_where_it_is() {
+    let mut s = Session::default();
+    let out = s.execute("script.add", &json!({"source": CARD, "start": {"seconds": 1}})).unwrap();
+    let group = out["group"].as_str().unwrap().to_string();
+    let (tracks, steps) = (s.project().tracks.len(), s.history().len());
+    let lowest = s.project().clip(out["clips"][0]["clip"].as_str().unwrap()).unwrap().0;
+
+    let again = s
+        .execute("script.setParams", &json!({"group": group, "params": {"price": 99, "tags": ["x", "y", "z"]}}))
+        .unwrap();
+    assert_eq!(again["group"], json!(group));
+    assert_eq!(again["clips"].as_array().unwrap().len(), 6);
+    assert_eq!(s.history().len(), steps + 1);
+    let p = s.project();
+    // the same tracks again, and one more for the third tag
+    assert_eq!(p.tracks.len(), tracks + 1);
+    let (ti, card) = p.clip(again["clips"][0]["clip"].as_str().unwrap()).unwrap();
+    assert_eq!((ti, card.start), (lowest, Tick::from_seconds(1.0)));
+    let price = p.clip(again["clips"][1]["clip"].as_str().unwrap()).unwrap().1;
+    assert!(matches!(&price.content, ClipContent::Text { style, .. } if style.counter.is_some_and(|c| c.to == 99.0)));
+    assert_eq!(p.scripts[&group].params["price"], json!(99));
+    // null is the default again
+    s.execute("script.setParams", &json!({"group": group, "params": {"price": null}})).unwrap();
+    assert!(!s.project().scripts[&group].params.contains_key("price"));
+    assert_eq!(s.project().scripts[&group].params["tags"], json!(["x", "y", "z"]));
+
+    // a new source keeps the values it still has a parameter for
+    let other = r#"
+        export const params = { tags: { type: "list", default: [] }, size: { type: "number", default: 80 } };
+        export function build({ params, scene, timeline }) {
+          const all = params.tags.map((t) => scene.text(t, { size: params.size }));
+          timeline().from(all, { opacity: 0, stagger: 0.1 });
+        }"#;
+    let out = s.execute("script.setSource", &json!({"group": group, "source": other})).unwrap();
+    assert_eq!(out["clips"].as_array().unwrap().len(), 3);
+    let p = s.project();
+    assert_eq!(p.scripts[&group].params.keys().collect::<Vec<_>>(), ["tags"]);
+    assert!(p.scripts[&group].declared.contains_key("size"));
+    assert!(p.tracks.iter().flat_map(|t| &t.clips).filter(|c| c.group.as_deref() == Some(group.as_str())).count() == 3);
+
+    // a source that fails changes nothing
+    let before = s.project();
+    let e =
+        s.execute("script.setSource", &json!({"group": group, "source": "export function build() {}"})).unwrap_err();
+    assert_eq!(e.to_string(), "script: the script made nothing: call scene.rect, scene.text, … in build");
+    assert_eq!(*s.project(), *before);
+    let e = s.execute("script.setParams", &json!({"group": group, "params": {"colour": 1}})).unwrap_err();
+    assert!(e.to_string().contains("no parameter `colour`; it has tags, size"), "{e}");
+    assert!(s.execute("script.get", &json!({"group": "g99"})).unwrap_err().to_string().contains("no script \"g99\""));
+}
+
+#[test]
+fn a_script_is_checked_without_a_trace_detached_and_forgotten_with_its_clips() {
+    let mut s = Session::default();
+    let before = s.project();
+    let (steps, revision) = (s.history().len(), s.revision());
+    let out = s.execute("script.check", &json!({"source": CARD, "params": {"price": 9}})).unwrap();
+    assert_eq!(out["ok"], json!(true));
+    assert_eq!(out["nodes"][1], json!({"node": "price", "kind": "text", "keys": {"scale": 31}}));
+    assert_eq!(out["values"]["price"], json!(9));
+    assert_eq!((*s.project() == *before, s.history().len(), s.revision()), (true, steps, revision));
+    // what the clips themselves refuse is found too, and named by its node
+    let e = s
+        .execute(
+            "script.check",
+            &json!({"source": "export function build({ scene }) { scene.image('m9', { name: 'shot' }); }"}),
+        )
+        .unwrap_err();
+    assert_eq!(e.to_string(), "script: shot: invalid parameters: no media \"m9\"");
+    assert_eq!(*s.project(), *before);
+    assert!(s.execute("script.add", &json!({"source": "  "})).is_err());
+
+    // detached, the clips stay a group and the script is gone
+    let out = s.execute("script.add", &json!({"source": CARD})).unwrap();
+    let group = out["group"].as_str().unwrap().to_string();
+    let first = out["clips"][0]["clip"].as_str().unwrap().to_string();
+    s.execute("script.detach", &json!({"group": group})).unwrap();
+    assert!(s.project().scripts.is_empty());
+    assert_eq!(s.project().clip(&first).unwrap().1.group.as_deref(), Some(group.as_str()));
+    assert!(s.execute("script.setParams", &json!({"group": group})).is_err());
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.project().scripts.len(), 1);
+
+    // its clips deleted, a script is forgotten; one of a single clip keeps its group meanwhile
+    let one = s
+        .execute(
+            "script.add",
+            &json!({"source": "export function build({ scene }) { scene.rect({}); scene.setDuration(2); }"}),
+        )
+        .unwrap();
+    let (g1, c1) = (one["group"].as_str().unwrap().to_string(), one["clips"][0]["clip"].as_str().unwrap().to_string());
+    assert_eq!(one["seconds"], json!(2.0));
+    let ids: Vec<&str> = out["clips"].as_array().unwrap().iter().map(|c| c["clip"].as_str().unwrap()).collect();
+    s.execute("clip.remove", &json!({"clips": ids})).unwrap();
+    let p = s.project();
+    assert_eq!(p.scripts.keys().collect::<Vec<_>>(), [&g1]);
+    assert_eq!(p.clip(&c1).unwrap().1.group.as_deref(), Some(g1.as_str()));
+    // the project with a script in it is written and read back the same
+    let text = serde_json::to_string(&*p).unwrap();
+    assert_eq!(serde_json::from_str::<Project>(&text).unwrap(), *p);
+}

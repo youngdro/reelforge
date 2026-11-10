@@ -1,0 +1,21 @@
+[package]
+name = "reelforge-script"
+description = "Motion scripts: a piece of JavaScript that builds nodes and tweens them on a timeline, run once in a sandbox and answered as plain data for the engine to turn into clips and keyframes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# A JavaScript interpreter in pure Rust (Unlicense OR MIT): no file system, network or clock is
+# handed to a script, and it builds for the browser.
+boa_engine = { version = "0.22", default-features = false }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+boa_engine = { version = "0.22", default-features = false, features = ["js"] }

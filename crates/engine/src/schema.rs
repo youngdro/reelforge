@@ -274,7 +274,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
     Some(match id {
         "commands.list" | "project.inspect" | "project.outline" | "project.new" | "edit.undo" | "edit.redo"
         | "title.templates" | "sound.library" | "timeline.list" | "fx.list" | "sticker.library" | "voice.list"
-        | "template.list" | "template.slots" | "promo.list" => object(vec![], &[]),
+        | "template.list" | "template.slots" | "promo.list" | "script.list" => object(vec![], &[]),
         "sound.add" => object(
             vec![
                 (
@@ -885,6 +885,64 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ),
             ],
             &["clip", "counter"],
+        ),
+        "script.add" | "script.check" => {
+            let mut props = vec![
+                (
+                    "source",
+                    json!({"type": "string", "description": "The script: JavaScript with `export function build({ params, canvas, scene, timeline })` and, if it takes parameters, `export const params = {name: {type, default, label?}}`. See docs/scripts.md."}),
+                ),
+                (
+                    "params",
+                    json!({"type": "object", "description": "Values for the parameters the script declares, by name; the rest take their defaults."}),
+                ),
+                (
+                    "duration",
+                    time(
+                        "How long the piece is; else as long as the script says (scene.setDuration), else until its last tween ends.",
+                    ),
+                ),
+                (
+                    "seed",
+                    json!({"type": "integer", "minimum": 0, "description": "What the script's Math.random starts from; 1 by default."}),
+                ),
+            ];
+            if id == "script.add" {
+                props.push(("start", time("Where the piece starts on the timeline; 0 by default.")));
+                props.push(("name", json!({"type": "string", "description": "What to call it."})));
+            }
+            object(props, &["source"])
+        }
+        "script.get" | "script.detach" => {
+            object(vec![("group", ident("The script's group id, such as g7 (script.list)."))], &["group"])
+        }
+        "script.setParams" => object(
+            vec![
+                ("group", ident("The script's group id, such as g7 (script.list).")),
+                (
+                    "params",
+                    json!({"type": "object", "description": "The values to change, by name; null puts one back to the script's default."}),
+                ),
+                ("reset", json!({"type": "boolean", "description": "Puts every parameter back to its default first."})),
+                ("duration", nullable(time("How long the piece is."))),
+                (
+                    "seed",
+                    json!({"type": "integer", "minimum": 0, "description": "What the script's Math.random starts from."}),
+                ),
+            ],
+            &["group"],
+        ),
+        "script.setSource" => object(
+            vec![
+                ("group", ident("The script's group id, such as g7 (script.list).")),
+                ("source", json!({"type": "string", "description": "The new source."})),
+                (
+                    "params",
+                    json!({"type": "object", "description": "All its parameter values anew; without this, those the new source still declares are kept."}),
+                ),
+                ("name", json!({"type": "string", "description": "What to call it."})),
+            ],
+            &["group", "source"],
         ),
         "promo.add" => object(
             vec![

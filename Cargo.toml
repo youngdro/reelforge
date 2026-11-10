@@ -12,6 +12,7 @@ repository = "https://github.com/youngdro/reelforge"
 [workspace.dependencies]
 # internal
 reelforge-time = { path = "crates/time" }
+reelforge-script = { path = "crates/script" }
 reelforge-renderspec = { path = "crates/renderspec" }
 reelforge-model = { path = "crates/model" }
 reelforge-compile = { path = "crates/compile" }

@@ -125,6 +125,7 @@ cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t2", "t
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setAnimation '{"clip": "c6", "slot": "in", "kind": "pop"}' --save
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setAnimation '{"clip": "c6", "slot": "loop", "kind": "wave"}' --save   # its characters, round and round
 cargo run -q -p reelforge-cli -- exec cut.reel.json promo.add '{"kind": "priceTag", "value": 129.9, "y": -0.2}' --save   # a price tag whose price counts up (promo.list has the others)
+cargo run -q -p reelforge-cli -- call script.add -p cut.reel.json source=@docs/examples/price-card.js start=2s   # motion written as code: a script builds keyframed clips (docs/scripts.md)
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t1", "shape": {"kind": "star", "points": 16, "inner": 0.8, "size": [300, 300], "fill": {"type": "radial", "from": [1, 0.8, 0.2], "to": [1, 0.4, 0]}}}' --save   # a shape of your own
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setKey '{"clip": "c5", "prop": "scale", "at": {"seconds": 4}, "value": 1.3, "ease": "inOut"}' --save
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setEase '{"clip": "c5", "at": {"seconds": 4}, "ease": [0.3, 1.5, 0.6, 1]}' --save   # on from that key: past the next one and back
