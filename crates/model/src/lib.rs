@@ -716,6 +716,11 @@ pub struct ClipTransform {
     /// perspective.
     #[serde(default = "far", skip_serializing_if = "is_far")]
     pub distance: f32,
+    /// Motion blur: how long the shutter is open while the clip moves, grows or turns, as a share
+    /// of the time from one frame to the next. 0 is none (it is sharp wherever it is), 0.5 a
+    /// film camera's.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub motion_blur: f32,
 }
 
 impl ClipTransform {
@@ -723,6 +728,9 @@ impl ClipTransform {
     pub const DISTANCE: f32 = 2.0;
     /// The nearest and farthest the eye may be.
     pub const DISTANCES: (f32, f32) = (0.2, 50.0);
+    /// How long the shutter is open when motion blur is turned on and nothing more is said, and
+    /// the longest it may be, as shares of a frame's time.
+    pub const SHUTTERS: (f32, f32) = (0.5, 2.0);
 
     /// Whether the clip is stretched, turned in space or placed by another point than its
     /// middle: more than a move, an even scale and a turn in the plane.
@@ -768,6 +776,7 @@ impl Default for ClipTransform {
             rotation_y: 0.0,
             anchor: [0.5, 0.5],
             distance: ClipTransform::DISTANCE,
+            motion_blur: 0.0,
         }
     }
 }

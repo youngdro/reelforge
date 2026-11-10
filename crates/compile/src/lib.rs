@@ -16,10 +16,10 @@ use reelforge_model::{
 };
 use reelforge_renderspec::{
     Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Between, Blend, Color, Comp, Crop, CropKeys,
-    Ease, Effect, Fit, Key, Layer, LayerContent, MaskShape, NumberText, Output, OutputFormat, Paint, Probe, RenderSpec,
-    ShapeContent, ShapeKind as SpecShape, ShapeMask, ShapeMaskKeys, ShapeShadow, ShapeStroke, SpeedKey, TextAlign,
-    TextBackground, TextContent, TextShadow, TextStroke, TimeMap, Transform, Trim, Turn, VideoCodec, VideoEncoding,
-    effects, validate,
+    Ease, Effect, Fit, Key, Layer, LayerContent, MaskShape, MotionBlur, NumberText, Output, OutputFormat, Paint, Probe,
+    RenderSpec, ShapeContent, ShapeKind as SpecShape, ShapeMask, ShapeMaskKeys, ShapeShadow, ShapeStroke, SpeedKey,
+    TextAlign, TextBackground, TextContent, TextShadow, TextStroke, TimeMap, Transform, Trim, Turn, VideoCodec,
+    VideoEncoding, effects, validate,
 };
 use reelforge_time::Tick;
 use thiserror::Error;
@@ -431,6 +431,7 @@ fn lower_tracks(
                         shape_mask_keys: None,
                         fx,
                         parent: None,
+                        motion_blur: None,
                     });
                 }
                 layers.push(Layer {
@@ -440,6 +441,9 @@ fn lower_tracks(
                     content,
                     transform: placement(clip, &shape, step),
                     parent: carried.get(clip.id.as_str()).map(|p| p.to_string()),
+                    // seen through a shutter while it moves, if the clip asks
+                    motion_blur: (clip.transform.motion_blur > 0.0)
+                        .then(|| MotionBlur { shutter: clip.transform.motion_blur.min(ClipTransform::SHUTTERS.1) }),
                     opacity: motion::lower(clip, Prop::Opacity, &shape, step),
                     blend: blend(clip.look.blend),
                     mask: None,
@@ -521,6 +525,7 @@ fn lower_tracks(
                         crop_keys: None,
                         shape_mask_keys: None,
                         parent: None,
+                        motion_blur: None,
                     });
                 }
                 // a light leak is light: soft warm glows that drift across over both clips
@@ -894,6 +899,7 @@ fn light_leak(clip: &str, at: Tick, half: Tick, canvas: [f32; 2]) -> Vec<Layer> 
                 crop_keys: None,
                 shape_mask_keys: None,
                 parent: None,
+                motion_blur: None,
             }
         })
         .collect()
@@ -1080,6 +1086,25 @@ mod tests {
         let spec = compile(&p, &CompileOptions::default()).unwrap();
         assert!(spec.layers[0].shape_mask.is_none() && spec.layers[1].shape_mask.is_some());
         assert!(spec.layers[1].shape_mask_keys.is_some());
+    }
+
+    #[test]
+    fn a_clip_seen_through_a_shutter_asks_its_layer_for_motion_blur() {
+        let mut p = Project::default();
+        let mut c = clip("c30", Tick::ZERO, Tick::SECOND, ClipContent::Solid { color: [1.0; 4] });
+        p.tracks[0].clips.push(c.clone());
+        let plain = compile(&p, &CompileOptions::default()).unwrap();
+        assert!(plain.layers[0].motion_blur.is_none() && !plain.required_features().contains("motion.blur/1"));
+        c.transform.motion_blur = 0.5;
+        p.tracks[0].clips[0] = c.clone();
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        assert_eq!(spec.layers[0].motion_blur, Some(MotionBlur { shutter: 0.5 }));
+        assert!(spec.required_features().contains("motion.blur/1"));
+        // no longer than a renderer takes, whatever the file says
+        c.transform.motion_blur = 9.0;
+        p.tracks[0].clips[0] = c;
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        assert_eq!(spec.layers[0].motion_blur, Some(MotionBlur { shutter: 2.0 }));
     }
 
     #[test]

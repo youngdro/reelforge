@@ -870,6 +870,17 @@
             "null"
           ]
         },
+        "motion_blur": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MotionBlur"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The layer smeared along its own movement, as a camera with its shutter open sees it\n(feature `motion.blur/1`)."
+        },
         "opacity": {
           "$ref": "#/$defs/Animated",
           "default": 1.0,
@@ -1318,6 +1329,21 @@
           "type": "string"
         }
       ]
+    },
+    "MotionBlur": {
+      "additionalProperties": false,
+      "description": "A layer seen through a shutter that stays open for part of each frame: where the layer is\nplaced is taken at several instants of that time and what it shows at each is averaged, so\nthat it is smeared along the way it moves, grows or turns, and is as sharp as ever while it\nstands still. Only its placement is taken at those instants (its `transform`, and those of the\nlayers that carry it): its picture, opacity, crop, mask and effects are the frame's own. The\ntime the shutter is open is centred on the frame's instant. A renderer takes as many instants\nas it sees fit (at least two where the layer moves a pixel or more), and may take fewer for a\ndraft.",
+      "properties": {
+        "shutter": {
+          "description": "How long the shutter is open, as a share of the time from one frame to the next: 0.5 is a\nfilm camera's half turn (180°), 1 the whole time. Above 0, at most 2.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "shutter"
+      ],
+      "type": "object"
     },
     "NumberText": {
       "additionalProperties": false,

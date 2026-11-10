@@ -129,6 +129,9 @@ pub struct Sprite {
     /// pixels to target pixels. It was drawn flat and is placed like a picture, and `x` and `y`
     /// are where it was drawn. `None` for a sprite that lands pixel on pixel.
     pub map: Option<crate::plan::Map>,
+    /// With `map`, for a layer smeared along its movement: the map at each instant its shutter is
+    /// open, drawn in place of `map`.
+    pub smear: Vec<crate::plan::Map>,
 }
 
 /// Composites drawn text into `out` on the CPU: the layer's effects, opacity and blend.
@@ -540,7 +543,7 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
             image.pixels[o] = over(pen_c, cover * shows, image.pixels[o]);
         }
     }
-    Some(Sprite { x: r.x, y: r.y, image: Arc::new(image), map: None })
+    Some(Sprite { x: r.x, y: r.y, image: Arc::new(image), map: None, smear: Vec::new() })
 }
 
 /// The byte each character of `text` starts at, white space left out.

@@ -890,6 +890,10 @@ pub fn input_schema(id: &str) -> Option<Value> {
                     json!({"type": "number", "minimum": 0.2, "maximum": 50, "description": "How far the eye is from a clip turned in space, in canvas heights; 2 by default, nearer is stronger."}),
                 ),
                 (
+                    "motionBlur",
+                    json!({"type": ["boolean", "number"], "minimum": 0, "maximum": 2, "description": "Motion blur: the clip smeared along its own movement while it moves, grows or turns, sharp at rest. true turns it on, false or 0 off; a number is the share of a frame's time the shutter is open (0.5 by default, a film camera's; up to 2)."}),
+                ),
+                (
                     "anchorX",
                     json!({"type": "number", "minimum": -4, "maximum": 5, "description": "The point of the picture that `x` and `y` place and that it is scaled and turned about, across: 0 its left edge, 0.5 its middle, 1 its right edge."}),
                 ),

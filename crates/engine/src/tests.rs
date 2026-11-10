@@ -3733,3 +3733,70 @@ fn the_next_clip_is_wiped_opened_flipped_and_torn_in() {
     let grown = layers[0]["transform"]["scale"].as_array().unwrap().last().unwrap()["v"].as_f64().unwrap();
     assert!(grown > 2.0, "{grown}");
 }
+
+#[test]
+fn a_clip_is_smeared_along_its_way_when_it_is_asked_to_be() {
+    let mut s = Session::default();
+    // red all over the frame, pushed out to the left by the blue clip after it
+    add_red(&mut s, 0.0, 2.0);
+    let track = video_track(&s);
+    let blue = s
+        .execute(
+            "clip.add",
+            &json!({"track": track, "color": [0, 0, 1], "start": {"seconds": 2}, "duration": {"seconds": 2}}),
+        )
+        .unwrap()["clip"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    s.execute("clip.setTransition", &json!({"clip": blue, "kind": "pushLeft", "duration": {"seconds": 0.5}})).unwrap();
+    let spec = |s: &mut Session| -> reelforge_renderspec::RenderSpec {
+        serde_json::from_value(s.execute("render.compile", &json!({})).unwrap()).unwrap()
+    };
+    // the middle row at the cut, a quarter the size: how blue each column is
+    let row = |s: &mut Session, at: f64| -> Vec<f32> {
+        let (img, _) = reelforge_render::render_frame(
+            &spec(s),
+            Tick::from_seconds(at),
+            0.25,
+            &reelforge_render::NoMedia,
+            reelforge_render::Quality::Final,
+        )
+        .unwrap();
+        let y = img.height / 2;
+        (0..img.width).map(|x| img.pixels[(y * img.width + x) as usize][2]).collect()
+    };
+    let soft = |row: &[f32]| row.iter().filter(|b| **b > 0.02 && **b < 0.98).count();
+    // without it the edge between the two is a column at most
+    assert!(spec(&mut s).layers.iter().all(|l| l.motion_blur.is_none()));
+    assert!(soft(&row(&mut s, 2.0)) <= 1);
+
+    // on: a film camera's shutter unless a number says how long, on the clip and on its layer
+    let set = |s: &mut Session, v: Value| s.execute("clip.set", &json!({"clip": blue, "motionBlur": v}));
+    let on = set(&mut s, json!(true)).unwrap();
+    assert_eq!(on["clip"]["transform"]["motion_blur"], 0.5);
+    let compiled = spec(&mut s);
+    assert_eq!(compiled.layers[1].motion_blur, Some(reelforge_renderspec::MotionBlur { shutter: 0.5 }));
+    assert!(compiled.layers[0].motion_blur.is_none() && compiled.required_features().contains("motion.blur/1"));
+    // the blue clip's leading edge is a ramp now, several columns wide, and wider for a longer shutter
+    let half = soft(&row(&mut s, 2.0));
+    assert!(half >= 3, "{half}");
+    set(&mut s, json!(1.5)).unwrap();
+    assert!(soft(&row(&mut s, 2.0)) > half);
+    // where it stands still it is as it was
+    set(&mut s, json!(false)).unwrap();
+    let plain = row(&mut s, 3.0);
+    set(&mut s, json!(true)).unwrap();
+    assert_eq!(row(&mut s, 3.0), plain);
+    // off again, by false or by 0; and a shutter is 0 to 2
+    let off = set(&mut s, json!(0)).unwrap();
+    assert!(off["clip"]["transform"].get("motion_blur").is_none());
+    assert!(spec(&mut s).layers.iter().all(|l| l.motion_blur.is_none()));
+    for bad in [json!(3), json!(-0.5), json!("on")] {
+        assert!(matches!(set(&mut s, bad), Err(EngineError::Params(m)) if m.contains("motionBlur")));
+    }
+    // one undo for each set
+    s.execute("clip.set", &json!({"clip": blue, "motionBlur": true})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.project().clip(&blue).unwrap().1.transform.motion_blur, 0.0);
+}

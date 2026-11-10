@@ -17,8 +17,10 @@ struct Layer {
     // fixed function; the rest are blended here)
     blend: u32,
     nfx: u32,
-    _pad0: u32,
-    _pad1: u32,
+    // a layer smeared along its movement: how many of `smear`'s maps it is drawn through, and
+    // how many instants its light is shared between (both 0 for a layer drawn once, by `inv`)
+    nsmear: u32,
+    nshare: u32,
     // the whole picture's size; the size a mask is shaped on
     pic: vec4<f32>,
     // crop offset in picture pixels; mirrored x, y (1 or 0)
@@ -39,6 +41,9 @@ struct Layer {
     // three slots (amount, size | domain min | domain max); 7 chroma key over two slots
     // (tolerance, softness, spill | key r, g, b)
     fx: array<vec4<f32>, 16>,
+    // the inverse maps of the instants a smeared layer's shutter is open, three rows each:
+    // (a, b, c), (d, e, f) and (g, h, i) of `inv0`, `inv1` and `persp`
+    smear: array<vec4<f32>, 96>,
 }
 
 @group(0) @binding(0) var<uniform> L: Layer;
@@ -380,17 +385,18 @@ fn mix1(s: f32, d: f32) -> f32 {
     }
 }
 
-@fragment
-fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+// What the layer shows at a target pixel through one inverse map (its rows `r0`, `r1` and `r2`),
+// its effects, opacity and mask applied: nothing outside its picture. `cpu::blit`'s `shade`.
+fn shade(pos: vec2<f32>, r0: vec3<f32>, r1: vec3<f32>, r2: vec3<f32>) -> vec4<f32> {
     // how far from the eye: 1 unless the layer is turned in space, 0 or less where it is not seen
-    let q = L.persp.x * pos.x + L.persp.y * pos.y + L.persp.z;
+    let q = r2.x * pos.x + r2.y * pos.y + r2.z;
     if q <= 1e-6 {
-        discard;
+        return vec4(0.0);
     }
-    let sx = (L.inv0.x * pos.x + L.inv0.y * pos.y + L.inv0.z) / q;
-    let sy = (L.inv0.w * pos.x + L.inv1.x * pos.y + L.inv1.y) / q;
+    let sx = (r0.x * pos.x + r0.y * pos.y + r0.z) / q;
+    let sy = (r1.x * pos.x + r1.y * pos.y + r1.z) / q;
     if sx < 0.0 || sy < 0.0 || sx >= L.inv1.z || sy >= L.inv1.w {
-        discard;
+        return vec4(0.0);
     }
     var s: vec4<f32>;
     if L.mode == 1u {
@@ -401,7 +407,25 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
         s = read(sx, sy);
     }
     let uv = vec2(sx / L.inv1.z, sy / L.inv1.w);
-    s = effects(s, uv) * (L.opacity * coverage(uv));
+    return effects(s, uv) * (L.opacity * coverage(uv));
+}
+
+@fragment
+fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    var s: vec4<f32>;
+    if L.nsmear == 0u {
+        s = shade(pos.xy, L.inv0.xyz, vec3(L.inv0.w, L.inv1.xy), L.persp.xyz);
+    } else {
+        // the mean of what it shows at each instant its shutter is open
+        var sum = vec4(0.0);
+        for (var i = 0u; i < L.nsmear; i++) {
+            sum += shade(pos.xy, L.smear[i * 3u].xyz, L.smear[i * 3u + 1u].xyz, L.smear[i * 3u + 2u].xyz);
+        }
+        s = sum / f32(L.nshare);
+    }
+    if s.a <= 0.0 && s.r <= 0.0 && s.g <= 0.0 && s.b <= 0.0 {
+        discard;
+    }
     if L.blend == 2u {
         let d = textureLoad(dst, vec2<i32>(pos.xy), 0);
         let rgb = s.rgb * d.rgb + s.rgb * (1.0 - d.a) + d.rgb * (1.0 - s.a);

@@ -61,7 +61,31 @@ pub struct PlannedLayer {
     pub carried: Vec<Carrier>,
     /// The frame it is drawn into, in target pixels.
     pub frame: [f32; 2],
+    /// Where it is at the instants its shutter is open, when it moves between them
+    /// (`motion.blur/1`): what it shows is the mean of what it shows placed at each. Empty for a
+    /// layer that is drawn once, as it is placed above.
+    pub smear: Vec<Placement>,
 }
+
+/// How a layer is placed at an instant: everything of it that [`PlannedLayer::matrix`] reads.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Placement {
+    /// Centre of the layer in target pixels.
+    pub center: [f32; 2],
+    /// Scale on top of the fit.
+    pub scale: f32,
+    /// Clockwise rotation, radians.
+    pub rotation: f32,
+    /// Width and height scaled apart.
+    pub stretch: [f32; 2],
+    /// Turned in space.
+    pub turn: Option<Turned>,
+    /// The layers that carry it, nearest first.
+    pub carried: Vec<Carrier>,
+}
+
+/// The most instants a layer's shutter is sampled at.
+pub const SMEAR: usize = 32;
 
 /// A layer turned out of the frame's plane, at an instant.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -292,6 +316,51 @@ impl PlannedLayer {
         map
     }
 
+    /// The layer as it is placed at another instant: only what places it, to ask for its
+    /// [`matrix`](Self::matrix) there.
+    fn moved(&self, p: &Placement) -> PlannedLayer {
+        PlannedLayer {
+            id: String::new(),
+            source: PlannedSource::Solid([0.0; 4]),
+            fit: self.fit,
+            center: p.center,
+            scale: p.scale,
+            rotation: p.rotation,
+            opacity: self.opacity,
+            blend: self.blend,
+            fx: Vec::new(),
+            lut: None,
+            crop: self.crop,
+            flip: self.flip,
+            shape: self.shape,
+            stretch: p.stretch,
+            anchor: self.anchor,
+            turn: p.turn,
+            carried: p.carried.clone(),
+            frame: self.frame,
+            smear: Vec::new(),
+        }
+    }
+
+    /// The maps from content pixels to target pixels at the instants the shutter is open
+    /// ([`matrix`](Self::matrix) at each); empty for a layer that is not smeared.
+    pub fn smears(&self, w: f32, h: f32, target: [f32; 2]) -> Vec<Map> {
+        self.smear.iter().map(|p| self.moved(p).matrix(w, h, target)).collect()
+    }
+
+    /// For a sprite drawn at this layer's scale and placed by `from` and [`place`](Self::place)
+    /// (`from` takes its pixels to target pixels counted from the layer's anchor): its maps at
+    /// the instants the shutter is open, each at the scale the layer has then.
+    pub fn smears_placed(&self, from: &Map) -> Vec<Map> {
+        self.smear
+            .iter()
+            .map(|p| {
+                let k = if self.scale != 0.0 { p.scale / self.scale } else { 1.0 };
+                then(&then(&self.moved(p).place(), &[k, 0.0, 0.0, 0.0, k, 0.0, 0.0, 0.0, 1.0]), from)
+            })
+            .collect()
+    }
+
     /// The map from content pixels (a `w` by `h` picture) to target pixels.
     pub fn matrix(&self, w: f32, h: f32, target: [f32; 2]) -> Map {
         let (sx, sy) = match self.fit {
@@ -425,33 +494,52 @@ fn plan_layers(
                 (PlannedSource::Comp(Box::new(frame)), Fit::Contain)
             }
         };
-        let pos = layer.transform.position.sample(local);
         let frame = [width as f32, height as f32];
-        // what carries it, up the chain: each at this instant on its own clock
-        let mut carried = Vec::new();
-        let mut up = layer.parent.as_deref();
-        while let Some(parent) = up.and_then(|id| all.iter().find(|l| l.id == id)) {
-            if carried.len() == reelforge_renderspec::PARENTS || parent.id == layer.id {
-                break;
+        // where it is at an output instant: itself on its own clock, and what carries it, up
+        // the chain, each on its own
+        let placement = |t: Tick| {
+            let local = t - layer.at;
+            let pos = layer.transform.position.sample(local);
+            let mut carried = Vec::new();
+            let mut up = layer.parent.as_deref();
+            while let Some(parent) = up.and_then(|id| all.iter().find(|l| l.id == id)) {
+                if carried.len() == reelforge_renderspec::PARENTS || parent.id == layer.id {
+                    break;
+                }
+                let (tr, at) = (&parent.transform, t - parent.at);
+                let pos = tr.position.sample(at);
+                carried.push(Carrier {
+                    center: [frame[0] * (0.5 + pos[0]), frame[1] * (0.5 + pos[1])],
+                    scale: tr.scale.sample(at),
+                    stretch: tr.stretch.as_ref().map_or([1.0, 1.0], |s| s.sample(at)),
+                    rotation: tr.rotation.sample(at).to_radians(),
+                    turn: tr.turn.as_ref().map(|turn| turned(turn, at, frame)),
+                });
+                up = parent.parent.as_deref();
             }
-            let (tr, at) = (&parent.transform, t - parent.at);
-            let pos = tr.position.sample(at);
-            carried.push(Carrier {
+            Placement {
                 center: [frame[0] * (0.5 + pos[0]), frame[1] * (0.5 + pos[1])],
-                scale: tr.scale.sample(at),
-                stretch: tr.stretch.as_ref().map_or([1.0, 1.0], |s| s.sample(at)),
-                rotation: tr.rotation.sample(at).to_radians(),
-                turn: tr.turn.as_ref().map(|turn| turned(turn, at, frame)),
-            });
-            up = parent.parent.as_deref();
-        }
-        layers.push(PlannedLayer {
+                scale: layer.transform.scale.sample(local),
+                rotation: layer.transform.rotation.sample(local).to_radians(),
+                stretch: layer.transform.stretch.as_ref().map_or([1.0, 1.0], |s| s.sample(local)),
+                // lying flat at this instant, it is drawn as a layer that is never turned
+                turn: layer
+                    .transform
+                    .turn
+                    .as_ref()
+                    .map(|turn| turned(turn, local, frame))
+                    .filter(|t| t.x != 0.0 || t.y != 0.0),
+                carried,
+            }
+        };
+        let now = placement(t);
+        let mut planned = PlannedLayer {
             id: layer.id.clone(),
             source,
             fit,
-            center: [width as f32 * (0.5 + pos[0]), height as f32 * (0.5 + pos[1])],
-            scale: layer.transform.scale.sample(local),
-            rotation: layer.transform.rotation.sample(local).to_radians(),
+            center: now.center,
+            scale: now.scale,
+            rotation: now.rotation,
             opacity: layer.opacity.sample(local).clamp(0.0, 1.0),
             blend: layer.blend,
             fx: layer
@@ -469,20 +557,53 @@ fn plan_layers(
                 _ => [false; 2],
             },
             shape: layer.shape_mask.map(|m| layer.shape_mask_keys.as_ref().map_or(m, |k| k.sample(m, local))),
-            stretch: layer.transform.stretch.as_ref().map_or([1.0, 1.0], |s| s.sample(local)),
+            stretch: now.stretch,
             anchor: layer.transform.anchor.unwrap_or([0.5, 0.5]),
-            // lying flat at this instant, it is drawn as a layer that is never turned
-            turn: layer
-                .transform
-                .turn
-                .as_ref()
-                .map(|turn| turned(turn, local, frame))
-                .filter(|t| t.x != 0.0 || t.y != 0.0),
-            carried,
+            turn: now.turn,
+            carried: now.carried,
             frame,
-        });
+            smear: Vec::new(),
+        };
+        if let Some(blur) = layer.motion_blur {
+            planned.smear = smear(&planned, blur.shutter, spec.output.fps.frame_duration(), |by| placement(t + by));
+        }
+        layers.push(planned);
     }
     layers
+}
+
+/// Where `layer` is at the instants a shutter open for `shutter` of a frame of `frame` ticks sees
+/// it, centred on the frame's own: as many as it takes for no two to be more than a couple of
+/// target pixels apart, [`SMEAR`] at most, and none when it does not move a pixel (it is then
+/// drawn once, as sharp as it is). `at` places it at an offset from the frame's instant.
+fn smear(layer: &PlannedLayer, shutter: f32, frame: Tick, at: impl Fn(Tick) -> Placement) -> Vec<Placement> {
+    let open = (frame.0 as f64 * f64::from(shutter.clamp(0.0, 2.0))) as i64;
+    if open <= 0 {
+        return Vec::new();
+    }
+    // how far the corners of a frame-sized picture on its anchor go while the shutter is open:
+    // through the middle of that time as well, for a move that turns back
+    let [w, h] = layer.frame;
+    let corners = |p: &Placement| {
+        let m = layer.moved(p).place();
+        let (x, y) = (w / 2.0 * p.scale, h / 2.0 * p.scale);
+        [(-x, -y), (x, -y), (-x, y), (x, y), (0.0, 0.0)].map(|(x, y)| apply(&m, x, y))
+    };
+    let far = |a: &Placement, b: &Placement| {
+        corners(a).iter().zip(corners(b)).fold(0.0f32, |far, (p, q)| match (p, q) {
+            (Some(p), Some(q)) => far.max((p[0] - q[0]).hypot(p[1] - q[1])),
+            // past the eye at one end: as far as can be
+            _ => f32::INFINITY,
+        })
+    };
+    let (first, mid, last) = (at(Tick(-open / 2)), at(Tick::ZERO), at(Tick(open - open / 2)));
+    let travel = far(&first, &mid) + far(&mid, &last);
+    if travel.is_nan() || travel < 1.0 {
+        return Vec::new();
+    }
+    let n = if travel.is_finite() { ((travel / 2.0).ceil() as usize).clamp(2, SMEAR) } else { SMEAR };
+    // the middles of `n` equal parts of the time the shutter is open
+    (0..n as i64).map(|j| at(Tick(open * (2 * j + 1 - n as i64) / (2 * n as i64)))).collect()
 }
 
 /// A turn in space at `t` from its layer's start, on a frame of `frame` target pixels.
@@ -519,6 +640,7 @@ mod tests {
             turn: None,
             carried: vec![],
             frame: [1080.0, 1920.0],
+            smear: Vec::new(),
         };
         let m = l.matrix(640.0, 360.0, [1080.0, 1920.0]);
         let inv = invert(m).unwrap();

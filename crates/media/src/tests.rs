@@ -33,6 +33,7 @@ fn layer(id: &str, at: Tick, dur: Tick, content: LayerContent) -> Layer {
         crop_keys: None,
         shape_mask_keys: None,
         parent: None,
+        motion_blur: None,
     }
 }
 

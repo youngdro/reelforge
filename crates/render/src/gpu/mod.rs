@@ -21,7 +21,7 @@ use reelforge_renderspec::{Blend, Fit, MaskShape, RenderSpec, effects};
 use reelforge_time::Tick;
 
 use crate::cpu::{Resolved, resolve, resolve_lut};
-use crate::plan::{FramePlan, Map, PlannedLayer, PlannedSource, bounds, invert, plan_frame};
+use crate::plan::{FramePlan, Map, PlannedLayer, PlannedSource, SMEAR, bounds, invert, plan_frame};
 use crate::{FrameReport, Image, Lut, MediaSource, Quality, RenderError, Yuv, unsupported_features};
 
 /// The working picture's format.
@@ -41,7 +41,9 @@ pub const FROST_ROOM: f32 = 0.125;
 /// Effects one layer can carry on the GPU (the uniform's array length).
 const MAX_FX: usize = 16;
 /// The `Layer` uniform's length in 32-bit words.
-const UNIFORM: usize = 52 + MAX_FX * 4;
+const UNIFORM: usize = 52 + MAX_FX * 4 + SMEAR * 12;
+/// Where the inverse maps of a smeared layer start in the uniform, three rows of four each.
+const SMEARS: usize = 52 + MAX_FX * 4;
 
 /// Why the GPU could not be used.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -683,47 +685,62 @@ impl GpuCompositor {
         for (layer, (what, lut)) in plan.layers.iter().zip(resolved) {
             // the map from the visible part, its size, the whole picture's size, the size a mask is
             // shaped on
-            let (m, size, whole, shaped, mode, color, picture) = match what {
+            let (m, smear, size, whole, shaped, mode, color, picture) = match what {
                 Drawn::Resolved(Resolved::Nothing) => continue,
                 Drawn::Resolved(Resolved::Flat(color, None)) => {
                     let mut l = layer.clone();
                     l.fit = Fit::Stretch;
-                    (l.matrix(1.0, 1.0, target), [1.0, 1.0], [1.0, 1.0], target, 1, color, None)
+                    (
+                        l.matrix(1.0, 1.0, target),
+                        l.smears(1.0, 1.0, target),
+                        [1.0, 1.0],
+                        [1.0, 1.0],
+                        target,
+                        1,
+                        color,
+                        None,
+                    )
                 }
                 Drawn::Resolved(Resolved::Flat(color, Some((w, h)))) => {
                     let (cw, ch) = layer.visible(w as f32, h as f32);
-                    (layer.matrix(cw, ch, target), [cw, ch], [w as f32, h as f32], [cw, ch], 2, color, None)
+                    let smear = layer.smears(cw, ch, target);
+                    (layer.matrix(cw, ch, target), smear, [cw, ch], [w as f32, h as f32], [cw, ch], 2, color, None)
                 }
                 Drawn::Resolved(Resolved::Picture(pic)) => {
                     let pic = self.fitting(pic);
                     let (w, h) = (pic.width as f32, pic.height as f32);
                     let (cw, ch) = layer.visible(w, h);
                     let view = self.picture(&pic);
-                    (layer.matrix(cw, ch, target), [cw, ch], [w, h], [cw, ch], 0, [0.0; 4], Some(view))
+                    let smear = layer.smears(cw, ch, target);
+                    (layer.matrix(cw, ch, target), smear, [cw, ch], [w, h], [cw, ch], 0, [0.0; 4], Some(view))
                 }
                 Drawn::Resolved(Resolved::Yuv(y)) => {
                     let (w, h) = (y.width as f32, y.height as f32);
                     let (cw, ch) = layer.visible(w, h);
                     let view = self.yuv_picture(&y);
-                    (layer.matrix(cw, ch, target), [cw, ch], [w, h], [cw, ch], 0, [0.0; 4], Some(view))
+                    let smear = layer.smears(cw, ch, target);
+                    (layer.matrix(cw, ch, target), smear, [cw, ch], [w, h], [cw, ch], 0, [0.0; 4], Some(view))
                 }
                 Drawn::Resolved(Resolved::Sprite(sp)) => {
                     let (w, h) = (sp.image.width as f32, sp.image.height as f32);
                     let view = self.picture(&sp.image);
                     // pixel on pixel, unless it was drawn flat to be placed like a picture
                     let m = sp.map.unwrap_or([1.0, 0.0, sp.x as f32, 0.0, 1.0, sp.y as f32, 0.0, 0.0, 1.0]);
-                    (m, [w, h], [w, h], [w, h], 0, [0.0; 4], Some(view))
+                    (m, sp.smear, [w, h], [w, h], [w, h], 0, [0.0; 4], Some(view))
                 }
                 Drawn::Nested(n) => {
                     let inner = &self.nested[n];
                     let (w, h) = (inner.width as f32, inner.height as f32);
                     let (cw, ch) = layer.visible(w, h);
                     let view = inner.target_view.clone();
-                    (layer.matrix(cw, ch, target), [cw, ch], [w, h], [cw, ch], 0, [0.0; 4], Some(view))
+                    let smear = layer.smears(cw, ch, target);
+                    (layer.matrix(cw, ch, target), smear, [cw, ch], [w, h], [cw, ch], 0, [0.0; 4], Some(view))
                 }
             };
             let sizes = Sizes { visible: size, whole, shaped };
-            let Some(uniform) = layer_uniform(layer, m, sizes, mode, color, target, lut.as_deref()) else { continue };
+            let Some(uniform) = layer_uniform(layer, (m, &smear), sizes, mode, color, target, lut.as_deref()) else {
+                continue;
+            };
             let lut_view = lut.as_ref().map(|l| self.lut(l));
             let buffer = self.uniform("layer", bytemuck::cast_slice(&uniform));
             let multiply = blend_index(layer.blend) == 2;
@@ -1150,10 +1167,11 @@ struct Sizes {
 }
 
 /// The `Layer` uniform of `composite.wgsl`, or `None` when the layer covers no pixel. `m` maps
-/// the visible part of the picture to target pixels.
+/// the visible part of the picture to target pixels; `smear` are its maps at the instants its
+/// shutter is open, for a layer smeared along its movement.
 fn layer_uniform(
     layer: &PlannedLayer,
-    m: Map,
+    (m, smear): (Map, &[Map]),
     sizes: Sizes,
     mode: u32,
     color: [f32; 4],
@@ -1161,8 +1179,21 @@ fn layer_uniform(
     lut: Option<&Lut>,
 ) -> Option<[u32; UNIFORM]> {
     let size = sizes.visible;
-    let inv = invert(m)?;
-    let b = bounds(&m, size[0], size[1], target);
+    // smeared along its movement, it is drawn through the map of each instant its shutter is
+    // open and covers wherever any of them puts it; an instant it is edge on shows nothing
+    let invs: Vec<Map> = smear.iter().take(SMEAR).filter_map(|m| invert(*m)).collect();
+    let inv = match (smear.is_empty(), invs.first()) {
+        (true, _) => invert(m)?,
+        (false, Some(first)) => *first,
+        (false, None) => return None,
+    };
+    let maps = if smear.is_empty() { std::slice::from_ref(&m) } else { &smear[..smear.len().min(SMEAR)] };
+    let b = maps
+        .iter()
+        .map(|m| bounds(m, size[0], size[1], target))
+        .fold([f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY], |b, at| {
+            [b[0].min(at[0]), b[1].min(at[1]), b[2].max(at[2]), b[3].max(at[3])]
+        });
     // a pixel's margin all round: the shader discards what lies outside the picture
     let x0 = (b[0].floor() - 1.0).max(0.0);
     let y0 = (b[1].floor() - 1.0).max(0.0);
@@ -1213,7 +1244,9 @@ fn layer_uniform(
         .map(f),
     );
     u[16..20].copy_from_slice(&[f(target[0]), f(target[1]), f(layer.opacity), mode]);
-    u[20..24].copy_from_slice(&[blend_code(layer.blend), n as u32, 0, 0]);
+    // how many maps it is drawn through, and how many instants its light is shared between
+    let (drawn, shared) = if smear.is_empty() { (0, 0) } else { (invs.len() as u32, maps.len() as u32) };
+    u[20..24].copy_from_slice(&[blend_code(layer.blend), n as u32, drawn, shared]);
     let [w, h] = sizes.whole;
     let flag = |b: bool| if b { 1.0 } else { 0.0 };
     let (kind, mask) = match layer.shape {
@@ -1257,8 +1290,13 @@ fn layer_uniform(
     }
     // how far from the eye a target pixel's point is: 1 everywhere for a layer not turned in space
     u[48..52].copy_from_slice(&[inv[6], inv[7], inv[8], 0.0].map(f));
-    for (slot, v) in u[52..].iter_mut().zip(fx.as_flattened()) {
+    for (slot, v) in u[52..SMEARS].iter_mut().zip(fx.as_flattened()) {
         *slot = f(*v);
+    }
+    if !smear.is_empty() {
+        for (slot, inv) in u[SMEARS..].as_chunks_mut::<12>().0.iter_mut().zip(&invs) {
+            *slot = [inv[0], inv[1], inv[2], 0.0, inv[3], inv[4], inv[5], 0.0, inv[6], inv[7], inv[8], 0.0].map(f);
+        }
     }
     Some(u)
 }

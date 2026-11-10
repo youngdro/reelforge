@@ -77,6 +77,7 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "lottie/1",
     "mask.shape/1",
     "mask.shape/2",
+    "motion.blur/1",
     "shape/1",
     "text/1",
     "text/2",
@@ -301,6 +302,7 @@ mod tests {
             crop_keys: None,
             shape_mask_keys: None,
             parent: None,
+            motion_blur: None,
         });
         s
     }
@@ -552,6 +554,61 @@ mod tests {
         let img = drawn(&s);
         assert_eq!([px(&img, 14, 10), px(&img, 15, 6), px(&img, 24, 6), px(&img, 25, 10)], [BLUE, RED, RED, BLUE]);
         assert!(s.required_features().contains("transform.3d/1") && unsupported_features(&s).is_empty());
+    }
+
+    #[test]
+    fn a_layer_on_the_move_is_smeared_along_its_way_and_sharp_at_rest() {
+        // 20 by 10, going 20 pixels to the right over two frames and then standing still
+        let mut s = spec();
+        let frame = FrameRate::FPS_30.frame_duration();
+        s.layers[0].transform.position = Animated::Keys(vec![
+            Key { t: Tick::ZERO, v: [-0.25, 0.0], ease: Ease::Linear },
+            Key { t: frame * 2, v: [0.25, 0.0], ease: Ease::Linear },
+        ]);
+        let at = |s: &RenderSpec, f: i64| render_frame(s, frame * f, 1.0, &NoMedia, Quality::Final).unwrap().0;
+        // how red each column of the middle row is, in linear light
+        let row = |img: &Image| -> Vec<f32> { (0..40).map(|x| img.pixels[(10 * 40 + x) as usize][0]).collect() };
+        // without a shutter it is sharp half way: columns 10 to 30
+        let sharp = row(&at(&s, 1));
+        assert_eq!([sharp[9], sharp[10], sharp[29], sharp[30]], [0.0, 1.0, 1.0, 0.0]);
+        // the shutter open the whole frame: it goes 10 pixels meanwhile, so its edges are ramps
+        // 10 wide about where they were, and no more light comes from it than it gives
+        s.layers[0].motion_blur = Some(MotionBlur { shutter: 1.0 });
+        reelforge_renderspec::validate(&s).expect("valid");
+        assert!(s.required_features().contains("motion.blur/1") && unsupported_features(&s).is_empty());
+        let img = at(&s, 1);
+        let soft = row(&img);
+        assert!(soft[3] == 0.0 && soft[36] == 0.0 && soft[16] == 1.0 && soft[23] == 1.0, "{soft:?}");
+        assert!(soft[6] > 0.0 && soft[6] < soft[10] && soft[10] < soft[13] && soft[13] <= 1.0, "{soft:?}");
+        assert!((soft[10] - 0.5).abs() < 0.15 && (soft[29] - 0.5).abs() < 0.15, "{soft:?}");
+        assert!((soft.iter().sum::<f32>() - 20.0).abs() < 0.5, "{}", soft.iter().sum::<f32>());
+        // the frame under it shows through where it is thin
+        assert!(img.pixels[10 * 40 + 6][2] > 0.5 && img.pixels[10 * 40 + 6][3] == 1.0);
+        // up and down it does not move: its top and bottom edges are as sharp as ever
+        assert_eq!([px(&img, 20, 4), px(&img, 20, 5), px(&img, 20, 14), px(&img, 20, 15)], [BLUE, RED, RED, BLUE]);
+        // half the shutter, half the smear
+        s.layers[0].motion_blur = Some(MotionBlur { shutter: 0.5 });
+        let half = row(&at(&s, 1));
+        assert!(half[6] == 0.0 && half[8] > 0.0 && half[13] == 1.0, "{half:?}");
+        // at rest it is drawn once, as sharp as without: the plan has no other instant for it
+        assert_eq!(
+            row(&at(&s, 5)),
+            row(&at(&RenderSpec { layers: vec![Layer { motion_blur: None, ..s.layers[0].clone() }], ..s.clone() }, 5))
+        );
+        assert!(plan::plan_frame(&s, frame * 5, 1.0).layers[0].smear.is_empty());
+        assert!(plan::plan_frame(&s, frame, 1.0).layers[0].smear.len() >= 2);
+        // growing smears too: it is larger at the end of the shutter's time than at its start
+        s.layers[0].transform.position = Animated::Constant([0.0, 0.0]);
+        s.layers[0].transform.scale = Animated::Keys(vec![
+            Key { t: Tick::ZERO, v: 0.2, ease: Ease::Linear },
+            Key { t: frame * 2, v: 1.0, ease: Ease::Linear },
+        ]);
+        s.layers[0].motion_blur = Some(MotionBlur { shutter: 1.0 });
+        let grown = row(&at(&s, 1));
+        assert!(
+            grown[20] == 1.0 && grown[4] == 0.0 && grown[5] > 0.0 && grown[5] < grown[9] && grown[9] < grown[12],
+            "{grown:?}"
+        );
     }
 
     #[test]
