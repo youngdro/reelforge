@@ -2188,3 +2188,68 @@ fn any_picture_clip_is_replaced_or_made_a_slot() {
     assert!(s.execute("template.fill", &json!({"media": [still]})).is_err());
     let _ = video;
 }
+
+#[test]
+fn a_parameter_a_command_does_not_take_is_refused_not_dropped() {
+    let mut s = Session::default();
+    let t = video_track(&s);
+    // a misplaced name says what the command takes; a near miss says which one was meant
+    let err = s.execute("clip.add", &json!({"track": t, "color": [1, 0, 0], "bogus": 1})).unwrap_err().to_string();
+    assert!(err.contains("no parameter `bogus`") && err.contains("`track`"), "{err}");
+    let err = s.execute("clip.add", &json!({"track": t, "color": [1, 0, 0], "Duration": 5})).unwrap_err().to_string();
+    assert!(err.contains("did you mean `duration`?"), "{err}");
+    let err = s.execute("edit.undo", &json!({"steps": 2})).unwrap_err().to_string();
+    assert!(err.contains("it takes none"), "{err}");
+    assert_eq!(s.revision(), 0, "nothing applied");
+
+    // every parameter each command's schema lists is one it takes
+    for c in registry() {
+        let schema = input_schema(c.id).expect("every command has a schema");
+        for name in schema["properties"].as_object().expect("an object").keys() {
+            let r = Session::default().execute(c.id, &json!({ name: null }));
+            assert!(!matches!(&r, Err(e) if e.to_string().contains("no parameter")), "{} {name}: {r:?}", c.id);
+        }
+    }
+}
+
+#[test]
+fn a_clip_lands_placed_and_a_batch_step_uses_what_an_earlier_one_replied() {
+    let mut s = Session::default();
+    let text = s.project().tracks.iter().find(|t| t.kind == TrackKind::Text).unwrap().id.clone();
+    let r = s
+        .execute(
+            "edit.batch",
+            &json!({"steps": [
+                {"id": "clip.add", "params": {"track": text, "text": "Hi", "y": -0.3, "scale": 0.5, "opacity": 0.8}},
+                {"id": "clip.setAnimation", "params": {"clip": "${0.clip}", "slot": "in", "kind": "pop"}},
+                {"id": "clip.duplicate", "params": {"clips": ["${0.clip}"]}},
+                {"id": "clip.set", "params": {"clip": "${2.clips.0.clip}", "text": "again"}},
+            ]}),
+        )
+        .unwrap();
+    let first = r["results"][0]["clip"].as_str().unwrap();
+    let (_, c) = s.project().clip(first).map(|(t, c)| (t, c.clone())).unwrap();
+    assert_eq!((c.transform.y, c.transform.scale, c.opacity), (-0.3, 0.5, 0.8));
+    assert!(c.anim.enter.is_some());
+    assert_eq!(s.history(), ["Batch"]);
+    let outline = s.execute("project.outline", &json!({})).unwrap();
+    let clips = &outline["tracks"].as_array().unwrap().iter().find(|t| t["id"] == text).unwrap()["clips"];
+    assert_eq!(clips[0]["place"]["y"], json!(-0.3));
+    assert_eq!(clips[0]["anim"]["in"], json!("pop"));
+    assert_eq!((&clips[0]["start"], &clips[0]["end"]), (&json!(0.0), &json!(5.0)));
+    assert_eq!(clips[1]["text"], json!("again"));
+
+    // a reference to a step that has not run, or to nothing, fails the whole batch
+    let rev = s.revision();
+    for bad in ["${5.clip}", "${0.nothing}", "${x}"] {
+        let r = s.execute(
+            "edit.batch",
+            &json!({"steps": [
+                {"id": "clip.add", "params": {"track": text, "text": "x"}},
+                {"id": "clip.remove", "params": {"clips": [bad]}},
+            ]}),
+        );
+        assert!(r.is_err(), "{bad}");
+    }
+    assert_eq!(s.revision(), rev);
+}

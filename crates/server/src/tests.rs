@@ -637,3 +637,43 @@ fn pauses_are_heard_and_cut_with_what_goes_with_the_voice() {
     let nothing = add(json!({"track": a1, "media": import(&quiet), "start": {"seconds": 10}}));
     assert!(matches!(hub.call("audio.cutPauses", &json!({"clips": [nothing]})), Err(CallError::Failed(_))));
 }
+
+#[test]
+fn a_long_export_runs_as_a_job_and_unknown_parameters_are_refused() {
+    let path = temp("job.reel.json");
+    let _ = std::fs::remove_file(&path);
+    let hub = Hub::open(&path).unwrap();
+    let video = track(&hub, "video");
+    hub.call("clip.add", &json!({"track": video, "color": [0, 0, 1], "duration": {"frame": 4}})).unwrap();
+    hub.call("project.setCanvas", &json!({"width": 64, "height": 64})).unwrap();
+
+    // the service's own operations check their parameters as the engine's commands do
+    let err = hub.call("render.frame", &json!({"seconds": 1})).unwrap_err().to_string();
+    assert!(err.contains("no parameter `seconds`") && err.contains("`at`"), "{err}");
+    let err = hub.call("audio.beats", &json!({"clip": "c1", "evry": 2})).unwrap_err().to_string();
+    assert!(err.contains("no parameter `evry`"), "{err}");
+
+    let Output::Json(started) =
+        hub.call("render.export", &json!({"path": "job.mp4", "renderer": "cpu", "wait": false})).unwrap()
+    else {
+        panic!("json")
+    };
+    let job = started["job"].as_str().unwrap().to_string();
+    let done = (0..600)
+        .find_map(|_| {
+            let Output::Json(j) = hub.call("render.jobs", &json!({"job": job})).unwrap() else { panic!("json") };
+            if j["state"] == "running" {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                None
+            } else {
+                Some(j)
+            }
+        })
+        .expect("the export ends");
+    assert_eq!((&done["state"], &done["done"], &done["total"]), (&json!("done"), &json!(4), &json!(4)), "{done}");
+    assert_eq!(done["result"]["frames"], 4);
+    assert!(path.with_file_name("job.mp4").exists());
+    let Output::Json(all) = hub.call("render.jobs", &json!({})).unwrap() else { panic!("json") };
+    assert_eq!(all["jobs"].as_array().unwrap().len(), 1);
+    assert!(hub.call("render.jobs", &json!({"job": "e9"})).is_err());
+}

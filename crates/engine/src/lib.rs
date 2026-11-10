@@ -16,6 +16,7 @@ mod commands;
 mod compound;
 mod cut;
 pub mod listen;
+mod outline;
 mod params;
 mod remix;
 mod schema;
@@ -98,12 +99,13 @@ impl Session {
     /// Runs the command `id` with `params` (an object, or null for none).
     pub fn execute(&mut self, id: &str, params: &Value) -> CmdResult {
         let spec = registry().iter().find(|c| c.id == id).ok_or_else(|| EngineError::Unknown(id.to_string()))?;
-        (spec.enabled)(self).map_err(EngineError::Disabled)?;
         let empty = json!({});
         let params = if params.is_null() { &empty } else { params };
         if !params.is_object() {
             return Err(EngineError::Params("parameters must be a JSON object".into()));
         }
+        schema::check_names(id, params).map_err(EngineError::Params)?;
+        (spec.enabled)(self).map_err(EngineError::Disabled)?;
         (spec.run)(self, params)
     }
 
