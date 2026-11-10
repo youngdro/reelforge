@@ -29,6 +29,7 @@ pub mod image;
 pub mod lut;
 pub mod media;
 pub mod plan;
+mod shadow;
 pub mod shape;
 pub mod text;
 pub mod yuv;
@@ -71,6 +72,7 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "flip/1",
     "frames.blend/1",
     "frames.flow/1",
+    "key.backdrop@1",
     "key.chroma@1",
     "key.person@1",
     "layer.parent/1",
@@ -78,6 +80,7 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "mask.shape/1",
     "mask.shape/2",
     "motion.blur/1",
+    "shadow.drop@1",
     "shape/1",
     "text/1",
     "text/2",
@@ -178,6 +181,8 @@ pub fn layer_outlines(spec: &RenderSpec, t: Tick, media: &dyn MediaSource) -> Ve
     let mut out = Vec::new();
     for layer in &plan.layers {
         let outline = match &layer.source {
+            // a shadow is its layer's, not a thing to pick up
+            PlannedSource::Shadow(_) => continue,
             PlannedSource::Solid(_) => {
                 let mut l = layer.clone();
                 l.fit = reelforge_renderspec::Fit::Stretch;
@@ -415,6 +420,89 @@ mod tests {
         let (soft, _) = render_frame(&s, Tick::ZERO, 4.0, &media, Quality::Final).unwrap();
         assert_eq!(px(&soft, beside.0, beside.1), [0, 0, 255, 255]);
         assert_ne!(px(&soft, face.0, face.1), px(&whole, face.0, face.1));
+    }
+
+    /// A thing on a studio sweep: a red box on a pale backdrop that is lighter at the top.
+    pub(crate) fn boxed_on_a_sweep(w: u32, h: u32) -> Arc<Image> {
+        let mut bytes = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                let thing = (w * 3 / 8..w * 5 / 8).contains(&x) && (h / 4..h * 3 / 4).contains(&y);
+                let pale = (236 - 30 * y / h) as u8;
+                bytes.extend(if thing { [200, 40, 30, 255] } else { [pale, pale, pale - 4, 255] });
+            }
+        }
+        Arc::new(Image::from_srgba8(w, h, &bytes))
+    }
+
+    #[test]
+    fn a_thing_is_lifted_off_its_backdrop_and_its_shadow_falls_on_what_is_behind() {
+        struct Still(Arc<Image>);
+        impl MediaSource for Still {
+            fn picture(&self, _: &str, _: &Asset, _: Tick) -> Result<Option<Arc<Image>>, String> {
+                Ok(Some(self.0.clone()))
+            }
+        }
+        let mut s = spec();
+        s.assets.insert(
+            "p".into(),
+            Asset {
+                kind: AssetKind::Image,
+                sha256: "5".repeat(64),
+                uri: "file:///p.png".into(),
+                of: None,
+                probe: None,
+            },
+        );
+        s.layers[0].content = LayerContent::Media {
+            asset: "p".into(),
+            time: TimeMap::default(),
+            fit: Fit::Stretch,
+            between: Default::default(),
+        };
+        s.layers[0].transform = Transform::default();
+        let media = Still(boxed_on_a_sweep(160, 80));
+        // as it is: the sweep covers the frame's blue. The box is at 60..100 × 20..60
+        let (whole, _) = render_frame(&s, Tick::ZERO, 4.0, &media, Quality::Final).unwrap();
+        let (thing, beside, under) = ((80, 40), (20, 10), (104, 64));
+        assert_ne!(px(&whole, beside.0, beside.1), [0, 0, 255, 255]);
+        // cut out: the box is as it was, and around it the frame's own blue shows
+        let fx = |id: &str, pairs: &[(&str, f32)]| Effect {
+            id: id.into(),
+            params: pairs.iter().map(|(k, v)| (k.to_string(), Animated::Constant(*v))).collect(),
+            asset: None,
+        };
+        s.layers[0].fx = vec![fx(effects::BACKDROP_KEY, &[])];
+        assert!(unsupported_features(&s).is_empty() && s.required_features().contains("key.backdrop@1"));
+        let (cut, _) = render_frame(&s, Tick::ZERO, 4.0, &media, Quality::Final).unwrap();
+        assert_eq!(px(&cut, thing.0, thing.1), px(&whole, thing.0, thing.1));
+        for at in [beside, under, (150, 70), (80, 10)] {
+            assert_eq!(px(&cut, at.0, at.1), [0, 0, 255, 255], "{at:?}");
+        }
+        // its shadow: the box's outline 8 right and 8 down (a tenth of the picture's shorter
+        // side), half dark, under the box and over the frame
+        s.layers[0].fx.push(fx(effects::SHADOW, &[("x", 0.1), ("y", 0.1), ("blur", 0.0), ("opacity", 0.5)]));
+        assert!(unsupported_features(&s).is_empty() && s.required_features().contains("shadow.drop@1"));
+        let (lit, _) = render_frame(&s, Tick::ZERO, 4.0, &media, Quality::Final).unwrap();
+        assert_eq!(px(&lit, thing.0, thing.1), px(&whole, thing.0, thing.1));
+        assert_eq!(px(&lit, beside.0, beside.1), [0, 0, 255, 255]);
+        let shade = px(&lit, under.0, under.1);
+        assert!(shade[0] == 0 && shade[1] == 0 && (180..192).contains(&shade[2]), "{shade:?}");
+        assert_eq!(px(&lit, 112, 72), [0, 0, 255, 255]);
+        // it fades with the layer
+        s.layers[0].opacity = Animated::Constant(0.5);
+        let (faint, _) = render_frame(&s, Tick::ZERO, 4.0, &media, Quality::Final).unwrap();
+        let shade = px(&faint, under.0, under.1);
+        assert!((220..230).contains(&shade[2]), "{shade:?}");
+        // the plan lists it under its layer; it is not a picture to fetch or a thing to pick up
+        let plan = plan_frame(&s, Tick::ZERO, 4.0);
+        let ids: Vec<&str> = plan.layers.iter().map(|l| l.id.as_str()).collect();
+        assert_eq!(ids, ["half~shadow", "half"]);
+        assert_eq!(plan.media_layers().len(), 1);
+        assert_eq!(layer_outlines(&s, Tick::ZERO, &media).len(), 1);
+        // a colour casts none
+        s.layers[0].content = LayerContent::Solid { color: Color([1.0, 0.0, 0.0, 1.0]) };
+        assert_eq!(plan_frame(&s, Tick::ZERO, 4.0).layers.len(), 1);
     }
 
     #[test]

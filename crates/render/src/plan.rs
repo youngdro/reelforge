@@ -134,6 +134,9 @@ pub enum PlannedSource {
     /// A composition's frame, drawn first on a see-through frame of its own and then placed as a
     /// picture: its layers at its own instant, at the size of the frame it goes into.
     Comp(Box<FramePlan>),
+    /// The shadow this layer casts (`shadow.drop@1`): made from its picture as it shows and
+    /// placed where it is, by the layer that draws it, which comes just before it in the plan.
+    Shadow(Box<PlannedLayer>),
 }
 
 impl FramePlan {
@@ -145,7 +148,11 @@ impl FramePlan {
             match &layer.source {
                 PlannedSource::Media { .. } => out.push((self, layer)),
                 PlannedSource::Comp(inner) => out.extend(inner.media_layers()),
-                PlannedSource::Solid(_) | PlannedSource::Text(_) | PlannedSource::Shape(_) => {}
+                // a shadow is cast by the picture of the layer after it, which is listed
+                PlannedSource::Solid(_)
+                | PlannedSource::Text(_)
+                | PlannedSource::Shape(_)
+                | PlannedSource::Shadow(_) => {}
             }
         }
         out
@@ -257,26 +264,27 @@ impl PlannedLayer {
     /// a pixel for every target pixel it covers: a preview drawn small, a layer scaled down.
     pub fn shrink(&self, w: f32, h: f32, target: [f32; 2]) -> u32 {
         let (cw, ch) = self.visible(w, h);
-        let m = self.matrix(cw, ch, target);
-        // target pixels per picture pixel, along each of the picture's axes
-        let per = if is_affine(&m) {
-            m[0].hypot(m[3]).max(m[1].hypot(m[4]))
-        } else {
-            // seen in perspective: along each of its edges, the nearest being the largest
-            let corner = |x: f32, y: f32| apply(&m, x, y);
-            let (Some(a), Some(b), Some(c), Some(d)) =
-                (corner(0.0, 0.0), corner(cw, 0.0), corner(cw, ch), corner(0.0, ch))
-            else {
-                return 1;
-            };
-            let far = |p: [f32; 2], q: [f32; 2]| (p[0] - q[0]).hypot(p[1] - q[1]);
-            (far(a, b).max(far(d, c)) / cw).max(far(a, d).max(far(b, c)) / ch)
-        };
+        let Some(per) = self.spread(cw, ch, target) else { return 1 };
         let mut k = 1;
         while k < 8 && per * (2 * k) as f32 <= 1.0 {
             k *= 2;
         }
         k
+    }
+
+    /// How many target pixels a pixel of the layer's visible picture (`cw` by `ch`) is spread
+    /// over, along the axis it is spread most; `None` for a layer part of which is beside or
+    /// behind the eye.
+    pub fn spread(&self, cw: f32, ch: f32, target: [f32; 2]) -> Option<f32> {
+        let m = self.matrix(cw, ch, target);
+        if is_affine(&m) {
+            return Some(m[0].hypot(m[3]).max(m[1].hypot(m[4])));
+        }
+        // seen in perspective: along each of its edges, the nearest being the largest
+        let corner = |x: f32, y: f32| apply(&m, x, y);
+        let (a, b, c, d) = (corner(0.0, 0.0)?, corner(cw, 0.0)?, corner(cw, ch)?, corner(0.0, ch)?);
+        let far = |p: [f32; 2], q: [f32; 2]| (p[0] - q[0]).hypot(p[1] - q[1]);
+        Some((far(a, b).max(far(d, c)) / cw).max(far(a, d).max(far(b, c)) / ch))
     }
 
     /// Whether the layer is only moved, scaled evenly and turned in the plane about its middle,
@@ -566,6 +574,24 @@ fn plan_layers(
         };
         if let Some(blur) = layer.motion_blur {
             planned.smear = smear(&planned, blur.shutter, spec.output.fps.frame_duration(), |by| placement(t + by));
+        }
+        // its shadow lies under it
+        if let Some(shadow) = crate::shadow::Shadow::of(&planned)
+            && matches!(planned.source, PlannedSource::Media { .. } | PlannedSource::Comp(_))
+            && planned.opacity > 0.0
+        {
+            layers.push(PlannedLayer {
+                id: format!("{}~shadow", planned.id),
+                source: PlannedSource::Shadow(Box::new(planned.clone())),
+                opacity: planned.opacity * shadow.opacity,
+                blend: Blend::Normal,
+                fx: Vec::new(),
+                lut: None,
+                crop: [0.0; 4],
+                flip: [false; 2],
+                shape: None,
+                ..planned.clone()
+            });
         }
         layers.push(planned);
     }

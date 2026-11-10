@@ -543,6 +543,54 @@ fn people_are_cut_out_the_same_way_on_both() {
 }
 
 #[test]
+fn backdrops_are_cut_and_shadows_cast_the_same_way_on_both() {
+    let thing = crate::tests::boxed_on_a_sweep(96, 64);
+    let mut s = base(64, 48);
+    let i = with_picture(&mut s, Fit::Contain);
+    s.layers[i].transform.scale = Animated::Constant(0.8);
+    // cut out, with a soft shadow beside it and an effect after
+    let key = fx_of(effects::BACKDROP_KEY, &[("tolerance", 0.5), ("holes", 0.5)]);
+    let soft = fx_of(effects::SHADOW, &[("x", 0.06), ("y", 0.08), ("blur", 0.04), ("opacity", 0.7)]);
+    s.layers[i].fx = vec![key.clone(), fx_of(effects::GRADE, &[("exposure", 0.3)]), soft.clone()];
+    same(&s, Tick::ZERO, 1.0, &Pictures(thing.clone()), Quality::Final);
+    // lying on the ground and coloured, under a layer that is turned, cropped and half there
+    let lying = fx_of(
+        effects::SHADOW,
+        &[("x", 0.0), ("y", 0.02), ("blur", 0.02), ("flat", 0.7), ("lean", 0.4), ("r", 0.3), ("b", 0.5)],
+    );
+    s.layers[i].fx = vec![key.clone(), lying];
+    s.layers[i].transform.rotation = Animated::Constant(20.0);
+    s.layers[i].crop = Some(Crop { left: 0.1, top: 0.0, right: 0.0, bottom: 0.05 });
+    s.layers[i].opacity = Animated::Constant(0.5);
+    same(&s, Tick::ZERO, 1.0, &Pictures(thing.clone()), Quality::Final);
+    // of a picture that is not cut out, behind a round mask: the mask's outline
+    s.layers[i].fx = vec![soft.clone()];
+    s.layers[i].crop = None;
+    s.layers[i].shape_mask = Some(ShapeMask {
+        shape: MaskShape::Circle,
+        center: [0.5, 0.5],
+        size: [0.7, 0.7],
+        rotation: 0.0,
+        feather: 0.0,
+        invert: false,
+    });
+    same(&s, Tick::ZERO, 1.0, &Pictures(picture(96, 64)), Quality::Final);
+    // a video the GPU would convert itself, and a composition: each casts its own
+    s.layers[i].shape_mask = None;
+    let video = Video(yuv(64, 48, (1, 1), false));
+    same(&s, Tick::ZERO, 1.0, &video, Quality::Final);
+    let mut inner = Comp::default();
+    let mut small = layer("in", LayerContent::Solid { color: Color([0.9, 0.5, 0.3, 1.0]) });
+    small.transform.scale = Animated::Constant(0.5);
+    inner.layers.push(small);
+    s.comps.insert("k".into(), inner);
+    s.layers.push(layer("c", LayerContent::Comp { comp: "k".into(), from: Tick::ZERO }));
+    s.layers[i + 1].fx = vec![soft];
+    s.layers[i + 1].transform.position = Animated::Constant([0.1, -0.1]);
+    same(&s, Tick::ZERO, 1.0, &video, Quality::Final);
+}
+
+#[test]
 fn distortions_read_the_same_places_on_both() {
     let pic = picture(60, 44);
     let cases: Vec<Vec<Effect>> = vec![

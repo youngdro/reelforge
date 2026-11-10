@@ -7,8 +7,8 @@
 //! one clip on the timeline, its parts inside.
 
 use reelforge_model::{
-    Animation, Clip, ClipContent, ClipTransform, Counter, Ease, Fill, Key, Loop, Made, MediaKind, Project, Prop, Shape,
-    ShapeKind, ShapeShadow, Stroke, Timeline, Track, TrackKind,
+    Animation, CastShadow, Clip, ClipContent, ClipTransform, Counter, Cutout, Ease, Fill, Key, Loop, Made, MediaKind,
+    Project, Prop, Shape, ShapeKind, ShapeShadow, Stroke, Timeline, Track, TrackKind,
 };
 use reelforge_time::Tick;
 use serde_json::{Value, json};
@@ -445,6 +445,10 @@ fn parts_of(proj: &Project, made: &Made) -> Vec<(TrackKind, Tick, Clip, Option<u
             _ => {}
         }
         let mut clip = plain_clip(String::new(), wait, long, part.content);
+        if part.stood {
+            clip.look.cutout = Some(Cutout::default());
+            clip.look.shadow = CastShadow::kind("ground");
+        }
         // a carried part is counted from its carrier's place, along the carrier's own scaled
         // axes: its place and size are shares of the carrier's
         let (from, by) = match carried {
