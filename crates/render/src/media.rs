@@ -83,6 +83,16 @@ impl StillImages {
         Ok(())
     }
 
+    /// Keeps a picture that was made, not read, for the asset with this hash.
+    pub fn insert(&self, sha256: &str, img: Image) {
+        self.cache.lock().expect("cache lock").insert(sha256.to_string(), Arc::new(img));
+    }
+
+    /// Whether the picture of the asset with this hash is here.
+    pub fn has(&self, sha256: &str) -> bool {
+        self.cache.lock().expect("cache lock").contains_key(sha256)
+    }
+
     fn load(&self, asset: &Asset) -> Result<Option<Arc<Image>>, String> {
         #[cfg(not(target_arch = "wasm32"))]
         {

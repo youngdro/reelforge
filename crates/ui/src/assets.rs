@@ -1,7 +1,8 @@
-//! The panel on the left: what can go on the timeline. Four tabs, as short-video editors have them:
+//! The panel on the left: what can go on the timeline. Six tabs, as short-video editors have them:
 //! the project's media (imported files, with a picture, their length, whether a clip uses them and
-//! whether they are offline), the built-in sound library, titles (plain or wearing a template), and
-//! the captions as a list to edit ([`crate::captions`]).
+//! whether they are offline), the built-in sound library, titles (plain or wearing a template),
+//! the built-in stickers, picture effects (each lands as an adjustment clip over the tracks below),
+//! and the captions as a list to edit ([`crate::captions`]).
 //!
 //! Anything in the panel is dragged onto the timeline (an [`Item`] is the drag's payload; the
 //! timeline draws where it would land and reports the drop) or added at the playhead. Like the rest
@@ -16,7 +17,8 @@ use std::collections::{HashMap, HashSet};
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use reelforge_media::Footage;
 use reelforge_media::library::{Category, SOUNDS};
-use reelforge_model::{Media, MediaKind, Project, TrackKind};
+use reelforge_media::stickers::STICKERS;
+use reelforge_model::{FxGroup, FxKind, Media, MediaKind, Project, TrackKind};
 use reelforge_time::Tick;
 use web_time::{Duration, Instant};
 
@@ -28,6 +30,8 @@ use crate::theme::{self, color, icon};
 const STILL_PREVIEW: Tick = Tick(5 * reelforge_time::TICKS_PER_SECOND);
 /// A new title's length.
 pub(crate) const TITLE_LENGTH: Tick = Tick(3 * reelforge_time::TICKS_PER_SECOND);
+/// A new sticker's or effect's length.
+pub(crate) const OVERLAY_LENGTH: Tick = Tick(3 * reelforge_time::TICKS_PER_SECOND);
 /// Time spent making pictures per frame.
 const BUDGET: Duration = Duration::from_millis(8);
 /// The narrowest a media card is drawn.
@@ -42,6 +46,20 @@ pub(crate) enum Item {
     Sound { id: &'static str, name: &'static str, length: Tick },
     /// A title, plain or wearing a template.
     Title(Option<&'static str>),
+    /// A sticker of the built-in library, by id.
+    Sticker(&'static str),
+    /// A picture effect on an adjustment clip of its own; `None` is an empty adjustment clip.
+    Effect(Option<FxKind>),
+}
+
+/// A picture effect's shown name.
+pub(crate) fn fx_name(kind: FxKind, s: &Strings) -> &'static str {
+    s.fx_names[FxKind::ALL.iter().position(|k| *k == kind).unwrap_or(0)]
+}
+
+/// A sticker's shown name.
+fn sticker_name(id: &str, s: &Strings) -> &'static str {
+    STICKERS.iter().position(|st| st.id == id).map_or("", |i| s.sticker_names[i])
 }
 
 impl Item {
@@ -52,6 +70,7 @@ impl Item {
             Item::Media(_) => TrackKind::Video,
             Item::Sound { .. } => TrackKind::Audio,
             Item::Title(_) => TrackKind::Text,
+            Item::Sticker(_) | Item::Effect(_) => TrackKind::Video,
         }
     }
 
@@ -61,6 +80,7 @@ impl Item {
             Item::Media(id) => p.media.get(id).and_then(|m| m.duration).unwrap_or(STILL_PREVIEW),
             Item::Sound { length, .. } => *length,
             Item::Title(_) => TITLE_LENGTH,
+            Item::Sticker(_) | Item::Effect(_) => OVERLAY_LENGTH,
         }
     }
 
@@ -71,6 +91,9 @@ impl Item {
             Item::Sound { name, .. } => (*name).to_string(),
             Item::Title(None) => s.text_default.to_string(),
             Item::Title(Some(t)) => template_name(t, s).to_string(),
+            Item::Sticker(id) => sticker_name(id, s).to_string(),
+            Item::Effect(None) => s.fx_adjustment.to_string(),
+            Item::Effect(Some(k)) => fx_name(*k, s).to_string(),
         }
     }
 }
@@ -94,6 +117,8 @@ enum Tab {
     Media,
     Audio,
     Text,
+    Stickers,
+    Effects,
     Captions,
 }
 
@@ -131,6 +156,8 @@ pub(crate) struct AssetPanel {
     seen: u64,
     /// The library sounds' lengths, measured the first time the sounds are shown.
     sound_lengths: HashMap<&'static str, Tick>,
+    /// The stickers' pictures, drawn the first time the stickers are shown.
+    stickers: Vec<egui::TextureHandle>,
     captions: crate::captions::CaptionsTab,
 }
 
@@ -178,6 +205,8 @@ impl AssetPanel {
             Tab::Media => self.media_tab(ui, p, media, s, playing, &mut action),
             Tab::Audio => self.audio_tab(ui, s, &mut action),
             Tab::Text => text_tab(ui, s, looks, &mut action),
+            Tab::Stickers => self.stickers_tab(ui, s, &mut action),
+            Tab::Effects => effects_tab(ui, s, &mut action),
             Tab::Captions => {
                 action = self.captions.show(ui, p, lang, playhead, selected, playing).map(Action::Captions);
             }
@@ -194,14 +223,19 @@ impl AssetPanel {
     fn tabs(&mut self, ui: &mut egui::Ui, s: &Strings) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            for (tab, glyph, word) in [
+            let tabs = [
                 (Tab::Media, icon::IMAGE, s.tab_media),
                 (Tab::Audio, icon::MUSIC, s.tab_audio),
                 (Tab::Text, icon::TEXT, s.tab_text),
+                (Tab::Stickers, icon::STICKER, s.tab_stickers),
+                (Tab::Effects, icon::SPARKLE, s.tab_effects),
                 (Tab::Captions, icon::CAPTIONS, s.tab_captions),
-            ] {
+            ];
+            // as wide as the panel lets them be
+            let w = ((ui.available_width() - 2.0 * (tabs.len() - 1) as f32) / tabs.len() as f32).clamp(36.0, 54.0);
+            for (tab, glyph, word) in tabs {
                 let on = self.tab == tab;
-                let (rect, r) = ui.allocate_exact_size(vec2(54.0, 44.0), Sense::click());
+                let (rect, r) = ui.allocate_exact_size(vec2(w.floor(), 44.0), Sense::click());
                 if r.hovered() && !on {
                     ui.painter().rect_filled(rect, 6.0, color::HOVER);
                 }
@@ -220,11 +254,19 @@ impl AssetPanel {
                     FontId::proportional(17.0),
                     tint,
                 );
+                // a long word is drawn smaller rather than over its neighbours
+                let mut size = 11.5;
+                while size > 8.0
+                    && painter.layout_no_wrap(word.to_string(), FontId::proportional(size), tint).size().x
+                        > rect.width()
+                {
+                    size -= 0.5;
+                }
                 painter.text(
                     rect.center_bottom() - vec2(0.0, 6.0),
                     Align2::CENTER_BOTTOM,
                     word,
-                    FontId::proportional(11.5),
+                    FontId::proportional(size),
                     tint,
                 );
                 if on {
@@ -531,6 +573,112 @@ impl AssetPanel {
     }
 }
 
+impl AssetPanel {
+    /// The stickers as a grid of pictures.
+    fn stickers_tab(&mut self, ui: &mut egui::Ui, s: &Strings, action: &mut Option<Action>) {
+        if self.stickers.is_empty() {
+            let side = 128;
+            self.stickers = STICKERS
+                .iter()
+                .filter_map(|st| {
+                    let px = reelforge_media::stickers::render(st.id, side as u32)?;
+                    let image = egui::ColorImage::from_rgba_unmultiplied([side, side], &px);
+                    Some(ui.ctx().load_texture(format!("sticker-{}", st.id), image, egui::TextureOptions::LINEAR))
+                })
+                .collect();
+        }
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            let gap = 8.0;
+            let room = ui.available_width();
+            let columns = ((room + gap) / (72.0 + gap)).floor().max(2.0) as usize;
+            let w = ((room - gap * (columns - 1) as f32) / columns as f32).floor();
+            let all: Vec<_> = STICKERS.iter().zip(&self.stickers).zip(s.sticker_names).collect();
+            for row in all.chunks(columns) {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    for ((st, texture), name) in row {
+                        let (rect, r) = ui.allocate_exact_size(vec2(w, w), Sense::click_and_drag());
+                        if r.drag_started() {
+                            egui::DragAndDrop::set_payload(ui.ctx(), Item::Sticker(st.id));
+                        }
+                        let painter = ui.painter();
+                        painter.rect_filled(rect, 6.0, if r.hovered() { color::HOVER } else { color::RAISED });
+                        painter.image(
+                            texture.id(),
+                            rect.shrink(w * 0.1),
+                            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+                        if r.hovered() {
+                            painter.rect_stroke(rect, 6.0, Stroke::new(1.0, color::ACCENT), StrokeKind::Inside);
+                        }
+                        if r.on_hover_text(format!("{name}\n{}", s.item_tip)).clicked() {
+                            *action = Some(Action::Add(Item::Sticker(st.id)));
+                        }
+                    }
+                });
+                ui.add_space(gap - ui.spacing().item_spacing.y);
+            }
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(s.sound_free).small().color(color::WEAK));
+        });
+    }
+}
+
+/// Picture effects by what they do, and the empty adjustment layer.
+fn effects_tab(ui: &mut egui::Ui, s: &Strings, action: &mut Option<Action>) {
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        ui.label(egui::RichText::new(s.fx_tip).small().color(color::WEAK));
+        ui.add_space(6.0);
+        if let Some(a) = fx_row(ui, icon::SLIDERS, s.fx_adjustment, Item::Effect(None), s.fx_adjustment_tip) {
+            *action = Some(a);
+        }
+        ui.add_space(8.0);
+        for (title, group) in s.fx_groups.into_iter().zip([FxGroup::Motion, FxGroup::Light, FxGroup::Focus]) {
+            ui.label(egui::RichText::new(title).small().strong().color(color::WEAK));
+            ui.add_space(2.0);
+            for kind in FxKind::ALL.into_iter().filter(|k| k.group() == group) {
+                if let Some(a) = fx_row(ui, icon::SPARKLE, fx_name(kind, s), Item::Effect(Some(kind)), s.item_tip) {
+                    *action = Some(a);
+                }
+            }
+            ui.add_space(10.0);
+        }
+    });
+}
+
+/// A row of the effects list: click adds at the playhead, drag goes to the timeline.
+fn fx_row(ui: &mut egui::Ui, glyph: &str, name: &str, item: Item, tip: &str) -> Option<Action> {
+    let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click_and_drag());
+    if r.drag_started() {
+        egui::DragAndDrop::set_payload(ui.ctx(), item.clone());
+    }
+    let painter = ui.painter();
+    if r.hovered() {
+        painter.rect_filled(rect, 6.0, color::HOVER);
+    }
+    let tile = Rect::from_min_size(rect.left_top() + vec2(4.0, 4.0), vec2(24.0, 24.0));
+    painter.rect_filled(tile, 5.0, color::FX.gamma_multiply(0.6));
+    painter.text(tile.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(13.0), color::TEXT);
+    painter.text(
+        rect.left_center() + vec2(38.0, 0.0),
+        Align2::LEFT_CENTER,
+        name,
+        FontId::proportional(13.0),
+        color::TEXT,
+    );
+    if r.hovered() {
+        painter.text(
+            rect.right_center() - vec2(10.0, 0.0),
+            Align2::RIGHT_CENTER,
+            icon::ADD,
+            FontId::proportional(14.0),
+            color::ACCENT,
+        );
+    }
+    r.on_hover_text(tip).clicked().then_some(Action::Add(item))
+}
+
 /// Nothing imported yet: a large target that imports.
 fn empty(ui: &mut egui::Ui, s: &Strings, action: &mut Option<Action>) {
     let h = 150.0f32.min(ui.available_height().max(100.0));
@@ -725,10 +873,12 @@ fn drag_preview(ctx: &egui::Context, p: &Project, s: &Strings) {
     let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) else { return };
     ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("asset drag")));
-    let glyph = match item.track_kind(p) {
-        TrackKind::Audio => icon::MUSIC,
-        TrackKind::Text => icon::TEXT,
-        TrackKind::Video => icon::FILM,
+    let glyph = match (&*item, item.track_kind(p)) {
+        (Item::Sticker(_), _) => icon::STICKER,
+        (Item::Effect(_), _) => icon::SPARKLE,
+        (_, TrackKind::Audio) => icon::MUSIC,
+        (_, TrackKind::Text) => icon::TEXT,
+        (_, TrackKind::Video) => icon::FILM,
     };
     let galley =
         painter.layout_no_wrap(format!("{glyph}  {}", item.label(p, s)), FontId::proportional(12.0), color::ON_ACCENT);
@@ -764,6 +914,14 @@ mod tests {
         assert_eq!(Item::Media(m.clone()).track_kind(&p), TrackKind::Audio);
         assert_eq!(Item::Media(m.clone()).length(&p), Tick::SECOND * 7);
         assert_eq!(Item::Title(None).track_kind(&p), TrackKind::Text);
+        // stickers and effects go over the picture
+        for over in [Item::Sticker("heart"), Item::Effect(Some(FxKind::Shake)), Item::Effect(None)] {
+            assert_eq!((over.track_kind(&p), over.length(&p)), (TrackKind::Video, OVERLAY_LENGTH));
+        }
+        let zh = crate::i18n::Lang::Zh.strings();
+        assert_eq!(Item::Sticker("heart").label(&p, zh), "爱心");
+        assert_eq!(Item::Effect(Some(FxKind::Flash)).label(&p, zh), "闪白");
+        assert_eq!(Item::Effect(None).label(&p, zh), "调节层");
         // a file never found is offline
         assert!(offline(&p.media[&m], &HashSet::new()));
         let len = sound_length(SOUNDS[0].id);

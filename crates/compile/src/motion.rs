@@ -8,11 +8,16 @@
 //! properties lowered together (x and y, which RenderSpec keys as one position) share key times;
 //! where their easings differ, the stretch is sampled per frame.
 //!
+//! Picture effects (`reelforge_model::fx`) are laid over the same way and sampled wherever they
+//! play: a clip's own turn it about its own centre, an adjustment clip's turn everything below
+//! about the centre of the frame, as one picture. What effects do to light, colour and focus
+//! comes out as keys for `color.grade@1` and `blur.gaussian@1` ([`fx_channel`]).
+//!
 //! A clip's layer can be longer than the clip: a transition centred on a cut starts the incoming
 //! layer early (its `lead`) and runs the outgoing one on. All times here are from the layer's
 //! start; the clip's keys are shifted by the lead, and animations play over the whole layer.
 
-use reelforge_model::{Clip, Ease as MEase, Fades, Key as MKey, Offset, Prop, TransitionKind};
+use reelforge_model::{Clip, Ease as MEase, Fades, Fx, FxChannel, FxSample, Key as MKey, Offset, Prop, TransitionKind};
 use reelforge_renderspec::{Animated, Ease, Key};
 use reelforge_time::Tick;
 
@@ -97,6 +102,28 @@ impl Overlay {
     }
 }
 
+/// An effect of an adjustment clip above, over part of a layer.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Frame {
+    /// Where it starts on the layer, from the layer's start.
+    pub from: Tick,
+    /// Where it ends.
+    pub to: Tick,
+    /// Where the adjustment clip starts, from the layer's start (before it, when the clip began
+    /// earlier).
+    pub origin: Tick,
+    /// The adjustment clip's length.
+    pub len: Tick,
+    /// The effect.
+    pub fx: Fx,
+}
+
+impl Frame {
+    fn sample(&self, t: Tick) -> FxSample {
+        if t < self.from || t >= self.to { FxSample::REST } else { self.fx.sample(t - self.origin, self.len) }
+    }
+}
+
 /// How a clip's layer lies against the clip.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shape {
@@ -106,13 +133,78 @@ pub struct Shape {
     pub len: Tick,
     /// Transitions over it.
     pub overlays: Vec<Overlay>,
+    /// Effects of adjustment clips above it.
+    pub frames: Vec<Frame>,
+    /// The canvas, in pixels: effects from above turn the layer about its centre.
+    pub canvas: [f32; 2],
 }
 
 impl Shape {
     /// The layer is the clip.
     pub fn of(clip: &Clip) -> Shape {
-        Shape { lead: Tick::ZERO, len: clip.duration, overlays: vec![] }
+        Shape { lead: Tick::ZERO, len: clip.duration, overlays: vec![], frames: vec![], canvas: [1.0, 1.0] }
     }
+
+    /// What the clip's own effects and those from above do to `channel`, at `t` from the layer's
+    /// start.
+    fn channel(&self, clip: &Clip, channel: FxChannel, t: Tick) -> f32 {
+        let mut s = FxSample::REST;
+        for fx in clip.fx.iter().filter(|fx| fx.kind.changes(channel)) {
+            s = s.and(fx.sample(t - self.lead, clip.duration));
+        }
+        for f in self.frames.iter().filter(|f| f.fx.kind.changes(channel)) {
+            s = s.and(f.sample(t));
+        }
+        s.channel(channel)
+    }
+}
+
+/// What the effects on `clip`'s layer do to `channel`, sampled at every frame while they play;
+/// `None` when none touches it.
+pub fn fx_channel(clip: &Clip, shape: &Shape, channel: FxChannel, step: Tick) -> Option<Animated<f32>> {
+    let own = clip.fx.iter().any(|fx| fx.kind.changes(channel));
+    let mut windows: Vec<(Tick, Tick)> =
+        shape.frames.iter().filter(|f| f.fx.kind.changes(channel)).map(|f| (f.from, f.to)).collect();
+    if own {
+        windows = vec![(Tick::ZERO, shape.len)];
+    }
+    if windows.is_empty() {
+        return None;
+    }
+    windows.sort();
+    let mut times = vec![Tick::ZERO];
+    for (a, b) in windows {
+        let mut t = a;
+        while t < b {
+            times.push(t);
+            t = Tick((t.0 / step.0 + 1) * step.0);
+        }
+        times.push(b);
+    }
+    times.push(shape.len);
+    times.sort();
+    times.dedup();
+    // an effect from above starts at once: the value before it holds
+    let starts = |t: Tick| !own && shape.frames.iter().any(|f| f.from == t && f.fx.kind.changes(channel));
+    let keys = times.iter().enumerate().map(|(i, &t)| {
+        let ease = if times.get(i + 1).is_some_and(|n| starts(*n)) { Ease::Hold } else { Ease::Linear };
+        Key { t, v: shape.channel(clip, channel, t), ease }
+    });
+    Some(Animated::Keys(keys.collect()))
+}
+
+/// A value that steps: `spans` are `(from, to, value)` on a layer `len` long, the value 0 outside
+/// them and added up where they overlap. `None` when it is 0 throughout.
+pub fn stepped(spans: &[(Tick, Tick, f32)], len: Tick, range: (f32, f32)) -> Option<Animated<f32>> {
+    if spans.iter().all(|s| s.2 == 0.0) {
+        return None;
+    }
+    let mut times: Vec<Tick> = spans.iter().flat_map(|s| [s.0, s.1]).chain([Tick::ZERO, len]).collect();
+    times.retain(|t| *t >= Tick::ZERO && *t <= len);
+    times.sort();
+    times.dedup();
+    let at = |t: Tick| spans.iter().filter(|s| s.0 <= t && t < s.1).map(|s| s.2).sum::<f32>().clamp(range.0, range.1);
+    Some(Animated::Keys(times.into_iter().map(|t| Key { t, v: at(t), ease: Ease::Hold }).collect()))
 }
 
 /// One property of one clip, as a function of time from its layer's start.
@@ -126,6 +218,10 @@ struct Curve<'a> {
     overlays: Vec<Overlay>,
     /// Sound fades (volume only).
     fades: Fades,
+    /// The clip's own effects that move this property.
+    own: Vec<Fx>,
+    /// Effects from above that move it.
+    frames: Vec<Frame>,
 }
 
 /// How an interval of a curve can be drawn exactly from its end values.
@@ -147,18 +243,76 @@ impl Curve<'_> {
             clip.keys.get(&prop).map_or(vec![], |k| k.iter().map(|k| MKey { t: k.t + shape.lead, ..*k }).collect());
         let overlays = shape.overlays.iter().copied().filter(|o| shifts(o.kind, o.incoming, prop)).collect();
         let fades = if prop == Prop::VolumeDb { clip.fade } else { Fades::default() };
-        Curve { prop, clip, shape, keys, animated, overlays, fades }
+        let own = clip.fx.iter().copied().filter(|fx| fx.kind.moves(prop)).collect();
+        // turning or scaling the frame about its centre moves whatever is off-centre
+        let frames = shape
+            .frames
+            .iter()
+            .copied()
+            .filter(|f| match prop {
+                Prop::X | Prop::Y => f.fx.kind.moves_any(),
+                p => f.fx.kind.moves(p),
+            })
+            .collect();
+        Curve { prop, clip, shape, keys, animated, overlays, fades, own, frames }
     }
 
     fn still(&self) -> bool {
-        self.keys.is_empty() && !self.animated && self.overlays.is_empty() && self.fades.is_empty()
+        self.keys.is_empty()
+            && !self.animated
+            && self.overlays.is_empty()
+            && self.fades.is_empty()
+            && self.own.is_empty()
+            && self.frames.is_empty()
+    }
+
+    /// Property `p` at `t` as the clip itself has it: its keys, animations, transitions and own
+    /// effects.
+    fn own_value(&self, p: Prop, t: Tick) -> f32 {
+        let base = self.clip.value_at(p, t - self.shape.lead);
+        let mut o = self.clip.anim.offset(t, self.shape.len);
+        for ov in self.shape.overlays.iter().filter(|o| shifts(o.kind, o.incoming, p)) {
+            o = o.and(ov.offset(t));
+        }
+        for fx in &self.clip.fx {
+            o = o.and(fx.sample(t - self.shape.lead, self.clip.duration).offset);
+        }
+        o.apply(p, base)
+    }
+
+    /// The value at `t` under the effects from above: the frame turned, scaled and moved as one
+    /// picture, about the canvas centre.
+    fn framed(&self, t: Tick) -> f32 {
+        let mut f = Offset::REST;
+        for fr in &self.frames {
+            f = f.and(fr.sample(t).offset);
+        }
+        match self.prop {
+            Prop::X | Prop::Y => {
+                let [w, h] = self.shape.canvas;
+                let (x, y) = (self.own_value(Prop::X, t) * w, self.own_value(Prop::Y, t) * h);
+                let (sin, cos) = f.rotation.to_radians().sin_cos();
+                if self.prop == Prop::X {
+                    (cos * x - sin * y) * f.scale / w + f.dx
+                } else {
+                    (sin * x + cos * y) * f.scale / h + f.dy
+                }
+            }
+            p => f.apply(p, self.own_value(p, t)),
+        }
     }
 
     fn value(&self, t: Tick) -> f32 {
+        if !self.frames.is_empty() {
+            return self.framed(t);
+        }
         let base = self.clip.value_at(self.prop, t - self.shape.lead);
         let mut o = if self.animated { self.clip.anim.offset(t, self.shape.len) } else { Offset::REST };
         for ov in &self.overlays {
             o = o.and(ov.offset(t));
+        }
+        for fx in &self.own {
+            o = o.and(fx.sample(t - self.shape.lead, self.clip.duration).offset);
         }
         let v = o.apply(self.prop, base);
         if self.fades.is_empty() {
@@ -179,6 +333,10 @@ impl Curve<'_> {
         }
         if fo > Tick::ZERO {
             w.push((lead + self.clip.duration - fo, lead + self.clip.duration));
+        }
+        w.extend(self.frames.iter().map(|f| (f.from, f.to)));
+        if !self.own.is_empty() {
+            w.push((Tick::ZERO, self.shape.len));
         }
         if !self.animated {
             return w;
@@ -251,9 +409,12 @@ fn plan(curves: &[Curve], step: Tick, len: Tick) -> Vec<(Tick, Ease)> {
                 _ => None,
             };
         }
+        // an effect from above starts at once: the value jumps at `t1`
+        let jump = curves.iter().any(|c| c.frames.iter().any(|f| f.from == t1));
         match agreed {
+            Some(Fits::Any) if jump => out.push((t0, Ease::Hold)),
             Some(Fits::Any) => out.push((t0, Ease::Linear)),
-            Some(Fits::Only(e)) => out.push((t0, e)),
+            Some(Fits::Only(e)) if !jump => out.push((t0, e)),
             _ => {
                 // every frame boundary between t0 and t1, on the layer's own frame grid
                 let mut t = t0;
@@ -315,6 +476,7 @@ mod tests {
             keep_pitch: true,
             color: Default::default(),
             look: Default::default(),
+            fx: vec![],
         }
     }
 

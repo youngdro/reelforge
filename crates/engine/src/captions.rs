@@ -185,6 +185,7 @@ pub(crate) fn place(
             keep_pitch: true,
             color: Default::default(),
             look: Default::default(),
+            fx: vec![],
         });
     }
     let track = proj.tracks.iter_mut().find(|t| t.id == track_id).expect("found or made above");

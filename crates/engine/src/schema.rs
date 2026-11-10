@@ -116,6 +116,28 @@ fn ease_schema() -> (&'static str, Value) {
     )
 }
 
+/// A list of picture effects.
+fn fx(doc: &str) -> Value {
+    let kinds: Vec<&str> = reelforge_model::FxKind::ALL.iter().map(|k| k.name()).collect();
+    json!({
+        "type": "array",
+        "description": format!("{doc} Each is a preset's name, or the name with how strong and how fast it plays."),
+        "items": {"oneOf": [
+            {"enum": kinds},
+            {
+                "type": "object",
+                "properties": {
+                    "kind": {"enum": kinds},
+                    "strength": {"type": "number", "minimum": 0, "maximum": 1, "description": "0.5 is the preset as designed."},
+                    "speed": {"type": "number", "minimum": 0.25, "maximum": 4, "description": "Times the preset's own pace; 1 by default."}
+                },
+                "required": ["kind"],
+                "additionalProperties": false
+            }
+        ]}
+    })
+}
+
 fn object(props: Vec<(&'static str, Value)>, required: &[&str]) -> Value {
     let mut p = serde_json::Map::new();
     for (k, v) in props {
@@ -129,7 +151,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
     let clip = || ("clip", ident("Clip id, such as c4."));
     Some(match id {
         "commands.list" | "project.inspect" | "project.new" | "edit.undo" | "edit.redo" | "title.templates"
-        | "sound.library" | "timeline.list" => object(vec![], &[]),
+        | "sound.library" | "timeline.list" | "fx.list" | "sticker.library" => object(vec![], &[]),
         "sound.add" => object(
             vec![
                 (
@@ -267,10 +289,27 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ("duration", time("Timeline length; the media's remaining length, or 3 s, by default.")),
                 ("media", ident("Media id (from media.import) for a video, image or audio clip.")),
                 ("sourceIn", time("Where in the media the clip starts.")),
+                (
+                    "sticker",
+                    json!({"enum": reelforge_media::stickers::STICKERS.iter().map(|s| s.id).collect::<Vec<_>>(), "description": "A library sticker (see sticker.library), placed as an image a third of the frame wide."}),
+                ),
+                (
+                    "name",
+                    json!({"type": "string", "description": "With `sticker`: what the project's media calls it."}),
+                ),
+                (
+                    "adjustment",
+                    json!({"type": "boolean", "description": "An adjustment clip (video tracks): it shows nothing; its `fx` and its colour (clip.setColor) work on the tracks below while it lasts."}),
+                ),
+                ("fx", fx("Picture effects the clip starts with.")),
             ];
             props.extend(title_props());
             object(props, &["track"])
         }
+        "clip.setFx" => object(
+            vec![clip(), ("fx", fx("The clip's effects from now on; an empty list removes them."))],
+            &["clip", "fx"],
+        ),
         "captions.import" => object(
             vec![
                 (

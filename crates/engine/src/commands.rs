@@ -4,9 +4,9 @@ use reelforge_compile::{CompileOptions, compile};
 use reelforge_model::timeline as model_timeline;
 use reelforge_model::{
     Adjust, AnimKind, Animation, BlendMode, Clip, ClipContent, ClipEffect, ClipTransform, Codec, CurvePoint,
-    CurvePreset, Ease, ExportSettings, Filter, FilterKind, Key, LutUse, Mask, MaskKind, Media, MediaKind, Outline,
-    Project, Prop, Quality, Resolution, Shadow, Timeline, TitleStyle, Track, TrackKind, Transition, TransitionKind,
-    anim, export, timing,
+    CurvePreset, Ease, ExportSettings, Filter, FilterKind, Fx, FxGroup, FxKind, Key, LutUse, Mask, MaskKind, Media,
+    MediaKind, Outline, Project, Prop, Quality, Resolution, Shadow, Timeline, TitleStyle, Track, TrackKind, Transition,
+    TransitionKind, anim, export, timing,
 };
 use reelforge_renderspec::AssetKind;
 use reelforge_time::{FrameRate, Tick};
@@ -284,8 +284,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.add",
         label: "Add Clip",
-        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "template"?: id}"#,
-        doc: "Places media, text or a colour on a track; starts at the track's end unless `start` is given. Titles default to bold white with a black outline, wrapping at 90 % of the canvas.",
+        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "name"?: string, "adjustment"?: bool, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "template"?: id}"#,
+        doc: "Places media, a library sticker, text, a colour or an adjustment clip on a track; starts at the track's end unless `start` is given. Titles default to bold white with a black outline, wrapping at 90 % of the canvas. A sticker (sticker.library) is an image a third of the frame wide; `name` is what the project's media calls it (its English name by default). An adjustment clip shows nothing: its effects (`fx`) and colour work on the tracks below it while it lasts.",
         edits: true,
         enabled: always,
         run: clip_add,
@@ -534,6 +534,33 @@ static REGISTRY: &[CommandSpec] = &[
         run: clip_add_effect,
     },
     CommandSpec {
+        id: "clip.setFx",
+        label: "Effects",
+        params: r#"{"clip": id, "fx": [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name]}"#,
+        doc: "Sets a clip's picture effects (fx.list names them), replacing the ones it has; an empty list removes them. On a picture or title they play on that clip; on an adjustment clip (clip.add with `adjustment`) they play on everything on the tracks below while it lasts, as does its colour (clip.setColor).",
+        edits: true,
+        enabled: always,
+        run: clip_set_fx,
+    },
+    CommandSpec {
+        id: "fx.list",
+        label: "Effects",
+        params: "{}",
+        doc: "Lists the picture effects: what moves the picture (shake, pulse, swing, bounce, slow zooms), what changes its light (flash, strobe, flicker, breathing corners) and what changes its focus or colour (blur in and out, grey to colour).",
+        edits: false,
+        enabled: always,
+        run: fx_list,
+    },
+    CommandSpec {
+        id: "sticker.library",
+        label: "Stickers",
+        params: "{}",
+        doc: "Lists the built-in stickers. clip.add with `sticker` places one.",
+        edits: false,
+        enabled: always,
+        run: sticker_library,
+    },
+    CommandSpec {
         id: "clip.setKey",
         label: "Add Keyframe",
         params: r#"{"clip": id, "prop": "x"|"y"|"scale"|"rotation"|"opacity"|"volumeDb"|"cropLeft"|"cropTop"|"cropRight"|"cropBottom"|"maskX"|"maskY"|"maskWidth"|"maskHeight"|"maskRotation"|"maskFeather"|"exposure"|"contrast"|"saturation"|"temperature"|"tint"|"highlights"|"shadows"|"fade"|"vignette", "at": time, "value"?: number, "ease"?: "linear"|"hold"|"inOut"}"#,
@@ -761,6 +788,7 @@ fn sound_add(s: &mut Session, v: &Value) -> CmdResult {
             keep_pitch: true,
             color: Default::default(),
             look: Default::default(),
+            fx: vec![],
         };
         proj.track_mut(&track).expect("found above").clips.push(c);
         Ok(json!({ "media": media, "track": track, "clip": clip, "start": start, "duration": duration }))
@@ -1171,10 +1199,60 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
     let text = p.opt_str("text")?.map(str::to_string);
     let color = p.opt_color("color")?.or(template(&p)?.map(|t| t.color));
     let size = p.opt_f64("size")?.unwrap_or(96.0) as f32;
+    let fx = fx_param(&p)?.unwrap_or_default();
+    let adjustment = p.opt_bool("adjustment")?.unwrap_or(false);
+    let sticker = match p.opt_str("sticker")? {
+        None => None,
+        Some(id) => {
+            use reelforge_media::stickers;
+            let st = stickers::find(id).ok_or_else(|| {
+                EngineError::Params(format!(
+                    "`sticker` must be one of {}",
+                    stickers::STICKERS.iter().map(|s| s.id).collect::<Vec<_>>().join(", ")
+                ))
+            })?;
+            let uri = format!("{}{}", stickers::PREFIX, st.id);
+            // drawn once here for its hash; the same picture wherever it shows
+            let sha = match s.project().media.values().any(|m| m.uri == uri) {
+                true => None,
+                false => {
+                    use sha2::{Digest, Sha256};
+                    let px = stickers::render(st.id, stickers::SIZE).expect("a library sticker");
+                    Some(Sha256::digest(&px).iter().map(|b| format!("{b:02x}")).collect::<String>())
+                }
+            };
+            Some((uri, p.opt_str("name")?.unwrap_or(st.en).to_string(), sha))
+        }
+    };
+    if [media.is_some(), text.is_some(), sticker.is_some(), adjustment].iter().filter(|x| **x).count() > 1 {
+        return Err(EngineError::Params("give one of `media`, `sticker`, `text` or `adjustment`".into()));
+    }
     s.edit("Add Clip", |proj| {
         let track = proj.track(&track_id).ok_or_else(|| not_found("track", &track_id))?;
         let start = start.unwrap_or_else(|| track.clips.last().map_or(Tick::ZERO, Clip::end));
+        let media = match &sticker {
+            None => media.clone(),
+            Some((uri, name, sha)) => Some(match proj.media.values().find(|m| m.uri == *uri) {
+                Some(m) => m.id.clone(),
+                None => {
+                    let m = proj.mint("m");
+                    let side = reelforge_media::stickers::SIZE;
+                    let item = Media {
+                        id: m.clone(),
+                        name: name.clone(),
+                        uri: uri.clone(),
+                        sha256: sha.clone(),
+                        kind: MediaKind::Image,
+                        duration: None,
+                        size: Some([side, side]),
+                    };
+                    proj.media.insert(m.clone(), item);
+                    m
+                }
+            }),
+        };
         let (content, natural) = match (&media, &text) {
+            _ if adjustment => (ClipContent::Adjustment, None),
             (Some(m), None) => {
                 let item = proj.media.get(m).ok_or_else(|| not_found("media", m))?;
                 let natural = item.duration.map(|d| d - source_in).filter(|d| *d > Tick::ZERO);
@@ -1204,7 +1282,8 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
             start,
             duration,
             content,
-            transform: ClipTransform::default(),
+            // a sticker starts a third of the frame wide
+            transform: ClipTransform { scale: if sticker.is_some() { 0.35 } else { 1.0 }, ..Default::default() },
             opacity: 1.0,
             volume_db: 0.0,
             effects: vec![],
@@ -1215,6 +1294,7 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
             keep_pitch: true,
             color: Default::default(),
             look: Default::default(),
+            fx,
         };
         proj.track_mut(&track_id).expect("found above").clips.push(clip);
         Ok(json!({ "clip": id, "start": start, "duration": duration }))
@@ -1863,10 +1943,12 @@ fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
                     *sc = v;
                 }
             }
-            ClipContent::Media { .. } if text.is_some() || size.is_some() || color.is_some() => {
+            ClipContent::Media { .. } | ClipContent::Adjustment
+                if text.is_some() || size.is_some() || color.is_some() =>
+            {
                 return Err(EngineError::Params("`text`, `size` and `color` apply to text and colour clips".into()));
             }
-            ClipContent::Media { .. } => {}
+            ClipContent::Media { .. } | ClipContent::Adjustment => {}
         }
         Ok(json!({ "clip": serde_json::to_value(&*clip).expect("serialises") }))
     })
@@ -1914,6 +1996,79 @@ fn clip_add_effect(s: &mut Session, v: &Value) -> CmdResult {
         clip.effects.push(ClipEffect { id: effect, params });
         Ok(json!({ "clip": id, "effects": clip.effects.len() }))
     })
+}
+
+/// The `fx` parameter: a list of effects, each a name or `{kind, strength, speed}`.
+fn fx_param(p: &P) -> Result<Option<Vec<Fx>>, EngineError> {
+    let Some(v) = p.opt("fx") else { return Ok(None) };
+    let bad = || {
+        EngineError::Params(format!(
+            "`fx` must list effects, each a name or {{kind, strength 0-1, speed 0.25-4}}; the names are {}",
+            FxKind::ALL.map(FxKind::name).join(", ")
+        ))
+    };
+    let list = v.as_array().ok_or_else(bad)?;
+    let mut out = Vec::with_capacity(list.len());
+    for item in list {
+        let kind = item.as_str().or_else(|| item.get("kind").and_then(Value::as_str)).ok_or_else(bad)?;
+        let mut fx = Fx::new(FxKind::parse(kind).ok_or_else(bad)?);
+        let number = |name: &str| match item.get(name) {
+            None | Some(Value::Null) => Ok(None),
+            Some(x) => x.as_f64().map(|x| Some(x as f32)).ok_or_else(bad),
+        };
+        if let Some(x) = number("strength")? {
+            fx.strength = x;
+        }
+        if let Some(x) = number("speed")? {
+            fx.speed = x;
+        }
+        if let Some(why) = fx.problem() {
+            return Err(EngineError::Params(why.into()));
+        }
+        out.push(fx);
+    }
+    Ok(Some(out))
+}
+
+fn clip_set_fx(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let fx = fx_param(&p)?.ok_or_else(|| EngineError::Params("missing `fx`".into()))?;
+    s.edit("Effects", |proj| {
+        let (ti, _) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        if proj.tracks[ti].kind == TrackKind::Audio {
+            return Err(EngineError::Params("effects apply to picture and title clips".into()));
+        }
+        let clip = proj.clip_mut(&id).expect("found above");
+        clip.fx = fx;
+        Ok(json!({ "clip": id, "fx": serde_json::to_value(&clip.fx).expect("serialises") }))
+    })
+}
+
+fn fx_list(_: &mut Session, _: &Value) -> CmdResult {
+    let list: Vec<Value> = FxKind::ALL
+        .iter()
+        .map(|k| {
+            json!({
+                "id": k.name(),
+                "group": match k.group() {
+                    FxGroup::Motion => "motion",
+                    FxGroup::Light => "light",
+                    FxGroup::Focus => "focus",
+                },
+                "hasSpeed": k.has_speed(),
+            })
+        })
+        .collect();
+    Ok(json!({ "effects": list }))
+}
+
+fn sticker_library(_: &mut Session, _: &Value) -> CmdResult {
+    let list: Vec<Value> = reelforge_media::stickers::STICKERS
+        .iter()
+        .map(|st| json!({ "id": st.id, "name": st.en, "nameZh": st.zh }))
+        .collect();
+    Ok(json!({ "stickers": list }))
 }
 
 fn prop(p: &P) -> Result<Prop, EngineError> {
@@ -2078,7 +2233,10 @@ fn clip_set_transition(s: &mut Session, v: &Value) -> CmdResult {
             if track.kind != TrackKind::Video {
                 return Err(EngineError::Params("transitions go between clips on a video track".into()));
             }
-            if !track.clips.iter().any(|c| c.end() == clip.start) {
+            if clip.is_adjustment() {
+                return Err(EngineError::Params("an adjustment clip has no picture to cut to".into()));
+            }
+            if !track.clips.iter().any(|c| c.end() == clip.start && !c.is_adjustment()) {
                 return Err(EngineError::Refused(
                     "no clip ends where this one starts; move them together first".into(),
                 ));

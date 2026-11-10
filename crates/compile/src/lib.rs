@@ -3,14 +3,16 @@
 //! This is the one place where editing meaning becomes rendering instructions. The renderer never
 //! reads a project, so anything a project can express has to be lowered here: clips become layers
 //! bottom track first, picture clips with sound and sound clips become audio clips, hidden tracks
-//! drop their layers and muted tracks their sound. As the model grows (transitions, templates,
+//! drop their layers and muted tracks their sound. An adjustment clip becomes no layer: its effects
+//! and colour are laid on the layers of the tracks below it, for as long as it covers them. As the
+//! model grows (transitions, templates,
 //! captions, speed curves), each feature gets its lowering here and the RenderSpec stays flat.
 
 use std::collections::BTreeMap;
 
 use reelforge_model::{
-    Adjust, BlendMode, Clip, ClipContent, Codec, Mask, MaskKind, MediaKind, Project, Prop, Timing, TitleAlign, Track,
-    TrackKind, TransitionKind,
+    Adjust, BlendMode, Clip, ClipContent, ClipTransform, Codec, FxChannel, Mask, MaskKind, MediaKind, Project, Prop,
+    Timing, TitleAlign, Track, TrackKind, TransitionKind,
 };
 use reelforge_renderspec::{
     Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Blend, Color, Crop, CropKeys, Ease, Effect, Fit,
@@ -23,7 +25,7 @@ use thiserror::Error;
 
 mod motion;
 
-use motion::{Overlay, Shape};
+use motion::{Frame, Overlay, Shape};
 
 /// A clip's blend mode as RenderSpec spells it.
 fn blend(m: BlendMode) -> Blend {
@@ -164,12 +166,37 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
         Ok(media_id.to_string())
     };
 
-    for track in &project.tracks {
+    for (ti, track) in project.tracks.iter().enumerate() {
         let cuts = transitions(track);
+        // the adjustment clips above this track
+        let above: Vec<&Clip> = project.tracks[ti + 1..]
+            .iter()
+            .filter(|t| t.kind == TrackKind::Video && !t.hidden)
+            .flat_map(|t| t.clips.iter().filter(|c| c.is_adjustment()))
+            .collect();
         for (i, clip) in track.clips.iter().enumerate() {
-            let picture = track.kind != TrackKind::Audio && !track.hidden;
+            let picture = track.kind != TrackKind::Audio && !track.hidden && !clip.is_adjustment();
             if picture {
-                let shape = shape(clip, cuts[i], cuts.get(i + 1).copied().flatten());
+                let mut shape = shape(clip, cuts[i], cuts.get(i + 1).copied().flatten());
+                shape.canvas = [c.width as f32, c.height as f32];
+                let at = clip.start - shape.lead;
+                // where each adjustment clip above covers this layer, in the layer's time
+                let covers: Vec<(Tick, Tick, &Clip)> = above
+                    .iter()
+                    .filter_map(|a| {
+                        let (from, to) = ((a.start - at).max(Tick::ZERO), (a.end() - at).min(shape.len));
+                        (from < to).then_some((from, to, *a))
+                    })
+                    .collect();
+                for (from, to, a) in &covers {
+                    shape.frames.extend(a.fx.iter().map(|fx| Frame {
+                        from: *from,
+                        to: *to,
+                        origin: a.start - at,
+                        len: a.duration,
+                        fx: *fx,
+                    }));
+                }
                 let media = matches!(clip.content, ClipContent::Media { .. });
                 let crop_keyed = Prop::CROP.iter().any(|p| clip.keyed(*p));
                 let content = match &clip.content {
@@ -179,6 +206,7 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                         fit: Fit::Contain,
                     },
                     ClipContent::Solid { color } => LayerContent::Solid { color: Color(*color) },
+                    ClipContent::Adjustment => unreachable!("an adjustment clip is not a picture"),
                     ClipContent::Text { text, size, color, style } => LayerContent::Text(TextContent {
                         weight: style.weight,
                         align: match style.align {
@@ -216,6 +244,16 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                 // a blurred copy filling the frame behind it
                 if let (Some(amount), LayerContent::Media { asset, time, .. }) = (clip.look.backdrop, &content) {
                     let mut fx = color_fx(clip, &shape, step, &mut asset_for)?;
+                    fx.extend(above_fx(clip, &shape, &covers, step));
+                    // it fills the frame where it is, and moves only with the frame
+                    let still = Clip {
+                        transform: ClipTransform::default(),
+                        keys: Default::default(),
+                        anim: Default::default(),
+                        fx: vec![],
+                        ..clip.clone()
+                    };
+                    let frame = Shape { overlays: vec![], ..shape.clone() };
                     fx.push(Effect {
                         id: effects::BLUR.into(),
                         params: [(
@@ -230,7 +268,11 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                         at: clip.start - shape.lead,
                         dur: shape.len,
                         content: LayerContent::Media { asset: asset.clone(), time: time.clone(), fit: Fit::Cover },
-                        transform: Transform::default(),
+                        transform: Transform {
+                            position: motion::lower_position(&still, &frame, step),
+                            scale: motion::lower(&still, Prop::Scale, &frame, step),
+                            rotation: motion::lower(&still, Prop::Rotation, &frame, step),
+                        },
                         opacity: motion::lower(clip, Prop::Opacity, &shape, step),
                         blend: Blend::Normal,
                         mask: None,
@@ -282,6 +324,18 @@ pub fn compile(project: &Project, options: &CompileOptions) -> Result<RenderSpec
                             params: e.params.iter().map(|(k, v)| (k.clone(), Animated::Constant(*v))).collect(),
                             asset: None,
                         }));
+                        fx.extend(above_fx(clip, &shape, &covers, step));
+                        // out of focus: pictures only, and one blur a layer
+                        if media
+                            && !fx.iter().any(|e| e.id == effects::BLUR)
+                            && let Some(radius) = motion::fx_channel(clip, &shape, FxChannel::Blur, step)
+                        {
+                            fx.push(Effect {
+                                id: effects::BLUR.into(),
+                                params: [("radius".to_string(), radius)].into(),
+                                asset: None,
+                            });
+                        }
                         fx
                     },
                 });
@@ -393,6 +447,42 @@ fn color_fx(
     Ok(fx)
 }
 
+/// What effects and the adjustment clips above (`covers`: where each lies on the layer) do to a
+/// layer's light and colour: the effects' own grade, sampled while they play, then the adjustment
+/// clips' filters and their adjustments, each as one grade that steps in and out. Where two
+/// adjustment clips overlap, their values add up.
+fn above_fx(clip: &Clip, shape: &Shape, covers: &[(Tick, Tick, &Clip)], step: Tick) -> Vec<Effect> {
+    let mut fx = Vec::new();
+    let played: Vec<(String, Animated<f32>)> =
+        [("exposure", FxChannel::Exposure), ("saturation", FxChannel::Saturation), ("vignette", FxChannel::Vignette)]
+            .into_iter()
+            .filter_map(|(name, ch)| Some((name.to_string(), motion::fx_channel(clip, shape, ch, step)?)))
+            .collect();
+    if !played.is_empty() {
+        fx.push(Effect { id: effects::GRADE.into(), params: played.into_iter().collect(), asset: None });
+    }
+    let filter = |a: &Clip| {
+        a.color.filter.filter(|f| f.strength > 0.0).map_or(Adjust::default(), |f| f.kind.adjust().scaled(f.strength))
+    };
+    let adjust = |a: &Clip| a.color.adjust;
+    let both: [&dyn Fn(&Clip) -> Adjust; 2] = [&filter, &adjust];
+    for values in both {
+        let params: Vec<(String, Animated<f32>)> = Adjust::RANGES
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (name, lo, hi))| {
+                let spans: Vec<(Tick, Tick, f32)> =
+                    covers.iter().map(|(from, to, a)| (*from, *to, values(a).values()[i])).collect();
+                Some((name.to_string(), motion::stepped(&spans, shape.len, (*lo, *hi))?))
+            })
+            .collect();
+        if !params.is_empty() {
+            fx.push(Effect { id: effects::GRADE.into(), params: params.into_iter().collect(), asset: None });
+        }
+    }
+    fx
+}
+
 /// A clip's timing as a layer or audio clip that starts `lead` before the clip.
 fn time_map(t: &Timing, lead: Tick) -> TimeMap {
     let mut ramp: Vec<SpeedKey> = t.ramp.iter().map(|&(at, speed)| SpeedKey { t: at + lead, speed }).collect();
@@ -412,7 +502,12 @@ fn transitions(track: &Track) -> Vec<Option<(TransitionKind, Tick)>> {
         .map(|(i, clip)| {
             let t = clip.transition?;
             let prev = track.clips.get(i.checked_sub(1)?)?;
-            if track.kind != TrackKind::Video || prev.end() != clip.start {
+            // an adjustment clip is no picture to cut from or to
+            if track.kind != TrackKind::Video
+                || prev.end() != clip.start
+                || prev.is_adjustment()
+                || clip.is_adjustment()
+            {
                 return None;
             }
             let half = Tick(t.duration.min(prev.duration).min(clip.duration).0 / 2);
@@ -433,7 +528,7 @@ fn shape(clip: &Clip, into: Option<(TransitionKind, Tick)>, out: Option<(Transit
         let cut = lead + clip.duration;
         overlays.push(Overlay { from: cut - h, to: cut + h, kind, incoming: false });
     }
-    Shape { lead, len: lead + clip.duration + tail, overlays }
+    Shape { lead, len: lead + clip.duration + tail, overlays, frames: vec![], canvas: [1.0, 1.0] }
 }
 
 #[cfg(test)]
@@ -458,6 +553,7 @@ mod tests {
             keep_pitch: true,
             color: Default::default(),
             look: Default::default(),
+            fx: vec![],
         }
     }
 
@@ -564,5 +660,111 @@ mod tests {
         assert_eq!(b.transform.position.sample(Tick::SECOND * 2), [0.0, 0.0]);
         let mid = b.transform.position.sample(Tick::SECOND)[0] - a.transform.position.sample(Tick::SECOND * 2)[0];
         assert!((mid - 1.0).abs() < 1e-4, "{mid}");
+    }
+
+    #[test]
+    fn a_clips_own_effects_are_sampled_while_it_lasts() {
+        use reelforge_model::{Fx, FxKind};
+        let mut p = Project::default();
+        let mut a = clip("c10", Tick::ZERO, Tick::SECOND * 2, ClipContent::Solid { color: [1.0; 4] });
+        a.fx = vec![Fx::new(FxKind::Shake), Fx::new(FxKind::Flash)];
+        p.tracks[0].clips = vec![a.clone()];
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        let l = &spec.layers[0];
+        let Animated::Keys(k) = &l.transform.position else { panic!("the shake moves it") };
+        // a key a frame
+        assert_eq!(k.len(), 61);
+        assert!(k.iter().any(|k| k.v[0] != 0.0) && k.iter().all(|k| k.v[0].abs() <= 0.02));
+        assert!((l.transform.scale.sample(Tick::SECOND) - 1.05).abs() < 1e-6);
+        assert_eq!(l.opacity, Animated::Constant(1.0));
+        // the flash is a grade whose exposure falls from each beat
+        let grade = l.fx.iter().find(|e| e.id == effects::GRADE).expect("a grade");
+        assert_eq!(grade.params.keys().collect::<Vec<_>>(), ["exposure"]);
+        let e = &grade.params["exposure"];
+        assert!((e.sample(Tick::ZERO) - 2.5).abs() < 1e-6 && e.sample(Tick(Tick::SECOND.0 / 2)) < 0.5);
+        assert!((e.sample(Tick::SECOND) - 2.5).abs() < 1e-6);
+        // a colour has no focus to lose
+        a.fx = vec![Fx::new(FxKind::BlurIn)];
+        p.tracks[0].clips = vec![a];
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        assert!(spec.layers[0].fx.is_empty());
+    }
+
+    #[test]
+    fn an_adjustment_clip_works_on_what_is_below_it_while_it_lasts() {
+        use reelforge_model::{Filter, FilterKind, Fx, FxKind, Transition, TransitionKind};
+        let mut p = Project::default();
+        p.media.insert(
+            "m9".into(),
+            Media {
+                id: "m9".into(),
+                name: "a.mp4".into(),
+                uri: "file:///a.mp4".into(),
+                sha256: Some("ab".repeat(32)),
+                kind: MediaKind::Video,
+                duration: Some(Tick::SECOND * 10),
+                size: Some([1080, 1920]),
+            },
+        );
+        let mut below = clip("c10", Tick::ZERO, Tick::SECOND * 4, ClipContent::media("m9", Tick::ZERO));
+        below.transform.x = 0.25;
+        p.tracks[0].clips = vec![below];
+        let mut adj = clip("c11", Tick::SECOND, Tick::SECOND * 2, ClipContent::Adjustment);
+        adj.fx = vec![Fx::new(FxKind::ZoomOut), Fx::new(FxKind::BlurIn)];
+        adj.color.adjust.exposure = 1.0;
+        adj.color.filter = Some(Filter { kind: FilterKind::ALL[0], strength: 1.0 });
+        let mut over = p.tracks[0].clone();
+        over.id = "t9".into();
+        over.clips = vec![adj];
+        p.tracks.insert(1, over);
+        // a title above it is left alone
+        let text = p.tracks.iter().position(|t| t.kind == TrackKind::Text).unwrap();
+        p.tracks[text].clips.push(clip(
+            "c12",
+            Tick::ZERO,
+            Tick::SECOND * 4,
+            ClipContent::Text { text: "Hi".into(), size: 80.0, color: [1.0; 4], style: TitleStyle::subtitle() },
+        ));
+        p.check().unwrap();
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        assert_eq!(spec.layers.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(), ["c10", "c12"]);
+        assert_eq!(spec.output.duration, Tick::SECOND * 4);
+        let (l, title) = (&spec.layers[0], &spec.layers[1]);
+        // outside the adjustment clip nothing changes; inside, the frame is pulled back about its
+        // centre, so what is off-centre moves out with it
+        assert_eq!(l.transform.scale.sample(Tick(Tick::SECOND.0 / 2)), 1.0);
+        assert!((l.transform.scale.sample(Tick::SECOND) - 1.3).abs() < 1e-6);
+        assert!((l.transform.position.sample(Tick::SECOND)[0] - 0.25 * 1.3).abs() < 1e-6);
+        assert!((l.transform.scale.sample(Tick::SECOND * 2) - 1.15).abs() < 1e-4);
+        assert_eq!(l.transform.position.sample(Tick::SECOND * 3), [0.25, 0.0]);
+        assert_eq!(title.transform.scale, Animated::Constant(1.0));
+        assert!(title.fx.is_empty());
+        // its filter and its adjustments step in and out, one grade each
+        let grades: Vec<&Effect> = l.fx.iter().filter(|e| e.id == effects::GRADE).collect();
+        assert_eq!(grades.len(), 2);
+        let exposure = &grades[1].params["exposure"];
+        assert_eq!(
+            [0, 1, 2, 3].map(|s| exposure.sample(Tick::SECOND * s + Tick(1))),
+            [0.0, 1.0, 1.0, 0.0],
+            "{exposure:?}"
+        );
+        // out of focus when it starts, sharp a second later
+        let blur = &l.fx.iter().find(|e| e.id == effects::BLUR).expect("a blur").params["radius"];
+        assert_eq!(blur.sample(Tick(Tick::SECOND.0 / 2)), 0.0);
+        assert!((blur.sample(Tick::SECOND) - 0.05).abs() < 1e-6);
+        assert_eq!(blur.sample(Tick::SECOND * 2), 0.0);
+
+        // a hidden track's adjustment clips do nothing, and none takes part in a transition
+        p.tracks[1].hidden = true;
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        assert!(spec.layers[0].fx.is_empty());
+        assert_eq!(spec.layers[0].transform.scale, Animated::Constant(1.0));
+        p.tracks[1].hidden = false;
+        let mut next = clip("c13", Tick::SECOND * 3, Tick::SECOND, ClipContent::Solid { color: [1.0; 4] });
+        next.transition = Some(Transition { kind: TransitionKind::Dissolve, duration: Tick::SECOND });
+        p.tracks[1].clips.push(next);
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        let c13 = spec.layers.iter().find(|l| l.id == "c13").unwrap();
+        assert_eq!((c13.at, c13.dur), (Tick::SECOND * 3, Tick::SECOND));
     }
 }

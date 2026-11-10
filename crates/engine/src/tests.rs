@@ -1,4 +1,4 @@
-use reelforge_model::{ClipContent, Prop, TrackKind};
+use reelforge_model::{ClipContent, Fx, FxKind, MediaKind, Prop, TrackKind};
 use reelforge_time::Tick;
 use serde_json::json;
 
@@ -1209,4 +1209,80 @@ fn crops_masks_and_colour_move_with_keyframes() {
     let p = s.project();
     let keys: Vec<Prop> = p.clip(&v).unwrap().1.keys.keys().copied().collect();
     assert_eq!(keys, [Prop::CropLeft]);
+}
+
+#[test]
+fn stickers_effects_and_adjustment_clips() {
+    let mut s = Session::default();
+    let v = video_track(&s);
+    assert_eq!(s.execute("sticker.library", &json!({})).unwrap()["stickers"].as_array().unwrap().len(), 20);
+    let fx = s.execute("fx.list", &json!({})).unwrap();
+    assert!(fx["effects"].as_array().unwrap().iter().any(|e| e["id"] == "shake" && e["group"] == "motion"));
+
+    // a sticker is an image made here: one media however often it is placed
+    let a = s.execute("clip.add", &json!({"track": v, "sticker": "heart", "fx": ["pulse"]})).unwrap();
+    let b = s.execute("clip.add", &json!({"track": v, "sticker": "heart"})).unwrap();
+    let p = s.project();
+    assert_eq!(p.media.len(), 1);
+    let m = p.media.values().next().unwrap();
+    assert_eq!((m.uri.as_str(), m.kind, m.size), ("library:sticker/heart", MediaKind::Image, Some([512, 512])));
+    assert_eq!(m.sha256.as_ref().map(String::len), Some(64));
+    let (_, clip) = p.clip(a["clip"].as_str().unwrap()).unwrap();
+    assert_eq!(clip.transform.scale, 0.35);
+    assert_eq!(clip.fx, [Fx::new(FxKind::Pulse)]);
+    assert_eq!(p.clip(b["clip"].as_str().unwrap()).unwrap().1.start, clip.end());
+    assert!(s.execute("clip.add", &json!({"track": v, "sticker": "kazoo"})).is_err());
+    assert!(s.execute("clip.add", &json!({"track": v, "sticker": "star", "text": "x"})).is_err());
+
+    // effects are set as a list, each with its strength and pace
+    let id = a["clip"].as_str().unwrap();
+    s.execute("clip.setFx", &json!({"clip": id, "fx": [{"kind": "shake", "strength": 1, "speed": 2}, "flash"]}))
+        .unwrap();
+    let fx = s.project().clip(id).unwrap().1.fx.clone();
+    assert_eq!(fx, [Fx { kind: FxKind::Shake, strength: 1.0, speed: 2.0 }, Fx::new(FxKind::Flash)]);
+    for bad in [
+        json!(["wobble"]),
+        json!([{"kind": "shake", "strength": 2}]),
+        json!([{"kind": "shake", "speed": 9}]),
+        json!("shake"),
+    ] {
+        assert!(s.execute("clip.setFx", &json!({"clip": id, "fx": bad})).is_err());
+    }
+    s.execute("clip.setFx", &json!({"clip": id, "fx": []})).unwrap();
+    assert!(s.project().clip(id).unwrap().1.fx.is_empty());
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.project().clip(id).unwrap().1.fx.len(), 2);
+
+    // an adjustment clip on a track above works on the sticker for as long as it lasts
+    let over = s.execute("track.add", &json!({"kind": "video"})).unwrap()["track"].as_str().unwrap().to_string();
+    let adj = s
+        .execute(
+            "clip.add",
+            &json!({"track": over, "adjustment": true, "fx": ["zoomIn"], "start": {"seconds": 1}, "duration": {"seconds": 2}}),
+        )
+        .unwrap()["clip"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    s.execute("clip.setColor", &json!({"clip": adj, "exposure": 1, "filter": "warm"})).unwrap();
+    assert!(s.project().clip(&adj).unwrap().1.is_adjustment());
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let layers = spec["layers"].as_array().unwrap();
+    assert_eq!(layers.len(), 2, "the adjustment clip is no layer");
+    let grades = layers[0]["fx"].as_array().unwrap().iter().filter(|e| e["id"] == "color.grade@1").count();
+    assert_eq!(grades, 3, "the flash, the filter and the adjustments");
+    // it is a clip like any other on the timeline
+    let right = s.execute("clip.split", &json!({"clip": adj, "at": {"seconds": 2}})).unwrap()["right"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(s.project().clip(&right).unwrap().1.fx, [Fx::new(FxKind::ZoomIn)]);
+    // but takes no title, no transition and no lookup table, and goes on no text track
+    assert!(s.execute("clip.set", &json!({"clip": adj, "text": "x"})).is_err());
+    assert!(s.execute("clip.setTransition", &json!({"clip": right, "kind": "dissolve"})).is_err());
+    let text = s.execute("track.add", &json!({"kind": "text"})).unwrap()["track"].as_str().unwrap().to_string();
+    assert!(s.execute("clip.add", &json!({"track": text, "adjustment": true})).is_err());
+    // sound has no picture to shake
+    let snd = s.execute("sound.add", &json!({"sound": "pop"})).unwrap()["clip"].as_str().unwrap().to_string();
+    assert!(s.execute("clip.setFx", &json!({"clip": snd, "fx": ["shake"]})).is_err());
 }
