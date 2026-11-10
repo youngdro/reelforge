@@ -203,8 +203,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "project.setCanvas",
         label: "Canvas Settings",
-        params: r#"{"width"?: u32, "height"?: u32, "fps"?: [num, den], "background"?: [r,g,b,a]}"#,
-        doc: "Changes the output size, frame rate or background.",
+        params: r#"{"width"?: u32, "height"?: u32, "ratio"?: "9:16"|"16:9"|"1:1"|"4:3"|"3:4"|"2.35:1"|"4:5", "fps"?: [num, den], "background"?: [r,g,b,a], "refit"?: bool}"#,
+        doc: "Changes the output size, frame rate or background. `ratio` picks a ready-made shape at a 1080-pixel shorter side (width and height, when given too, win). Unless `refit` is false, the clips follow a new size: a picture that covered the canvas (or filled it, having its shape) is scaled to cover the new one, keyframes and all, and titles are resized by the change of the shorter side. Returns the canvas and the clips refitted.",
         edits: true,
         enabled: always,
         run: project_set_canvas,
@@ -1077,7 +1077,16 @@ fn project_set_export(s: &mut Session, v: &Value) -> CmdResult {
 
 fn project_set_canvas(s: &mut Session, v: &Value) -> CmdResult {
     let p = P::new(v, fps(s));
-    let (w, h, bg) = (p.opt_u32("width")?, p.opt_u32("height")?, p.opt_color("background")?);
+    let (mut w, mut h, bg) = (p.opt_u32("width")?, p.opt_u32("height")?, p.opt_color("background")?);
+    if let Some(id) = p.opt_str("ratio")? {
+        let (_, rw, rh) = crate::canvas::RATIOS
+            .into_iter()
+            .find(|(r, ..)| *r == id)
+            .ok_or_else(|| EngineError::Params(format!("unknown `ratio` {id:?}")))?;
+        w = w.or(Some(rw));
+        h = h.or(Some(rh));
+    }
+    let refit = p.opt_bool("refit")?.unwrap_or(true);
     let rate = match p.opt("fps") {
         None => None,
         Some(r) => {
@@ -1091,11 +1100,12 @@ fn project_set_canvas(s: &mut Session, v: &Value) -> CmdResult {
         }
     };
     for d in [w, h].into_iter().flatten() {
-        if d == 0 || d > 8192 || d % 2 != 0 {
-            return Err(EngineError::Params("width and height must be even and between 2 and 8192".into()));
+        if !(16..=8192).contains(&d) || d % 2 != 0 {
+            return Err(EngineError::Params("width and height must be even and between 16 and 8192".into()));
         }
     }
     s.edit("Canvas Settings", |proj| {
+        let old = proj.canvas.clone();
         let c = &mut proj.canvas;
         if let Some(w) = w {
             c.width = w;
@@ -1109,7 +1119,13 @@ fn project_set_canvas(s: &mut Session, v: &Value) -> CmdResult {
         if let Some(bg) = bg {
             c.background = bg;
         }
-        Ok(json!({ "canvas": serde_json::to_value(&*c).expect("serialises") }))
+        let new = c.clone();
+        let done = if refit { crate::canvas::refit(proj, &old, &new) } else { Default::default() };
+        Ok(json!({
+            "canvas": serde_json::to_value(&new).expect("serialises"),
+            "covered": done.covered,
+            "titles": done.titles,
+        }))
     })
 }
 

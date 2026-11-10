@@ -26,6 +26,7 @@
 mod ahead;
 mod assets;
 mod audio;
+mod canvas;
 mod captions;
 mod curve;
 mod drafts;
@@ -109,6 +110,8 @@ pub struct EditorApp {
     export: Option<export_job::ExportJob>,
     /// The export settings are showing.
     export_open: bool,
+    /// The canvas settings.
+    canvas: canvas::CanvasEdit,
     /// The panel on the left: media, sounds, titles.
     assets: assets::AssetPanel,
     /// The SubRip file being picked is a second language's (asked from the captions list).
@@ -379,6 +382,7 @@ impl EditorApp {
             arrivals: Arc::default(),
             export: None,
             export_open: false,
+            canvas: canvas::CanvasEdit::default(),
             assets: assets::AssetPanel::default(),
             second_captions: false,
             timelines_open: false,
@@ -1945,18 +1949,22 @@ impl EditorApp {
                     ui.label(egui::RichText::new(name).color(theme::color::TEXT));
                 }
             }
-            if !narrow {
-                let c = &p.canvas;
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{}×{} · {} fps · {}",
-                        c.width,
-                        c.height,
-                        (c.fps.fps() * 100.0).round() / 100.0,
-                        theme::timecode(p.duration().seconds())
-                    ))
-                    .color(theme::color::WEAK),
-                );
+            // the canvas's size opens its settings
+            let c = &p.canvas;
+            let size = if narrow {
+                format!("{}×{}", c.width, c.height)
+            } else {
+                format!(
+                    "{}×{} · {} fps · {}",
+                    c.width,
+                    c.height,
+                    (c.fps.fps() * 100.0).round() / 100.0,
+                    theme::timecode(p.duration().seconds())
+                )
+            };
+            let canvas = egui::Button::new(egui::RichText::new(size).color(theme::color::WEAK)).frame(false);
+            if ui.add(canvas).on_hover_text(s.canvas_tip).clicked() {
+                self.canvas.open = !self.canvas.open;
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 self.export_controls(ui, &p);
@@ -4272,6 +4280,7 @@ impl eframe::App for EditorApp {
         }
         self.take_dropped_files(&ctx);
         self.export_window(&ctx);
+        self.canvas_window(&ctx);
         self.timelines_window(&ctx);
         self.spoken_window(&ctx);
         if ctx.input(|i| !i.raw.hovered_files.is_empty()) {

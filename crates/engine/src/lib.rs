@@ -10,6 +10,7 @@
 //! checks the invariants and only then commits, pushing the old snapshot onto the undo stack. A
 //! reader (a preview, an export) holds a snapshot and never blocks an edit.
 
+mod canvas;
 mod capcut;
 mod captions;
 mod commands;
@@ -28,6 +29,7 @@ use reelforge_model::Project;
 use serde_json::{Value, json};
 use thiserror::Error;
 
+pub use canvas::RATIOS;
 pub use captions::{CAPTIONS_TRACK, CAPTIONS_TRACK_2, Cue, format_srt, parse_srt};
 pub use commands::{CommandSpec, media_uses, registry};
 pub use params::parse_time;

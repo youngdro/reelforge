@@ -213,8 +213,22 @@ pub fn input_schema(id: &str) -> Option<Value> {
         ),
         "project.setCanvas" => object(
             vec![
-                ("width", json!({"type": "integer", "minimum": 16, "description": "Output width in pixels."})),
-                ("height", json!({"type": "integer", "minimum": 16, "description": "Output height in pixels."})),
+                (
+                    "width",
+                    json!({"type": "integer", "minimum": 16, "maximum": 8192, "description": "Output width in pixels; even."}),
+                ),
+                (
+                    "height",
+                    json!({"type": "integer", "minimum": 16, "maximum": 8192, "description": "Output height in pixels; even."}),
+                ),
+                (
+                    "ratio",
+                    json!({"type": "string", "enum": crate::canvas::RATIOS.map(|r| r.0), "description": "A ready-made shape at a 1080-pixel shorter side; width and height, when given too, win."}),
+                ),
+                (
+                    "refit",
+                    json!({"type": "boolean", "description": "Whether clips follow a new size (true by default): pictures that covered the canvas go on covering it, titles keep their size against it."}),
+                ),
                 (
                     "fps",
                     json!({"type": "array", "items": {"type": "integer", "minimum": 1}, "minItems": 2, "maxItems": 2, "description": "Frame rate as [numerator, denominator], such as [30, 1] or [30000, 1001]."}),
