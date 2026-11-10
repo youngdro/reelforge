@@ -270,6 +270,35 @@ fn layers_ok(spec: &RenderSpec, at: &str, layers: &[crate::Layer]) -> Result<(),
         keys_ok(&format!("{path}.transform.position"), &layer.transform.position, layer.dur)?;
         keys_ok(&format!("{path}.transform.scale"), &layer.transform.scale, layer.dur)?;
         keys_ok(&format!("{path}.transform.rotation"), &layer.transform.rotation, layer.dur)?;
+        if let Some(stretch) = &layer.transform.stretch {
+            keys_ok(&format!("{path}.transform.stretch"), stretch, layer.dur)?;
+        }
+        if layer.transform.anchor.is_some_and(|a| !a.iter().all(|v| v.is_finite())) {
+            return Err(bad(format!("{path}.transform.anchor"), "needs numbers"));
+        }
+        if let Some(turn) = &layer.transform.turn {
+            keys_ok(&format!("{path}.transform.turn.x"), &turn.x, layer.dur)?;
+            keys_ok(&format!("{path}.transform.turn.y"), &turn.y, layer.dur)?;
+            if !(turn.distance.is_finite() && turn.distance >= 0.1) {
+                return Err(bad(format!("{path}.transform.turn.distance"), "must be 0.1 or more"));
+            }
+        }
+        if let Some(parent) = &layer.parent {
+            // up the chain: every parent among these layers, none met twice, eight at most
+            let (mut up, mut steps) = (Some(parent.as_str()), 0);
+            while let Some(id) = up {
+                let found = layers.iter().find(|l| l.id == id);
+                let Some(found) = found else {
+                    return Err(bad(format!("{path}.parent"), format!("unknown layer {id:?}")));
+                };
+                steps += 1;
+                if id == layer.id || steps > crate::PARENTS {
+                    let why = if id == layer.id { "a layer cannot carry itself" } else { "too many parents" };
+                    return Err(bad(format!("{path}.parent"), why));
+                }
+                up = found.parent.as_deref();
+            }
+        }
         for (j, fx) in layer.fx.iter().enumerate() {
             let fx_path = format!("{path}.fx[{j}]");
             let ok = fx.id.split_once('@').is_some_and(|(name, ver)| {
@@ -515,6 +544,7 @@ mod tests {
             shape_mask: None,
             crop_keys: None,
             shape_mask_keys: None,
+            parent: None,
         });
         s
     }
@@ -579,6 +609,53 @@ mod tests {
         assert!(validate(&s).is_err());
         s.layers[0].content = LayerContent::Text(Box::new(TextContent::new("ok", 96.0, Color([1.0; 4]))));
         assert!(s.required_features().contains("text/1"));
+    }
+
+    #[test]
+    fn a_layer_in_space_says_what_it_needs_and_a_ring_of_parents_is_refused() {
+        let mut s = base();
+        assert!(!s.required_features().iter().any(|f| f.starts_with("transform.") || f.starts_with("layer.")));
+        // an old spec reads as it did: none of this is written unless it is used
+        let plain = s.to_json();
+        assert!(!plain.contains("stretch") && !plain.contains("anchor") && !plain.contains("parent"));
+        let mut carried = s.layers[0].clone();
+        carried.id = "carried".into();
+        carried.parent = Some(s.layers[0].id.clone());
+        carried.transform.stretch = Some(Animated::Constant([2.0, 0.5]));
+        carried.transform.anchor = Some([0.0, 1.0]);
+        carried.transform.turn = Some(Turn::held(10.0, -40.0));
+        s.layers.push(carried);
+        validate(&s).unwrap();
+        assert_eq!(RenderSpec::from_json(&s.to_json()).unwrap(), s);
+        let needs = s.required_features();
+        for f in ["transform.stretch/1", "transform.anchor/1", "transform.3d/1", "layer.parent/1"] {
+            assert!(needs.contains(f), "{f}");
+        }
+        // a turn's angles and distance have defaults
+        let mut v = serde_json::to_value(&s).unwrap();
+        v["layers"][1]["transform"]["turn"] = serde_json::json!({"y": 30.0});
+        let back = RenderSpec::from_json(&v.to_string()).unwrap();
+        assert_eq!(back.layers[1].transform.turn, Some(Turn::held(0.0, 30.0)));
+
+        let refused = |s: &RenderSpec, at: &str| {
+            assert!(matches!(validate(s), Err(ValidationError::Invalid { path, .. }) if path == at), "{at}");
+        };
+        let mut bad = s.clone();
+        bad.layers[1].transform.turn = Some(Turn { distance: 0.0, ..Turn::held(0.0, 0.0) });
+        refused(&bad, "layers[1].transform.turn.distance");
+        let mut bad = s.clone();
+        bad.layers[1].transform.anchor = Some([f32::NAN, 0.5]);
+        refused(&bad, "layers[1].transform.anchor");
+        // a parent that is not there, a layer that carries itself, two that carry each other
+        let mut bad = s.clone();
+        bad.layers[1].parent = Some("nobody".into());
+        refused(&bad, "layers[1].parent");
+        let mut bad = s.clone();
+        bad.layers[1].parent = Some("carried".into());
+        refused(&bad, "layers[1].parent");
+        let mut bad = s.clone();
+        bad.layers[0].parent = Some("carried".into());
+        refused(&bad, "layers[0].parent");
     }
 
     #[test]

@@ -51,6 +51,42 @@ pub struct PlannedLayer {
     pub flip: [bool; 2],
     /// A shape that shows part of the layer.
     pub shape: Option<ShapeMask>,
+    /// Width and height scaled apart, on top of the scale.
+    pub stretch: [f32; 2],
+    /// The point of the picture that sits at `center`, as fractions of what shows of it.
+    pub anchor: [f32; 2],
+    /// Turned in space.
+    pub turn: Option<Turned>,
+    /// The layers that carry this one, nearest first, each as it is placed at this instant.
+    pub carried: Vec<Carrier>,
+    /// The frame it is drawn into, in target pixels.
+    pub frame: [f32; 2],
+}
+
+/// A layer turned out of the frame's plane, at an instant.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Turned {
+    /// Radians about the horizontal axis: positive tips the top edge away.
+    pub x: f32,
+    /// Radians about the vertical axis: positive swings the right edge away.
+    pub y: f32,
+    /// How far the eye is, in target pixels.
+    pub eye: f32,
+}
+
+/// A layer that carries another, as it is placed at an instant: what of it moves what it carries.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Carrier {
+    /// Its anchor in target pixels.
+    pub center: [f32; 2],
+    /// Its scale.
+    pub scale: f32,
+    /// Its width and height scaled apart.
+    pub stretch: [f32; 2],
+    /// Its clockwise rotation, radians.
+    pub rotation: f32,
+    /// Its turn in space.
+    pub turn: Option<Turned>,
 }
 
 /// What a layer draws.
@@ -96,8 +132,87 @@ impl FramePlan {
 /// one that did not stops here.
 const DEPTH: usize = 8;
 
-/// A 2-D affine map `[a, b, c, d, e, f]`: `x' = a x + b y + c`, `y' = d x + e y + f`.
-pub type Affine = [f32; 6];
+/// A map of the plane, `[a, b, c, d, e, f, g, h, i]`: `x' = (a x + b y + c) / w` and
+/// `y' = (d x + e y + f) / w` with `w = g x + h y + i`. For a layer that is not turned in space
+/// `w` is 1 (`g` and `h` are 0, `i` is 1) and the map is affine; for one that is, `w` is how far
+/// the point is from the eye, as a share of the eye's distance: at 0 or less it is not seen.
+pub type Map = [f32; 9];
+
+/// Where `m` takes a point; `None` where it is beside or behind the eye.
+pub fn apply(m: &Map, x: f32, y: f32) -> Option<[f32; 2]> {
+    let w = m[6] * x + m[7] * y + m[8];
+    (w > 1e-4).then(|| [(m[0] * x + m[1] * y + m[2]) / w, (m[3] * x + m[4] * y + m[5]) / w])
+}
+
+/// Whether a map is affine: its `w` is 1 everywhere.
+pub fn is_affine(m: &Map) -> bool {
+    m[6] == 0.0 && m[7] == 0.0 && m[8] == 1.0
+}
+
+/// The box around where `m` takes a `w` by `h` picture's corners, `[x0, y0, x1, y1]`; the whole
+/// of `frame` when a corner is not seen (the picture runs past the eye).
+pub fn bounds(m: &Map, w: f32, h: f32, frame: [f32; 2]) -> [f32; 4] {
+    let mut b = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+    for (x, y) in [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)] {
+        let Some([px, py]) = apply(m, x, y) else { return [0.0, 0.0, frame[0], frame[1]] };
+        b = [b[0].min(px), b[1].min(py), b[2].max(px), b[3].max(py)];
+    }
+    b
+}
+
+/// A map of space that keeps lines parallel: rows for x, y and z, each over `[x, y, z, 1]`.
+type Space = [[f32; 4]; 3];
+
+const SPACE: Space = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]];
+
+/// `a` after `b`.
+fn after(a: &Space, b: &Space) -> Space {
+    let mut out = [[0.0; 4]; 3];
+    for (r, row) in out.iter_mut().enumerate() {
+        for (c, v) in row.iter_mut().enumerate() {
+            *v = a[r][0] * b[0][c] + a[r][1] * b[1][c] + a[r][2] * b[2][c] + if c == 3 { a[r][3] } else { 0.0 };
+        }
+    }
+    out
+}
+
+/// Moved to `center`, turned in the plane and in space, scaled by `sx` and `sy`: what a layer's
+/// own transform does to points counted from its anchor.
+fn placed(center: [f32; 2], rotation: f32, turn: Option<Turned>, sx: f32, sy: f32) -> Space {
+    let (sin, cos) = rotation.sin_cos();
+    let mut m: Space = [[cos, -sin, 0.0, center[0]], [sin, cos, 0.0, center[1]], [0.0, 0.0, 1.0, 0.0]];
+    if let Some(t) = turn {
+        // about the vertical axis the right edge goes away, about the horizontal the top edge
+        let ((sy_, cy_), (sx_, cx_)) = (t.y.sin_cos(), t.x.sin_cos());
+        m = after(&m, &[[cy_, 0.0, sy_, 0.0], [0.0, 1.0, 0.0, 0.0], [-sy_, 0.0, cy_, 0.0]]);
+        m = after(&m, &[[1.0, 0.0, 0.0, 0.0], [0.0, cx_, -sx_, 0.0], [0.0, sx_, cx_, 0.0]]);
+    }
+    after(&m, &[[sx, 0.0, 0.0, 0.0], [0.0, sy, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]])
+}
+
+/// The plane `z = 0` of `m` as it is on the frame, seen flat.
+fn flat(m: &Space) -> Map {
+    [m[0][0], m[0][1], m[0][3], m[1][0], m[1][1], m[1][3], 0.0, 0.0, 1.0]
+}
+
+/// The plane `z = 0` of `m` as the eye sees it from `eye` in front of `at`.
+fn seen(m: &Space, at: [f32; 2], eye: f32) -> Map {
+    let (x, y, z) = ([m[0][0], m[0][1], m[0][3]], [m[1][0], m[1][1], m[1][3]], [m[2][0], m[2][1], m[2][3]]);
+    let row = |r: [f32; 3], v: f32| [r[0] - v / eye * z[0], r[1] - v / eye * z[1], r[2] - v / eye * z[2]];
+    let (rx, ry) = (row(x, at[0]), row(y, at[1]));
+    [rx[0], rx[1], rx[2], ry[0], ry[1], ry[2], -z[0] / eye, -z[1] / eye, 1.0 - z[2] / eye]
+}
+
+/// `a` after `b`, as maps of the plane.
+pub fn then(a: &Map, b: &Map) -> Map {
+    let mut out = [0.0; 9];
+    for r in 0..3 {
+        for c in 0..3 {
+            out[r * 3 + c] = a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c];
+        }
+    }
+    out
+}
 
 impl PlannedLayer {
     /// The part of a `w` by `h` picture that shows, after the crop.
@@ -120,7 +235,19 @@ impl PlannedLayer {
         let (cw, ch) = self.visible(w, h);
         let m = self.matrix(cw, ch, target);
         // target pixels per picture pixel, along each of the picture's axes
-        let per = m[0].hypot(m[3]).max(m[1].hypot(m[4]));
+        let per = if is_affine(&m) {
+            m[0].hypot(m[3]).max(m[1].hypot(m[4]))
+        } else {
+            // seen in perspective: along each of its edges, the nearest being the largest
+            let corner = |x: f32, y: f32| apply(&m, x, y);
+            let (Some(a), Some(b), Some(c), Some(d)) =
+                (corner(0.0, 0.0), corner(cw, 0.0), corner(cw, ch), corner(0.0, ch))
+            else {
+                return 1;
+            };
+            let far = |p: [f32; 2], q: [f32; 2]| (p[0] - q[0]).hypot(p[1] - q[1]);
+            (far(a, b).max(far(d, c)) / cw).max(far(a, d).max(far(b, c)) / ch)
+        };
         let mut k = 1;
         while k < 8 && per * (2 * k) as f32 <= 1.0 {
             k *= 2;
@@ -128,8 +255,45 @@ impl PlannedLayer {
         k
     }
 
+    /// Whether the layer is only moved, scaled evenly and turned in the plane about its middle,
+    /// by itself: what every layer was before `transform.stretch/1` and the rest.
+    pub fn plain(&self) -> bool {
+        self.stretch == [1.0, 1.0] && self.anchor == [0.5, 0.5] && self.turn.is_none() && self.carried.is_empty()
+    }
+
+    /// The map to target pixels from points counted in target pixels from the layer's anchor,
+    /// before it is stretched, turned or carried: its own `scale` is not in it.
+    pub fn place(&self) -> Map {
+        let own = placed(self.center, self.rotation, self.turn, self.stretch[0], self.stretch[1]);
+        // what carries it, nearest first: each takes the frame's middle to its own anchor
+        let middle: Space = [[1.0, 0.0, 0.0, -self.frame[0] / 2.0], [0.0, 1.0, 0.0, -self.frame[1] / 2.0], SPACE[2]];
+        let carry = |c: &Carrier| {
+            after(&placed(c.center, c.rotation, c.turn, c.scale * c.stretch[0], c.scale * c.stretch[1]), &middle)
+        };
+        // the outermost one turned in space is where the eye looks from: what it carries is one
+        // object in space with it, and what carries it moves the picture the eye saw
+        let turned = self.carried.iter().rposition(|c| c.turn.is_some());
+        let inside = turned.map_or(0, |i| i + 1);
+        let mut m = own;
+        for c in &self.carried[..inside] {
+            m = after(&carry(c), &m);
+        }
+        let mut map = match (turned, self.turn) {
+            (Some(i), _) => {
+                let c = &self.carried[i];
+                seen(&m, c.center, c.turn.expect("found turned").eye)
+            }
+            (None, Some(t)) => seen(&m, self.center, t.eye),
+            (None, None) => flat(&m),
+        };
+        for c in &self.carried[inside..] {
+            map = then(&flat(&carry(c)), &map);
+        }
+        map
+    }
+
     /// The map from content pixels (a `w` by `h` picture) to target pixels.
-    pub fn matrix(&self, w: f32, h: f32, target: [f32; 2]) -> Affine {
+    pub fn matrix(&self, w: f32, h: f32, target: [f32; 2]) -> Map {
         let (sx, sy) = match self.fit {
             Fit::Contain => {
                 let s = (target[0] / w).min(target[1] / h);
@@ -142,22 +306,47 @@ impl PlannedLayer {
             Fit::Stretch => (target[0] / w, target[1] / h),
         };
         let (sx, sy) = (sx * self.scale, sy * self.scale);
+        if !self.plain() {
+            // scaled about the anchor, then placed
+            let (ox, oy) = (-w * self.anchor[0], -h * self.anchor[1]);
+            return then(&self.place(), &[sx, 0.0, sx * ox, 0.0, sy, sy * oy, 0.0, 0.0, 1.0]);
+        }
         let (sin, cos) = self.rotation.sin_cos();
         // translate(center) · rotate · scale · translate(-w/2, -h/2)
         let (a, b, d, e) = (cos * sx, -sin * sy, sin * sx, cos * sy);
         let (ox, oy) = (-w / 2.0, -h / 2.0);
-        [a, b, a * ox + b * oy + self.center[0], d, e, d * ox + e * oy + self.center[1]]
+        [a, b, a * ox + b * oy + self.center[0], d, e, d * ox + e * oy + self.center[1], 0.0, 0.0, 1.0]
     }
 }
 
-/// Inverts an affine map; `None` when it collapses (scale 0).
-pub fn invert(m: Affine) -> Option<Affine> {
-    let det = m[0] * m[4] - m[1] * m[3];
+/// Inverts a map; `None` when it collapses (scale 0, or a layer seen edge on).
+pub fn invert(m: Map) -> Option<Map> {
+    if is_affine(&m) {
+        let det = m[0] * m[4] - m[1] * m[3];
+        if det.abs() < 1e-12 {
+            return None;
+        }
+        let (a, b, d, e) = (m[4] / det, -m[1] / det, -m[3] / det, m[0] / det);
+        return Some([a, b, -(a * m[2] + b * m[5]), d, e, -(d * m[2] + e * m[5]), 0.0, 0.0, 1.0]);
+    }
+    // the adjugate over the determinant, in doubles: the terms nearly cancel for a far eye
+    let m = m.map(f64::from);
+    let co = [
+        m[4] * m[8] - m[5] * m[7],
+        m[2] * m[7] - m[1] * m[8],
+        m[1] * m[5] - m[2] * m[4],
+        m[5] * m[6] - m[3] * m[8],
+        m[0] * m[8] - m[2] * m[6],
+        m[2] * m[3] - m[0] * m[5],
+        m[3] * m[7] - m[4] * m[6],
+        m[1] * m[6] - m[0] * m[7],
+        m[0] * m[4] - m[1] * m[3],
+    ];
+    let det = m[0] * co[0] + m[1] * co[3] + m[2] * co[6];
     if det.abs() < 1e-12 {
         return None;
     }
-    let (a, b, d, e) = (m[4] / det, -m[1] / det, -m[3] / det, m[0] / det);
-    Some([a, b, -(a * m[2] + b * m[5]), d, e, -(d * m[2] + e * m[5])])
+    Some(co.map(|c| (c / det) as f32))
 }
 
 /// Plans the frame at `t`, drawn at `scale` times the output size.
@@ -230,6 +419,25 @@ fn plan_layers(
             }
         };
         let pos = layer.transform.position.sample(local);
+        let frame = [width as f32, height as f32];
+        // what carries it, up the chain: each at this instant on its own clock
+        let mut carried = Vec::new();
+        let mut up = layer.parent.as_deref();
+        while let Some(parent) = up.and_then(|id| all.iter().find(|l| l.id == id)) {
+            if carried.len() == reelforge_renderspec::PARENTS || parent.id == layer.id {
+                break;
+            }
+            let (tr, at) = (&parent.transform, t - parent.at);
+            let pos = tr.position.sample(at);
+            carried.push(Carrier {
+                center: [frame[0] * (0.5 + pos[0]), frame[1] * (0.5 + pos[1])],
+                scale: tr.scale.sample(at),
+                stretch: tr.stretch.as_ref().map_or([1.0, 1.0], |s| s.sample(at)),
+                rotation: tr.rotation.sample(at).to_radians(),
+                turn: tr.turn.as_ref().map(|turn| turned(turn, at, frame)),
+            });
+            up = parent.parent.as_deref();
+        }
         layers.push(PlannedLayer {
             id: layer.id.clone(),
             source,
@@ -254,9 +462,29 @@ fn plan_layers(
                 _ => [false; 2],
             },
             shape: layer.shape_mask.map(|m| layer.shape_mask_keys.as_ref().map_or(m, |k| k.sample(m, local))),
+            stretch: layer.transform.stretch.as_ref().map_or([1.0, 1.0], |s| s.sample(local)),
+            anchor: layer.transform.anchor.unwrap_or([0.5, 0.5]),
+            // lying flat at this instant, it is drawn as a layer that is never turned
+            turn: layer
+                .transform
+                .turn
+                .as_ref()
+                .map(|turn| turned(turn, local, frame))
+                .filter(|t| t.x != 0.0 || t.y != 0.0),
+            carried,
+            frame,
         });
     }
     layers
+}
+
+/// A turn in space at `t` from its layer's start, on a frame of `frame` target pixels.
+fn turned(turn: &reelforge_renderspec::Turn, t: Tick, frame: [f32; 2]) -> Turned {
+    Turned {
+        x: turn.x.sample(t).to_radians(),
+        y: turn.y.sample(t).to_radians(),
+        eye: turn.distance.max(0.1) * frame[1],
+    }
 }
 
 #[cfg(test)]
@@ -279,6 +507,11 @@ mod tests {
             crop: [0.0; 4],
             flip: [false; 2],
             shape: None,
+            stretch: [1.0, 1.0],
+            anchor: [0.5, 0.5],
+            turn: None,
+            carried: vec![],
+            frame: [1080.0, 1920.0],
         };
         let m = l.matrix(640.0, 360.0, [1080.0, 1920.0]);
         let inv = invert(m).unwrap();

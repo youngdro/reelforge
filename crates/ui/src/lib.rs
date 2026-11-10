@@ -303,6 +303,11 @@ struct Inspector {
     scale: f32,
     rotation: f32,
     opacity: f32,
+    /// Its width and height apart, and its turn in space about the horizontal and the vertical
+    /// axis.
+    space: [f32; 4],
+    /// The point it is placed and turned about, as shares of its picture.
+    anchor: [f32; 2],
     /// Colour and title clips, and shapes filled with one colour.
     color: Option<[f32; 4]>,
     /// Shapes: width, height, corner radius and outline width, in canvas pixels.
@@ -3068,6 +3073,8 @@ impl EditorApp {
             scale: clip.value_at(Prop::Scale, local),
             rotation: clip.value_at(Prop::Rotation, local),
             opacity: clip.value_at(Prop::Opacity, local),
+            space: Prop::SPACE.map(|p| clip.value_at(p, local)),
+            anchor: clip.transform.anchor,
             color: match &clip.content {
                 ClipContent::Text { color, .. } | ClipContent::Solid { color } => Some(*color),
                 // a shape's first colour: its fill's, or its outline's
@@ -3236,6 +3243,46 @@ impl EditorApp {
         let looks = self.looks.as_deref().unwrap_or_default();
         // tools that work on several clips take the whole selection when this clip is in it
         let chosen = Some(self.selection()).filter(|all| all.contains(&id)).unwrap_or_else(|| vec![id.clone()]);
+        // what could carry it: the other clips drawn on this timeline that it does not carry
+        // itself, each by what it shows
+        let carried_by = clip.parent.clone();
+        fn carries(p: &reelforge_model::Project, id: &str, c: &reelforge_model::Clip) -> bool {
+            let mut up = c.parent.as_deref();
+            for _ in 0..=reelforge_renderspec::PARENTS {
+                match up.and_then(|up| p.clip(up)) {
+                    Some((_, c)) if c.id == id => return true,
+                    Some((_, c)) => up = c.parent.as_deref(),
+                    None => return false,
+                }
+            }
+            true
+        }
+        let carriers: Vec<(String, String)> = p
+            .tracks
+            .iter()
+            .filter(|t| t.kind != TrackKind::Audio)
+            .flat_map(|t| &t.clips)
+            .filter(|c| c.id != id && !c.is_adjustment() && !carries(&p, &id, c))
+            .map(|c| {
+                let what = match &c.content {
+                    ClipContent::Text { text, .. } => text.chars().take(12).collect(),
+                    ClipContent::Media { media, .. } => p.media.get(media).map_or(String::new(), |m| m.name.clone()),
+                    ClipContent::Shape { shape } => {
+                        let i = reelforge_model::ShapeKind::ALL.iter().position(|k| *k == shape.kind).unwrap_or(0);
+                        s.shape_names[i].to_string()
+                    }
+                    ClipContent::Solid { .. } => s.kind_colour.to_string(),
+                    ClipContent::Compound { .. } => s.kind_compound.to_string(),
+                    ClipContent::Adjustment => String::new(),
+                };
+                (c.id.clone(), if what.is_empty() { c.id.clone() } else { format!("{what} · {}", c.id) })
+            })
+            .collect();
+        let on_path = clip.path.as_ref().map(|path| path.points.len());
+        let spaced = clip.transform.in_space()
+            || clip.parent.is_some()
+            || clip.path.is_some()
+            || Prop::SPACE.iter().any(|p| clip.keyed(*p));
         let edit = self.inspector.as_mut().expect("set above");
         let mut commit = false;
         let mut reshape = false;
@@ -3475,6 +3522,69 @@ impl EditorApp {
                             ui.end_row();
                         }
                     });
+                    // stretched, turned in space, placed by another point, carried: out of the way
+                    // until one of them is wanted
+                    if theme::disclosure(ui, s.sec_space, spaced) {
+                        egui::Grid::new("space").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                            let rows = [
+                                (Prop::ScaleX, s.stretch_x, 0.01, -10.0..=10.0, "×"),
+                                (Prop::ScaleY, s.stretch_y, 0.01, -10.0..=10.0, "×"),
+                                (Prop::RotationX, s.turn_x, 0.5, -360.0..=360.0, "°"),
+                                (Prop::RotationY, s.turn_y, 0.5, -360.0..=360.0, "°"),
+                            ];
+                            for ((prop, name, speed, range, suffix), v) in rows.into_iter().zip(&mut edit.space) {
+                                theme::field_name(ui, name);
+                                ui.horizontal(|ui| {
+                                    let r = ui.add_sized(
+                                        [ui.available_width() - 26.0, 24.0],
+                                        egui::DragValue::new(v).speed(speed).range(range).suffix(suffix),
+                                    );
+                                    commit |= r.drag_stopped() || (r.changed() && !r.dragged());
+                                    if key_button(ui, mark_of(prop)) {
+                                        actions.push(toggle(prop, mark_of(prop)));
+                                    }
+                                });
+                                ui.end_row();
+                            }
+                            theme::field_name(ui, s.anchor).on_hover_text(s.anchor_tip);
+                            ui.horizontal(|ui| {
+                                let w = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+                                for v in &mut edit.anchor {
+                                    let r = ui.add_sized(
+                                        [w, 24.0],
+                                        egui::DragValue::new(v).speed(0.01).range(0.0..=1.0).fixed_decimals(2),
+                                    );
+                                    commit |= r.drag_stopped() || (r.changed() && !r.dragged());
+                                }
+                            });
+                            ui.end_row();
+                            theme::field_name(ui, s.parent).on_hover_text(s.parent_tip);
+                            let name = |id: &String| carriers.iter().find(|(c, _)| c == id).map(|(_, n)| n.as_str());
+                            let mut picked = carried_by.clone();
+                            egui::ComboBox::from_id_salt("parent")
+                                .selected_text(carried_by.as_ref().and_then(name).unwrap_or(s.none))
+                                .width(ui.available_width())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut picked, None, s.none);
+                                    for (c, name) in &carriers {
+                                        ui.selectable_value(&mut picked, Some(c.clone()), name);
+                                    }
+                                });
+                            if picked != carried_by {
+                                actions.push(("clip.setParent", json!({"clip": id, "parent": picked, "at": at})));
+                            }
+                            ui.end_row();
+                        });
+                        if let Some(points) = on_path {
+                            ui.horizontal(|ui| {
+                                let said = fill(s.path_points, &[&points]);
+                                ui.label(egui::RichText::new(said).small().color(theme::color::WEAK));
+                                if ui.small_button("×").on_hover_text(s.path_remove).clicked() {
+                                    actions.push(("clip.setPath", json!({"clip": id, "points": null})));
+                                }
+                            });
+                        }
+                    }
                 });
             }
             // how the values travel between the keyframes around the playhead
@@ -4219,9 +4329,20 @@ impl EditorApp {
                 (Prop::Scale, e.scale, current.scale),
                 (Prop::Rotation, e.rotation, current.rotation),
                 (Prop::Opacity, e.opacity, current.opacity),
+                (Prop::ScaleX, e.space[0], current.space[0]),
+                (Prop::ScaleY, e.space[1], current.space[1]),
+                (Prop::RotationX, e.space[2], current.space[2]),
+                (Prop::RotationY, e.space[3], current.space[3]),
             ] {
                 if now != was {
                     params[prop.name()] = json!(now);
+                }
+            }
+            for (name, now, was) in
+                [("anchorX", e.anchor[0], current.anchor[0]), ("anchorY", e.anchor[1], current.anchor[1])]
+            {
+                if now != was {
+                    params[name] = json!(now);
                 }
             }
             if let Some(c) = e.color
@@ -4531,7 +4652,10 @@ impl EditorApp {
             shaping,
             &mut self.gesture,
             // where the clip is now: its keyframed placement at the playhead
-            |id| committed.clip(id).map(|(_, c)| placement_at(c, at)),
+            |id| {
+                let (_, c) = committed.clip(id)?;
+                Some((placement_at(c, at), reelforge_engine::space::carried_move(&committed, id, at)))
+            },
         );
         if let Some(sel) = out.select {
             self.selected = sel;
@@ -4655,6 +4779,7 @@ fn placement_at(c: &reelforge_model::Clip, at: Tick) -> ClipTransform {
         y: c.value_at(Prop::Y, t),
         scale: c.value_at(Prop::Scale, t),
         rotation: c.value_at(Prop::Rotation, t),
+        ..c.transform
     }
 }
 

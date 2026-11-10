@@ -143,6 +143,8 @@ fn blank_clip(id: String, start: Tick, duration: Tick, content: ClipContent) -> 
         group: None,
         slot: None,
         steady: None,
+        parent: None,
+        path: None,
     }
 }
 
@@ -329,6 +331,7 @@ fn read_draft(proj: &mut Project, draft: &Value, folder: Option<&str>) -> Result
                     y: (-num(&c["transform"]["y"], 0.0) / 2.0) as f32,
                     scale: scale.clamp(0.01, 100.0) as f32,
                     rotation: num(&c["rotation"], 0.0) as f32,
+                    ..ClipTransform::default()
                 };
                 clip.opacity = num(&c["alpha"], 1.0).clamp(0.0, 1.0) as f32;
                 if matches!(clip.content, ClipContent::Media { .. }) {

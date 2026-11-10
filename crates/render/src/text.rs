@@ -125,6 +125,10 @@ pub struct Sprite {
     pub y: i32,
     /// The picture, shared: the same title on the next frame is the same sprite.
     pub image: Arc<Image>,
+    /// For a layer that is stretched, turned in space or carried: the map from the picture's
+    /// pixels to target pixels. It was drawn flat and is placed like a picture, and `x` and `y`
+    /// are where it was drawn. `None` for a sprite that lands pixel on pixel.
+    pub map: Option<crate::plan::Map>,
 }
 
 /// Composites drawn text into `out` on the CPU: the layer's effects, opacity and blend.
@@ -179,11 +183,8 @@ pub fn rasterize(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
     sp
 }
 
-fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32, target: [u32; 2]) -> Option<Sprite> {
-    bundled();
-    if text.text.trim().is_empty() {
-        return None;
-    }
+/// `text` laid out in `family`, in output pixels.
+fn laid(text: &TextContent, family: &str) -> Arc<filmcraft_text::Layout> {
     let style = TextStyle {
         family: family.to_string(),
         // a family without an italic of that weight is sheared by the text engine
@@ -207,7 +208,29 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
         leading: text.leading * text.size,
         ..ParagraphStyle::default()
     };
-    let mut l = filmcraft_text::layout_rich(&text.text, &style, &missing(&text.text, &style), &para);
+    filmcraft_text::layout_rich(&text.text, &style, &missing(&text.text, &style), &para)
+}
+
+/// The size, in output pixels, of the box a title's anchor is a point of: as tall as its lines
+/// together, and as wide as its longest line reaches to either side of the middle of the block
+/// it is laid out in (which is what sits at the layer's centre). Words centred in a wide wrap
+/// are measured as words, and a title aligned to one side starts at that side of the box.
+pub(crate) fn block(text: &TextContent, family: &str) -> [f32; 2] {
+    bundled();
+    let l = laid(text, family);
+    let b = l.bounds;
+    let middle = (b[0] + b[2]) / 2.0;
+    let (x0, x1) = l.lines.iter().fold((f32::MAX, f32::MIN), |(a, z), ln| (a.min(ln.x), z.max(ln.x + ln.width)));
+    let half = if x0 <= x1 { (middle - x0).abs().max((x1 - middle).abs()) } else { (b[2] - b[0]) / 2.0 };
+    [2.0 * half, b[3] - b[1]]
+}
+
+fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32, target: [u32; 2]) -> Option<Sprite> {
+    bundled();
+    if text.text.trim().is_empty() {
+        return None;
+    }
+    let mut l = laid(text, family);
     let b = l.bounds;
     // a typewriter: the glyphs of the first characters only, where the whole text puts them
     let cut = shown_bytes(text);
@@ -406,7 +429,7 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
             }
         }
     }
-    Some(Sprite { x: r.x, y: r.y, image: Arc::new(image) })
+    Some(Sprite { x: r.x, y: r.y, image: Arc::new(image), map: None })
 }
 
 /// One coat of ink as coverage: the glyphs, their outlines and their shadow.

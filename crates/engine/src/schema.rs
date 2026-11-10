@@ -858,6 +858,36 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ("rotation", num("Clockwise, degrees.")),
                 ("opacity", json!({"type": "number", "minimum": 0, "maximum": 1, "description": "Opacity."})),
                 ("volumeDb", num("Gain in dB; 0 is unchanged.")),
+                ("scaleX", num("Width alone, on top of the scale: 1 as it is, negative mirrored.")),
+                ("scaleY", num("Height alone, on top of the scale.")),
+                (
+                    "rotationX",
+                    num(
+                        "Turned in space about the horizontal axis through its anchor, degrees: positive tips the top edge away.",
+                    ),
+                ),
+                (
+                    "rotationY",
+                    num(
+                        "Turned in space about the vertical axis through its anchor, degrees: positive swings the right edge away; past 90 it shows its back.",
+                    ),
+                ),
+                (
+                    "perspective",
+                    json!({"type": "number", "minimum": 0.2, "maximum": 50, "description": "How far the eye is from a clip turned in space, in canvas heights; 2 by default, nearer is stronger."}),
+                ),
+                (
+                    "anchorX",
+                    json!({"type": "number", "minimum": -4, "maximum": 5, "description": "The point of the picture that `x` and `y` place and that it is scaled and turned about, across: 0 its left edge, 0.5 its middle, 1 its right edge."}),
+                ),
+                (
+                    "anchorY",
+                    json!({"type": "number", "minimum": -4, "maximum": 5, "description": "The same, down: 0 its top edge, 0.5 its middle, 1 its bottom edge."}),
+                ),
+                (
+                    "keep",
+                    json!({"type": "boolean", "description": "With another anchor, whether the picture stays where it lies (`x` and `y` change to match); true by default."}),
+                ),
                 ("at", time("Timeline time at which keyframed properties are set.")),
                 ("fadeIn", time("Sound fade-in from the clip's start; 0 removes it.")),
                 ("fadeOut", time("Sound fade-out up to the clip's end; 0 removes it.")),
@@ -874,6 +904,51 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ease_schema(),
             ],
             &["clip", "prop", "at"],
+        ),
+        "clip.setParent" => object(
+            vec![
+                clip(),
+                (
+                    "parent",
+                    json!({"description": "The clip that carries it: a picture, title or shape clip of the same timeline; null sets it free.", "oneOf": [{"type": "string"}, {"type": "null"}]}),
+                ),
+                (
+                    "keep",
+                    json!({"type": "boolean", "description": "Whether the clip stays where it shows (its x, y, scale and rotation are rewritten for the new parent); true by default."}),
+                ),
+                ("at", time("Timeline time at which it stays where it shows; the clip's start by default.")),
+            ],
+            &["clip", "parent"],
+        ),
+        "clip.setPath" => object(
+            vec![
+                clip(),
+                (
+                    "points",
+                    json!({
+                        "description": "The points the path passes through, each [x, y] counted as the clip's x and y are (shares of the canvas from its centre, or from the parent's anchor); null removes the path. Left out, the path the clip has keeps its points.",
+                        "oneOf": [
+                            {
+                                "type": "array", "minItems": 2, "maxItems": 64,
+                                "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+                            },
+                            {"type": "null"},
+                        ],
+                    }),
+                ),
+                (
+                    "closed",
+                    json!({"type": "boolean", "description": "Goes on from the last point round to the first again."}),
+                ),
+                (
+                    "orient",
+                    json!({"type": "boolean", "description": "Turns the clip to face the way it goes: the path's heading (0 going right, 90 going down) is added to its rotation."}),
+                ),
+                ("start", time("When it sets off, from the clip's start; 0 by default.")),
+                ("duration", time("How long the journey takes; the rest of the clip by default.")),
+                ease_schema(),
+            ],
+            &["clip"],
         ),
         "clip.setEase" => object(
             vec![
@@ -1048,7 +1123,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ),
                 (
                     "kind",
-                    json!({"description": "Preset; null removes the animation. In and out: fade to spin, and for titles only typewriter (types the words in, or erases them) and charFade, charRise, charDrop, charPop (the characters one after another), and for shapes only draw (the outline draws itself on, then the fill comes in). Loop: breathe, heartbeat, swing, float, bounce, shake, spin, blink, and for titles only wave and jump (the characters one after another).", "oneOf": [{"enum": ["fade", "slideUp", "slideDown", "slideLeft", "slideRight", "zoomIn", "zoomOut", "pop", "spin", "typewriter", "charFade", "charRise", "charDrop", "charPop", "draw", "breathe", "heartbeat", "swing", "float", "bounce", "shake", "blink", "wave", "jump"]}, {"type": "null"}]}),
+                    json!({"description": "Preset; null removes the animation. In and out: fade to spin, flipY (swings in like a door) and flipX (tips up like a lid), both in space about the clip's anchor, and for titles only typewriter (types the words in, or erases them) and charFade, charRise, charDrop, charPop (the characters one after another), and for shapes only draw (the outline draws itself on, then the fill comes in). Loop: breathe, heartbeat, swing, float, bounce, shake, spin, blink, flip (round and round in space, showing its back), tilt (rocks from side to side in space), and for titles only wave and jump (the characters one after another).", "oneOf": [{"enum": ["fade", "slideUp", "slideDown", "slideLeft", "slideRight", "zoomIn", "zoomOut", "pop", "spin", "typewriter", "charFade", "charRise", "charDrop", "charPop", "draw", "flipY", "flipX", "breathe", "heartbeat", "swing", "float", "bounce", "shake", "blink", "wave", "jump", "flip", "tilt"]}, {"type": "null"}]}),
                 ),
                 (
                     "duration",

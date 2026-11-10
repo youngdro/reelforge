@@ -69,6 +69,8 @@ pub(crate) struct Gesture {
     /// The layer's centre on screen when it did.
     centre: Pos2,
     start: ClipTransform,
+    /// How a move across the canvas moves the clip's placement (see [`interact`]).
+    back: [f32; 4],
     /// The placement so far.
     pub(crate) now: ClipTransform,
     /// The lines the move sticks to, in output pixels: `[x of a vertical one, y of a horizontal one]`.
@@ -270,8 +272,9 @@ fn crop_drag(start: [f32; 4], bits: u8, d: [f32; 2]) -> [f32; 4] {
 }
 
 /// Handles the pointer over the preview and draws the selection. `outlines` are the visible
-/// layers, bottom first; `transform` gives a clip's committed placement; `canvas` is the frame's
-/// size in output pixels.
+/// layers, bottom first; `transform` gives a clip's committed placement, and how a move across
+/// the canvas moves it (`[a, b, c, d]`: `x' = a x + b y`, `y' = c x + d y`; a clip another carries
+/// is placed along that clip's axes); `canvas` is the frame's size in output pixels.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn interact(
     ui: &egui::Ui,
@@ -282,7 +285,7 @@ pub(crate) fn interact(
     selected: Option<&str>,
     shaping: Shaping,
     gesture: &mut Option<Gesture>,
-    transform: impl Fn(&str) -> Option<ClipTransform>,
+    transform: impl Fn(&str) -> Option<(ClipTransform, [f32; 4])>,
 ) -> StageOutput {
     let mut out = StageOutput::default();
     let pointer = response.interact_pointer_pos().or(response.hover_pos());
@@ -391,7 +394,7 @@ pub(crate) fn interact(
     if response.drag_started()
         && let Some(p) = ui.input(|i| i.pointer.press_origin()).or(response.interact_pointer_pos())
         && let Some((clip, kind, c)) = take(p)
-        && let Some(start) = transform(&clip)
+        && let Some((start, back)) = transform(&clip)
     {
         if Some(clip.as_str()) != selected {
             out.select = Some(Some(clip.clone()));
@@ -409,6 +412,7 @@ pub(crate) fn interact(
             from: p,
             centre: c,
             start,
+            back,
             now: start,
             guides: [None; 2],
             bounds,
@@ -448,7 +452,9 @@ pub(crate) fn interact(
                         g.guides[1] = Some(line);
                     }
                 }
-                (g.now.x, g.now.y) = (g.start.x + d.x / canvas[0], g.start.y + d.y / canvas[1]);
+                let [a, b, c, e] = g.back;
+                let (dx, dy) = (a * d.x + b * d.y, c * d.x + e * d.y);
+                (g.now.x, g.now.y) = (g.start.x + dx / canvas[0], g.start.y + dy / canvas[1]);
             }
             Kind::Scale => {
                 let ratio = p.distance(g.centre) / g.from.distance(g.centre).max(1.0);

@@ -131,12 +131,42 @@ told its words directly (`promo_set` with `text`) no longer follows its field. C
 covers Chinese and Latin; for Japanese copy import a font and make it the brand's (`brand_set`)
 before building.
 
+## A product card that turns in space
+
+```text
+clip_add {"track": "t2", "shape": {"kind": "rectangle", "size": [780, 1040], "radius": 56, "fill": [1, 1, 1, 1]}}
+                                                  → c7, the card
+clip_set {"clip": "c7", "perspective": 1.4}
+clip_setAnimation {"clip": "c7", "slot": "in", "kind": "flipY"}     → it turns in like a door
+clip_setAnimation {"clip": "c7", "slot": "loop", "kind": "tilt"}    → then sways, seen in perspective
+clip_add the product picture, the name and the price on tracks above, placed where they belong on the card
+clip_setParent {"clip": "c9", "parent": "c7"}     → for each: it stays where it shows and now goes with the card
+clip_set {"clip": "c13", "anchorX": 0.5, "anchorY": 1}              → the price stands on its foot
+clip_setKey {"clip": "c13", "prop": "scaleY", "at": {"seconds": 1}, "value": 0, "ease": "overshoot"}
+clip_setKey {"clip": "c13", "prop": "scaleY", "at": {"seconds": 1.5}, "value": 1}
+clip_add a star, then clip_setPath {"clip": "c20", "points": [[0.4, -0.06], [0, 0.26], [-0.4, -0.06], [0, -0.4]],
+                                    "closed": true, "orient": true, "duration": {"seconds": 4.5}}
+                                                  → it goes round the card, facing the way it goes
+render_frame {"at": {"seconds": 1.2}, "scale": 0.3} → look, then fix
+```
+
+A clip carried by another is placed in its parent's space: its `x`, `y` are from the parent's anchor,
+in canvas units before the parent's scale and turn, and `project_outline` shows them so. Give a clip
+to its parent after placing it and it stays where it was. A parent passes on where it is, not how it
+looks: its opacity, effects and its start and end stay its own, so keep the clips the same length. A
+parent that is hidden or removed carries nothing. Layers are drawn in track order whatever their
+turn: a card turned past 90° still has the tracks above drawn over it. Keeping a picture in place
+under a new anchor or parent is exact while nothing in the chain is turned in space, so set parents
+at an instant when the card lies flat (`at`). A clip on a path is not moved by `x`, `y` until the
+path is taken away (`points: null`).
+
 ## What each feature calls
 
 | Feature | Tools |
 | --- | --- |
 | Cutting and arranging | `clip_add`, `clip_split`, `clip_trim`, `clip_move`, `clip_remove` (`ripple`), `clip_roll`, `clip_slip`, `clip_shift`, `clip_copy` / `clip_paste` / `clip_duplicate`, `timeline_cut`, `track_add` / `track_set` / `track_move`, `marker_*` |
 | Placement and keyframes | `clip_set` (x, y, scale, rotation, opacity, volume; at `at` once keyframed), `clip_setKey`, `clip_setEase` (named curves or a cubic Bézier), `clip_removeKey`, `clip_clearKeys` |
+| 3D, anchor, following and paths | `clip_set` with `scaleX` / `scaleY` (stretch one way), `rotationX` / `rotationY` (degrees: tipped back, swung like a door; keyframable like the rest with `clip_setKey`), `perspective` (how far the eye is, in frame heights: 2 by default, less is stronger), `anchorX` / `anchorY` (the point of the clip that `x`, `y` place and that it scales and turns about, as fractions from its top left; the picture stays where it was unless `keep: false`), `clip_setParent` (`clip`, `parent` or null: the clip is placed inside its parent and goes, scales and turns with it, in its perspective; it stays where it shows unless `keep: false`), `clip_setPath` (`points` in canvas coordinates or null, `closed`, `orient`, `start`, `duration`, `ease`: the clip travels the smooth curve through them at an even speed instead of standing at x, y), `clip_setAnimation` kinds `flipX` / `flipY` (in and out) and loops `flip` / `tilt` |
 | Speed and smoothness | `clip_setSpeed` (`frames`: repeat, blend or flow for frames in between), `clip_setSpeedCurve` (`curve`: a preset or points), `clip_setReverse`, `clip_freeze`, `clip_stabilize` (measures the camera's path) and `clip_setStabilize` |
 | Crop, mask, blend | `clip_setCrop`, `clip_setMask`, `clip_setBlend`, `clip_setBackdrop` (canvas blur); crop and mask edges are keyframable (`cropLeft`…, `maskX`…) |
 | Colour | `clip_setColor` (filters, LUT media, adjustments; adjustments are keyframable) |

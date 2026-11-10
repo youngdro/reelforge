@@ -73,6 +73,7 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "frames.flow/1",
     "key.chroma@1",
     "key.person@1",
+    "layer.parent/1",
     "lottie/1",
     "mask.shape/1",
     "mask.shape/2",
@@ -86,6 +87,9 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "time.hold/1",
     "time.ramp/1",
     "time.reverse/1",
+    "transform.3d/1",
+    "transform.anchor/1",
+    "transform.stretch/1",
 ];
 
 /// Why a frame could not be rendered.
@@ -146,6 +150,13 @@ pub fn render_frame(
     cpu::composite(spec, &plan, media, quality)
 }
 
+/// The size, in output pixels, of the box a title's anchor is a point of, in the default face: as
+/// tall as its lines together and as wide as its longest line reaches to either side of the
+/// middle of its block, which is what the layer places.
+pub fn text_block(text: &reelforge_renderspec::TextContent) -> [f32; 2] {
+    text::block(text, text::DEFAULT_FAMILY)
+}
+
 /// Where a visible layer lands: its box's corners in output pixels (`[x, y]`, clockwise from the
 /// content's top-left), turned with the layer.
 pub type Outline = [[f32; 2]; 4];
@@ -156,9 +167,12 @@ pub type Outline = [[f32; 2]; 4];
 pub fn layer_outlines(spec: &RenderSpec, t: Tick, media: &dyn MediaSource) -> Vec<(String, Outline)> {
     let plan = plan_frame(spec, t, 1.0);
     let target = [plan.width as f32, plan.height as f32];
-    let corners = |m: plan::Affine, w: f32, h: f32| -> Outline {
-        [[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]].map(|[x, y]| [m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5]])
+    // a corner past the eye has no place on the frame: it is put where it would be seen flat
+    let at = |m: &plan::Map, [x, y]: [f32; 2]| {
+        plan::apply(m, x, y).unwrap_or([m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5]])
     };
+    let corners =
+        |m: plan::Map, w: f32, h: f32| -> Outline { [[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]].map(|p| at(&m, p)) };
     let mut out = Vec::new();
     for layer in &plan.layers {
         let outline = match &layer.source {
@@ -184,6 +198,13 @@ pub fn layer_outlines(spec: &RenderSpec, t: Tick, media: &dyn MediaSource) -> Ve
                 // a composition's picture is a frame
                 let (w, h) = layer.visible(target[0], target[1]);
                 corners(layer.matrix(w, h, target), w, h)
+            }
+            PlannedSource::Shape(sh) if !layer.plain() => {
+                // its box, counted from the anchor, then placed
+                let k = plan.width as f32 / spec.output.width as f32 * layer.scale;
+                let (w, h) = (sh.size[0] * k, sh.size[1] * k);
+                let from = [1.0, 0.0, -layer.anchor[0] * w, 0.0, 1.0, -layer.anchor[1] * h, 0.0, 0.0, 1.0];
+                corners(plan::then(&layer.place(), &from), w, h)
             }
             PlannedSource::Shape(sh) => {
                 // its box, scaled and turned about the layer's centre
@@ -215,6 +236,15 @@ pub fn layer_outlines(spec: &RenderSpec, t: Tick, media: &dyn MediaSource) -> Ve
                     }
                 }
                 if lo[0] == usize::MAX {
+                    continue;
+                }
+                if let Some(m) = &sp.map {
+                    // drawn flat: the ink's box in the sprite, placed with it
+                    let (lo, hi) = (lo.map(|v| v as f32), hi.map(|v| v as f32));
+                    out.push((
+                        layer.id.clone(),
+                        [[lo[0], lo[1]], [hi[0], lo[1]], [hi[0], hi[1]], [lo[0], hi[1]]].map(|p| at(m, p)),
+                    ));
                     continue;
                 }
                 let (x0, y0) = (sp.x as f32 + lo[0] as f32, sp.y as f32 + lo[1] as f32);
@@ -257,6 +287,7 @@ mod tests {
                 position: Animated::Constant([0.25, 0.0]),
                 scale: Animated::Constant(0.5),
                 rotation: Animated::Constant(0.0),
+                ..Transform::default()
             },
             opacity: Animated::Constant(1.0),
             blend: Blend::Normal,
@@ -268,6 +299,7 @@ mod tests {
             shape_mask: None,
             crop_keys: None,
             shape_mask_keys: None,
+            parent: None,
         });
         s
     }
@@ -451,6 +483,117 @@ mod tests {
         assert!(near(o[0], [35.0, 0.0]) && near(o[2], [25.0, 20.0]), "{o:?}");
         // past its end nothing is there
         assert!(layer_outlines(&s, Tick::SECOND, &NoMedia).is_empty());
+    }
+
+    const RED: [u8; 4] = [255, 0, 0, 255];
+    const BLUE: [u8; 4] = [0, 0, 255, 255];
+
+    fn drawn(s: &RenderSpec) -> Image {
+        render_frame(s, Tick::ZERO, 1.0, &NoMedia, Quality::Final).unwrap().0
+    }
+
+    #[test]
+    fn a_layer_is_stretched_one_way_and_placed_by_its_anchor() {
+        // the box is 20 by 10 in the middle of the frame: columns 10 to 30, rows 5 to 15
+        let mut s = spec();
+        s.layers[0].transform.position = Animated::Constant([0.0, 0.0]);
+        // half as wide, as tall as it was
+        s.layers[0].transform.stretch = Some(Animated::Constant([0.5, 1.0]));
+        let img = drawn(&s);
+        assert_eq!([px(&img, 13, 10), px(&img, 16, 10), px(&img, 24, 10), px(&img, 26, 10)], [BLUE, RED, RED, BLUE]);
+        assert_eq!([px(&img, 20, 4), px(&img, 20, 6), px(&img, 20, 14)], [BLUE, RED, RED]);
+        assert_eq!(
+            layer_outlines(&s, Tick::ZERO, &NoMedia)[0].1,
+            [[15.0, 5.0], [25.0, 5.0], [25.0, 15.0], [15.0, 15.0]]
+        );
+        // its top left corner where its middle was: it reaches right and down from there
+        s.layers[0].transform.stretch = None;
+        s.layers[0].transform.anchor = Some([0.0, 0.0]);
+        let img = drawn(&s);
+        assert_eq!([px(&img, 18, 12), px(&img, 21, 12), px(&img, 38, 18), px(&img, 21, 8)], [BLUE, RED, RED, BLUE]);
+        // and it turns about that corner: a quarter turn swings it down and to the left
+        s.layers[0].transform.rotation = Animated::Constant(90.0);
+        let img = drawn(&s);
+        assert_eq!([px(&img, 12, 12), px(&img, 18, 18), px(&img, 21, 12), px(&img, 8, 12)], [RED, RED, BLUE, BLUE]);
+        // a spec that asks for these says so
+        let needs = s.required_features();
+        assert!(needs.contains("transform.anchor/1") && !needs.contains("transform.stretch/1"));
+        assert!(unsupported_features(&s).is_empty());
+    }
+
+    #[test]
+    fn a_layer_turned_in_space_is_seen_in_perspective() {
+        // 20 by 10 in the middle of the frame, the eye two frame heights (40 pixels) away
+        let mut s = spec();
+        s.layers[0].transform.position = Animated::Constant([0.0, 0.0]);
+        // swung 60 degrees about the vertical: its right edge goes away and is smaller, its left
+        // comes nearer and is larger; its middle stays where it was
+        s.layers[0].transform.turn = Some(Turn::held(0.0, 60.0));
+        let img = drawn(&s);
+        assert_eq!([px(&img, 12, 10), px(&img, 14, 10), px(&img, 23, 10), px(&img, 25, 10)], [BLUE, RED, RED, BLUE]);
+        // the near edge is taller than the box was, the far edge shorter
+        assert_eq!([px(&img, 14, 4), px(&img, 14, 15), px(&img, 23, 5), px(&img, 23, 7)], [RED, RED, BLUE, RED]);
+        let o = layer_outlines(&s, Tick::ZERO, &NoMedia)[0].1;
+        assert!(o[3][1] - o[0][1] > 12.0 && o[2][1] - o[1][1] < 9.0, "{o:?}");
+        // the other way round
+        s.layers[0].transform.turn = Some(Turn::held(0.0, -60.0));
+        let img = drawn(&s);
+        assert_eq!([px(&img, 25, 4), px(&img, 16, 5), px(&img, 16, 7)], [RED, BLUE, RED]);
+        // tipped about the horizontal: the top edge goes away
+        s.layers[0].transform.turn = Some(Turn::held(60.0, 0.0));
+        let img = drawn(&s);
+        assert_eq!([px(&img, 10, 8), px(&img, 12, 8), px(&img, 9, 12), px(&img, 20, 6)], [BLUE, RED, RED, BLUE]);
+        // edge on, nothing of it is seen
+        s.layers[0].transform.turn = Some(Turn::held(0.0, 90.0));
+        assert!(drawn(&s).to_srgba8().as_chunks::<4>().0.iter().all(|p| *p == BLUE));
+        // from farther away the perspective is weaker: nearly a flat squeeze to half the width
+        s.layers[0].transform.turn = Some(Turn { distance: 50.0, ..Turn::held(0.0, 60.0) });
+        let img = drawn(&s);
+        assert_eq!([px(&img, 14, 10), px(&img, 15, 6), px(&img, 24, 6), px(&img, 25, 10)], [BLUE, RED, RED, BLUE]);
+        assert!(s.required_features().contains("transform.3d/1") && unsupported_features(&s).is_empty());
+    }
+
+    #[test]
+    fn a_layer_is_carried_by_its_parent() {
+        let mut s = spec();
+        // what carries: unseen, as large as the frame, its middle a quarter to the right (30, 10)
+        s.layers[0].opacity = Animated::Constant(0.0);
+        s.layers[0].transform.scale = Animated::Constant(1.0);
+        // what is carried: 8 by 4, placed in the frame's middle, which is the carrier's anchor
+        let mut small = s.layers[0].clone();
+        small.id = "small".into();
+        small.opacity = Animated::Constant(1.0);
+        small.transform = Transform { scale: Animated::Constant(0.2), ..Transform::default() };
+        small.parent = Some("half".into());
+        s.layers.push(small);
+        reelforge_renderspec::validate(&s).expect("valid");
+        let img = drawn(&s);
+        assert_eq!([px(&img, 25, 10), px(&img, 27, 9), px(&img, 33, 11), px(&img, 34, 10)], [BLUE, RED, RED, BLUE]);
+        assert_eq!(px(&img, 20, 10), BLUE);
+        // moved 10 to its right, the carrier turned a quarter: it is 10 below, turned with it
+        s.layers[1].transform.position = Animated::Constant([0.25, 0.0]);
+        s.layers[0].transform.rotation = Animated::Constant(90.0);
+        let img = drawn(&s);
+        assert_eq!([px(&img, 27, 18), px(&img, 28, 17), px(&img, 31, 19), px(&img, 32, 18)], [BLUE, RED, RED, BLUE]);
+        assert_eq!(px(&img, 30, 15), BLUE);
+        // the carrier half the size: half as far from it, half as large
+        s.layers[0].transform.scale = Animated::Constant(0.5);
+        let img = drawn(&s);
+        assert_eq!([px(&img, 29, 14), px(&img, 30, 12), px(&img, 30, 13), px(&img, 30, 16)], [RED, BLUE, RED, RED]);
+        assert_eq!(px(&img, 31, 14), BLUE);
+        // the carrier on the move carries it, on the carrier's own clock even before it starts
+        s.layers[0].transform.rotation = Animated::Constant(0.0);
+        s.layers[0].transform.scale = Animated::Constant(1.0);
+        s.layers[1].transform.position = Animated::Constant([0.0, 0.0]);
+        s.layers[0].at = Tick::from_seconds(0.5);
+        s.layers[0].dur = Tick::from_seconds(0.5);
+        s.layers[0].transform.position = Animated::Keys(vec![
+            Key { t: Tick::ZERO, v: [-0.25, 0.0], ease: Ease::Linear },
+            Key { t: Tick::from_seconds(0.5), v: [0.25, 0.0], ease: Ease::Linear },
+        ]);
+        let at = |t: f64| render_frame(&s, Tick::from_seconds(t), 1.0, &NoMedia, Quality::Final).unwrap().0;
+        assert_eq!([px(&at(0.0), 10, 10), px(&at(0.75), 20, 10), px(&at(0.75), 10, 10)], [RED, RED, BLUE]);
+        assert!(s.required_features().contains("layer.parent/1") && unsupported_features(&s).is_empty());
     }
 
     #[test]

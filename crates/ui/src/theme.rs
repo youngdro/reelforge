@@ -606,6 +606,29 @@ pub(crate) fn field_name(ui: &mut egui::Ui, name: &str) -> egui::Response {
     response
 }
 
+/// A line that opens and closes what is below it: a small arrow and a name. Says whether it is
+/// open; `open` is how it starts.
+pub(crate) fn disclosure(ui: &mut egui::Ui, name: &str, open: bool) -> bool {
+    let id = ui.scope_id().with(("disclosure", name));
+    let mut open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(open);
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), egui::Sense::click());
+    let tone = if r.hovered() { color::TEXT } else { color::WEAK };
+    let c = egui::pos2(rect.left() + 5.0, rect.center().y);
+    let arrow = if open {
+        vec![c + egui::vec2(-4.0, -2.5), c + egui::vec2(4.0, -2.5), c + egui::vec2(0.0, 3.0)]
+    } else {
+        vec![c + egui::vec2(-2.5, -4.0), c + egui::vec2(3.0, 0.0), c + egui::vec2(-2.5, 4.0)]
+    };
+    ui.painter().add(egui::Shape::convex_polygon(arrow, tone, egui::Stroke::NONE));
+    let galley = ui.painter().layout_no_wrap(name.to_string(), FontId::proportional(12.0), tone);
+    ui.painter().galley(egui::pos2(rect.left() + 16.0, rect.center().y - galley.size().y / 2.0), galley, tone);
+    if r.clicked() {
+        open = !open;
+    }
+    ui.data_mut(|d| d.insert_temp(id, open));
+    open
+}
+
 /// `t` as `m:ss.cc`, or `h:mm:ss.cc` past an hour.
 pub(crate) fn timecode(seconds: f64) -> String {
     let cs = (seconds.max(0.0) * 100.0).round() as u64;
