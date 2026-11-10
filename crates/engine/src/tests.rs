@@ -1700,6 +1700,55 @@ fn a_title_is_set_in_an_imported_font_and_spaced() {
 }
 
 #[test]
+fn the_people_in_a_clip_are_cut_out_and_put_back() {
+    let mut s = Session::default();
+    let v = video_track(&s);
+    let m = s
+        .execute(
+            "media.import",
+            &json!({"path": "/nowhere/host.mp4", "kind": "video", "duration": {"seconds": 6}, "size": [1920, 1080], "sha256": "ab".repeat(32)}),
+        )
+        .unwrap()["media"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let c = s.execute("clip.add", &json!({"track": v, "media": m})).unwrap()["clip"].as_str().unwrap().to_string();
+    let person = |s: &Session| s.project().clip(&c).unwrap().1.look.person;
+    let features = |s: &mut Session| s.execute("render.compile", &json!({})).unwrap()["engine"]["features"].clone();
+
+    // on when nothing else is said; it is the layer's first effect, before a keyed colour
+    assert_eq!(s.execute("clip.setPersonKey", &json!({"clip": c})).unwrap(), json!({"clip": c, "person": true}));
+    assert!(person(&s));
+    s.execute("clip.setChromaKey", &json!({"clip": c, "color": [0.1, 0.8, 0.2]})).unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let fx = spec["layers"][0]["fx"].as_array().unwrap();
+    assert_eq!((fx[0]["id"].as_str(), fx[1]["id"].as_str()), (Some("key.person@1"), Some("key.chroma@1")));
+    assert!(features(&mut s).as_array().unwrap().contains(&json!("key.person@1")));
+    // it is part of the clip: saved with it, kept when the clip is split
+    assert_eq!(serde_json::to_value(s.project().clip(&c).unwrap().1).unwrap()["look"]["person"], json!(true));
+    let right = s.execute("clip.split", &json!({"clip": c, "at": {"seconds": 2}})).unwrap()["right"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(s.project().clip(&right).unwrap().1.look.person);
+    s.execute("edit.undo", &json!({})).unwrap();
+
+    // off, and undone
+    s.execute("clip.setPersonKey", &json!({"clip": c, "on": false})).unwrap();
+    assert!(!person(&s));
+    assert!(!features(&mut s).as_array().unwrap().contains(&json!("key.person@1")));
+    assert!(!serde_json::to_string(s.project().clip(&c).unwrap().1).unwrap().contains("person"));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(person(&s));
+
+    // only videos and pictures, and only a yes or a no
+    let red = add_red(&mut s, 10.0, 2.0);
+    assert!(s.execute("clip.setPersonKey", &json!({"clip": red})).is_err());
+    assert!(s.execute("clip.setPersonKey", &json!({"clip": c, "on": "yes"})).is_err());
+    assert!(s.execute("clip.setPersonKey", &json!({"clip": "nothing"})).is_err());
+}
+
+#[test]
 fn a_colour_is_keyed_out_and_pictures_are_distorted() {
     let mut s = Session::default();
     let v = video_track(&s);

@@ -12,6 +12,7 @@ use std::process::{Command, ExitCode};
 /// Layer of each workspace crate. A crate may depend only on crates in lower layers.
 const LAYERS: &[(&str, u8)] = &[
     ("reelforge-time", 0),
+    ("reelforge-matte", 0),
     ("reelforge-renderspec", 1),
     ("reelforge-model", 1),
     ("reelforge-compile", 2),

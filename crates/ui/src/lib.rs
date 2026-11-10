@@ -324,6 +324,8 @@ struct LookEdit {
     backdrop: Option<Option<f32>>,
     /// The colour keyed out of it, when it can have one (the same clips).
     chroma: Option<Option<reelforge_model::ChromaKey>>,
+    /// Whether its people are cut out (the same clips again).
+    person: bool,
 }
 
 /// A picture clip's colour, as the inspector edits it.
@@ -2990,6 +2992,7 @@ impl EditorApp {
                         if p.media.get(media).is_some_and(|m| m.kind != MediaKind::Audio))
                     && p.clip(&id).is_some_and(|(ti, _)| p.tracks[ti].kind == TrackKind::Video))
                 .then_some(clip.look.chroma),
+                person: clip.look.person,
             }),
             title: match &clip.content {
                 ClipContent::Text { text, size, style, .. } => Some(Title {
@@ -3409,6 +3412,13 @@ impl EditorApp {
                                     actions.push(("clip.setBackdrop", json!({"clip": id, "blur": blur, "all": true})));
                                 }
                             });
+                            ui.end_row();
+                        }
+                        if l.chroma.is_some() {
+                            ui.label(egui::RichText::new(s.person).color(theme::color::WEAK));
+                            if ui.checkbox(&mut l.person, "").on_hover_text(s.person_tip).changed() {
+                                actions.push(("clip.setPersonKey", json!({"clip": id, "on": l.person})));
+                            }
                             ui.end_row();
                         }
                         if let Some(chroma) = &mut l.chroma {

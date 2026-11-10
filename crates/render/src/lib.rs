@@ -11,15 +11,17 @@
 //!    exports. Both start from what [`cpu::resolve`] fetched and drew (pictures, text sprites), so
 //!    they agree on placeholders and errors.
 //!
-//! This crate depends on `reelforge-renderspec` and `reelforge-time` only (`cargo xtask layers`
-//! enforces it), so the same code renders inside the editor, in the browser and on a render
-//! service.
+//! Of this workspace the crate depends on `reelforge-renderspec`, `reelforge-time` and
+//! `reelforge-matte` (the model behind `key.person@1`) only, none of which knows a project
+//! (`cargo xtask layers` enforces it), so the same code renders inside the editor, in the browser
+//! and on a render service.
 //!
 //! Pictures come from a [`MediaSource`]. A source that cannot produce a picture yet returns
 //! `Ok(None)`; the frame then shows the offline slate where that layer would be, and the
 //! [`FrameReport`] says so, so a draft preview keeps working while a final render can refuse.
 
 pub mod cpu;
+pub mod cutout;
 pub mod distort;
 #[cfg(feature = "gpu")]
 pub mod gpu;
@@ -69,6 +71,7 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "frames.blend/1",
     "frames.flow/1",
     "key.chroma@1",
+    "key.person@1",
     "mask.shape/1",
     "mask.shape/2",
     "text/1",
@@ -309,6 +312,61 @@ mod tests {
         assert_eq!(ask(4.0, Quality::Draft), 2);
         // a final frame always has the whole picture
         assert_eq!(ask(1.0, Quality::Final), 1);
+    }
+
+    /// The portrait `reelforge-matte` is tested with: a person in front of a studio backdrop.
+    pub(crate) fn portrait() -> Arc<Image> {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../matte/tests/astronaut.png");
+        let img = ::image::open(path).expect("the portrait").to_rgba8();
+        Arc::new(Image::from_srgba8(img.width(), img.height(), img.as_raw()))
+    }
+
+    #[test]
+    fn the_people_in_a_layer_stay_and_what_is_behind_them_shows_through() {
+        struct Portrait(Arc<Image>);
+        impl MediaSource for Portrait {
+            fn picture(&self, _: &str, _: &Asset, _: Tick) -> Result<Option<Arc<Image>>, String> {
+                Ok(Some(self.0.clone()))
+            }
+        }
+        let mut s = spec();
+        s.assets.insert(
+            "p".into(),
+            Asset {
+                kind: AssetKind::Image,
+                sha256: "4".repeat(64),
+                uri: "file:///p.png".into(),
+                of: None,
+                probe: None,
+            },
+        );
+        s.layers[0].content = LayerContent::Media {
+            asset: "p".into(),
+            time: TimeMap::default(),
+            fit: Fit::Stretch,
+            between: Default::default(),
+        };
+        s.layers[0].transform = Transform::default();
+        let media = Portrait(portrait());
+        // as it is: the studio backdrop covers the frame's blue
+        let (whole, _) = render_frame(&s, Tick::ZERO, 4.0, &media, Quality::Final).unwrap();
+        let (face, beside) = ((80, 19), (12, 9));
+        assert_ne!(px(&whole, beside.0, beside.1), [0, 0, 255, 255]);
+        // cut out: the face is as it was, and beside the head the frame's own blue shows
+        s.layers[0].fx = vec![Effect { id: effects::PERSON_KEY.into(), params: Default::default(), asset: None }];
+        assert!(s.required_features().contains("key.person@1") && SUPPORTED_FEATURES.contains(&"key.person@1"));
+        let (cut, _) = render_frame(&s, Tick::ZERO, 4.0, &media, Quality::Final).unwrap();
+        assert_eq!(px(&cut, face.0, face.1), px(&whole, face.0, face.1));
+        assert_eq!(px(&cut, beside.0, beside.1), [0, 0, 255, 255]);
+        // before a blur, which then softens the outline it made
+        s.layers[0].fx.push(Effect {
+            id: effects::BLUR.into(),
+            params: [("radius".to_string(), Animated::Constant(0.05))].into(),
+            asset: None,
+        });
+        let (soft, _) = render_frame(&s, Tick::ZERO, 4.0, &media, Quality::Final).unwrap();
+        assert_eq!(px(&soft, beside.0, beside.1), [0, 0, 255, 255]);
+        assert_ne!(px(&soft, face.0, face.1), px(&whole, face.0, face.1));
     }
 
     #[test]

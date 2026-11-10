@@ -3561,6 +3561,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "reelforge-matte"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "rayon",
+]
+
+[[package]]
 name = "reelforge-media"
 version = "0.1.0"
 dependencies = [
@@ -3600,6 +3608,7 @@ dependencies = [
  "filmcraft-text",
  "image",
  "pollster",
+ "reelforge-matte",
  "reelforge-renderspec",
  "reelforge-time",
  "thiserror 2.0.21",

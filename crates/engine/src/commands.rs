@@ -606,6 +606,15 @@ static REGISTRY: &[CommandSpec] = &[
         run: clip_set_chroma_key,
     },
     CommandSpec {
+        id: "clip.setPersonKey",
+        label: "Cut Out People",
+        params: r#"{"clip": id, "on"?: bool}"#,
+        doc: "Keeps only the people in a video or picture clip and makes the rest see-through (剪映's 智能抠像), so the tracks below show around them; no green screen is needed. A small model bundled with the editor looks at every picture as it is drawn, so nothing is uploaded and nothing has to be analysed first. It is made for a person facing the camera, as in a talking-head shot: outlines are soft, hair and fingers are rough, and in a picture with nobody in it it keeps whatever stands out. `on` false (true when left out) removes it.",
+        edits: true,
+        enabled: always,
+        run: clip_set_person_key,
+    },
+    CommandSpec {
         id: "clip.setBlend",
         label: "Blend Mode",
         params: r#"{"clip": id, "mode": "normal"|"add"|"multiply"|"screen"|"overlay"|"darken"|"lighten"|"softLight"|"hardLight"|"difference"|"colorDodge"|"colorBurn"}"#,
@@ -2994,6 +3003,20 @@ fn clip_set_crop(s: &mut Session, v: &Value) -> CmdResult {
             return Err(EngineError::Params(why.into()));
         }
         Ok(json!({ "clip": id, "look": serde_json::to_value(&clip.look).expect("serialises") }))
+    })
+}
+
+fn clip_set_person_key(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = p.str("clip")?.to_string();
+    let on = p.opt_bool("on")?.unwrap_or(true);
+    s.edit("Cut Out People", |proj| {
+        let (ti, clip) = proj.clip(&id).ok_or_else(|| not_found("clip", &id))?;
+        if proj.tracks[ti].kind != TrackKind::Video || !matches!(clip.content, ClipContent::Media { .. }) {
+            return Err(EngineError::Params("only video and picture clips can have their people cut out".into()));
+        }
+        proj.clip_mut(&id).expect("found above").look.person = on;
+        Ok(json!({ "clip": id, "person": on }))
     })
 }
 
