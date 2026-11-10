@@ -436,7 +436,11 @@ export function rf_save(name, bytes, mime) {
             let layers: Vec<_> = plan.media_layers().into_iter().map(|(_, l)| l).collect();
             self.open.retain(|id, _| layers.iter().any(|l| &l.id == id));
             for layer in layers {
-                let PlannedSource::Media { asset, at } = &layer.source else { continue };
+                let PlannedSource::Media { asset, at, between } = &layer.source else { continue };
+                // a picture made between two frames needs both: the software decoder has them
+                if !between.is_nearest() {
+                    continue;
+                }
                 let Some(def) = spec.assets.get(asset).filter(|d| d.kind == AssetKind::Video) else { continue };
                 if !self.open.contains_key(&layer.id) {
                     let dec = match media.video_bytes(def) {

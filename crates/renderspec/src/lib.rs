@@ -493,6 +493,11 @@ pub enum LayerContent {
         /// How the picture is fitted to the frame before the transform applies.
         #[serde(default)]
         fit: Fit,
+        /// What shows when an output instant falls between two frames of a video: what a clip
+        /// slowed down, or a file of fewer frames a second than the output, is made smooth with.
+        /// A still ignores it.
+        #[serde(default, skip_serializing_if = "Between::is_nearest")]
+        between: Between,
     },
     /// A flat colour filling the frame.
     Solid {
@@ -609,6 +614,38 @@ impl TimeMap {
         ]
         .into_iter()
         .flatten()
+    }
+}
+
+/// What a video layer shows at an instant between two of its file's frames.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Between {
+    /// The frame of that instant, held until the next.
+    #[default]
+    Nearest,
+    /// The two frames mixed, by how far along from the one to the other the instant is (feature
+    /// `frames.blend/1`).
+    Blend,
+    /// A frame made in between (feature `frames.flow/1`): what moved from the one frame to the
+    /// other is followed, and drawn as far along its way as the instant is. Where nothing can
+    /// be followed, the two are mixed as for `blend`.
+    Flow,
+}
+
+impl Between {
+    /// Whether frames are shown as they are.
+    pub fn is_nearest(&self) -> bool {
+        *self == Between::Nearest
+    }
+
+    /// The feature id a renderer needs for it, if any.
+    pub fn feature(self) -> Option<&'static str> {
+        match self {
+            Between::Nearest => None,
+            Between::Blend => Some("frames.blend/1"),
+            Between::Flow => Some("frames.flow/1"),
+        }
     }
 }
 
@@ -1315,8 +1352,9 @@ impl RenderSpec {
                     out.insert("text/5".to_string());
                 }
             }
-            if let LayerContent::Media { time, .. } = &layer.content {
+            if let LayerContent::Media { time, between, .. } = &layer.content {
                 out.extend(time.features().map(str::to_string));
+                out.extend(between.feature().map(str::to_string));
             }
             if layer.crop.is_some() {
                 out.insert("crop/1".to_string());

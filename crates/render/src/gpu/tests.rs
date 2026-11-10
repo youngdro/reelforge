@@ -136,7 +136,10 @@ fn with_picture(spec: &mut RenderSpec, fit: Fit) -> usize {
         "pic".into(),
         Asset { kind: AssetKind::Image, sha256: "1".repeat(64), uri: "file:///pic.png".into(), of: None, probe: None },
     );
-    spec.layers.push(layer("pic", LayerContent::Media { asset: "pic".into(), time: TimeMap::default(), fit }));
+    spec.layers.push(layer(
+        "pic",
+        LayerContent::Media { asset: "pic".into(), time: TimeMap::default(), fit, between: Default::default() },
+    ));
     spec.layers.len() - 1
 }
 
@@ -275,7 +278,15 @@ fn drafts_draw_the_same_slate_and_report() {
             probe: Some(Probe { width: Some(30), height: Some(20), duration: None }),
         },
     );
-    let mut l = layer("v", LayerContent::Media { asset: "v".into(), time: TimeMap::default(), fit: Fit::Contain });
+    let mut l = layer(
+        "v",
+        LayerContent::Media {
+            asset: "v".into(),
+            time: TimeMap::default(),
+            fit: Fit::Contain,
+            between: Default::default(),
+        },
+    );
     l.transform.rotation = Animated::Constant(10.0);
     s.layers.push(l);
     same(&s, Tick::ZERO, 1.0, &NoMedia, Quality::Draft);
@@ -433,8 +444,15 @@ fn video_pictures_converted_on_the_gpu_match_the_cpu() {
                 probe: None,
             },
         );
-        s.layers
-            .push(layer("v", LayerContent::Media { asset: "v".into(), time: TimeMap::default(), fit: Fit::Stretch }));
+        s.layers.push(layer(
+            "v",
+            LayerContent::Media {
+                asset: "v".into(),
+                time: TimeMap::default(),
+                fit: Fit::Stretch,
+                between: Default::default(),
+            },
+        ));
         same(&s, Tick::ZERO, 1.0, &video, Quality::Final);
         // turned and smaller, over the background
         s.layers[0].transform.rotation = Animated::Constant(17.0);

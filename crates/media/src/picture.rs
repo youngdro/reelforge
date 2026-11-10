@@ -17,7 +17,7 @@ pub fn layer_picture(spec: &RenderSpec, media: &dyn MediaSource, layer: &str, t:
         .iter()
         .find(|l| l.id == layer)
         .ok_or_else(|| format!("clip {layer:?} shows nothing at that time (it is hidden, or not there then)"))?;
-    let PlannedSource::Media { asset, at } = &planned.source else {
+    let PlannedSource::Media { asset, at, .. } = &planned.source else {
         return Err(format!("clip {layer:?} is not a video or a picture"));
     };
     let def = spec.assets.get(asset).ok_or_else(|| format!("unknown asset {asset:?}"))?;

@@ -17,7 +17,9 @@
 //! layer early (its `lead`) and runs the outgoing one on. All times here are from the layer's
 //! start; the clip's keys are shifted by the lead, and animations play over the whole layer.
 
-use reelforge_model::{Clip, Ease as MEase, Fades, Fx, FxChannel, FxSample, Key as MKey, Offset, Prop, TransitionKind};
+use reelforge_model::{
+    Clip, Ease as MEase, Fades, Fx, FxChannel, FxSample, Key as MKey, Offset, Prop, Steadied, Timing, TransitionKind,
+};
 use reelforge_renderspec::{Animated, CharCurve, CharMotion, CharPose, Ease, Key};
 use reelforge_time::Tick;
 
@@ -205,12 +207,63 @@ pub struct Shape {
     pub frames: Vec<Frame>,
     /// The canvas, in pixels: effects from above turn the layer about its centre.
     pub canvas: [f32; 2],
+    /// What holds the layer's picture steady, when it is steadied.
+    pub steady: Option<Fix>,
+}
+
+/// A steadied clip's picture, moved against the camera's shake (`reelforge_model::Steady`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Fix {
+    /// The move at each instant of the source, and how much larger the picture is drawn.
+    pub moves: Steadied,
+    /// Which source instant shows when.
+    pub timing: Timing,
+    /// The whole picture's size in canvas pixels as it is drawn at scale 1.
+    pub picture: [f32; 2],
+    /// -1 where the picture is mirrored (across, down), else 1.
+    pub flip: [f32; 2],
+}
+
+impl Fix {
+    /// The fix for `clip`, whose file's picture is `size` pixels, on a `canvas`; nothing when the
+    /// clip is not steadied.
+    pub fn of(clip: &Clip, size: [u32; 2], canvas: [f32; 2]) -> Option<Fix> {
+        let steady = clip.steady.as_ref()?;
+        let timing = clip.timing()?;
+        let (w, h) = (size[0].max(1) as f32, size[1].max(1) as f32);
+        // the part the crop leaves is what is fitted inside the canvas
+        let crop = clip.look.crop;
+        let (vw, vh) = (w * (1.0 - crop.left - crop.right).max(1e-3), h * (1.0 - crop.top - crop.bottom).max(1e-3));
+        let fit = (canvas[0] / vw).min(canvas[1] / vh);
+        let flip = |on: bool| if on { -1.0 } else { 1.0 };
+        Some(Fix {
+            moves: steady.steadied(w / h),
+            timing,
+            picture: [w * fit, h * fit],
+            flip: [flip(clip.look.flip_x), flip(clip.look.flip_y)],
+        })
+    }
+
+    /// The move at `t` from the clip's start: across and down in the picture's own frame as
+    /// fractions of its size, and the turn in degrees, as they show (a mirrored picture moves
+    /// and turns the other way).
+    fn at(&self, t: Tick) -> [f32; 3] {
+        let [x, y, turn] = self.moves.at(self.timing.source_in + self.timing.travel(t));
+        [x * self.flip[0], y * self.flip[1], turn * self.flip[0] * self.flip[1]]
+    }
 }
 
 impl Shape {
     /// The layer is the clip.
     pub fn of(clip: &Clip) -> Shape {
-        Shape { lead: Tick::ZERO, len: clip.duration, overlays: vec![], frames: vec![], canvas: [1.0, 1.0] }
+        Shape {
+            lead: Tick::ZERO,
+            len: clip.duration,
+            overlays: vec![],
+            frames: vec![],
+            canvas: [1.0, 1.0],
+            steady: None,
+        }
     }
 
     /// What the clip's own effects and those from above do to `channel`, at `t` from the layer's
@@ -328,6 +381,7 @@ impl Curve<'_> {
 
     fn still(&self) -> bool {
         self.keys.is_empty()
+            && !self.steady()
             && !self.animated
             && self.overlays.is_empty()
             && self.fades.is_empty()
@@ -336,8 +390,13 @@ impl Curve<'_> {
     }
 
     /// Property `p` at `t` as the clip itself has it: its keys, animations, transitions and own
-    /// effects.
+    /// effects, with its picture held steady.
     fn own_value(&self, p: Prop, t: Tick) -> f32 {
+        self.steadied(p, t).apply(p, self.shaky(p, t))
+    }
+
+    /// [`own_value`](Self::own_value) before the picture is steadied.
+    fn shaky(&self, p: Prop, t: Tick) -> f32 {
         let base = self.clip.value_at(p, t - self.shape.lead);
         let mut o = self.clip.anim.offset(t, self.shape.len);
         for ov in self.shape.overlays.iter().filter(|o| shifts(o.kind, o.incoming, p)) {
@@ -347,6 +406,31 @@ impl Curve<'_> {
             o = o.and(fx.sample(t - self.shape.lead, self.clip.duration).offset);
         }
         o.apply(p, base)
+    }
+
+    /// What holding the picture steady does to property `p` at `t`: the picture is drawn larger
+    /// and turned against the shake, and moved against it in its own frame, so as far as it is
+    /// drawn large and the way it is turned.
+    fn steadied(&self, p: Prop, t: Tick) -> Offset {
+        let Some(fix) = &self.shape.steady else { return Offset::REST };
+        let [x, y, turn] = fix.at((t - self.shape.lead).max(Tick::ZERO).min(self.clip.duration));
+        match p {
+            Prop::Scale => Offset { scale: fix.moves.zoom, ..Offset::REST },
+            Prop::Rotation => Offset { rotation: turn, ..Offset::REST },
+            Prop::X | Prop::Y => {
+                let scale = self.shaky(Prop::Scale, t) * fix.moves.zoom;
+                let (sin, cos) = (self.shaky(Prop::Rotation, t) + turn).to_radians().sin_cos();
+                let (a, b) = (x * fix.picture[0] * scale, y * fix.picture[1] * scale);
+                let [w, h] = self.shape.canvas;
+                Offset { dx: (cos * a - sin * b) / w, dy: (sin * a + cos * b) / h, ..Offset::REST }
+            }
+            _ => Offset::REST,
+        }
+    }
+
+    /// Whether the picture is held steady in a way that changes this property.
+    fn steady(&self) -> bool {
+        self.shape.steady.is_some() && matches!(self.prop, Prop::X | Prop::Y | Prop::Scale | Prop::Rotation)
     }
 
     /// The value at `t` under the effects from above: the frame turned, scaled and moved as one
@@ -383,7 +467,7 @@ impl Curve<'_> {
         for fx in &self.own {
             o = o.and(fx.sample(t - self.shape.lead, self.clip.duration).offset);
         }
-        let v = o.apply(self.prop, base);
+        let v = self.steadied(self.prop, t).apply(self.prop, o.apply(self.prop, base));
         if self.fades.is_empty() {
             return v;
         }
@@ -404,7 +488,9 @@ impl Curve<'_> {
             w.push((lead + self.clip.duration - fo, lead + self.clip.duration));
         }
         w.extend(self.frames.iter().map(|f| (f.from, f.to)));
-        if !self.own.is_empty() {
+        if !self.own.is_empty() || (self.steady() && self.prop != Prop::Scale) {
+            // an effect or a steadied picture moves all the while (steadied, its size alone does
+            // not: it is as much larger from start to end)
             w.push((Tick::ZERO, self.shape.len));
         }
         if !self.animated {
@@ -554,6 +640,7 @@ mod tests {
             voice: Default::default(),
             group: None,
             slot: None,
+            steady: None,
         }
     }
 
