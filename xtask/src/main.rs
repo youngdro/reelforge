@@ -18,6 +18,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("reelforge-render", 2),
     ("reelforge-media", 3),
     ("reelforge-engine", 4),
+    ("reelforge-hwenc", 4),
     ("reelforge-ui", 5),
     ("reelforge-server", 5),
     ("reelforge", 6),

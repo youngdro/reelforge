@@ -72,6 +72,8 @@ pub struct ExportStats {
     pub audio_samples: u64,
     /// What drew the frames: `cpu`, or the GPU adapter.
     pub renderer: String,
+    /// What encoded the video ([`VideoEncoder::name`]), such as `h264 (software)`.
+    pub encoder: String,
 }
 
 const CHANNELS: usize = 2;
@@ -105,16 +107,9 @@ pub fn export_with<W: Read + Write + Seek>(
 ) -> Result<(W, ExportStats), ExportError> {
     check(spec)?;
     let venc = video_encoding(spec);
-    if venc.codec != VideoCodec::H264 {
-        return Err(ExportError::Invalid(format!(
-            "this exporter writes H.264 only; {:?} needs a hardware encoder (export from the browser)",
-            venc.codec
-        )));
-    }
-    let [width, height] = encoded_size(spec);
-    let encoder = SoftwareH264::new(width, height, spec.output.fps, &venc)?;
+    let encoder = open_encoder(spec)?;
     let mut drawer = Drawer::new(renderer)?;
-    let mut writer = ExportWriter::new(spec, out, Box::new(encoder))?;
+    let mut writer = ExportWriter::new(spec, out, encoder)?;
     let total = writer.frames();
     let scale = venc.scale(spec.output.width);
     each_frame(spec, media, &mut drawer, scale, total, &mut |i, yuv| {
@@ -207,6 +202,41 @@ pub trait VideoEncoder {
     }
     /// What encodes, for reports.
     fn name(&self) -> String;
+}
+
+/// Makes an encoder for frames of this size and rate with these settings, or `None` when it cannot
+/// (no such codec, no device, the system refuses), and then the next one is asked.
+pub type EncoderFactory = fn(size: [u32; 2], fps: FrameRate, venc: &VideoEncoding) -> Option<Box<dyn VideoEncoder>>;
+
+static ENCODERS: std::sync::Mutex<Vec<EncoderFactory>> = std::sync::Mutex::new(Vec::new());
+
+/// Puts an encoder in front of FilmCraft's: [`open_encoder`] (and so [`export`]) asks the
+/// registered ones first, the last registered first. The operating system's hardware encoders
+/// come in this way (`reelforge-hwenc`), so this crate stays pure Rust.
+pub fn register_video_encoder(make: EncoderFactory) {
+    let mut all = ENCODERS.lock().unwrap_or_else(|e| e.into_inner());
+    if !all.iter().any(|f| std::ptr::fn_addr_eq(*f, make)) {
+        all.push(make);
+    }
+}
+
+/// The encoder `spec` exports with: a registered one that takes it, else FilmCraft's H.264. HEVC
+/// and AV1 need a registered (hardware) encoder.
+pub fn open_encoder(spec: &RenderSpec) -> Result<Box<dyn VideoEncoder>, ExportError> {
+    let venc = video_encoding(spec);
+    let size = encoded_size(spec);
+    let fps = spec.output.fps;
+    let all = ENCODERS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(enc) = all.iter().rev().find_map(|make| make(size, fps, &venc)) {
+        return Ok(enc);
+    }
+    if venc.codec != VideoCodec::H264 {
+        return Err(ExportError::Invalid(format!(
+            "no encoder for {:?} here: it needs the system's hardware encoder; H.264 always works",
+            venc.codec
+        )));
+    }
+    Ok(Box::new(SoftwareH264::new(size[0], size[1], fps, &venc)?))
 }
 
 /// FilmCraft's H.264 encoder: pure Rust, on the CPU.
@@ -422,7 +452,8 @@ impl<W: Read + Write + Seek> ExportWriter<W> {
         if !self.configured {
             return Err(ExportError::Encode("the encoder produced nothing".into()));
         }
-        let mut stats = ExportStats { frames: self.total, audio_samples: 0, renderer: String::new() };
+        let mut stats =
+            ExportStats { frames: self.total, audio_samples: 0, renderer: String::new(), encoder: self.enc.name() };
         if let Some(mut s) = self.sound.take() {
             s.mix_until(spec, media, &mut self.mux, spec.output.duration)?;
             for au in s.enc.flush() {

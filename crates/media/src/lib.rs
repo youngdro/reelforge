@@ -27,8 +27,9 @@ use reelforge_renderspec::{Asset, AssetKind};
 use reelforge_time::{FrameRate, Tick};
 
 pub use export::{
-    EncodedFrame, ExportError, ExportStats, ExportWriter, Progress, Renderer, SoftwareH264, VideoConfig, VideoEncoder,
-    Yuv420, draw_frame, encoded_size, export, export_with, video_encoding,
+    EncodedFrame, EncoderFactory, ExportError, ExportStats, ExportWriter, Progress, Renderer, SoftwareH264,
+    VideoConfig, VideoEncoder, Yuv420, draw_frame, encoded_size, export, export_with, open_encoder,
+    register_video_encoder, video_encoding,
 };
 
 /// What [`probe_path`] measured.

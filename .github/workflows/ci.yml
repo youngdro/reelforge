@@ -32,3 +32,25 @@ jobs:
           REELFORGE_REQUIRE_GPU: "1"
           WGPU_BACKEND: gl
           REELFORGE_GPU_LIMITS: webgl2
+
+  # the operating system's video encoders (reelforge-hwenc), on the systems that have them
+  system-encoders:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            require: "h264,hevc"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy
+        run: cargo clippy -p reelforge-hwenc --all-targets -- -D warnings
+      - name: encode, write an MP4, decode it
+        run: cargo test -p reelforge-hwenc -- --nocapture
+        env:
+          REELFORGE_REQUIRE_HWENC: ${{ matrix.require }}

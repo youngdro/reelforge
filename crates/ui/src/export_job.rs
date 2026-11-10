@@ -89,7 +89,7 @@ mod native {
                     e => e.to_string(),
                 })?;
                 std::fs::rename(&part, &out).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
-                Ok(format!("H.264 · {}", stats.renderer))
+                Ok(format!("{} · {}", stats.encoder, stats.renderer))
             })();
             if r.is_err() {
                 let _ = std::fs::remove_file(&part);

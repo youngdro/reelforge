@@ -164,6 +164,8 @@ enum Cmd {
 }
 
 fn main() -> ExitCode {
+    // exports use the system's (hardware) encoder where there is one
+    reelforge_hwenc::register();
     match run(Cli::parse().cmd) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -326,6 +328,7 @@ fn run(cmd: Cmd) -> Result<(), String> {
                 "frames": stats.frames,
                 "audioSamples": stats.audio_samples,
                 "renderer": stats.renderer,
+                "encoder": stats.encoder,
                 "seconds": started.elapsed().as_secs_f64(),
             }));
             Ok(())
