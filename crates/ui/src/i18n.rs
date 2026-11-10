@@ -76,6 +76,12 @@ impl Lang {
         if name == "Look" {
             return self.strings().track_look.into();
         }
+        // Voice-over, Voice-over 2, …
+        if let Some(rest) = name.strip_prefix(reelforge_engine::VOICEOVER_TRACK)
+            && (rest.is_empty() || rest.strip_prefix(' ').is_some_and(|n| n.chars().all(|c| c.is_ascii_digit())))
+        {
+            return format!("{}{rest}", self.strings().voiceover);
+        }
         let Some((word, n)) = name.split_once(' ') else { return name.to_string() };
         if !n.chars().all(|c| c.is_ascii_digit()) {
             return name.to_string();
@@ -212,6 +218,15 @@ pub(crate) struct Strings {
     pub(crate) transcribe_stopped: &'static str,
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub(crate) transcribe_needs_server: &'static str,
+    pub(crate) voiceover: &'static str,
+    pub(crate) voiceover_tip: &'static str,
+    pub(crate) voiceover_picked_tip: &'static str,
+    pub(crate) speaking: &'static str,
+    pub(crate) speaking_remote: &'static str,
+    pub(crate) voiced: &'static str,
+    pub(crate) voice_failed: &'static str,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub(crate) voice_needs_server: &'static str,
     pub(crate) sec_colour: &'static str,
     pub(crate) sec_transform: &'static str,
     pub(crate) sec_sound: &'static str,
@@ -685,6 +700,8 @@ static EN: Strings = Strings {
         ("captions.export", "Export captions"),
         ("captions.add", "Add captions"),
         ("captions.transcribe", "Auto captions"),
+        ("voiceover.add", "Add voice-over"),
+        ("voice.speak", "Voice-over"),
         ("captions.list", "List captions"),
         ("captions.split", "Split caption"),
         ("captions.merge", "Merge captions"),
@@ -830,6 +847,14 @@ static EN: Strings = Strings {
     transcribe_failed: "Auto captions failed: {}",
     transcribe_stopped: "Auto captions stopped",
     transcribe_needs_server: "Auto captions run on a server: open this editor from `reelforge serve`",
+    voiceover: "Voice-over",
+    voiceover_tip: "Read the captions aloud onto a Voice-over track (a local Kokoro model; nothing leaves this machine)",
+    voiceover_picked_tip: "Read the selected titles aloud onto a Voice-over track (a local Kokoro model; nothing leaves this machine)",
+    speaking: "Reading {} of {}",
+    speaking_remote: "The server is reading…",
+    voiced: "Read {} lines aloud",
+    voice_failed: "Voice-over failed: {}",
+    voice_needs_server: "Voice-over runs on a server: open this editor from `reelforge serve`",
     sec_colour: "COLOUR",
     sec_transform: "TRANSFORM",
     sec_sound: "SOUND",
@@ -1392,6 +1417,8 @@ static ZH: Strings = Strings {
         ("captions.export", "导出字幕"),
         ("captions.add", "添加字幕"),
         ("captions.transcribe", "自动字幕"),
+        ("voiceover.add", "添加配音"),
+        ("voice.speak", "配音"),
         ("captions.list", "字幕列表"),
         ("captions.split", "拆分字幕"),
         ("captions.merge", "合并字幕"),
@@ -1537,6 +1564,14 @@ static ZH: Strings = Strings {
     transcribe_failed: "自动字幕失败：{}",
     transcribe_stopped: "已停止自动字幕",
     transcribe_needs_server: "自动字幕需要在服务端运行：请通过 `reelforge serve` 打开编辑器",
+    voiceover: "配音",
+    voiceover_tip: "把字幕读出来，放到配音轨（本地 Kokoro 模型，数据不出本机）",
+    voiceover_picked_tip: "把选中的文字读出来，放到配音轨（本地 Kokoro 模型，数据不出本机）",
+    speaking: "配音中 {}/{}",
+    speaking_remote: "服务端配音中…",
+    voiced: "已配音 {} 句",
+    voice_failed: "配音失败：{}",
+    voice_needs_server: "配音需要在服务端运行：请通过 `reelforge serve` 打开编辑器",
     sec_colour: "颜色",
     sec_transform: "变换",
     sec_sound: "声音",
@@ -2014,6 +2049,8 @@ mod tests {
         assert_eq!(Lang::Zh.command("nope"), "");
         assert_eq!(Lang::Ja.track_name("Video 3"), "動画 3");
         assert_eq!(Lang::Ja.track_name("Captions"), "字幕");
+        assert_eq!(Lang::Zh.track_name("Voice-over 2"), "配音 2");
+        assert_eq!(Lang::Zh.track_name("Voice-overs"), "Voice-overs");
         assert_eq!(Lang::Zh.track_name("Stickers"), "贴纸");
         assert_eq!(Lang::Zh.track_name("Look"), "滤镜");
     }

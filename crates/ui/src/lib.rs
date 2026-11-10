@@ -44,6 +44,7 @@ mod strips;
 mod theme;
 mod timeline;
 mod transcribe_job;
+mod voice_job;
 #[cfg(target_arch = "wasm32")]
 mod webcodecs;
 
@@ -120,6 +121,11 @@ pub struct EditorApp {
     /// The local speech model, loaded on first use.
     #[cfg(not(target_arch = "wasm32"))]
     speech: Option<Arc<reelforge_speech::Recogniser>>,
+    /// A voice-over in progress.
+    voice_job: Option<voice_job::VoiceJob>,
+    /// The local voice model, loaded on first use.
+    #[cfg(not(target_arch = "wasm32"))]
+    voice: Arc<Mutex<Option<reelforge_voice::Kokoro>>>,
     /// The export settings are showing.
     export_open: bool,
     /// The panel on the left: media, sounds, titles.
@@ -409,6 +415,9 @@ impl EditorApp {
             transcribe: None,
             #[cfg(not(target_arch = "wasm32"))]
             speech: None,
+            voice_job: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            voice: Arc::default(),
             export_open: false,
             assets: assets::AssetPanel::default(),
             second_captions: false,
@@ -2665,6 +2674,7 @@ impl EditorApp {
             }
             self.record_button(ui);
             self.transcribe_controls(ui);
+            self.voice_controls(ui);
             if theme::tool(ui, icon::SPARKLE, s.spoken, s.spoken_tip, true).clicked() {
                 self.spoken.open = !self.spoken.open;
             }

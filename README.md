@@ -34,7 +34,12 @@ glitch, colour split, mosaic and wave next to the shakes, zooms and blurs. SubRi
 `.srt` on the editor or `captions.import`, and go out with `captions.export`. **Auto captions** hear
 the timeline with a local Whisper model (pure Rust on candle, CPU; nothing leaves the machine): the
 editor's Auto captions button, or `captions.transcribe` for agents on a server. Get a model with
-`reelforge-cli fetch-model --size small` (into `~/.reelforge/models/whisper`, or `REELFORGE_WHISPER`). Someone speaking is tightened up in one step (剪口播): `audio.cutPauses` hears the pauses,
+`reelforge-cli fetch-model --size small` (into `~/.reelforge/models/whisper`, or `REELFORGE_WHISPER`). **Voice-over** (配音)
+reads the captions, or the titles picked, aloud with a local Kokoro-82M model and puts each line where its title
+starts, on Voice-over tracks: the editor's Voice-over button, or `voice.speak` on a server (`voiceover.add` places
+lines from any other source). Mandarin is turned into Kokoro's phonemes in-tree (pinyin, tone sandhi, numbers read in
+Chinese). Get the model with `reelforge-cli fetch-model --kokoro` (into `~/.reelforge/models/kokoro`, or
+`REELFORGE_KOKORO`). Someone speaking is tightened up in one step (剪口播): `audio.cutPauses` hears the pauses,
 `captions.fillers` finds the captions that are only a filler word (嗯, 那个, um, …), and `timeline.cut` takes those stretches out of picture, sound and captions together, leaving the music as it is. Frames are composited on the GPU (wgpu) in the editor's preview and in exports,
 with the CPU compositor as the reference and the fallback. Agents edit through an MCP server (stdio
 or HTTP), and the same operations are an HTTP API and `reelforge-cli call`. People in a browser or on

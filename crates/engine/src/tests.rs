@@ -2377,3 +2377,62 @@ fn a_video_is_asked_for_frames_between_its_own() {
     let e = s.execute("clip.setSpeed", &json!({"clip": pic["clip"], "frames": "flow"})).unwrap_err().to_string();
     assert!(e.contains("only a video"), "{e}");
 }
+
+#[test]
+fn spoken_lines_are_placed_on_voiceover_tracks_in_one_step() {
+    let mut s = Session::default();
+    let line = |n: u8, at: f64, secs: f64| {
+        json!({"path": format!("/nowhere/line{n}.wav"), "start": {"seconds": at}, "duration": {"seconds": secs},
+               "sha256": format!("{n:02x}").repeat(32)})
+    };
+    let tracks_before = s.project().tracks.len();
+    // the second line starts before the first has finished, so it goes a track down
+    let out = s
+        .execute("voiceover.add", &json!({"lines": [line(1, 0.0, 2.0), line(2, 1.5, 1.0), line(3, 2.0, 1.0)]}))
+        .unwrap();
+    let p = s.project();
+    let tracks: Vec<&str> = out["tracks"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
+    assert_eq!(tracks.len(), 2);
+    assert_eq!(p.tracks.len(), tracks_before + 2);
+    let (a, b) = (p.track(tracks[0]).unwrap(), p.track(tracks[1]).unwrap());
+    assert_eq!((a.name.as_str(), a.kind), (crate::VOICEOVER_TRACK, reelforge_model::TrackKind::Audio));
+    assert_eq!(b.name, "Voice-over 2");
+    assert_eq!(a.clips.iter().map(|c| c.start).collect::<Vec<_>>(), [Tick::ZERO, Tick::SECOND * 2]);
+    assert_eq!(b.clips[0].start, Tick::from_seconds(1.5));
+    assert_eq!(p.media.len(), 3);
+    // one undo takes it all away
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!((s.project().tracks.len(), s.project().media.len()), (tracks_before, 0));
+    // a bad line applies nothing and says which
+    let e = s.execute("voiceover.add", &json!({"lines": [line(1, 0.0, 1.0), {"path": "x.wav"}]})).unwrap_err();
+    assert!(e.to_string().contains("lines[1]") && e.to_string().contains("start"), "{e}");
+    let e = s.execute("voiceover.add", &json!({"lines": [{"path": "/nowhere/x.wav", "start": 0}]})).unwrap_err();
+    assert!(e.to_string().contains("how long"), "{e}");
+    assert_eq!(s.project().media.len(), 0);
+    let v = video_track(&s);
+    assert!(s.execute("voiceover.add", &json!({"lines": [line(1, 0.0, 1.0)], "track": v})).is_err());
+}
+
+#[test]
+fn a_voiceover_reads_the_titles_picked_or_the_captions() {
+    let mut s = Session::default();
+    assert!(crate::spoken_lines(&s.project(), &[]).unwrap_err().contains("add captions"));
+    let out = s
+        .execute(
+            "captions.add",
+            &json!({"cues": [
+                {"start": {"seconds": 2.0}, "end": {"seconds": 3.0}, "text": "第二句"},
+                {"start": {"seconds": 0.0}, "end": {"seconds": 1.0}, "text": "第一\n句"},
+                {"start": {"seconds": 1.0}, "end": {"seconds": 2.0}, "text": "  "}
+            ]}),
+        )
+        .unwrap();
+    let lines = crate::spoken_lines(&s.project(), &[]).unwrap();
+    assert_eq!(lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), ["第一 句", "第二句"]);
+    assert_eq!(lines[1].start, Tick::SECOND * 2);
+    let second = out["clips"][1].as_str().unwrap().to_string();
+    let picked = crate::spoken_lines(&s.project(), std::slice::from_ref(&second)).unwrap();
+    assert_eq!((picked.len(), picked[0].clip.as_str()), (1, second.as_str()));
+    let v = add_video(&mut s, 2.0);
+    assert!(crate::spoken_lines(&s.project(), &[v]).unwrap_err().contains("not a title"));
+}
