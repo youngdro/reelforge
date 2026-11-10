@@ -440,7 +440,13 @@ pub(crate) fn replace(
         None => (speed, curve) = (1.0, vec![]),
     }
     let clip = proj.clip_mut(id).expect("found above");
-    clip.content = ClipContent::Media { media: media.to_string(), source_in, speed, reversed: false, curve, silent };
+    // what was asked of the old file's frames is asked of the new one's
+    let frames = match &clip.content {
+        ClipContent::Media { frames, .. } => *frames,
+        _ => Default::default(),
+    };
+    clip.content =
+        ClipContent::Media { media: media.to_string(), source_in, speed, reversed: false, curve, silent, frames };
     // another camera shook another way
     clip.steady = None;
     if grow != 1.0 {

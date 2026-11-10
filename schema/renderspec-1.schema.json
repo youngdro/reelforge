@@ -341,6 +341,26 @@
       ],
       "type": "object"
     },
+    "Between": {
+      "description": "What a video layer shows at an instant between two of its file's frames.",
+      "oneOf": [
+        {
+          "const": "nearest",
+          "description": "The frame of that instant, held until the next.",
+          "type": "string"
+        },
+        {
+          "const": "blend",
+          "description": "The two frames mixed, by how far along from the one to the other the instant is (feature\n`frames.blend/1`).",
+          "type": "string"
+        },
+        {
+          "const": "flow",
+          "description": "A frame made in between (feature `frames.flow/1`): what moved from the one frame to the\nother is followed, and drawn as far along its way as the instant is. Where nothing can\nbe followed, the two are mixed as for `blend`.",
+          "type": "string"
+        }
+      ]
+    },
     "Blend": {
       "description": "Blend modes.",
       "oneOf": [
@@ -889,6 +909,10 @@
             "asset": {
               "description": "The asset id.",
               "type": "string"
+            },
+            "between": {
+              "$ref": "#/$defs/Between",
+              "description": "What shows when an output instant falls between two frames of a video: what a clip\nslowed down, or a file of fewer frames a second than the output, is made smooth with.\nA still ignores it."
             },
             "fit": {
               "$ref": "#/$defs/Fit",

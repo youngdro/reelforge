@@ -647,6 +647,10 @@ pub fn input_schema(id: &str) -> Option<Value> {
                     "keepPitch",
                     json!({"type": "boolean", "description": "Sound keeps its pitch at another speed (default); false lets it rise and fall like tape."}),
                 ),
+                (
+                    "frames",
+                    json!({"enum": ["repeat", "blend", "flow"], "description": "What a video shows between two frames of its file (a slowed clip has to): the frame before held, the two mixed, or a frame made in between by following what moved."}),
+                ),
             ],
             &["clip"],
         ),

@@ -35,7 +35,7 @@ pub use fx::{Fx, FxChannel, FxGroup, FxKind, FxSample};
 pub use look::{BlendMode, ChromaKey, Crop, Look, Mask, MaskKind};
 pub use steady::{Steadied, Steady};
 pub use timeline::{Timeline, TimelineInfo};
-pub use timing::{CurvePoint, CurvePreset, Timing};
+pub use timing::{CurvePoint, CurvePreset, Inbetween, Timing};
 pub use transition::{Transition, TransitionKind};
 pub use voice::{Denoise, Voice, VoiceKind, VoicePart};
 
@@ -356,7 +356,15 @@ impl Clip {
 impl ClipContent {
     /// A media clip from `source_in` at normal speed.
     pub fn media(media: impl Into<String>, source_in: Tick) -> ClipContent {
-        ClipContent::Media { media: media.into(), source_in, speed: 1.0, reversed: false, curve: vec![], silent: false }
+        ClipContent::Media {
+            media: media.into(),
+            source_in,
+            speed: 1.0,
+            reversed: false,
+            curve: vec![],
+            silent: false,
+            frames: Inbetween::Repeat,
+        }
     }
 }
 
@@ -381,6 +389,9 @@ pub enum ClipContent {
         /// Its sound is not played: it was detached to a clip of its own.
         #[serde(default, skip_serializing_if = "is_no")]
         silent: bool,
+        /// What a video shows between two frames of its file.
+        #[serde(default, skip_serializing_if = "Inbetween::is_repeat")]
+        frames: Inbetween,
     },
     /// A colour filling the frame.
     Solid {

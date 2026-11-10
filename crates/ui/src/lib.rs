@@ -53,8 +53,8 @@ use reelforge_compile::{CompileOptions, compile};
 use reelforge_engine::{Session, SharedSession};
 use reelforge_media::Footage;
 use reelforge_model::{
-    Adjust, AnimKind, BlendMode, ClipContent, ClipTransform, CurvePreset, FilterKind, LoopKind, Mask, MaskKind,
-    MediaKind, Project, Prop, TrackKind, TransitionKind, VoiceKind,
+    Adjust, AnimKind, BlendMode, ClipContent, ClipTransform, CurvePreset, FilterKind, Inbetween, LoopKind, Mask,
+    MaskKind, MediaKind, Project, Prop, TrackKind, TransitionKind, VoiceKind,
 };
 use reelforge_render::{Quality, render_frame};
 use reelforge_time::Tick;
@@ -329,6 +329,8 @@ struct SpeedEdit {
     video: bool,
     /// How much of the camera's shake is taken out, in percent, when the picture is held steady.
     steady: Option<f32>,
+    /// What shows between two frames of the file.
+    frames: Inbetween,
 }
 
 /// Whether a property has a keyframe at the playhead.
@@ -2642,7 +2644,7 @@ impl EditorApp {
             volume: has_sound.then(|| clip.value_at(Prop::VolumeDb, local)),
             fades: has_sound.then(|| [clip.fade.fade_in.seconds() as f32, clip.fade.fade_out.seconds() as f32]),
             speed: match &clip.content {
-                ClipContent::Media { media, speed, reversed, curve, .. }
+                ClipContent::Media { media, speed, reversed, curve, frames, .. }
                     if p.media.get(media).is_some_and(|m| m.kind != MediaKind::Image) =>
                 {
                     Some(SpeedEdit {
@@ -2654,6 +2656,7 @@ impl EditorApp {
                         video: p.media.get(media).is_some_and(|m| m.kind == MediaKind::Video)
                             && p.clip(&id).is_some_and(|(ti, _)| p.tracks[ti].kind == TrackKind::Video),
                         steady: clip.steady.as_ref().map(|s| (s.amount * 100.0).round()),
+                        frames: *frames,
                     })
                 }
                 ClipContent::Media { speed, .. } if *speed == 0.0 => Some(SpeedEdit {
@@ -2664,6 +2667,7 @@ impl EditorApp {
                     frozen: true,
                     video: false,
                     steady: None,
+                    frames: Inbetween::Repeat,
                 }),
                 _ => None,
             },
@@ -3450,6 +3454,25 @@ impl EditorApp {
                                     actions.push(("clip.setStabilize", json!({"clip": id, "amount": *amount / 100.0})));
                                 }
                                 r.on_hover_text(s.steady_amount_tip);
+                            }
+                        });
+                        // what a slowed clip shows between the file's frames
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(s.frames).color(theme::color::WEAK))
+                                .on_hover_text(s.frames_tip);
+                            let name =
+                                |f: Inbetween| s.frames_names[Inbetween::ALL.iter().position(|x| *x == f).unwrap_or(0)];
+                            let mut picked = sp.frames;
+                            egui::ComboBox::from_id_salt("frames").selected_text(name(picked)).width(110.0).show_ui(
+                                ui,
+                                |ui| {
+                                    for f in Inbetween::ALL {
+                                        ui.selectable_value(&mut picked, f, name(f));
+                                    }
+                                },
+                            );
+                            if picked != sp.frames {
+                                actions.push(("clip.setSpeed", json!({"clip": id, "frames": picked.name()})));
                             }
                         });
                     }
