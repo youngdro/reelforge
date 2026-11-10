@@ -30,6 +30,8 @@ const WORK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const PICTURE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 /// The display picture: straight sRGB, 8 bits.
 const DISPLAY: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+/// The side of the [glow](GpuCompositor::glow) in texels (`GLOW_SIDE` in convert.wgsl).
+const GLOW: u32 = 16;
 /// Effects one layer can carry on the GPU (the uniform's array length).
 const MAX_FX: usize = 16;
 /// The `Layer` uniform's length in 32-bit words.
@@ -93,6 +95,10 @@ pub struct GpuCompositor {
     layer_pipelines: [wgpu::RenderPipeline; 4],
     /// Straight sRGB (files, readback) and premultiplied sRGB (what egui draws).
     display_pipelines: [wgpu::RenderPipeline; 2],
+    /// The frame far out of focus, and what draws it.
+    glow_pipeline: wgpu::RenderPipeline,
+    glow: wgpu::Texture,
+    glow_view: wgpu::TextureView,
     /// Y'CbCr readback; the browser has no blocking readback, so it never reads them.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     luma_pipeline: Option<wgpu::ComputePipeline>,
@@ -344,7 +350,7 @@ impl GpuCompositor {
                 cache: None,
             })
         });
-        let display_pipelines = ["fs_srgb", "fs_srgb_premultiplied"].map(|entry| {
+        let to_display = |entry: &str| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(entry),
                 layout: None,
@@ -370,7 +376,13 @@ impl GpuCompositor {
                 multiview_mask: None,
                 cache: None,
             })
-        });
+        };
+        let display_pipelines = ["fs_srgb", "fs_srgb_premultiplied"].map(to_display);
+        let glow_pipeline = to_display("fs_glow");
+        use wgpu::TextureUsages as U;
+        let glow =
+            texture(&device, "glow", GLOW, GLOW, DISPLAY, U::RENDER_ATTACHMENT | U::TEXTURE_BINDING | U::COPY_SRC);
+        let glow_view = glow.create_view(&Default::default());
         let compute = adapter_has_compute(&device);
         let compute_pipeline = |entry: &str| {
             compute.then(|| {
@@ -422,6 +434,9 @@ impl GpuCompositor {
             layer_layout,
             layer_pipelines,
             display_pipelines,
+            glow_pipeline,
+            glow,
+            glow_view,
             luma_pipeline,
             chroma_pipeline,
             no_picture,
@@ -729,24 +744,38 @@ impl GpuCompositor {
         self.convert(1)
     }
 
+    /// The last frame far out of focus: a few texels a side of opaque sRGB, each the light of a
+    /// wide part of the picture. For the light the picture throws around it in the editor, which
+    /// registers the texture once: it is the same one for every frame.
+    pub fn glow(&self) -> Option<&wgpu::Texture> {
+        let frame = self.frame.as_ref()?;
+        self.draw_working(&self.glow_pipeline, frame, &self.glow_view, "glow");
+        Some(&self.glow)
+    }
+
     /// Converts the working picture into the display texture with `display_pipelines[which]`.
     fn convert(&self, which: usize) -> Option<&wgpu::Texture> {
-        let pipeline = &self.display_pipelines[which];
         let frame = self.frame.as_ref()?;
+        self.draw_working(&self.display_pipelines[which], frame, &frame.display_view, "display");
+        Some(&frame.display)
+    }
+
+    /// Draws `into` from the working picture with one of the pipelines of convert.wgsl.
+    fn draw_working(&self, pipeline: &wgpu::RenderPipeline, frame: &Frame, into: &wgpu::TextureView, label: &str) {
         let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("display"),
+            label: Some(label),
             layout: &pipeline.get_bind_group_layout(0),
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: wgpu::BindingResource::TextureView(&frame.target_view),
             }],
         });
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("display") });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("display"),
+                label: Some(label),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame.display_view,
+                    view: into,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -761,7 +790,6 @@ impl GpuCompositor {
             pass.draw(0..3, 0..1);
         }
         self.queue.submit([enc.finish()]);
-        Some(&frame.display)
     }
 
     /// The last frame as straight sRGB 8-bit RGBA, like [`Image::to_srgba8`]: `(width, height,
@@ -769,6 +797,12 @@ impl GpuCompositor {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn read_srgba8(&self) -> Result<(u32, u32, Vec<u8>), GpuError> {
         let texture = self.convert(0).ok_or_else(|| GpuError::Readback("nothing rendered yet".into()))?;
+        self.read_rgba8(texture)
+    }
+
+    /// The bytes of an 8-bit RGBA texture: `(width, height, bytes)`. Blocks until the GPU is done.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_rgba8(&self, texture: &wgpu::Texture) -> Result<(u32, u32, Vec<u8>), GpuError> {
         let (w, h) = (texture.width(), texture.height());
         let row = (w * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {

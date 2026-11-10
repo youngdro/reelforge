@@ -194,7 +194,7 @@ impl Palette {
                                 let lit = ctx.animate_bool_with_time(r.id, on, 0.08);
                                 let painter = ui.painter();
                                 if lit > 0.0 {
-                                    theme::aurora_rect(painter, rect, 9.0, 0.2 * lit);
+                                    theme::accent_rect(painter, rect, 9.0, 0.2 * lit);
                                 }
                                 let ink = if !e.enabled {
                                     color::WEAK.gamma_multiply(0.6)

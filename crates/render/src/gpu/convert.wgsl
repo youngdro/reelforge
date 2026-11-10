@@ -41,6 +41,36 @@ fn fs_srgb_premultiplied(@builtin(position) pos: vec4<f32>) -> @location(0) vec4
     return vec4(c.rgb * c.a, c.a);
 }
 
+// ---- glow: the picture far out of focus, a few texels a side ----
+
+// The glow's side in texels (`GLOW` in mod.rs).
+const GLOW_SIDE: f32 = 16.0;
+const GLOW_TAPS: i32 = 16;
+// One deviation of the blur, as a part of the picture's side.
+const GLOW_SPREAD: f32 = 0.15;
+
+// A texel of the glow is the light of a wide part of the picture: taps on a grid out to three
+// deviations (nearer, the blur's end shows as an edge in the dark), weighed by a Gaussian. Light is added as light (linear, premultiplied: what is
+// transparent gives none) and leaves as opaque sRGB. Past the picture's edge, the edge goes on.
+@fragment
+fn fs_glow(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let last = vec2<f32>(textureDimensions(frame)) - 1.0;
+    let at = pos.xy / GLOW_SIDE;
+    var sum = vec3(0.0);
+    var weight = 0.0;
+    for (var j = 0; j < GLOW_TAPS; j++) {
+        for (var i = 0; i < GLOW_TAPS; i++) {
+            let d = (vec2(f32(i), f32(j)) + 0.5) / f32(GLOW_TAPS) * 6.0 - 3.0;
+            let w = exp(-0.5 * dot(d, d));
+            let p = clamp(at + d * GLOW_SPREAD, vec2(0.0), vec2(1.0)) * last;
+            sum += w * clamp(textureLoad(frame, vec2<i32>(round(p)), 0).rgb, vec3(0.0), vec3(1.0));
+            weight += w;
+        }
+    }
+    let c = sum / weight;
+    return vec4(linear_to_srgb(c.r), linear_to_srgb(c.g), linear_to_srgb(c.b), 1.0);
+}
+
 // ---- encoder input: Y', Cb, Cr planes, four 8-bit samples per word ----
 
 struct Dims {

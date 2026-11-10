@@ -23,7 +23,7 @@ use crate::theme::{color, icon};
 
 const RULER: f32 = 26.0;
 const ROW: f32 = 54.0;
-const HEADER: f32 = 156.0;
+const HEADER: f32 = 168.0;
 /// How close, in points, a drag must come to a snap target to stick to it.
 const SNAP_POINTS: f32 = 8.0;
 /// How close to a clip's edge, in points, a drag trims instead of moving.
@@ -565,7 +565,7 @@ impl TimelineView {
             // each track is a trough in the panel
             let trough = Rect::from_min_max(row_rect.min + vec2(0.0, 2.0), row_rect.max - vec2(6.0, 2.0));
             let shade = if row % 2 == 0 { color::ROW } else { color::ROW_ALT };
-            painter.rect_filled(trough, CornerRadius::same(9), shade);
+            painter.rect_filled(trough, CornerRadius::same(14), shade);
 
             let lane = painter.with_clip_rect(row_rect.intersect(lanes));
             let dim = track.hidden || track.muted;
@@ -672,20 +672,22 @@ impl TimelineView {
 
             // Header.
             let head = Rect::from_min_size(egui::pos2(rect.left(), top), vec2(HEADER, row_h));
-            let (glyph, tint) = match track.kind {
-                TrackKind::Video => (icon::FILM, color::VIDEO),
-                TrackKind::Text => (icon::TEXT, color::TEXT_CLIP),
-                TrackKind::Audio => (icon::MUSIC, color::AUDIO),
+            let glyph = match track.kind {
+                TrackKind::Video => icon::FILM,
+                TrackKind::Text => icon::TEXT,
+                TrackKind::Audio => icon::MUSIC,
             };
             painter.text(
-                head.left_center() + vec2(12.0, 0.0),
+                head.left_center() + vec2(14.0, 0.0),
                 Align2::LEFT_CENTER,
                 glyph,
                 FontId::proportional(15.0),
-                tint,
+                color::WEAK,
             );
-            painter.with_clip_rect(head.shrink(2.0)).text(
-                head.left_center() + vec2(34.0, 0.0),
+            // the name has what the buttons leave it
+            let buttons = if track.kind == TrackKind::Video { 3.0 } else { 2.0 };
+            painter.with_clip_rect(head.with_max_x(head.right() - 10.0 - 24.0 * buttons)).text(
+                head.left_center() + vec2(36.0, 0.0),
                 Align2::LEFT_CENTER,
                 lang.track_name(&track.name),
                 FontId::proportional(12.5),
@@ -696,7 +698,7 @@ impl TimelineView {
             } else {
                 ("hidden", track.hidden, icon::HIDDEN, icon::SHOWN, if track.hidden { words.show } else { words.hide })
             };
-            let toggle = Rect::from_center_size(egui::pos2(head.right() - 20.0, head.center().y), vec2(26.0, 26.0));
+            let toggle = Rect::from_center_size(egui::pos2(head.right() - 20.0, head.center().y), vec2(24.0, 26.0));
             let r = ui
                 .put(
                     toggle,
@@ -714,7 +716,7 @@ impl TimelineView {
                 out.toggled = Some((track.id.clone(), key, !on));
             }
             // a locked track's clips stay as they are
-            let lock = toggle.translate(vec2(if track.kind == TrackKind::Video { -52.0 } else { -26.0 }, 0.0));
+            let lock = toggle.translate(vec2(if track.kind == TrackKind::Video { -48.0 } else { -24.0 }, 0.0));
             let r = ui
                 .put(
                     lock,
@@ -734,7 +736,7 @@ impl TimelineView {
             }
             // a magnetic track keeps its clips end to end
             if track.kind == TrackKind::Video {
-                let magnet = toggle.translate(vec2(-26.0, 0.0));
+                let magnet = toggle.translate(vec2(-24.0, 0.0));
                 let r = ui
                     .put(
                         magnet,
@@ -824,7 +826,6 @@ impl TimelineView {
             let on_lanes = painter.with_clip_rect(lanes);
             // a line of light, and where it is on a capsule at its head
             let line = [egui::pos2(x, ruler.top() + 8.0), egui::pos2(x, rect.bottom())];
-            on_lanes.line_segment(line, Stroke::new(5.0, color::ACCENT.gamma_multiply(0.22)));
             on_lanes.line_segment(line, Stroke::new(1.5, Color32::WHITE));
             let at = crate::theme::timecode(playhead.seconds());
             let galley = painter.layout_no_wrap(at, FontId::monospace(10.5), color::ON_ACCENT);
@@ -833,8 +834,8 @@ impl TimelineView {
             let mid =
                 x.clamp(lanes.left() + size.x / 2.0, (lanes.right() - size.x / 2.0).max(lanes.left() + size.x / 2.0));
             let handle = Rect::from_center_size(egui::pos2(mid, ruler.top() + 9.0), size);
-            crate::theme::glow(&on_lanes, handle, 9.0, color::aurora(0.4).gamma_multiply(0.45), 10);
-            crate::theme::aurora_rect(&on_lanes, handle, 9.0, 1.0);
+            crate::theme::glow(&on_lanes, handle, 9.0, Color32::from_black_alpha(120), 8);
+            crate::theme::accent_rect(&on_lanes, handle, 9.0, 1.0);
             on_lanes.galley(handle.center() - galley.size() / 2.0, galley, color::ON_ACCENT);
         }
 
@@ -1192,7 +1193,7 @@ fn paint_clip(
     seconds_of: &dyn Fn(f32) -> f64,
 ) {
     let Look { selected, dim, dragging } = look;
-    let radius = CornerRadius::same(7);
+    let radius = CornerRadius::same(10);
     let (glyph, label, mut fill) = match &clip.content {
         ClipContent::Media { media, .. } => {
             let m = p.media.get(media);
@@ -1245,10 +1246,17 @@ fn paint_clip(
     }
     if selected && !dragging {
         // what is selected gives off light
-        crate::theme::glow(painter, r, 7.0, color::ACCENT.gamma_multiply(0.55), 12);
+        crate::theme::glow(painter, r, 10.0, color::ACCENT.gamma_multiply(0.14), 10);
     }
-    // lit from the left, like a strip of film held up
-    crate::theme::gradient_rect(painter, r, 7.0, fill, fill.lerp_to_gamma(color::PANEL, 0.45));
+    // dark, with a little of its kind's tint, and the tint itself on a spine at its start
+    let tint = fill;
+    let fill =
+        color::RAISED.lerp_to_gamma(tint, if matches!(clip.content, ClipContent::Solid { .. }) { 0.8 } else { 0.28 });
+    painter.rect_filled(r, radius, fill);
+    if r.width() > 12.0 {
+        let spine = Rect::from_min_max(r.left_top() + vec2(3.0, 5.0), r.left_bottom() + vec2(5.5, -5.0));
+        painter.with_clip_rect(r).rect_filled(spine, CornerRadius::same(2), tint);
+    }
     let mut strip = false;
     if let ClipContent::Media { media, .. } = &clip.content
         && let Some(m) = p.media.get(media)
