@@ -110,6 +110,11 @@ impl ParameterSets {
             };
             match kind(codec, unit) {
                 Unit::Vps => keep(&mut self.vps),
+                Unit::Sps if codec == VideoCodec::H264 => match h264_sps_bt709(unit) {
+                    Some(told) if !self.sps.contains(&told) => self.sps.push(told),
+                    Some(_) => {}
+                    None => keep(&mut self.sps),
+                },
                 Unit::Sps => keep(&mut self.sps),
                 Unit::Pps => keep(&mut self.pps),
                 Unit::Delimiter => {}
@@ -176,7 +181,7 @@ impl ParameterSets {
 /// The first `n` bytes of a NAL unit's payload with the emulation prevention bytes (the `03` of
 /// `00 00 03`) taken out.
 fn unescaped(unit: &[u8], n: usize) -> Vec<u8> {
-    let mut out = Vec::with_capacity(n);
+    let mut out = Vec::with_capacity(n.min(unit.len()));
     let mut zeros = 0;
     for &b in unit {
         if out.len() == n {
@@ -190,6 +195,191 @@ fn unescaped(unit: &[u8], n: usize) -> Vec<u8> {
         out.push(b);
     }
     out
+}
+
+/// An H.264 SPS that says what the pictures are: BT.709, limited range. Media Foundation's
+/// software encoder leaves the colours unsaid, and a decoder then guesses from the size (BT.601
+/// below HD, which shifts every colour). The rest of the SPS is kept bit for bit. `None` when
+/// the SPS cannot be read; it is then used as it came.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn h264_sps_bt709(unit: &[u8]) -> Option<Vec<u8>> {
+    let rbsp = unescaped(unit.get(1..)?, usize::MAX);
+    // the payload ends at the stop bit: the last 1 in the last byte that has one
+    let last = rbsp.iter().rposition(|b| *b != 0)?;
+    let end = last * 8 + 7 - rbsp[last].trailing_zeros() as usize;
+    let mut r = Bits { data: &rbsp, at: 0, end };
+    let profile = r.take(8)?;
+    r.take(16)?;
+    r.ue()?;
+    if matches!(profile, 100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135) {
+        let chroma = r.ue()?;
+        if chroma == 3 {
+            r.take(1)?;
+        }
+        r.ue()?;
+        r.ue()?;
+        r.take(1)?;
+        if r.take(1)? == 1 {
+            for list in 0..if chroma == 3 { 12 } else { 8 } {
+                if r.take(1)? == 0 {
+                    continue;
+                }
+                let (mut last, mut next) = (8i64, 8i64);
+                for _ in 0..if list < 6 { 16 } else { 64 } {
+                    if next != 0 {
+                        next = (last + r.se()? + 256) % 256;
+                    }
+                    if next != 0 {
+                        last = next;
+                    }
+                }
+            }
+        }
+    }
+    r.ue()?;
+    match r.ue()? {
+        0 => {
+            r.ue()?;
+        }
+        1 => {
+            r.take(1)?;
+            r.se()?;
+            r.se()?;
+            for _ in 0..r.ue()? {
+                r.se()?;
+            }
+        }
+        _ => {}
+    }
+    r.ue()?;
+    r.take(1)?;
+    r.ue()?;
+    r.ue()?;
+    if r.take(1)? == 0 {
+        r.take(1)?;
+    }
+    r.take(1)?;
+    if r.take(1)? == 1 {
+        for _ in 0..4 {
+            r.ue()?;
+        }
+    }
+    let mut out = Writer::default();
+    out.copy(&rbsp, 0, r.at);
+    // video format 5 (unspecified), limited range, then primaries, transfer and matrix: 1 is BT.709
+    let signal = |out: &mut Writer| {
+        out.put(1, 1);
+        out.put(5, 3);
+        out.put(0, 1);
+        out.put(1, 1);
+        out.put(0x01_01_01, 24);
+    };
+    if r.take(1)? == 1 {
+        out.put(1, 1);
+        let from = r.at;
+        if r.take(1)? == 1 && r.take(8)? == 255 {
+            r.take(32)?;
+        }
+        if r.take(1)? == 1 {
+            r.take(1)?;
+        }
+        out.copy(&rbsp, from, r.at);
+        if r.take(1)? == 1 {
+            r.take(4)?;
+            if r.take(1)? == 1 {
+                r.take(24)?;
+            }
+        }
+        signal(&mut out);
+        out.copy(&rbsp, r.at, end);
+    } else {
+        // a VUI with nothing else in it: no aspect ratio or overscan before the colours, and no
+        // chroma location, timing, HRDs, picture structure or restrictions after
+        out.put(1, 1);
+        out.put(0, 2);
+        signal(&mut out);
+        out.put(0, 6);
+    }
+    out.put(1, 1);
+    // back into a NAL unit: a 03 goes in wherever two zeros would be followed by 0 to 3
+    let mut sps = vec![unit[0]];
+    let mut zeros = 0;
+    for b in out.bytes {
+        if zeros >= 2 && b <= 3 {
+            sps.push(3);
+            zeros = 0;
+        }
+        zeros = if b == 0 { zeros + 1 } else { 0 };
+        sps.push(b);
+    }
+    Some(sps)
+}
+
+/// Reads bits, most significant first, up to `end`.
+struct Bits<'a> {
+    data: &'a [u8],
+    at: usize,
+    end: usize,
+}
+
+impl Bits<'_> {
+    fn take(&mut self, n: usize) -> Option<u32> {
+        if self.at + n > self.end {
+            return None;
+        }
+        let mut v = 0;
+        for _ in 0..n {
+            v = (v << 1) | u32::from((self.data[self.at / 8] >> (7 - self.at % 8)) & 1);
+            self.at += 1;
+        }
+        Some(v)
+    }
+
+    /// An unsigned Exp-Golomb number.
+    fn ue(&mut self) -> Option<u32> {
+        let mut zeros = 0;
+        while self.take(1)? == 0 {
+            zeros += 1;
+            if zeros > 31 {
+                return None;
+            }
+        }
+        Some(((1u64 << zeros) - 1 + u64::from(self.take(zeros)?)) as u32)
+    }
+
+    /// A signed Exp-Golomb number.
+    fn se(&mut self) -> Option<i64> {
+        let k = i64::from(self.ue()?);
+        Some(if k % 2 == 1 { (k + 1) / 2 } else { -(k / 2) })
+    }
+}
+
+/// Writes bits, most significant first.
+#[derive(Default)]
+struct Writer {
+    bytes: Vec<u8>,
+    bits: usize,
+}
+
+impl Writer {
+    fn put(&mut self, v: u32, n: usize) {
+        for i in (0..n).rev() {
+            if self.bits.is_multiple_of(8) {
+                self.bytes.push(0);
+            }
+            if (v >> i) & 1 == 1 {
+                *self.bytes.last_mut().expect("pushed above") |= 0x80 >> (self.bits % 8);
+            }
+            self.bits += 1;
+        }
+    }
+
+    /// The bits of `data` from `from` up to `to`.
+    fn copy(&mut self, data: &[u8], from: usize, to: usize) {
+        for at in from..to {
+            self.put(u32::from((data[at / 8] >> (7 - at % 8)) & 1), 1);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -242,5 +432,57 @@ mod tests {
         assert_eq!(r[13..23], [0xf0, 0, 0xfc, 0xfd, 0xf8, 0xf8, 0, 0, 0x0f, 3]);
         assert_eq!(r[23..29], [0x80 | 32, 0, 1, 0, 3, 0x40]);
         assert_eq!(ParameterSets::default().hvcc(), None);
+    }
+
+    #[test]
+    fn an_h264_sps_is_made_to_say_bt709() {
+        use filmcraft_h264::params::Sps;
+        let colours = |unit: &[u8]| {
+            let sps = Sps::parse(&unescaped(&unit[1..], usize::MAX)).expect("an SPS");
+            let v = sps.vui.clone().expect("a VUI");
+            (sps, (v.full_range, v.colour_primaries, v.transfer_characteristics, v.matrix_coefficients))
+        };
+        // x264's, 1280×720 High: a VUI with timing and restrictions, and no colours
+        let with: &[u8] = &[
+            0x67, 0x64, 0x00, 0x1f, 0xac, 0xd9, 0x40, 0x50, 0x05, 0xbb, 0x01, 0x10, 0x00, 0x00, 0x03, 0x00, 0x10, 0x00,
+            0x00, 0x03, 0x03, 0xc0, 0xf1, 0x83, 0x19, 0x60,
+        ];
+        let before = Sps::parse(&unescaped(&with[1..], usize::MAX)).expect("an SPS");
+        let told = h264_sps_bt709(with).expect("readable");
+        let (after, said) = colours(&told);
+        assert_eq!(said, (false, 1, 1, 1));
+        assert_eq!((after.pic_width_in_mbs, after.pic_height_in_map_units), (80, 45));
+        let (was, is) = (before.vui.expect("a VUI"), after.vui.expect("a VUI"));
+        assert_eq!((was.timing, was.sar), (is.timing, is.sar));
+        assert_eq!(
+            was.bitstream_restriction.map(|b| (b.max_num_reorder_frames, b.max_dec_frame_buffering)),
+            is.bitstream_restriction.map(|b| (b.max_num_reorder_frames, b.max_dec_frame_buffering))
+        );
+        // said once is said: nothing changes the second time
+        assert_eq!(h264_sps_bt709(&told), Some(told));
+
+        // Baseline, 640×360 (cropped from 368), and no VUI at all
+        let mut w = Writer::default();
+        w.put(0x42_00_1e, 24);
+        for (v, n) in [(1, 1), (1, 1), (1, 1), (1, 1), (0b010, 3), (0, 1)] {
+            w.put(v, n);
+        }
+        // 40 and 23 macroblocks, coded less one: ue(39), ue(22)
+        w.put(40, 11);
+        w.put(23, 9);
+        // frames only, 8×8 direct, cropped: 0, 0, 0, 4 (ue(4) is 00101), and no VUI
+        for (v, n) in [(1, 1), (1, 1), (1, 1), (1, 1), (1, 1), (1, 1), (0b00101, 5), (0, 1), (1, 1)] {
+            w.put(v, n);
+        }
+        let without = [&[0x67][..], &w.bytes].concat();
+        let before = Sps::parse(&without[1..]).expect("an SPS");
+        assert!(before.vui.is_none());
+        let told = h264_sps_bt709(&without).expect("readable");
+        let (after, said) = colours(&told);
+        assert_eq!(said, (false, 1, 1, 1));
+        assert_eq!(after.frame_crop, Some((0, 0, 0, 4)));
+        assert_eq!((after.pic_width_in_mbs, after.pic_height_in_map_units), (40, 23));
+        // cut short, it is left alone
+        assert_eq!(h264_sps_bt709(&with[..6]), None);
     }
 }

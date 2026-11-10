@@ -2918,6 +2918,7 @@ dependencies = [
 name = "reelforge-hwenc"
 version = "0.1.0"
 dependencies = [
+ "filmcraft-h264",
  "objc2-core-foundation",
  "objc2-core-media",
  "objc2-core-video",

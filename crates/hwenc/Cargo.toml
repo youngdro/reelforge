@@ -17,6 +17,7 @@ reelforge-renderspec = { workspace = true }
 reelforge-media = { workspace = true }
 
 [dev-dependencies]
+filmcraft-h264 = "0.9"
 reelforge-render = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
