@@ -502,6 +502,7 @@ impl TimelineView {
         };
 
         // Rows.
+        let mut chosen_at: Option<(Rect, TrackKind)> = None;
         for (row, (index, track)) in order.iter().map(|&i| (i, &p.tracks[i])).enumerate() {
             let top = rect.top() + RULER + row as f32 * row_h;
             let row_rect = Rect::from_min_size(egui::pos2(lanes.left(), top), vec2(lanes.width(), row_h));
@@ -537,6 +538,9 @@ impl TimelineView {
                     egui::pos2(x_of(a), top + 5.0),
                     egui::pos2(x_of(b).max(x_of(a) + 3.0), top + row_h - 5.0),
                 );
+                if selected.first() == Some(&clip.id) && self.drag.is_none() && !track.locked {
+                    chosen_at = Some((r, track.kind));
+                }
                 // a moved clip carries its source along; a trimmed one keeps it in place
                 let mut start = if b - a == clip.duration { a } else { clip.start };
                 if let Some((s, by)) = &slip
@@ -749,6 +753,54 @@ impl TimelineView {
             crate::theme::glow(&on_lanes, handle, 9.0, color::aurora(0.4).gamma_multiply(0.45), 10);
             crate::theme::aurora_rect(&on_lanes, handle, 9.0, 1.0);
             on_lanes.galley(handle.center() - galley.size() / 2.0, galley, color::ON_ACCENT);
+        }
+
+        // The selected clip's tools, on a pill over it while the pointer is on either.
+        if let Some((r, kind)) = chosen_at
+            && !playing
+            && r.right() > lanes.left()
+            && r.left() < lanes.right()
+        {
+            let mut tools = vec![
+                (icon::SPLIT, words.split, Action::Split),
+                (icon::TO_START, words.trim_start, Action::TrimStart),
+                (icon::TO_END, words.trim_end, Action::TrimEnd),
+                (icon::ADD, words.duplicate, Action::Duplicate),
+            ];
+            if kind == TrackKind::Video && detachable(p, &selected[0]) {
+                tools.push((icon::DETACH, words.detach_audio, Action::DetachAudio));
+            }
+            tools.push((icon::DELETE, words.delete, Action::Delete));
+            let size = vec2(tools.len() as f32 * 30.0 + 8.0, 30.0);
+            let left = r.left().max(lanes.left() + 4.0).min(lanes.right() - size.x - 4.0);
+            let pill = Rect::from_min_size(egui::pos2(left, (r.top() - size.y - 3.0).max(rect.top())), size);
+            let near = Rect::from_min_max(pill.min, egui::pos2(r.right().max(pill.right()), r.bottom()));
+            let pointer = ui.input(|i| i.pointer.hover_pos());
+            let over = pointer.is_some_and(|at| near.contains(at) && (pill.contains(at) || r.contains(at)));
+            let shown = ui.ctx().animate_bool_with_time(response.id.with("clip tools"), over, 0.1);
+            if shown > 0.0 {
+                let rise = 4.0 * (1.0 - shown);
+                let pill = pill.translate(vec2(0.0, rise));
+                let ink = Color32::from_white_alpha((26.0 * shown) as u8);
+                crate::theme::glow(&painter, pill, 15.0, Color32::from_black_alpha((150.0 * shown) as u8), 16);
+                painter.rect(
+                    pill,
+                    CornerRadius::same(15),
+                    color::RAISED.gamma_multiply(shown),
+                    Stroke::new(1.0, ink),
+                    StrokeKind::Inside,
+                );
+                if shown > 0.6 {
+                    for (i, (glyph, tip, action)) in tools.into_iter().enumerate() {
+                        let at = Rect::from_min_size(pill.min + vec2(4.0 + i as f32 * 30.0, 1.0), vec2(30.0, 28.0));
+                        let tint = if action == Action::Delete { color::PLAYHEAD } else { color::TEXT };
+                        let button = egui::Button::new(egui::RichText::new(glyph).size(14.0).color(tint)).frame(false);
+                        if ui.put(at, button).on_hover_text(tip).clicked() {
+                            out.action = Some(action);
+                        }
+                    }
+                }
+            }
         }
 
         // Cursor.

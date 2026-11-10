@@ -32,6 +32,7 @@ mod drafts;
 mod export_job;
 pub mod i18n;
 mod looks;
+mod palette;
 #[cfg(target_arch = "wasm32")]
 mod picker;
 mod record;
@@ -115,6 +116,9 @@ pub struct EditorApp {
     second_captions: bool,
     /// The timelines window is showing, and the name being typed for the current timeline.
     timelines_open: bool,
+    /// The command palette (Ctrl+K), and the list of keys (?).
+    palette: palette::Palette,
+    keys_open: bool,
     /// The window that trims speech.
     spoken: spoken::Spoken,
     timeline_name: String,
@@ -386,6 +390,8 @@ impl EditorApp {
             assets: assets::AssetPanel::default(),
             second_captions: false,
             timelines_open: false,
+            palette: palette::Palette::default(),
+            keys_open: false,
             spoken: spoken::Spoken::default(),
             timeline_name: String::new(),
             recorder: None,
@@ -1804,11 +1810,18 @@ impl EditorApp {
     /// Keys, when no text field has them.
     fn shortcuts(&mut self, ctx: &egui::Context) {
         use egui::{Key, Modifiers};
-        if ctx.egui_wants_keyboard_input() {
-            return;
-        }
         let cmd = Modifiers::COMMAND;
         let pressed = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
+        // the palette opens from anywhere, a text field too
+        if pressed(cmd, Key::K) {
+            self.palette.toggle();
+        }
+        if ctx.egui_wants_keyboard_input() || self.palette.open {
+            return;
+        }
+        if pressed(Modifiers::SHIFT, Key::Slash) || pressed(Modifiers::NONE, Key::Questionmark) {
+            self.keys_open = !self.keys_open;
+        }
         let fps = self.project().canvas.fps;
         if pressed(Modifiers::NONE, Key::Space) {
             self.rate = 1.0;
@@ -1931,6 +1944,168 @@ impl EditorApp {
         }
     }
 
+    /// Shows the interface in `lang` from now on, and remembers it.
+    fn set_lang(&mut self, ctx: &egui::Context, lang: Lang) {
+        if lang == self.lang {
+            return;
+        }
+        if self.status == self.s().ready {
+            self.status.clear();
+        }
+        if (lang == Lang::Ja) != (self.lang == Lang::Ja) {
+            theme::set_fonts(ctx, lang == Lang::Ja);
+        }
+        self.lang = lang;
+        self.lang_chosen = true;
+        self.lang_unsaved = true;
+    }
+
+    /// Everything the palette can find, in the order it shows for an empty field: what can be done,
+    /// then the markers, the files, the titles and the languages.
+    fn palette_entries(&self) -> Vec<palette::Entry> {
+        use palette::{Entry, Run};
+        use timeline::Action;
+        let s = self.s();
+        let p = self.project();
+        let chosen = self.selection();
+        let (any, several) = (!chosen.is_empty(), chosen.len() > 1);
+        // a tip without the keys in brackets at its end
+        let plain = |tip: &'static str| tip.split("  (").next().unwrap_or(tip);
+        let act = |glyph, word: &'static str, keys: &'static str, action, on| {
+            Entry::new(glyph, word, keys, Run::Act(action)).enabled(on)
+        };
+        let mut all = vec![
+            Entry::new(icon::PLAY, plain(s.play_tip), "Space", Run::Play),
+            act(icon::SPLIT, s.split, "S", Action::Split, true),
+            act(icon::CROP, s.trim_start, "Q", Action::TrimStart, true),
+            act(icon::CROP, s.trim_end, "W", Action::TrimEnd, true),
+            act(icon::ADD, s.duplicate, "Ctrl+D", Action::Duplicate, any),
+            act(icon::SAVE, s.copy, "Ctrl+C", Action::Copy, any),
+            act(icon::SPLIT, s.cut, "Ctrl+X", Action::Cut, any),
+            act(icon::IMPORT, s.paste, "Ctrl+V", Action::Paste, self.clipboard.is_some()),
+            act(icon::DELETE, s.delete, "Delete", Action::Delete, any),
+            act(icon::DELETE, s.ripple_delete, "Shift+Delete", Action::RippleDelete, any),
+            act(icon::DETACH, s.detach_audio, "Alt+D", Action::DetachAudio, any),
+            act(icon::MERGE, s.group, "Ctrl+G", Action::Group, several),
+            act(icon::MERGE, s.ungroup, "Ctrl+Shift+G", Action::Ungroup, any),
+            act(icon::FILM, s.compound, "Alt+G", Action::Compound, any),
+            act(icon::FILM, s.uncompound, "Alt+Shift+G", Action::Uncompound, any),
+            act(icon::DONE, s.select_all, "Ctrl+A", Action::SelectAll, true),
+            Entry::new(icon::UNDO, plain(s.undo_tip), "Ctrl+Z", Run::Undo),
+            Entry::new(icon::REDO, plain(s.redo_tip), "Ctrl+Shift+Z", Run::Redo),
+            Entry::new(icon::TEXT, s.title_tip, "", Run::Title),
+            Entry::new(icon::COLOUR, s.colour_tip, "", Run::Colour),
+            Entry::new(icon::MARKER, s.add_marker, "M", Run::Marker),
+            Entry::new(icon::IMPORT, s.import, "", Run::Import),
+            Entry::new(icon::FIT, plain(s.fit_tip), "Shift+Z", Run::Fit),
+            Entry::new(icon::ZOOM_IN, plain(s.zoom_in_tip), "+", Run::ZoomIn),
+            Entry::new(icon::ZOOM_OUT, plain(s.zoom_out_tip), "−", Run::ZoomOut),
+            Entry::new(icon::SCREEN, plain(s.preview_only_tip), "F", Run::PreviewOnly),
+            Entry::new(icon::SEARCH, s.hint_keys, "?", Run::Keys),
+        ];
+        for m in &p.markers {
+            let at = theme::timecode(m.at.seconds());
+            let label = if m.note.is_empty() {
+                s.palette_marker.to_string()
+            } else {
+                format!("{} · {}", s.palette_marker, m.note)
+            };
+            all.push(Entry::new(icon::MARKER, label, at, Run::Seek(m.at)));
+        }
+        for (id, m) in &p.media {
+            let glyph = match m.kind {
+                MediaKind::Video => icon::VIDEO,
+                MediaKind::Image => icon::IMAGE,
+                MediaKind::Audio => icon::MUSIC,
+                // looks and fonts are not placed on a timeline
+                _ => continue,
+            };
+            all.push(Entry::new(glyph, m.name.clone(), s.palette_place, Run::Media(id.clone())));
+        }
+        for clip in p.tracks.iter().flat_map(|t| &t.clips) {
+            if let ClipContent::Text { text, .. } = &clip.content {
+                let at = theme::timecode(clip.start.seconds());
+                all.push(Entry::new(icon::TEXT, text.replace('\n', " "), at, Run::Clip(clip.id.clone(), clip.start)));
+            }
+        }
+        for l in Lang::ALL {
+            all.push(Entry::new(icon::TRANSLATE, l.strings().lang_name, "", Run::Lang(l)).enabled(l != self.lang));
+        }
+        all
+    }
+
+    /// Does what was chosen in the palette.
+    fn palette_run(&mut self, run: palette::Run, ctx: &egui::Context) {
+        use palette::Run;
+        match run {
+            Run::Act(action) => self.act(action),
+            Run::Undo => {
+                let _ = self.execute("edit.undo", json!({}));
+            }
+            Run::Redo => {
+                let _ = self.execute("edit.redo", json!({}));
+            }
+            Run::Play => self.set_playing(!self.playing),
+            Run::Title => self.add_title(),
+            Run::Colour => self.add_colour(),
+            Run::Import => self.pick_files(ctx),
+            Run::Marker => {
+                let _ = self.execute("marker.add", json!({"at": self.playhead}));
+            }
+            Run::Fit => self.timeline.fit(self.project().duration().seconds(), ctx.content_rect().width()),
+            Run::ZoomIn => self.timeline.zoom(1.5),
+            Run::ZoomOut => self.timeline.zoom(1.0 / 1.5),
+            Run::PreviewOnly => self.preview_only = !self.preview_only,
+            Run::Keys => self.keys_open = true,
+            Run::Seek(t) => self.seek(t.min(self.project().duration())),
+            Run::Media(id) => self.add_item(&assets::Item::Media(id), self.playhead, None),
+            Run::Clip(id, at) => {
+                self.select(timeline::Select::Set(vec![id]));
+                self.seek(at);
+            }
+            Run::Lang(lang) => self.set_lang(ctx, lang),
+        }
+    }
+
+    /// The list of keys, while open (?).
+    fn keys_window(&mut self, ctx: &egui::Context) {
+        if !self.keys_open {
+            return;
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.keys_open = false;
+            return;
+        }
+        let s = self.s();
+        let mut open = true;
+        let tallest = (ctx.content_rect().height() - 120.0).max(160.0);
+        egui::Window::new(egui::RichText::new(s.hint_keys).strong())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().max_height(tallest).min_scrolled_height(tallest).show(ui, |ui| {
+                    // two columns of keys in a wide window
+                    let columns = if self.narrow { 1 } else { 2 };
+                    let rows = s.keys.len().div_ceil(columns);
+                    ui.horizontal_top(|ui| {
+                        for column in s.keys.chunks(rows) {
+                            egui::Grid::new(("keys", column[0].0)).num_columns(2).spacing([14.0, 6.0]).show(ui, |ui| {
+                                for &(k, what) in column {
+                                    theme::keycap(ui, &i18n::keys(ui.ctx(), k));
+                                    ui.label(egui::RichText::new(what).color(theme::color::WEAK));
+                                    ui.end_row();
+                                }
+                            });
+                            ui.add_space(18.0);
+                        }
+                    });
+                });
+            });
+        self.keys_open &= open;
+    }
+
     /// The bar along the top: name, what the project is, who is here, undo, export.
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         let p = self.project();
@@ -1966,6 +2141,11 @@ impl EditorApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 self.export_controls(ui, &p);
                 ui.add_space(4.0);
+                let keys = if narrow { String::new() } else { i18n::keys(ui.ctx(), "Ctrl+K") };
+                if theme::tool(ui, icon::SEARCH, &keys, s.palette_tip, true).clicked() {
+                    self.palette.toggle();
+                }
+                ui.add_space(4.0);
                 let mut lang = self.lang;
                 // a narrow bar has room for the language's code only
                 let (shown, width) = if narrow { (self.lang.code(), 40.0) } else { (s.lang_name, 96.0) };
@@ -1979,17 +2159,7 @@ impl EditorApp {
                     })
                     .response
                     .on_hover_text(s.lang_tip);
-                if lang != self.lang {
-                    if self.status == s.ready {
-                        self.status.clear();
-                    }
-                    if (lang == Lang::Ja) != (self.lang == Lang::Ja) {
-                        theme::set_fonts(ui.ctx(), lang == Lang::Ja);
-                    }
-                    self.lang = lang;
-                    self.lang_chosen = true;
-                    self.lang_unsaved = true;
-                }
+                self.set_lang(ui.ctx(), lang);
                 // an editor with drafts starts anew on the drafts page, which loses nothing
                 if self.drafts.is_none()
                     && theme::tool(ui, icon::ADD, if narrow { "" } else { s.new_project }, s.new_project_tip, true)
@@ -2585,25 +2755,24 @@ impl EditorApp {
         let p = self.project();
         let s = self.s();
         let Some(id) = self.selected.clone() else {
-            ui.add_space(24.0);
+            // nothing to adjust: the two ways to everything else
+            ui.add_space((ui.available_height() * 0.28).clamp(24.0, 160.0));
             ui.vertical_centered(|ui| {
-                ui.label(egui::RichText::new(icon::FILM).size(28.0).color(theme::color::LINE));
+                ui.label(egui::RichText::new(icon::SLIDERS).size(30.0).color(theme::color::HOVER));
+                ui.add_space(6.0);
                 ui.label(egui::RichText::new(s.select_hint).color(theme::color::WEAK));
-            });
-            ui.add_space(16.0);
-            // the list is longer than a short window: it scrolls, and the panel keeps its height
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                theme::section(ui, s.shortcuts, |ui| {
-                    egui::Grid::new("keys").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
-                        for &(k, what) in s.keys {
-                            ui.label(
-                                egui::RichText::new(i18n::keys(ui.ctx(), k)).monospace().color(theme::color::TEXT),
-                            );
-                            ui.label(egui::RichText::new(what).color(theme::color::WEAK));
-                            ui.end_row();
+                ui.add_space(18.0);
+                for (keys, word, palette) in [("Ctrl+K", s.hint_palette, true), ("?", s.hint_keys, false)] {
+                    let keys = i18n::keys(ui.ctx(), keys);
+                    if theme::hint_chip(ui, &keys, word).clicked() {
+                        if palette {
+                            self.palette.toggle();
+                        } else {
+                            self.keys_open = true;
                         }
-                    });
-                });
+                    }
+                    ui.add_space(2.0);
+                }
             });
             return;
         };
@@ -4298,6 +4467,13 @@ impl eframe::App for EditorApp {
         self.export_window(&ctx);
         self.timelines_window(&ctx);
         self.spoken_window(&ctx);
+        self.keys_window(&ctx);
+        if self.palette.open {
+            let entries = self.palette_entries();
+            if let Some(run) = self.palette.show(&ctx, self.s(), entries) {
+                self.palette_run(run, &ctx);
+            }
+        }
         if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
             let screen = ctx.content_rect();
             let painter = ctx
