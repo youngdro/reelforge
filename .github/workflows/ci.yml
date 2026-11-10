@@ -41,6 +41,8 @@ jobs:
         include:
           - os: macos-latest
             require: "h264,hevc"
+          - os: windows-latest
+            require: "h264"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
