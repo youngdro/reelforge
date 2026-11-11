@@ -83,6 +83,7 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "shadow.drop@1",
     "shape/1",
     "shape.color/1",
+    "shape.keys/1",
     "text/1",
     "text/2",
     "text/3",

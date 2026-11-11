@@ -4807,3 +4807,52 @@ fn a_script_is_kept_as_a_preset_and_built_again_with_other_values() {
     let back: reelforge_model::Project = serde_json::from_str(&text).unwrap();
     assert_eq!(back.presets, s.project().presets);
 }
+
+#[test]
+fn a_shape_s_box_corner_and_outline_are_keyed_and_a_script_tweens_them() {
+    let mut s = Session::default();
+    let src = r##"export function build({ scene, timeline }) {
+        const bar = scene.rect({ name: "bar", width: 100, height: 40, fill: "#fff", stroke: { color: "#000", width: 2 } });
+        const dot = scene.circle({ name: "dot", width: 50 });
+        timeline({ defaults: { duration: 1, ease: "none" } })
+          .to(bar, { width: 600, borderRadius: 20, stroke: "#ff0000", strokeWidth: 8 })
+          .from(dot, { height: 0 }, 0);
+    }"##;
+    let out = s.execute("script.add", &json!({"source": src})).unwrap();
+    let id = |i: usize| out["clips"][i]["clip"].as_str().unwrap().to_string();
+    let proj = s.project();
+    let ends = |c: &reelforge_model::Clip, p: Prop| c.keys[&p].iter().map(|k| k.v).collect::<Vec<_>>();
+    let bar = proj.clip(&id(0)).unwrap().1;
+    assert_eq!(ends(bar, Prop::Width), [100.0, 600.0]);
+    assert_eq!(ends(bar, Prop::Radius), [0.0, 20.0]);
+    assert_eq!(ends(bar, Prop::StrokeWidth), [2.0, 8.0]);
+    assert_eq!((ends(bar, Prop::StrokeR), ends(bar, Prop::StrokeA)), (vec![0.0, 1.0], vec![1.0, 1.0]));
+    assert!(!bar.keys.contains_key(&Prop::Height));
+    assert_eq!(ends(proj.clip(&id(1)).unwrap().1, Prop::Height), [0.0, 50.0]);
+    let spec = reelforge_compile::compile(&proj, &reelforge_compile::CompileOptions { encode: false }).unwrap();
+    assert!(spec.required_features().contains("shape.keys/1"));
+    reelforge_renderspec::validate(&spec).unwrap();
+    let shape = |i: usize| {
+        let layer = spec.layers.iter().find(|l| l.id == id(i)).unwrap();
+        let reelforge_renderspec::LayerContent::Shape(sh) = &layer.content else { panic!() };
+        sh.clone()
+    };
+    let half = shape(0).at(Tick::from_seconds(0.5));
+    assert_eq!((half.size, half.radius), ([350.0, 40.0], 10.0));
+    let stroke = half.stroke.unwrap();
+    assert_eq!((stroke.width, stroke.color.0[0]), (5.0, 0.5));
+    // a shape without an outline keys none of it
+    assert!(shape(1).keys.as_ref().is_some_and(|k| k.stroke_color.is_none() && k.size.is_some()));
+
+    // by hand too, where the shape has the part; a script asking for what a node lacks is told
+    let e = s.execute("clip.setKey", &json!({"clip": id(1), "prop": "strokeWidth", "at": 0, "value": 3})).unwrap_err();
+    assert_eq!(e.to_string(), "invalid parameters: this clip has no `strokeWidth` to key");
+    s.execute("clip.setKey", &json!({"clip": id(1), "prop": "radius", "at": 0, "value": 3})).unwrap();
+    let e = s
+        .execute(
+            "script.check",
+            &json!({"source": "export function build({ scene, timeline }) { timeline().to(scene.circle({}), { stroke: \"red\" }); }"}),
+        )
+        .unwrap_err();
+    assert!(e.to_string().contains("only a shape made with a `stroke`"), "{e}");
+}

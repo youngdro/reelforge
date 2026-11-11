@@ -146,6 +146,10 @@ In rough priority order for short videos:
    `colorB`, `colorA` of a title's words or of a shape's fill, of a gradient the colour it starts
    from). The plan writes the colour of the instant into the fill or the words, so neither
    compositor knows of it.
+   `shape.keys/1` (`ShapeContent.keys`, `ShapeKeys`) keys a shape's box, corner radius, outline
+   width and outline colour (`Prop::SHAPE`: `width`, `height`, `radius`, `strokeWidth`;
+   `Prop::STROKE`: `strokeR` … `strokeA`), written into the shape of the instant the same way
+   (`ShapeContent::at`).
    `motion.blur/1` (`Layer.motion_blur`, a shutter open for a share of a frame's time) smears a
    layer along its own movement. The plan places the layer at several instants of that time
    (`PlannedLayer.smear`, as many as keep them a couple of pixels apart, `plan::SMEAR` at most,

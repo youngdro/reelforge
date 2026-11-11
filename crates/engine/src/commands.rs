@@ -3216,6 +3216,11 @@ fn clip_set_key(s: &mut Session, v: &Value) -> CmdResult {
             } else if Prop::COLOR.contains(&prop) {
                 // a title's colour, or the colour that fills a shape
                 clip.own_color().is_some()
+            } else if Prop::STROKE.contains(&prop) || prop == Prop::StrokeWidth {
+                // an outline there is
+                matches!(&clip.content, ClipContent::Shape { shape } if shape.stroke.is_some())
+            } else if Prop::SHAPE.contains(&prop) {
+                matches!(&clip.content, ClipContent::Shape { .. })
             } else {
                 proj.tracks[ti].kind != TrackKind::Audio
             };

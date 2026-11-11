@@ -735,6 +735,23 @@ pub fn color(clip: &Clip, shape: &Shape, step: Tick) -> Option<reelforge_renders
     })
 }
 
+/// The box, corner and outline of `clip`'s shape over time, where any of them has keys; the
+/// outline's only where it has one (`stroked`).
+pub fn shape_keys(clip: &Clip, shape: &Shape, step: Tick, stroked: bool) -> Option<reelforge_renderspec::ShapeKeys> {
+    let keyed = |p: Prop| clip.keyed(p);
+    let keys = reelforge_renderspec::ShapeKeys {
+        size: (keyed(Prop::Width) || keyed(Prop::Height))
+            .then(|| lower_pair(clip, [Prop::Width, Prop::Height], shape, step)),
+        radius: keyed(Prop::Radius).then(|| lower(clip, Prop::Radius, shape, step)),
+        stroke_width: (stroked && keyed(Prop::StrokeWidth)).then(|| lower(clip, Prop::StrokeWidth, shape, step)),
+        stroke_color: (stroked && Prop::STROKE.iter().any(|p| keyed(*p))).then(|| {
+            let [r, g, b, a] = Prop::STROKE.map(|p| lower(clip, p, shape, step));
+            reelforge_renderspec::ColorKeys { r, g, b, a }
+        }),
+    };
+    (keys != reelforge_renderspec::ShapeKeys::default()).then_some(keys)
+}
+
 /// Position `[x, y]` of `clip`'s layer, keyed together.
 pub fn lower_position(clip: &Clip, shape: &Shape, step: Tick) -> Animated<[f32; 2]> {
     lower_pair(clip, [Prop::X, Prop::Y], shape, step)

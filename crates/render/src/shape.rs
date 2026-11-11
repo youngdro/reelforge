@@ -396,6 +396,7 @@ mod tests {
             trim: None,
             fill_opacity: None,
             fill_color: None,
+            keys: None,
         }
     }
 

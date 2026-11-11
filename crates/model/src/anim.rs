@@ -90,6 +90,22 @@ pub enum Prop {
     ColorB,
     /// How solid it is.
     ColorA,
+    /// A shape's width in canvas pixels, before the clip's scale.
+    Width,
+    /// A shape's height.
+    Height,
+    /// A shape's corner radius, in canvas pixels.
+    Radius,
+    /// The width of a shape's outline, in canvas pixels.
+    StrokeWidth,
+    /// The red of a shape's outline, 0 to 1.
+    StrokeR,
+    /// Its green.
+    StrokeG,
+    /// Its blue.
+    StrokeB,
+    /// How solid it is.
+    StrokeA,
 }
 
 impl Prop {
@@ -131,8 +147,12 @@ impl Prop {
     pub const DRAW: [Prop; 2] = [Prop::DrawStart, Prop::DrawEnd];
     /// A shape's or a title's colour: red, green, blue, and how solid.
     pub const COLOR: [Prop; 4] = [Prop::ColorR, Prop::ColorG, Prop::ColorB, Prop::ColorA];
+    /// A shape's box, corner and outline width.
+    pub const SHAPE: [Prop; 4] = [Prop::Width, Prop::Height, Prop::Radius, Prop::StrokeWidth];
+    /// A shape's outline colour: red, green, blue, and how solid.
+    pub const STROKE: [Prop; 4] = [Prop::StrokeR, Prop::StrokeG, Prop::StrokeB, Prop::StrokeA];
     /// Every property.
-    pub const ALL: [Prop; 36] = [
+    pub const ALL: [Prop; 44] = [
         Prop::X,
         Prop::Y,
         Prop::Scale,
@@ -169,6 +189,14 @@ impl Prop {
         Prop::ColorG,
         Prop::ColorB,
         Prop::ColorA,
+        Prop::Width,
+        Prop::Height,
+        Prop::Radius,
+        Prop::StrokeWidth,
+        Prop::StrokeR,
+        Prop::StrokeG,
+        Prop::StrokeB,
+        Prop::StrokeA,
     ];
 
     /// The name commands use (`x`, `volumeDb`, `cropLeft`, `maskX`, `exposure`…).
@@ -210,6 +238,14 @@ impl Prop {
             Prop::ColorG => "colorG",
             Prop::ColorB => "colorB",
             Prop::ColorA => "colorA",
+            Prop::Width => "width",
+            Prop::Height => "height",
+            Prop::Radius => "radius",
+            Prop::StrokeWidth => "strokeWidth",
+            Prop::StrokeR => "strokeR",
+            Prop::StrokeG => "strokeG",
+            Prop::StrokeB => "strokeB",
+            Prop::StrokeA => "strokeA",
         }
     }
 
@@ -226,7 +262,8 @@ impl Prop {
         }
         match self {
             Prop::Opacity | Prop::DrawStart | Prop::DrawEnd => Some((0.0, 1.0)),
-            p if Prop::COLOR.contains(&p) => Some((0.0, 1.0)),
+            p if Prop::COLOR.contains(&p) || Prop::STROKE.contains(&p) => Some((0.0, 1.0)),
+            p if Prop::SHAPE.contains(&p) => Some((0.0, f32::MAX)),
             p if Prop::CROP.contains(&p) => Some((0.0, 0.98)),
             Prop::MaskWidth | Prop::MaskHeight | Prop::MaskFeather => Some((0.0, f32::MAX)),
             _ => None,
@@ -923,6 +960,22 @@ impl Clip {
                 let i = Prop::COLOR.iter().position(|c| *c == p).expect("a colour's part");
                 self.own_color().map_or(1.0, |c| c[i])
             }
+            Prop::Width | Prop::Height | Prop::Radius | Prop::StrokeWidth => match &self.content {
+                crate::ClipContent::Shape { shape } => match p {
+                    Prop::Width => shape.size[0],
+                    Prop::Height => shape.size[1],
+                    Prop::Radius => shape.radius,
+                    _ => shape.stroke.as_ref().map_or(0.0, |s| s.width),
+                },
+                _ => 0.0,
+            },
+            Prop::StrokeR | Prop::StrokeG | Prop::StrokeB | Prop::StrokeA => {
+                let i = Prop::STROKE.iter().position(|c| *c == p).expect("an outline colour's part");
+                match &self.content {
+                    crate::ClipContent::Shape { shape } => shape.stroke.as_ref().map_or(1.0, |s| s.color[i]),
+                    _ => 1.0,
+                }
+            }
             p => {
                 let i = Prop::ADJUST.iter().position(|a| *a == p).expect("every other property is an adjustment");
                 self.color.adjust.values()[i]
@@ -982,6 +1035,28 @@ impl Clip {
                         None => {}
                     },
                     _ => {}
+                }
+            }
+            Prop::Width | Prop::Height | Prop::Radius | Prop::StrokeWidth => {
+                if let crate::ClipContent::Shape { shape } = &mut self.content {
+                    match p {
+                        Prop::Width => shape.size[0] = v,
+                        Prop::Height => shape.size[1] = v,
+                        Prop::Radius => shape.radius = v,
+                        _ => {
+                            if let Some(s) = &mut shape.stroke {
+                                s.width = v;
+                            }
+                        }
+                    }
+                }
+            }
+            Prop::StrokeR | Prop::StrokeG | Prop::StrokeB | Prop::StrokeA => {
+                let i = Prop::STROKE.iter().position(|c| *c == p).expect("an outline colour's part");
+                if let crate::ClipContent::Shape { shape } = &mut self.content
+                    && let Some(s) = &mut shape.stroke
+                {
+                    s.color[i] = v;
                 }
             }
             p => {

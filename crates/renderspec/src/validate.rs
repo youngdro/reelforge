@@ -399,6 +399,19 @@ fn shape_ok(path: &str, sh: &crate::ShapeContent, dur: Tick) -> Result<(), Valid
     if let Some(c) = &sh.fill_color {
         color_keys_ok(&format!("{path}.fill_color"), c, dur)?;
     }
+    if let Some(k) = &sh.keys {
+        if let Some(size) = &k.size {
+            keys_ok(&format!("{path}.keys.size"), size, dur)?;
+        }
+        for (name, part) in [("radius", &k.radius), ("stroke_width", &k.stroke_width)] {
+            if let Some(part) = part {
+                keys_ok(&format!("{path}.keys.{name}"), part, dur)?;
+            }
+        }
+        if let Some(c) = &k.stroke_color {
+            color_keys_ok(&format!("{path}.keys.stroke_color"), c, dur)?;
+        }
+    }
     Ok(())
 }
 

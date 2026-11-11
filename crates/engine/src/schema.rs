@@ -144,7 +144,7 @@ fn title_props() -> Vec<(&'static str, Value)> {
 fn prop_schema() -> (&'static str, Value) {
     (
         "prop",
-        json!({"enum": reelforge_model::Prop::ALL.map(reelforge_model::Prop::name).to_vec(), "description": "The property that moves: placement, opacity and volume; the crop's edges; the mask's centre, size, turn and soft edge; the colour adjustments; `colorR`, `colorG`, `colorB`, `colorA` (each 0 to 1), the colour of a title's words or of a shape's fill (of a gradient, the colour it starts from)."}),
+        json!({"enum": reelforge_model::Prop::ALL.map(reelforge_model::Prop::name).to_vec(), "description": "The property that moves: placement, opacity and volume; the crop's edges; the mask's centre, size, turn and soft edge; the colour adjustments; `colorR`, `colorG`, `colorB`, `colorA` (each 0 to 1), the colour of a title's words or of a shape's fill (of a gradient, the colour it starts from); `width`, `height`, `radius` and `strokeWidth` (canvas pixels), a shape's box, corner and outline; `strokeR`, `strokeG`, `strokeB`, `strokeA`, its outline's colour."}),
     )
 }
 

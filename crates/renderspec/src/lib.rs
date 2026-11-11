@@ -1260,6 +1260,52 @@ pub struct ShapeContent {
     /// or of the colour a gradient starts from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill_color: Option<ColorKeys>,
+    /// Its box, corner and outline over time (feature `shape.keys/1`), each in place of the
+    /// constant value beside it where given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<ShapeKeys>,
+}
+
+/// The values of a shape that move (feature `shape.keys/1`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ShapeKeys {
+    /// Width and height of its box, in place of `size`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<Animated<[f32; 2]>>,
+    /// Corner radius, in place of `radius`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radius: Option<Animated<f32>>,
+    /// The outline's width, in place of `stroke.width`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke_width: Option<Animated<f32>>,
+    /// The outline's colour, in place of `stroke.color`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke_color: Option<ColorKeys>,
+}
+
+impl ShapeContent {
+    /// The shape as it is `t` from its layer's start: its moving values written in, none left
+    /// to move.
+    pub fn at(&self, t: Tick) -> ShapeContent {
+        let mut out = self.clone();
+        let Some(keys) = out.keys.take() else { return out };
+        if let Some(size) = &keys.size {
+            out.size = size.sample(t).map(|v| v.clamp(0.0, 16384.0));
+        }
+        if let Some(r) = &keys.radius {
+            out.radius = r.sample(t).clamp(0.0, 16384.0);
+        }
+        if let Some(stroke) = &mut out.stroke {
+            if let Some(w) = &keys.stroke_width {
+                stroke.width = w.sample(t).clamp(0.0, 2048.0);
+            }
+            if let Some(c) = &keys.stroke_color {
+                stroke.color = c.sample(t);
+            }
+        }
+        out
+    }
 }
 
 fn five() -> u32 {
@@ -1845,6 +1891,9 @@ impl RenderSpec {
                 out.insert("shape/1".to_string());
                 if sh.fill_color.is_some() {
                     out.insert("shape.color/1".to_string());
+                }
+                if sh.keys.is_some() {
+                    out.insert("shape.keys/1".to_string());
                 }
             }
             if let LayerContent::Media { time, between, .. } = &layer.content {

@@ -484,7 +484,8 @@ fn plan_layers(
                 (PlannedSource::Text(text), Fit::Contain)
             }
             LayerContent::Shape(shape) => {
-                let mut shape = shape.clone();
+                // its box, corner and outline are values of this instant
+                let mut shape = Box::new(shape.at(local));
                 if let Some(t) = &shape.trim {
                     let (a, b) = (t.start.sample(local).clamp(0.0, 1.0), t.end.sample(local).clamp(0.0, 1.0));
                     shape.trim = Some(Trim { start: Animated::Constant(a), end: Animated::Constant(b) });
@@ -732,6 +733,20 @@ mod tests {
                 b: Animated::Constant(0.0),
                 a: Animated::Keys(vec![key(0.0, 0.0), key(1.0, 2.0)]),
             }),
+            keys: Some(reelforge_renderspec::ShapeKeys {
+                size: Some(Animated::Keys(vec![
+                    Key { t: Tick::ZERO, v: [10.0, 10.0], ease: Default::default() },
+                    Key { t: Tick::from_seconds(1.0), v: [50.0, 10.0], ease: Default::default() },
+                ])),
+                radius: Some(Animated::Keys(vec![key(0.0, 0.0), key(1.0, -8.0)])),
+                stroke_width: Some(Animated::Keys(vec![key(0.0, 2.0), key(1.0, 6.0)])),
+                stroke_color: Some(reelforge_renderspec::ColorKeys {
+                    r: Animated::Constant(0.0),
+                    g: Animated::Keys(vec![key(0.0, 0.0), key(1.0, 1.0)]),
+                    b: Animated::Constant(0.0),
+                    a: Animated::Constant(1.0),
+                }),
+            }),
         }));
         spec.layers.push(shape);
         let plan = plan_frame(&spec, Tick::from_seconds(0.25), 1.0);
@@ -743,6 +758,9 @@ mod tests {
         assert_eq!(s.fill_opacity, Some(Animated::Constant(0.25)));
         // its colour as it is at that instant is its fill, each part kept within 0 to 1
         assert_eq!((&s.fill, &s.fill_color), (&Some(Paint::Solid { color: Color([0.75, 0.5, 0.0, 0.5]) }), &None));
+        // and so are its box, its corner (never below none) and its outline
+        assert_eq!((s.size, s.radius, &s.keys), ([20.0, 10.0], 0.0, &None));
+        assert_eq!(s.stroke, Some(ShapeStroke { color: Color([0.0, 0.25, 0.0, 1.0]), width: 3.0 }));
         // a trim past the whole outline is the whole outline
         let plan = plan_frame(&spec, Tick::from_seconds(0.9), 1.0);
         let PlannedSource::Shape(s) = &plan.layers[1].source else { panic!() };

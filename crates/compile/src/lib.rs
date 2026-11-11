@@ -289,7 +289,9 @@ fn lower_tracks(
                     },
                     ClipContent::Solid { color } => LayerContent::Solid { color: Color(*color) },
                     ClipContent::Shape { shape: sh } => {
-                        let stroked = sh.stroke.as_ref().is_some_and(|s| s.width > 0.0);
+                        // an outline as thin as nothing is none, unless it widens
+                        let stroked =
+                            sh.stroke.as_ref().is_some_and(|s| s.width > 0.0 || clip.keyed(Prop::StrokeWidth));
                         let (trim, fill_opacity) = motion::draw(clip, &shape, step, stroked);
                         LayerContent::Shape(Box::new(ShapeContent {
                             kind: match sh.kind {
@@ -315,7 +317,7 @@ fn lower_tracks(
                             stroke: sh
                                 .stroke
                                 .as_ref()
-                                .filter(|s| s.width > 0.0)
+                                .filter(|_| stroked)
                                 .map(|s| ShapeStroke { color: Color(s.color), width: s.width }),
                             shadow: sh.shadow.as_ref().map(|s| ShapeShadow {
                                 color: Color(s.color),
@@ -325,6 +327,7 @@ fn lower_tracks(
                             trim: trim.map(|[start, end]| Trim { start, end }),
                             fill_opacity,
                             fill_color: motion::color(clip, &shape, step).filter(|_| sh.fill.is_some()),
+                            keys: motion::shape_keys(clip, &shape, step, stroked),
                         }))
                     }
                     // its timeline's picture, from where the clip starts in it
@@ -913,6 +916,7 @@ fn light_leak(clip: &str, at: Tick, half: Tick, canvas: [f32; 2]) -> Vec<Layer> 
                     trim: None,
                     fill_opacity: None,
                     fill_color: None,
+                    keys: None,
                 })),
                 transform: Transform {
                     position: Animated::Keys(vec![
