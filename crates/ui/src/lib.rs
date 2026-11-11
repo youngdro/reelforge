@@ -1321,6 +1321,8 @@ impl EditorApp {
             }
         } else {
             self.status = fill(self.s().added_to_media, &[&m.name]);
+            // seen where it went: a sound file in the audio tab, a picture or a video in media
+            self.assets.reveal(m.kind);
         }
         // an animation that uses what is not drawn says so, rather than looking wrong in silence
         let missing: Vec<&str> = imported["unsupported"]

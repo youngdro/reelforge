@@ -1529,6 +1529,65 @@ fn a_script_s_colour_parameter_is_read_for_the_picker_where_it_can_be() {
 }
 
 #[test]
+fn sound_brought_in_is_with_the_library_sounds_and_not_among_the_pictures() {
+    use crate::i18n::Lang;
+    use eframe::egui;
+    fn texts(shapes: &[egui::epaint::ClippedShape]) -> String {
+        fn walk(shape: &egui::Shape, out: &mut String) {
+            match shape {
+                egui::Shape::Text(t) => {
+                    out.push_str(&t.galley.job.text);
+                    out.push('\n');
+                }
+                egui::Shape::Vec(all) => all.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut out = String::new();
+        shapes.iter().for_each(|c| walk(&c.shape, &mut out));
+        out
+    }
+    let mut app = EditorApp::demo().with_lang(Lang::En);
+    let ctx = egui::Context::default();
+    crate::theme::install(&ctx, false);
+    let panel = |app: &mut EditorApp| {
+        let mut shown = String::new();
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(380.0, 800.0))),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                let (p, media) = (app.project(), app.media.clone());
+                let _ = app.assets.show(ui, &p, &media, Lang::En, &[], false, Tick::ZERO, &[]);
+            });
+            out.textures_delta.clear();
+            shown = texts(&out.shapes);
+        }
+        shown
+    };
+    // a sound file imported (not placed) is shown where it went: in the audio tab, above the library
+    app.import_bytes("Voice over take 2.wav", tone_wav(48_000, 0.5), false);
+    let audio = panel(&mut app);
+    let (mine, effects) = (audio.find("IMPORTED"), audio.find("EFFECTS"));
+    assert!(mine.is_some() && mine < effects, "{audio}");
+    assert!(audio.contains("Voice over take 2"), "{audio}");
+    // the media tab has pictures and video only, and no filter for sound; a picture imported is
+    // shown there
+    let png = {
+        let mut out = Vec::new();
+        let img = image::RgbaImage::from_pixel(8, 4, image::Rgba([0, 200, 0, 255]));
+        img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+        out
+    };
+    app.import_bytes("Green.png", png, false);
+    let media = panel(&mut app);
+    assert!(media.contains("Green.png"), "{media}");
+    assert!(!media.contains("Voice over take 2") && media.contains("Pictures"), "{media}");
+    assert_eq!(media.matches("Audio").count(), 1, "only the audio tab's own name: {media}");
+}
+
+#[test]
 fn a_saved_preset_is_offered_in_other_projects_and_builds_its_script() {
     let source = "export const params = { size: { type: \"number\", default: 100 } };\n\
                   export function build({ params, scene, timeline }) {\n\
