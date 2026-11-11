@@ -106,12 +106,17 @@ pub enum Prop {
     StrokeB,
     /// How solid it is.
     StrokeA,
+    /// Degrees the clip leans across, its top edge to the left as its bottom goes right
+    /// (as CSS `skewX`).
+    SkewX,
+    /// Degrees it leans down, its right edge going down (as CSS `skewY`).
+    SkewY,
 }
 
 impl Prop {
     /// Where, how and how loud: what `clip.set` sets, and what animations, transitions and
     /// effects may move.
-    pub const MOTION: [Prop; 10] = [
+    pub const MOTION: [Prop; 12] = [
         Prop::X,
         Prop::Y,
         Prop::Scale,
@@ -122,7 +127,11 @@ impl Prop {
         Prop::ScaleY,
         Prop::RotationX,
         Prop::RotationY,
+        Prop::SkewX,
+        Prop::SkewY,
     ];
+    /// Leaning: across and down.
+    pub const SKEW: [Prop; 2] = [Prop::SkewX, Prop::SkewY];
     /// Stretched and turned in space: width and height apart, about the horizontal and the
     /// vertical axis.
     pub const SPACE: [Prop; 4] = [Prop::ScaleX, Prop::ScaleY, Prop::RotationX, Prop::RotationY];
@@ -152,7 +161,7 @@ impl Prop {
     /// A shape's outline colour: red, green, blue, and how solid.
     pub const STROKE: [Prop; 4] = [Prop::StrokeR, Prop::StrokeG, Prop::StrokeB, Prop::StrokeA];
     /// Every property.
-    pub const ALL: [Prop; 44] = [
+    pub const ALL: [Prop; 46] = [
         Prop::X,
         Prop::Y,
         Prop::Scale,
@@ -197,6 +206,8 @@ impl Prop {
         Prop::StrokeG,
         Prop::StrokeB,
         Prop::StrokeA,
+        Prop::SkewX,
+        Prop::SkewY,
     ];
 
     /// The name commands use (`x`, `volumeDb`, `cropLeft`, `maskX`, `exposure`…).
@@ -246,6 +257,8 @@ impl Prop {
             Prop::StrokeG => "strokeG",
             Prop::StrokeB => "strokeB",
             Prop::StrokeA => "strokeA",
+            Prop::SkewX => "skewX",
+            Prop::SkewY => "skewY",
         }
     }
 
@@ -264,6 +277,7 @@ impl Prop {
             Prop::Opacity | Prop::DrawStart | Prop::DrawEnd => Some((0.0, 1.0)),
             p if Prop::COLOR.contains(&p) || Prop::STROKE.contains(&p) => Some((0.0, 1.0)),
             p if Prop::SHAPE.contains(&p) => Some((0.0, f32::MAX)),
+            Prop::SkewX | Prop::SkewY => Some((-89.0, 89.0)),
             p if Prop::CROP.contains(&p) => Some((0.0, 0.98)),
             Prop::MaskWidth | Prop::MaskHeight | Prop::MaskFeather => Some((0.0, f32::MAX)),
             _ => None,
@@ -936,6 +950,8 @@ impl Clip {
             Prop::ScaleY => self.transform.scale_y,
             Prop::RotationX => self.transform.rotation_x,
             Prop::RotationY => self.transform.rotation_y,
+            Prop::SkewX => self.transform.skew[0],
+            Prop::SkewY => self.transform.skew[1],
             Prop::Opacity => self.opacity,
             Prop::VolumeDb => self.volume_db,
             Prop::CropLeft => self.look.crop.left,
@@ -994,6 +1010,8 @@ impl Clip {
             Prop::ScaleY => self.transform.scale_y = v,
             Prop::RotationX => self.transform.rotation_x = v,
             Prop::RotationY => self.transform.rotation_y = v,
+            Prop::SkewX => self.transform.skew[0] = v,
+            Prop::SkewY => self.transform.skew[1] = v,
             Prop::Opacity => self.opacity = v,
             Prop::VolumeDb => self.volume_db = v,
             Prop::CropLeft => self.look.crop.left = v,

@@ -55,6 +55,8 @@ Every node takes `x`, `y`, `scale`, `rotation`, `opacity` and a `name` (which er
 replies use). Later nodes lie over earlier ones. Every node also takes:
 
 - `scaleX`, `scaleY`: width and height apart, on top of `scale` (negative mirrors);
+- `skewX`, `skewY`: leaning, in degrees within ±89, as CSS `skew` (`skewX: 20` slants the top
+  edge left and the bottom right, about the node's `transformOrigin`);
 - `rotationX`, `rotationY`: turned in space, in degrees (`rotationY` swings it like a door,
   `rotationX` tips it like a lid; past 90 it shows its back), seen from `perspective` pixels away
   (two canvas heights unless told; nearer is stronger);
@@ -106,7 +108,7 @@ script.
   `repeat` (a whole number of extra times), `yoyo`, `repeatDelay`.
 - A value is a number, or `"+=n"` / `"-=n"` from where the property is.
 - **Properties**: `x`, `y`, `scale`, `rotation`, `opacity`, `scaleX`, `scaleY`, `rotationX`,
-  `rotationY` on every node; `maskX`, `maskY`, `maskWidth`, `maskHeight`, `maskRotation`,
+  `rotationY`, `skewX`, `skewY` on every node; `maskX`, `maskY`, `maskWidth`, `maskHeight`, `maskRotation`,
   `maskFeather` on a node with a `mask`; `fill` on a shape made with a fill and `color` on a title
   (a colour as anywhere else; of a gradient, the colour it starts from; each of red, green, blue
   and alpha goes its own straight way, so fade with `opacity` rather than to a transparent black);
@@ -186,7 +188,6 @@ what to write meanwhile (a script that uses one is refused, and told so):
 
 | GSAP | State | Meanwhile |
 | --- | --- | --- |
-| `skewX`, `skewY` | nothing skews | |
 | `width`, `height` of a title or a picture | only a shape's box is keyed | `scaleX`, `scaleY` with a `transformOrigin` |
 | a shadow's colour, a gradient's second colour, a title's box | a fill's, a title's and an outline's colour are keyed | cross-fade two nodes |
 | `filter: blur()` and other filters | not keyed | the colour adjustments are; `motionBlur` |

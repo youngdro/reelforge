@@ -129,7 +129,8 @@ In rough priority order for short videos:
    A layer's placement is a 3×3 map of the frame's plane (`plan::Map`). `transform.stretch/1`
    scales its two sides apart, `transform.anchor/1` names the point of the picture that is placed
    and that it scales and turns about, `transform.3d/1` (`turn`) tips it about its horizontal and
-   vertical through that point and looks at it from `distance` frame heights, and `layer.parent/1`
+   vertical through that point and looks at it from `distance` frame heights, `transform.skew/1`
+   (`skew`, degrees) leans it as CSS `skew` does, between its stretch and its turn, and `layer.parent/1`
    places it inside another layer (`parent`, at most `PARENTS` deep; `validate` refuses a ring):
    the maps of the chain are multiplied, and the outermost turned layer is where the eye looks
    from, so a card and what it carries share one perspective. The CPU compositor divides by the

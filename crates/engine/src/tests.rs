@@ -4856,3 +4856,30 @@ fn a_shape_s_box_corner_and_outline_are_keyed_and_a_script_tweens_them() {
         .unwrap_err();
     assert!(e.to_string().contains("only a shape made with a `stroke`"), "{e}");
 }
+
+#[test]
+fn a_clip_leans_and_a_script_skews_it() {
+    let mut s = Session::default();
+    let src = r##"export function build({ scene, timeline }) {
+        const card = scene.rect({ name: "card", skewY: 5 });
+        timeline({ defaults: { duration: 1, ease: "none" } }).to(card, { skewX: -20 });
+    }"##;
+    let out = s.execute("script.add", &json!({"source": src})).unwrap();
+    let id = out["clips"][0]["clip"].as_str().unwrap().to_string();
+    let proj = s.project();
+    let card = proj.clip(&id).unwrap().1;
+    assert_eq!(card.transform.skew, [0.0, 5.0]);
+    assert_eq!(card.keys[&Prop::SkewX].iter().map(|k| k.v).collect::<Vec<_>>(), [0.0, -20.0]);
+    let spec = reelforge_compile::compile(&proj, &reelforge_compile::CompileOptions { encode: false }).unwrap();
+    assert!(spec.required_features().contains("transform.skew/1"));
+    reelforge_renderspec::validate(&spec).unwrap();
+    let layer = spec.layers.iter().find(|l| l.id == id).unwrap();
+    assert_eq!(layer.transform.skew.as_ref().unwrap().sample(Tick::from_seconds(0.5)), [-10.0, 5.0]);
+
+    // by hand: set, keyed and refused past the edge; the outline says it
+    s.execute("clip.set", &json!({"clip": id, "skewY": -12})).unwrap();
+    assert_eq!(s.project().clip(&id).unwrap().1.transform.skew[1], -12.0);
+    assert!(s.execute("clip.set", &json!({"clip": id, "skewY": 95})).is_err());
+    assert!(s.execute("clip.setKey", &json!({"clip": id, "prop": "skewY", "at": 0, "value": 120})).is_err());
+    s.execute("clip.setKey", &json!({"clip": id, "prop": "skewY", "at": 0, "value": 30})).unwrap();
+}

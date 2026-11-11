@@ -818,6 +818,7 @@ fn carriers(tracks: &[Track]) -> BTreeMap<&str, &str> {
 /// Where a clip's layer is and how it is turned, over its layer.
 fn placement(clip: &Clip, shape: &Shape, step: Tick) -> Transform {
     let stretch = motion::lower_pair(clip, [Prop::ScaleX, Prop::ScaleY], shape, step);
+    let skew = motion::lower_pair(clip, [Prop::SkewX, Prop::SkewY], shape, step);
     let [x, y] = [Prop::RotationX, Prop::RotationY].map(|p| motion::lower(clip, p, shape, step));
     let flat = Animated::Constant(0.0);
     let (near, far) = ClipTransform::DISTANCES;
@@ -828,6 +829,7 @@ fn placement(clip: &Clip, shape: &Shape, step: Tick) -> Transform {
         stretch: (stretch != Animated::Constant([1.0, 1.0])).then_some(stretch),
         anchor: (clip.transform.anchor != [0.5, 0.5]).then_some(clip.transform.anchor),
         turn: (x != flat || y != flat).then(|| Turn { x, y, distance: clip.transform.distance.clamp(near, far) }),
+        skew: (skew != Animated::Constant([0.0, 0.0])).then_some(skew),
     }
 }
 

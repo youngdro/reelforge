@@ -144,7 +144,7 @@ fn title_props() -> Vec<(&'static str, Value)> {
 fn prop_schema() -> (&'static str, Value) {
     (
         "prop",
-        json!({"enum": reelforge_model::Prop::ALL.map(reelforge_model::Prop::name).to_vec(), "description": "The property that moves: placement, opacity and volume; the crop's edges; the mask's centre, size, turn and soft edge; the colour adjustments; `colorR`, `colorG`, `colorB`, `colorA` (each 0 to 1), the colour of a title's words or of a shape's fill (of a gradient, the colour it starts from); `width`, `height`, `radius` and `strokeWidth` (canvas pixels), a shape's box, corner and outline; `strokeR`, `strokeG`, `strokeB`, `strokeA`, its outline's colour."}),
+        json!({"enum": reelforge_model::Prop::ALL.map(reelforge_model::Prop::name).to_vec(), "description": "The property that moves: placement, opacity and volume; the crop's edges; the mask's centre, size, turn and soft edge; the colour adjustments; `colorR`, `colorG`, `colorB`, `colorA` (each 0 to 1), the colour of a title's words or of a shape's fill (of a gradient, the colour it starts from); `width`, `height`, `radius` and `strokeWidth` (canvas pixels), a shape's box, corner and outline; `strokeR`, `strokeG`, `strokeB`, `strokeA`, its outline's colour; `skewX`, `skewY` (degrees within ±89), how it leans."}),
     )
 }
 
@@ -632,9 +632,19 @@ pub fn input_schema(id: &str) -> Option<Value> {
         "clip.add" => {
             // a stretch, a turn in space, an anchor and motion blur, as clip.set says them
             let set = input_schema("clip.set").expect("clip.set has a schema");
-            let placed =
-                ["scaleX", "scaleY", "rotationX", "rotationY", "perspective", "motionBlur", "anchorX", "anchorY"]
-                    .map(|k| (k, set["properties"][k].clone()));
+            let placed = [
+                "scaleX",
+                "scaleY",
+                "rotationX",
+                "rotationY",
+                "skewX",
+                "skewY",
+                "perspective",
+                "motionBlur",
+                "anchorX",
+                "anchorY",
+            ]
+            .map(|k| (k, set["properties"][k].clone()));
             let mut props = vec![
                 ("track", ident("Track id, such as t1 (project.inspect lists them).")),
                 ("start", time("Timeline start; the end of the track by default.")),
@@ -987,6 +997,14 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ("volumeDb", num("Gain in dB; 0 is unchanged.")),
                 ("scaleX", num("Width alone, on top of the scale: 1 as it is, negative mirrored.")),
                 ("scaleY", num("Height alone, on top of the scale.")),
+                (
+                    "skewX",
+                    json!({"type": "number", "minimum": -89, "maximum": 89, "description": "Leaning across about its anchor, degrees, as CSS skewX: positive slants its top edge left."}),
+                ),
+                (
+                    "skewY",
+                    json!({"type": "number", "minimum": -89, "maximum": 89, "description": "Leaning down about its anchor, degrees, as CSS skewY: positive drops its right edge."}),
+                ),
                 (
                     "rotationX",
                     num(
