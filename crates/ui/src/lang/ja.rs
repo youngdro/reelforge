@@ -1025,6 +1025,7 @@ pub(super) static JA: Strings = Strings {
     agents_tip: "AI エージェント（Claude Code、Claude Desktop、任意の MCP クライアント）にこのプロジェクトを編集させる",
     agents_about: "エージェントは MCP でエディタと同じコマンドを使ってこのプロジェクトを編集します。編集はすぐここに表示され、取り消しも共通です。",
     agents_serving: "エージェントの接続先: {}",
+    agents_lan: "ほかのコンピュータからは {}（トークンも必要）",
     agents_token: "トークン",
     agents_copy: "コピー",
     agents_claude_code: "Claude Code（ターミナルで）",
