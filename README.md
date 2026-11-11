@@ -34,7 +34,12 @@ glitch, colour split, mosaic and wave next to the shakes, zooms and blurs. SubRi
 `.srt` on the editor or `captions.import`, and go out with `captions.export`. **Auto captions** hear
 the timeline with a local Whisper model (pure Rust on candle, CPU; nothing leaves the machine): the
 editor's Auto captions button, or `captions.transcribe` for agents on a server. Get a model with
-`reelforge-cli fetch-model --size small` (into `~/.reelforge/models/whisper`, or `REELFORGE_WHISPER`). Someone speaking is tightened up in one step (剪口播): `audio.cutPauses` hears the pauses,
+`reelforge-cli fetch-model --size small` (into `~/.reelforge/models/whisper`, or `REELFORGE_WHISPER`). **Voice-over** (配音)
+reads the captions, or the titles picked, aloud with a local Kokoro-82M model and puts each line where its title
+starts, on Voice-over tracks: the editor's Voice-over button, or `voice.speak` on a server (`voiceover.add` places
+lines from any other source). Mandarin is turned into Kokoro's phonemes in-tree (pinyin, tone sandhi, numbers read in
+Chinese). Get the model with `reelforge-cli fetch-model --kokoro` (into `~/.reelforge/models/kokoro`, or
+`REELFORGE_KOKORO`). Someone speaking is tightened up in one step (剪口播): `audio.cutPauses` hears the pauses,
 `captions.fillers` finds the captions that are only a filler word (嗯, 那个, um, …), and `timeline.cut` takes those stretches out of picture, sound and captions together, leaving the music as it is. Frames are composited on the GPU (wgpu) in the editor's preview and in exports,
 with the CPU compositor as the reference and the fallback. Agents edit through an MCP server (stdio
 or HTTP), and the same operations are an HTTP API and `reelforge-cli call`. People in a browser or on
@@ -55,6 +60,28 @@ everything set on it; a picture of another shape is scaled to cover the frame, a
 to fill), and `clip.replace` swaps the file of any one clip. In the editor they are on the drafts page and
 in the Templates tab on the left: pick one, then drop your files in. Any timeline becomes a template by
 marking its picture clips as slots (`template.mark`, or a clip's menu).
+A storyboard is a whole marketing video planned ahead: twelve are built in (`storyboard.list`: a product
+launch, a flash sale, buy one get one, before and after, a roundup of three, a shop to visit, a problem
+and its fix, an unboxing, buyers' reviews, a livestream teaser, a holiday sale, three steps). Each is
+scenes in order, with a slot for your picture and a marker saying what to film, ready-made pieces over
+it (price tags, checklists, coupons, buy buttons), transitions, music and the line to say. Its words are
+fields with names (`product`, `price`, `cta`), in English, Chinese or Japanese: `storyboard.apply` builds
+one from your copy and `storyboard.fill` gives fields other words later, and every piece written from
+them is made again to fit. In the editor they are under Storyboards in the Templates tab, with the copy
+as a form to type over.
+Clips that show at the same time share the frame by a layout (版式): `layout.apply` takes picture clips
+on tracks one above another and makes them equal strips side by side or stacked, a grid, one large with
+the rest beside it, picture in picture (small pictures in a corner, square or round, outlined), or a
+compare slider, where the second picture shows only past a divider that travels across the first (before
+and after). Each clip is cropped about its middle to the shape of its cell and scaled to fill it, so
+nothing is squashed; `clip.setCrop` reframes it inside. In the editor select the clips and pick Layout
+from a clip's menu, or from the command palette.
+Clips keep time with the music (卡点): `audio.beats` marks the beats of a song, `beat.cut` lays clips
+end to end so that every cut is on one (two beats each with `every: 2`), and `beat.apply` makes a clip
+do something on every beat: punch in, pulse, shake, flash, strobe, tilt, bounce or squash. A tempo
+(`bpm`, `first`) or the times themselves (`at`) stand in for the markers when the beat is already known.
+A move is written as ordinary keyframes, so it can be edited or cleared afterwards. In the editor
+select the clips and pick On the beat from a clip's menu, or from the command palette.
 A shaky shot is held steady (防抖): `clip.stabilize` watches the frames a video clip shows, follows how the
 camera moved from each to the next, and keeps that path with the clip; the picture is then moved and
 turned against the shake and drawn just large enough that its edges stay out of sight. How much goes
@@ -67,6 +94,47 @@ The people in a video or picture are cut out without a green screen (智能抠�
 people box in a clip's look, keeps them and makes the rest see-through, so the tracks below show around them. A small
 segmentation model bundled with the editor (`reelforge-matte`) looks at each picture as it is drawn, in pure Rust on
 the machine or in the browser; it is made for a person facing the camera, and its outlines are soft.
+A product photographed on a plain backdrop is lifted off it (商品抠图): `clip.setCutout`, or the Cut out product box
+in a clip's look, makes the backdrop see-through and keeps what stands before it. The backdrop is the colour the
+picture's edges show (white and grey included, lit unevenly or not), so a white label on the product stays; the
+backdrop's own soft shadow goes with it, and no pale rim is left along the outline. No model is needed: it is worked
+out from each picture as it is drawn. It needs one colour all round the subject; a product the colour of its backdrop
+cannot be told from it. `clip.setShadow` (the Shadow box) puts a shadow under what is left, or under any picture: of
+its outline as it shows, floating (`drop`), standing on a floor (`ground`), cast by a low sun (`long`) or a light all
+round (`glow`). The ready-made piece `productStage` does both and stands the product in a pool of light.
+Lottie animations (Bodymovin `.json`, dotLottie `.lottie`) are imported like any other file and placed like a video:
+see-through where they draw nothing, going round again while their clip lasts, drawn in pure Rust (`reelforge-lottie`)
+on the machine or in the browser. Shapes, strokes, gradients, trim paths, repeaters, masks, mattes, precompositions,
+pictures and glyph text are drawn; expressions, effects, layer styles, text animators, blend modes and 3D layers are
+not, and importing a file that uses them says so (`unsupported` in `media.import`'s answer, a note in the status bar).
+Twenty decorations drawn for the editor come with it as Lottie animations (`decor.list`: confetti, fireworks,
+sparkles, a tap ring, a bouncing arrow, an underline and a ring drawn by hand, falling coins, a flame…), free to use
+and needing no files. `decor.add` puts one over the picture in the brand's colours (or the ones given, or its own red
+and yellow); in the editor they are under Animated in the Stickers tab, each playing while the pointer is over it.
+A clip is placed in space as well as on the flat of the frame: it is stretched one way more than the other
+(`scaleX`, `scaleY`), tipped and swung like a card (`rotationX`, `rotationY`, seen from a distance of `perspective`
+frame heights), and placed, scaled and turned about any point of itself (`anchorX`, `anchorY`: a price that grows
+from its foot, a badge that swings open on its edge). All of them are keyframed like the rest, and the `flipX`,
+`flipY`, `flip` and `tilt` animations use them. One clip follows another (`clip.setParent`): a card's picture, title
+and price go wherever the card goes, turn as it turns and are seen in the same perspective. And a clip travels along
+a path instead of standing in one place (`clip.setPath`): a smooth curve through points, at an even speed, facing the
+way it goes if asked. In the editor they are under 3D & anchor in a clip's inspector.
+A title's words move one after another as its characters do (`wordFade`, `wordRise`, `wordPop`; a Chinese character
+is a word of its own), and its lines (`lineRise`); characters spring up past their size and back (`charElastic`) or
+fall and bounce (`charBounce`), and any clip does the same as a whole (`elastic`, `drop`). A title is written on
+(`draw`): a pen follows each character's outline before its ink comes in. And what is being said takes another colour
+(`karaoke` on `clip.set`, the Karaoke box by a title's style): everything said so far, the edge passing smoothly
+through the character being said, or the word or line being said alone. Give one caption a karaoke and
+`captions.restyle` gives it to the rest, each over its own length.
+Between two clips that touch on a video track (`clip.setTransition`, Transition in a clip's inspector), besides the
+dissolve, dips, pushes, slides and zoom: a soft edge wipes the next clip in from any side (`wipeLeft`, `wipeRight`,
+`wipeUp`, `wipeDown`); it opens from the middle through a circle, a box or a diamond; the last clip turns away in
+space like a card with the next on its back (`flip`, `flipUp`); the next is turned in like a page (`pageTurn`); warm
+light drifts across as it fades in (`lightLeak`); the picture tears into bands with its colours apart and cuts
+(`glitch`); or the camera goes into one clip out of focus and comes back out of the other (`zoomBlur`).
+A clip can be seen through a shutter (`motionBlur` on `clip.set`, Motion blur under Transform in its inspector): it is
+smeared along its own way while it moves, grows or turns, by keyframes, animations, transitions, a path or whatever
+carries it, and is as sharp as ever where it rests.
 See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Video and audio codecs and containers are FilmCraft's clean-room, pure-Rust crates
@@ -119,6 +187,20 @@ cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t1", "m
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t2", "text": "第一句字幕", "size": 72, "start": {"seconds": 0.5}, "duration": {"seconds": 2}}' --save
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setAnimation '{"clip": "c6", "slot": "in", "kind": "pop"}' --save
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setAnimation '{"clip": "c6", "slot": "loop", "kind": "wave"}' --save   # its characters, round and round
+cargo run -q -p reelforge-cli -- exec cut.reel.json promo.add '{"kind": "priceTag", "value": 129.9, "y": -0.2}' --save   # a price tag whose price counts up (promo.list has the other 36: coupons, checklists, ratings, buy buttons, end cards, a product card that swings in with your picture on it, a product lifted off its photograph and stood in a pool of light…)
+cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setCutout '{"clip": "c5"}' --save   # a product photo on a white or studio backdrop: the backdrop goes, the product stays
+cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setShadow '{"clip": "c5", "kind": "ground"}' --save   # and stands on its own shadow (drop, ground, long, glow)
+cargo run -q -p reelforge-cli -- exec cut.reel.json brand.set '{"primary": [0.05, 0.35, 0.95], "secondary": [1, 0.85, 0.3]}' --save   # ready-made pieces take the brand's colours from here on
+cargo run -q -p reelforge-cli -- exec cut.reel.json promo.add '{"kind": "checklist", "lines": ["持久保湿 12 小时", "敏感肌适用"], "compound": true}' --save   # a list, folded into one clip (→ c9)
+cargo run -q -p reelforge-cli -- exec cut.reel.json promo.set '{"clip": "c9", "lines": ["持久保湿 12 小时", "敏感肌适用", "无香精"]}' --save   # other words: the piece is made again to fit them
+cargo run -q -p reelforge-cli -- exec ad.reel.json storyboard.apply '{"storyboard": "flashSale", "copy": {"price": 59, "oldPrice": 89}}' --save   # a whole flash-sale video planned ahead: scenes, pieces, music (storyboard.list has twelve)
+cargo run -q -p reelforge-cli -- exec ad.reel.json storyboard.fill '{"copy": {"discount": "直降 30 元", "stock": 12}}' --save   # other copy: every piece written from it is made again
+cargo run -q -p reelforge-cli -- exec ad.reel.json layout.apply '{"layout": "compare", "clips": ["c1", "c2"]}' --save   # before and after: c2, on the track above, shows past a divider that slides across c1 (layout.list has columns, rows, grid, focus, pip)
+cargo run -q -p reelforge-cli -- exec ad.reel.json beat.cut '{"clips": ["c1", "c2", "c3", "c4"], "every": 2, "move": "punch"}' --save   # a montage on the beat: each clip two beats long, arriving with a punch (the beat is the markers audio.beats left; or give "bpm": 120)
+cargo run -q -p reelforge-cli -- exec ad.reel.json beat.apply '{"clips": ["c7"], "move": "squash", "every": 4}' --save   # the price tag squashes on the first beat of every bar (beat.list has punch, pulse, shake, flash, strobe, tilt, bounce)
+cargo run -q -p reelforge-cli -- exec ad.reel.json decor.add '{"decor": "confettiBurst", "start": {"seconds": 12}}' --save   # confetti over the closing scene, in the brand's colours (decor.list has twenty animated decorations)
+cargo run -q -p reelforge-cli -- exec ad.reel.json decor.add '{"decor": "circleMark", "start": {"seconds": 6}, "x": 0.1, "y": 0.2, "color": [1, 0.8, 0.2]}' --save   # a ring drawn by hand round the price
+cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t1", "shape": {"kind": "star", "points": 16, "inner": 0.8, "size": [300, 300], "fill": {"type": "radial", "from": [1, 0.8, 0.2], "to": [1, 0.4, 0]}}}' --save   # a shape of your own
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setKey '{"clip": "c5", "prop": "scale", "at": {"seconds": 4}, "value": 1.3, "ease": "inOut"}' --save
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setEase '{"clip": "c5", "at": {"seconds": 4}, "ease": [0.3, 1.5, 0.6, 1]}' --save   # on from that key: past the next one and back
 cargo run -q -r -p reelforge-cli -- export cut.reel.json -o cut.mp4      # a project, or a RenderSpec
@@ -132,6 +214,8 @@ cargo run -q -p reelforge-cli -- exec cut.reel.json project.setCover '{"at": {"s
 `reelforge-cli serve` puts a project behind the Model Context Protocol: every command is a tool
 (`clip_split`, `clip_add`…, each with a JSON Schema), plus `render_frame` (returns a PNG the agent can
 look at), `render_export` and `project_save`. Every edit is saved to the project file as it commits.
+[docs/agents.md](docs/agents.md) is the guide for agents: setting up Claude Code, Claude Desktop and
+other clients, how the tools take time and ids, and which tools each feature uses.
 
 ```sh
 cargo build -r -p reelforge-cli

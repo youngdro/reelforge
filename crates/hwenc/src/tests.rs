@@ -56,6 +56,8 @@ mod round_trip {
                 shape_mask: None,
                 crop_keys: None,
                 shape_mask_keys: None,
+                parent: None,
+                motion_blur: None,
             });
         }
         s

@@ -1,4 +1,4 @@
-use reelforge_model::{ClipContent, Fx, FxKind, MediaKind, Prop, TrackKind};
+use reelforge_model::{AnimKind, ClipContent, Fill, Fx, FxKind, MediaKind, Prop, TrackKind};
 use reelforge_time::Tick;
 use serde_json::json;
 
@@ -1749,6 +1749,100 @@ fn the_people_in_a_clip_are_cut_out_and_put_back() {
 }
 
 #[test]
+fn a_product_is_cut_out_from_its_backdrop_and_casts_a_shadow() {
+    let mut s = Session::default();
+    let v = video_track(&s);
+    let m = s
+        .execute(
+            "media.import",
+            &json!({"path": "/nowhere/flask.png", "kind": "image", "size": [1200, 1600], "sha256": "cd".repeat(32)}),
+        )
+        .unwrap()["media"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let c = s.execute("clip.add", &json!({"track": v, "media": m})).unwrap()["clip"].as_str().unwrap().to_string();
+    let look = |s: &Session| serde_json::to_value(&s.project().clip(&c).unwrap().1.look).unwrap();
+    let fx = |s: &mut Session| -> Vec<Value> {
+        s.execute("render.compile", &json!({})).unwrap()["layers"][0]["fx"].as_array().cloned().unwrap_or_default()
+    };
+
+    // cut out as most studio pictures need, when nothing else is said
+    let set = s.execute("clip.setCutout", &json!({"clip": c})).unwrap();
+    assert_eq!(set, json!({"clip": c, "cutout": {"tolerance": 0.5, "holes": 0.5}}));
+    // one thing changed: the other stays as it was
+    s.execute("clip.setCutout", &json!({"clip": c, "tolerance": 0.75})).unwrap();
+    s.execute("clip.setCutout", &json!({"clip": c, "holes": 0})).unwrap();
+    assert_eq!(look(&s)["cutout"], json!({"tolerance": 0.75, "holes": 0.0}));
+    let layer = fx(&mut s);
+    assert_eq!(layer[0]["id"], json!("key.backdrop@1"));
+    let near = |v: &Value, want: f64| (v.as_f64().unwrap() - want).abs() < 1e-6;
+    assert!(near(&layer[0]["params"]["tolerance"], 0.75) && near(&layer[0]["params"]["holes"], 0.0), "{layer:?}");
+
+    // a shadow: floating when nothing is said, a kind by name, then one thing at a time
+    let set = s.execute("clip.setShadow", &json!({"clip": c})).unwrap();
+    assert!(near(&set["shadow"]["opacity"], 0.45) && near(&set["shadow"]["flat"], 0.0), "{set}");
+    let set = s.execute("clip.setShadow", &json!({"clip": c, "kind": "ground", "opacity": 0.3})).unwrap();
+    assert!(near(&set["shadow"]["flat"], 0.86) && near(&set["shadow"]["opacity"], 0.3), "{set}");
+    let set =
+        s.execute("clip.setShadow", &json!({"clip": c, "color": [0.2, 0, 0.4], "lean": -0.25, "blur": 0.05})).unwrap();
+    let shadow = &set["shadow"];
+    assert!(near(&shadow["flat"], 0.86) && near(&shadow["opacity"], 0.3) && near(&shadow["lean"], -0.25), "{set}");
+    assert!(near(&shadow["color"][2], 0.4) && near(&shadow["blur"], 0.05), "{set}");
+    // the renderer is told after everything that changes the picture's outline or colours
+    let layer = fx(&mut s);
+    assert_eq!(layer.last().unwrap()["id"], json!("shadow.drop@1"));
+    assert!(near(&layer.last().unwrap()["params"]["lean"], -0.25));
+    let features = s.execute("render.compile", &json!({})).unwrap()["engine"]["features"].clone();
+    assert!(features.as_array().unwrap().contains(&json!("shadow.drop@1")));
+    assert!(features.as_array().unwrap().contains(&json!("key.backdrop@1")));
+    // both are the clip's: kept by its halves when it is split
+    let right = s.execute("clip.split", &json!({"clip": c, "at": {"seconds": 1}})).unwrap()["right"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let half = s.project().clip(&right).unwrap().1.look.clone();
+    assert!(half.cutout.is_some() && half.shadow.is_some_and(|s| s.lean == -0.25));
+    s.execute("edit.undo", &json!({})).unwrap();
+
+    // off, and undone
+    s.execute("clip.setShadow", &json!({"clip": c, "on": false})).unwrap();
+    s.execute("clip.setCutout", &json!({"clip": c, "on": false})).unwrap();
+    assert_eq!(look(&s), json!({}));
+    assert!(fx(&mut s).is_empty());
+    s.execute("edit.undo", &json!({})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(look(&s)["cutout"].is_object() && look(&s)["shadow"].is_object());
+
+    // a compound clip is a picture too; a colour or a title is not, and values keep to their ranges
+    let red = add_red(&mut s, 10.0, 2.0);
+    for command in ["clip.setCutout", "clip.setShadow"] {
+        assert!(s.execute(command, &json!({"clip": red})).is_err(), "{command}");
+        assert!(s.execute(command, &json!({"clip": "nothing"})).is_err(), "{command}");
+        assert!(s.execute(command, &json!({"clip": c, "on": "yes"})).is_err(), "{command}");
+    }
+    for bad in [json!({"tolerance": 1.5}), json!({"holes": -0.1}), json!({"softness": 0.2})] {
+        let mut params = bad.clone();
+        params["clip"] = json!(c);
+        assert!(s.execute("clip.setCutout", &params).is_err(), "{bad}");
+    }
+    for bad in [
+        json!({"kind": "sun"}),
+        json!({"opacity": 2}),
+        json!({"blur": 0.6}),
+        json!({"x": -2}),
+        json!({"color": "black"}),
+    ] {
+        let mut params = bad.clone();
+        params["clip"] = json!(c);
+        assert!(s.execute("clip.setShadow", &params).is_err(), "{bad}");
+    }
+    let folded = s.execute("clip.compound", &json!({"clips": [c]})).unwrap()["clip"].as_str().unwrap().to_string();
+    assert!(s.execute("clip.setShadow", &json!({"clip": folded, "kind": "glow"})).is_ok());
+    assert!(s.execute("clip.setCutout", &json!({"clip": folded})).is_ok());
+}
+
+#[test]
 fn a_colour_is_keyed_out_and_pictures_are_distorted() {
     let mut s = Session::default();
     let v = video_track(&s);
@@ -2239,6 +2333,71 @@ fn any_picture_clip_is_replaced_or_made_a_slot() {
 }
 
 #[test]
+fn a_parameter_a_command_does_not_take_is_refused_not_dropped() {
+    let mut s = Session::default();
+    let t = video_track(&s);
+    // a misplaced name says what the command takes; a near miss says which one was meant
+    let err = s.execute("clip.add", &json!({"track": t, "color": [1, 0, 0], "bogus": 1})).unwrap_err().to_string();
+    assert!(err.contains("no parameter `bogus`") && err.contains("`track`"), "{err}");
+    let err = s.execute("clip.add", &json!({"track": t, "color": [1, 0, 0], "Duration": 5})).unwrap_err().to_string();
+    assert!(err.contains("did you mean `duration`?"), "{err}");
+    let err = s.execute("edit.undo", &json!({"steps": 2})).unwrap_err().to_string();
+    assert!(err.contains("it takes none"), "{err}");
+    assert_eq!(s.revision(), 0, "nothing applied");
+
+    // every parameter each command's schema lists is one it takes
+    for c in registry() {
+        let schema = input_schema(c.id).expect("every command has a schema");
+        for name in schema["properties"].as_object().expect("an object").keys() {
+            let r = Session::default().execute(c.id, &json!({ name: null }));
+            assert!(!matches!(&r, Err(e) if e.to_string().contains("no parameter")), "{} {name}: {r:?}", c.id);
+        }
+    }
+}
+
+#[test]
+fn a_clip_lands_placed_and_a_batch_step_uses_what_an_earlier_one_replied() {
+    let mut s = Session::default();
+    let text = s.project().tracks.iter().find(|t| t.kind == TrackKind::Text).unwrap().id.clone();
+    let r = s
+        .execute(
+            "edit.batch",
+            &json!({"steps": [
+                {"id": "clip.add", "params": {"track": text, "text": "Hi", "y": -0.3, "scale": 0.5, "opacity": 0.8}},
+                {"id": "clip.setAnimation", "params": {"clip": "${0.clip}", "slot": "in", "kind": "pop"}},
+                {"id": "clip.duplicate", "params": {"clips": ["${0.clip}"]}},
+                {"id": "clip.set", "params": {"clip": "${2.clips.0.clip}", "text": "again"}},
+            ]}),
+        )
+        .unwrap();
+    let first = r["results"][0]["clip"].as_str().unwrap();
+    let (_, c) = s.project().clip(first).map(|(t, c)| (t, c.clone())).unwrap();
+    assert_eq!((c.transform.y, c.transform.scale, c.opacity), (-0.3, 0.5, 0.8));
+    assert!(c.anim.enter.is_some());
+    assert_eq!(s.history(), ["Batch"]);
+    let outline = s.execute("project.outline", &json!({})).unwrap();
+    let clips = &outline["tracks"].as_array().unwrap().iter().find(|t| t["id"] == text).unwrap()["clips"];
+    assert_eq!(clips[0]["place"]["y"], json!(-0.3));
+    assert_eq!(clips[0]["anim"]["in"], json!("pop"));
+    assert_eq!((&clips[0]["start"], &clips[0]["end"]), (&json!(0.0), &json!(5.0)));
+    assert_eq!(clips[1]["text"], json!("again"));
+
+    // a reference to a step that has not run, or to nothing, fails the whole batch
+    let rev = s.revision();
+    for bad in ["${5.clip}", "${0.nothing}", "${x}"] {
+        let r = s.execute(
+            "edit.batch",
+            &json!({"steps": [
+                {"id": "clip.add", "params": {"track": text, "text": "x"}},
+                {"id": "clip.remove", "params": {"clips": [bad]}},
+            ]}),
+        );
+        assert!(r.is_err(), "{bad}");
+    }
+    assert_eq!(s.revision(), rev);
+}
+
+#[test]
 fn recognised_lines_become_captions() {
     let mut s = Session::default();
     let out = s
@@ -2376,6 +2535,1864 @@ fn a_video_is_asked_for_frames_between_its_own() {
     let pic = s.execute("clip.add", &json!({"track": v, "media": still, "start": {"seconds": 20}})).unwrap();
     let e = s.execute("clip.setSpeed", &json!({"clip": pic["clip"], "frames": "flow"})).unwrap_err().to_string();
     assert!(e.contains("only a video"), "{e}");
+}
+
+#[test]
+fn shapes_draw_themselves_on_and_titles_count() {
+    let mut s = Session::default();
+    let video = s.project().tracks.iter().find(|t| t.kind == TrackKind::Video).unwrap().id.clone();
+    let text = s.project().tracks.iter().find(|t| t.kind == TrackKind::Text).unwrap().id.clone();
+    let add = json!({"track": video, "duration": {"seconds": 2}, "shape": {
+        "kind": "rectangle", "size": [600, 200], "radius": 40,
+        "fill": {"type": "linear", "from": [1, 0, 0], "to": [1, 0.5, 0, 1], "angle": 90},
+        "stroke": {"color": [1, 1, 1, 1], "width": 8}
+    }});
+    let shape = s.execute("clip.add", &add).unwrap()["clip"].as_str().unwrap().to_string();
+    // what a shape cannot be is refused, and so is a shape with something else
+    for bad in [json!({"kind": "blob"}), json!({"points": 2}), json!({"trim": [0, 2]}), json!({"fill": "red"})] {
+        assert!(s.execute("clip.add", &json!({"track": video, "start": {"seconds": 5}, "shape": bad})).is_err());
+    }
+    assert!(s.execute("clip.add", &json!({"track": video, "shape": {}, "text": "x"})).is_err());
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("shape/1")));
+    let c = &spec["layers"][0]["content"];
+    assert_eq!(
+        (&c["type"], &c["kind"], &c["size"], &c["radius"]),
+        (&json!("shape"), &json!("rectangle"), &json!([600.0, 200.0]), &json!(40.0))
+    );
+    assert_eq!(c["fill"]["type"], json!("linear"));
+    assert!(c.get("trim").is_none() && c.get("fill_opacity").is_none());
+
+    // drawn on: the outline's end rises from 0 to 1, and the fill follows it in
+    assert!(
+        s.execute(
+            "clip.setAnimation",
+            &json!({"clip": shape, "slot": "in", "kind": "draw", "duration": {"seconds": 1}})
+        )
+        .is_ok()
+    );
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let c = &spec["layers"][0]["content"];
+    let end = c["trim"]["end"].as_array().unwrap();
+    assert_eq!((end[0]["v"].as_f64(), end.last().unwrap()["v"].as_f64()), (Some(0.0), Some(1.0)));
+    let fill = c["fill_opacity"].as_array().unwrap();
+    assert_eq!((fill[0]["v"].as_f64(), fill.last().unwrap()["v"].as_f64()), (Some(0.0), Some(1.0)));
+    // the shape itself is not faded by it
+    assert_eq!(spec["layers"][0]["opacity"], json!(1.0));
+    // a title has no outline to key by hand (it is written on by its own animation)
+    let title =
+        s.execute("clip.add", &json!({"track": text, "text": "¥{n}", "duration": {"seconds": 2}})).unwrap()["clip"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+    // its outline keyed by hand, and its values changed
+    s.execute("clip.setAnimation", &json!({"clip": shape, "slot": "in", "kind": null})).unwrap();
+    s.execute("clip.setKey", &json!({"clip": shape, "prop": "drawEnd", "at": 0, "value": 0.25})).unwrap();
+    s.execute("clip.setKey", &json!({"clip": shape, "prop": "drawEnd", "at": {"seconds": 1}, "value": 1})).unwrap();
+    assert!(s.execute("clip.setKey", &json!({"clip": title, "prop": "drawEnd", "at": 0, "value": 0.5})).is_err());
+    let out = s.execute("clip.setShape", &json!({"clip": shape, "kind": "star", "points": 12, "fill": null})).unwrap();
+    assert_eq!((&out["shape"]["kind"], &out["shape"]["points"]), (&json!("star"), &json!(12)));
+    assert!(out["shape"].get("fill").is_none());
+    assert!(s.execute("clip.setShape", &json!({"clip": title, "kind": "star"})).is_err());
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert_eq!(spec["layers"][0]["content"]["trim"]["end"][0]["v"], json!(0.25));
+    // one colour for it with clip.set
+    s.execute("clip.set", &json!({"clip": shape, "color": [0, 0, 1, 1]})).unwrap();
+    assert!(
+        matches!(&s.project().clip(&shape).unwrap().1.content, ClipContent::Shape { shape } if shape.fill.is_some())
+    );
+
+    // a counter: the number runs to its value over a second and is written where {n} is
+    let set = json!({"clip": title, "counter": {"from": 0, "to": 1299.5, "over": {"seconds": 1}, "ease": "linear", "decimals": 2, "group": true}});
+    s.execute("clip.setCounter", &set).unwrap();
+    assert!(s.execute("clip.setCounter", &json!({"clip": shape, "counter": {}})).is_err());
+    assert!(s.execute("clip.setCounter", &json!({"clip": title, "counter": {"decimals": 9}})).is_err());
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("text/6")));
+    let layers = spec["layers"].as_array().unwrap();
+    let n = &layers.iter().find(|l| l["id"] == json!(title)).unwrap()["content"]["number"];
+    assert_eq!((&n["decimals"], &n["group"]), (&json!(2), &json!(true)));
+    let keys = n["value"].as_array().unwrap();
+    let at =
+        |secs: f64| keys.iter().find(|k| k["t"] == json!(Tick::from_seconds(secs))).unwrap()["v"].as_f64().unwrap();
+    assert!((at(0.5) - 649.75).abs() < 0.01 && at(1.0) == 1299.5 && at(2.0) == 1299.5);
+    // keys on `count` say the value instead
+    s.execute("clip.setKey", &json!({"clip": title, "prop": "count", "at": 0, "value": 5})).unwrap();
+    s.execute("clip.setKey", &json!({"clip": title, "prop": "count", "at": {"seconds": 2}, "value": 0})).unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let layers = spec["layers"].as_array().unwrap();
+    let keys = layers.iter().find(|l| l["id"] == json!(title)).unwrap()["content"]["number"]["value"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!((keys[0]["v"].as_f64(), keys.last().unwrap()["v"].as_f64()), (Some(5.0), Some(0.0)));
+    s.execute("clip.setCounter", &json!({"clip": title, "counter": null})).unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert!(!spec["engine"]["features"].as_array().unwrap().contains(&json!("text/6")));
+}
+
+#[test]
+fn promo_pieces_are_grouped_clips_on_free_tracks_in_one_step() {
+    let mut s = Session::default();
+    let listed = s.execute("promo.list", &json!({})).unwrap();
+    let kinds: Vec<String> =
+        listed["promos"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(kinds.len(), 37);
+    // the first seven are a shape and a title each
+    let kinds = &kinds[..7];
+    let tracks = s.project().tracks.len();
+    for kind in kinds {
+        let out = s.execute("promo.add", &json!({"kind": kind, "value": 59, "duration": {"seconds": 2}})).unwrap();
+        let clips = out["clips"].as_array().unwrap();
+        assert_eq!(clips.len(), 2, "{kind}");
+        let p = s.project();
+        // one group, each part above the one before
+        let at: Vec<usize> = clips.iter().map(|c| p.clip(c["clip"].as_str().unwrap()).unwrap().0).collect();
+        assert!(at.windows(2).all(|w| w[0] < w[1]), "{kind}: {at:?}");
+        for c in clips {
+            let clip = p.clip(c["clip"].as_str().unwrap()).unwrap().1;
+            assert_eq!(clip.group.as_deref(), out["group"].as_str());
+            assert!(clip.anim.enter.is_some());
+        }
+        s.execute("render.compile", &json!({})).unwrap();
+    }
+    // the first went on the tracks that were there; the rest brought their own
+    assert_eq!(s.project().tracks.len(), tracks + 2 * (kinds.len() - 1));
+    // one step each
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.project().tracks.len(), tracks + 2 * (kinds.len() - 2));
+    // a price counts up to its value; a countdown runs down a second a second, as a clock
+    let mut s = Session::default();
+    let out = s.execute("promo.add", &json!({"kind": "priceTag", "value": 129.9, "text": "到手价 ¥{n}"})).unwrap();
+    let p = s.project();
+    let ClipContent::Text { text, style, .. } = &p.clip(out["clips"][1]["clip"].as_str().unwrap()).unwrap().1.content
+    else {
+        panic!()
+    };
+    let c = style.counter.unwrap();
+    assert_eq!((text.as_str(), c.to, c.decimals), ("到手价 ¥{n}", 129.9, 2));
+    let out = s.execute("promo.add", &json!({"kind": "countdown", "value": 90, "duration": {"seconds": 4}})).unwrap();
+    let p = s.project();
+    let ClipContent::Text { style, .. } = &p.clip(out["clips"][1]["clip"].as_str().unwrap()).unwrap().1.content else {
+        panic!()
+    };
+    let c = style.counter.unwrap();
+    assert_eq!((c.from, c.to, c.clock), (90.0, 86.0, true));
+    assert!(s.execute("promo.add", &json!({"kind": "voucher"})).is_err());
+    assert!(s.execute("promo.add", &json!({"kind": "banner", "scale": 0})).is_err());
+}
+
+#[test]
+fn every_ready_made_piece_is_built_as_listed_and_compiles_on_any_canvas() {
+    let listed = Session::default().execute("promo.list", &json!({})).unwrap();
+    let listed = listed["promos"].as_array().unwrap().clone();
+    let categories: std::collections::BTreeSet<&str> = listed.iter().map(|p| p["category"].as_str().unwrap()).collect();
+    assert_eq!(categories.into_iter().collect::<Vec<_>>(), ["action", "price", "product", "rhythm", "titles"]);
+    for canvas in [[1080, 1920], [1920, 1080], [720, 1280], [2160, 3840], [1080, 1080]] {
+        for piece in &listed {
+            let kind = piece["id"].as_str().unwrap();
+            let mut s = Session::default();
+            s.execute("project.setCanvas", &json!({"width": canvas[0], "height": canvas[1]})).unwrap();
+            let out = s.execute("promo.add", &json!({"kind": kind, "start": {"seconds": 1}})).unwrap();
+            let clips = out["clips"].as_array().unwrap();
+            assert_eq!(clips.len() as u64, piece["clips"].as_u64().unwrap(), "{kind}");
+            assert_eq!(out["duration"], piece["duration"], "{kind}");
+            assert!(!piece["about"].as_str().unwrap().is_empty(), "{kind}");
+            let p = s.project();
+            p.check().unwrap_or_else(|e| panic!("{kind} on {canvas:?}: {e}"));
+            let at: Vec<usize> = clips.iter().map(|c| p.clip(c["clip"].as_str().unwrap()).unwrap().0).collect();
+            assert!(at.windows(2).all(|w| w[0] < w[1]), "{kind}: {at:?}");
+            for c in clips {
+                let clip = p.clip(c["clip"].as_str().unwrap()).unwrap().1;
+                assert_eq!(clip.group.as_deref(), out["group"].as_str());
+                // each part moves, of itself or with what carries it, and ends with the piece
+                assert!(clip.anim.enter.is_some() || !clip.keys.is_empty() || clip.parent.is_some(), "{kind}");
+                let long: Tick = serde_json::from_value(out["duration"].clone()).unwrap();
+                assert_eq!(clip.end(), Tick::from_seconds(1.0) + long, "{kind}");
+                assert!(clip.start >= Tick::from_seconds(1.0));
+            }
+            s.execute("render.compile", &json!({})).unwrap_or_else(|e| panic!("{kind} on {canvas:?}: {e:?}"));
+        }
+    }
+}
+
+#[test]
+fn ready_made_pieces_take_lines_numbers_sides_and_fold_into_one_clip() {
+    let mut s = Session::default();
+    let text_of = |s: &Session, clip: &Value| match &s.project().clip(clip.as_str().unwrap()).unwrap().1.content {
+        ClipContent::Text { text, .. } => text.clone(),
+        _ => String::new(),
+    };
+    // a list has a row a line, under its plate
+    let out = s.execute("promo.add", &json!({"kind": "checklist", "lines": ["轻", "快"]})).unwrap();
+    let clips = out["clips"].as_array().unwrap();
+    assert_eq!(clips.len(), 3);
+    assert_eq!((text_of(&s, &clips[1]["clip"]), text_of(&s, &clips[2]["clip"])), ("✓  轻".into(), "✓  快".into()));
+    // its rows come one after another, from the left of one box
+    let p = s.project();
+    let (a, b) =
+        (p.clip(clips[1]["clip"].as_str().unwrap()).unwrap().1, p.clip(clips[2]["clip"].as_str().unwrap()).unwrap().1);
+    assert!(a.start < b.start && a.end() == b.end());
+    let ClipContent::Text { style, .. } = &a.content else { panic!() };
+    assert_eq!((style.align, style.wrap), (reelforge_model::TitleAlign::Left, 730.0 / 1080.0));
+    assert!(s.execute("promo.add", &json!({"kind": "checklist", "lines": []})).is_err());
+    assert!(
+        s.execute("promo.add", &json!({"kind": "checklist", "lines": ["1", "2", "3", "4", "5", "6", "7"]})).is_err()
+    );
+    assert!(s.execute("promo.add", &json!({"kind": "checklist", "rows": ["1"]})).is_err());
+
+    // two prices: the bars are in proportion and the saving is counted up to
+    let out = s
+        .execute("promo.add", &json!({"kind": "priceCompare", "values": [500, 350], "lines": ["别家", "我们"]}))
+        .unwrap();
+    let clips = out["clips"].as_array().unwrap();
+    let p = s.project();
+    let ClipContent::Text { style, text, .. } =
+        &p.clip(clips.last().unwrap()["clip"].as_str().unwrap()).unwrap().1.content
+    else {
+        panic!()
+    };
+    assert_eq!((text.as_str(), style.counter.unwrap().to), ("立省 ¥{n}", 150.0));
+    let bar = |i: usize| match &p.clip(clips[i]["clip"].as_str().unwrap()).unwrap().1.content {
+        ClipContent::Shape { shape } => shape.size[0],
+        _ => panic!(),
+    };
+    assert_eq!((bar(1), bar(4)), (520.0, 364.0));
+    assert_eq!(text_of(&s, &clips[2]["clip"]), "¥500");
+    assert!(s.execute("promo.add", &json!({"kind": "priceCompare", "values": [1, 2, 3, 4, 5]})).is_err());
+    assert!(s.execute("promo.add", &json!({"kind": "priceCompare", "values": ["a"]})).is_err());
+
+    // a piece that points does so the way it is told; each has a place of its own unless given one
+    let out = s.execute("promo.add", &json!({"kind": "arrowHint", "side": "left"})).unwrap();
+    let arrow = s.project().clip(out["clips"][0]["clip"].as_str().unwrap()).unwrap().1.clone();
+    assert_eq!(arrow.transform.rotation, 180.0);
+    assert!((arrow.transform.y - 0.3).abs() < 1e-6);
+    // and nudges that way, round after round, from where it sits and back to it
+    let nudge = &arrow.keys[&Prop::X];
+    assert_eq!((nudge[0].v, nudge.last().unwrap().v), (arrow.transform.x, arrow.transform.x));
+    assert!(nudge.len() == 9 && nudge[1].v < arrow.transform.x);
+    assert!(s.execute("promo.add", &json!({"kind": "arrowHint", "side": "sideways"})).is_err());
+    // a label leans away from the middle of the frame, but not off its edge
+    let label_x = |s: &mut Session, params: Value| {
+        let out = s.execute("promo.add", &params).unwrap();
+        s.project().clip(out["clips"][3]["clip"].as_str().unwrap()).unwrap().1.transform.x
+    };
+    assert!(label_x(&mut s, json!({"kind": "callout", "x": 0.0, "text": "轻"})) > 0.0);
+    assert!(label_x(&mut s, json!({"kind": "callout", "x": -0.2, "text": "轻"})) < -0.2);
+    assert!(label_x(&mut s, json!({"kind": "callout", "x": -0.2, "text": "一段很长很长的卖点说明"})) > -0.2);
+    assert!(label_x(&mut s, json!({"kind": "callout", "x": 0.3, "text": "一段很长很长的卖点说明"})) < 0.3);
+    assert!(label_x(&mut s, json!({"kind": "callout", "x": -0.2, "side": "right", "text": "轻"})) > -0.2);
+    let out = s.execute("promo.add", &json!({"kind": "buyButton", "y": -0.2})).unwrap();
+    assert_eq!(s.project().clip(out["clips"][0]["clip"].as_str().unwrap()).unwrap().1.transform.y, -0.2);
+
+    // a sweep is three bands crossing the frame, covering it at its middle
+    let out = s.execute("promo.add", &json!({"kind": "colorSweep", "side": "down", "start": {"seconds": 5}})).unwrap();
+    assert_eq!(out["duration"], json!(Tick::from_seconds(0.9)));
+    let p = s.project();
+    for c in out["clips"].as_array().unwrap() {
+        let clip = p.clip(c["clip"].as_str().unwrap()).unwrap().1;
+        let keys = &clip.keys[&Prop::Y];
+        assert!((keys[0].v + 1.02).abs() < 1e-5 && (keys.last().unwrap().v - 1.02).abs() < 1e-5);
+        assert!(keys.windows(2).all(|w| w[0].t < w[1].t));
+        assert!(clip.value_at(Prop::Y, Tick(clip.duration.0 / 2)).abs() < 0.2);
+        let ClipContent::Shape { shape } = &clip.content else { panic!() };
+        assert_eq!(shape.size, [1084.0, 1924.0]);
+    }
+
+    // folded, a piece is one clip with its parts inside, made and unmade in one step
+    let mut s = Session::default();
+    let tracks = s.project().tracks.len();
+    let out = s.execute("promo.add", &json!({"kind": "specTable", "compound": true, "start": {"seconds": 2}})).unwrap();
+    let p = s.project();
+    let clip = p.clip(out["clip"].as_str().unwrap()).unwrap().1;
+    assert_eq!((clip.start, clip.duration), (Tick::from_seconds(2.0), Tick::from_seconds(3.0)));
+    let inner = p.tracks_of(clip.compound().unwrap().0).unwrap();
+    assert_eq!(inner.iter().map(|t| t.clips.len()).sum::<usize>(), 7);
+    assert_eq!(out["parts"].as_array().unwrap().len(), 7);
+    assert_eq!(p.timelines.iter().find(|t| t.compound).unwrap().name, "Spec table");
+    assert_eq!(p.tracks.iter().map(|t| t.clips.len()).sum::<usize>(), 1);
+    s.execute("render.compile", &json!({})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    let p = s.project();
+    assert_eq!((p.tracks.len(), p.tracks.iter().map(|t| t.clips.len()).sum::<usize>()), (tracks, 0));
+    assert!(p.timelines.iter().all(|t| !t.compound));
+    // one that cannot be made leaves nothing behind
+    assert!(s.execute("promo.add", &json!({"kind": "tiers", "compound": true, "lines": []})).is_err());
+    assert_eq!(s.project().tracks.len(), tracks);
+}
+
+#[test]
+fn a_folded_piece_is_given_other_words_and_made_again_to_fit() {
+    let mut s = Session::default();
+    let shape_width = |s: &Session, timeline: &str| {
+        let p = s.project();
+        let clips = p.tracks_of(timeline).unwrap().iter().flat_map(|t| &t.clips);
+        clips
+            .filter_map(|c| if let ClipContent::Shape { shape } = &c.content { Some(shape.size[0]) } else { None })
+            .next()
+    };
+    let words = |s: &Session, timeline: &str| -> Vec<String> {
+        let p = s.project();
+        let clips = p.tracks_of(timeline).unwrap().iter().flat_map(|t| &t.clips);
+        clips
+            .filter_map(|c| if let ClipContent::Text { text, .. } = &c.content { Some(text.clone()) } else { None })
+            .collect()
+    };
+    let out = s
+        .execute(
+            "promo.add",
+            &json!({"kind": "buyButton", "compound": true, "start": {"seconds": 2}, "color": [0, 0.5, 1]}),
+        )
+        .unwrap();
+    let (clip, timeline) = (out["clip"].as_str().unwrap().to_string(), out["timeline"].as_str().unwrap().to_string());
+    let narrow = shape_width(&s, &timeline).unwrap();
+    // what it was made as is kept, and read back
+    let got = s.execute("promo.get", &json!({"clip": clip})).unwrap();
+    assert_eq!((got["piece"]["kind"].as_str(), got["piece"]["text"].as_str()), (Some("buyButton"), Some("立即抢购")));
+    assert_eq!(got["piece"]["color"], json!([0.0, 0.5, 1.0, 1.0]));
+    // the clip is moved and set like any other; then the piece is given longer words
+    s.execute("clip.set", &json!({"clip": clip, "y": -0.1, "opacity": 0.8})).unwrap();
+    let out = s.execute("promo.set", &json!({"clip": clip, "text": "现在就去店里看看吧"})).unwrap();
+    assert_eq!(out["piece"]["text"], json!("现在就去店里看看吧"));
+    // the button is made again as wide as its words, in the colour it had; the clip is as it was set
+    assert_eq!(words(&s, &timeline), ["现在就去店里看看吧"]);
+    assert!(shape_width(&s, &timeline).unwrap() > narrow + 100.0);
+    let p = s.project();
+    let (_, outer) = p.clip(&clip).unwrap();
+    assert_eq!((outer.start, outer.transform.y, outer.opacity), (Tick::from_seconds(2.0), -0.1, 0.8));
+    let ClipContent::Shape { shape } = &p.tracks_of(&timeline).unwrap()[0].clips[0].content else { panic!() };
+    assert!(matches!(shape.fill, Some(Fill::Linear { to, .. }) if to == [0.0, 0.5, 1.0, 1.0]));
+    s.execute("render.compile", &json!({})).unwrap();
+    // one undo step
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(words(&s, &timeline), ["立即抢购"]);
+
+    // rows, numbers and sides are given the same way; what is not named stays
+    let out = s.execute("promo.add", &json!({"kind": "checklist", "compound": true, "lines": ["轻", "快"]})).unwrap();
+    let (list, inner) = (out["clip"].as_str().unwrap().to_string(), out["timeline"].as_str().unwrap().to_string());
+    s.execute("promo.set", &json!({"clip": list, "lines": ["轻", "快", "稳"], "scale": 0.8})).unwrap();
+    assert_eq!(words(&s, &inner), ["✓  轻", "✓  快", "✓  稳"]);
+    s.execute("promo.set", &json!({"clip": list, "color": [0, 0, 0]})).unwrap();
+    assert_eq!(words(&s, &inner).len(), 3);
+    assert_eq!(crate::made_of(&s.project(), &list).unwrap().1.scale, 0.8);
+    let out = s.execute("promo.add", &json!({"kind": "flashProgress", "compound": true})).unwrap();
+    let (bar, inner) = (out["clip"].as_str().unwrap().to_string(), out["timeline"].as_str().unwrap().to_string());
+    s.execute("promo.set", &json!({"clip": bar, "value": 40})).unwrap();
+    let p = s.project();
+    let ClipContent::Shape { shape } = &p.tracks_of(&inner).unwrap()[1].clips[0].content else { panic!() };
+    assert_eq!(shape.trim, [0.0, 0.4]);
+    // it is refused what the piece cannot be, and nothing changes
+    assert!(s.execute("promo.set", &json!({"clip": list, "lines": []})).is_err());
+    assert!(s.execute("promo.set", &json!({"clip": list, "side": "inwards"})).is_err());
+    assert!(s.execute("promo.set", &json!({"clip": list, "kind": "banner"})).is_err());
+    assert!(s.execute("promo.set", &json!({"clip": list, "scale": 0})).is_err());
+    // a piece left as grouped clips, or any other clip, is not one to rewrite
+    let grouped = s.execute("promo.add", &json!({"kind": "banner"})).unwrap();
+    let part = grouped["clips"][0]["clip"].clone();
+    assert!(s.execute("promo.set", &json!({"clip": part, "text": "x"})).is_err());
+    assert_eq!(s.execute("promo.get", &json!({"clip": part})).unwrap()["piece"], Value::Null);
+    assert!(s.execute("promo.get", &json!({"clip": "c999"})).is_err());
+
+    // a second clip playing the same piece changes with the first, also after the piece's own
+    // timeline was opened and left; saved and opened, it is still a piece
+    let copy = s.execute("clip.duplicate", &json!({"clips": [clip]})).unwrap();
+    let copy = copy["clips"][0]["clip"].as_str().unwrap().to_string();
+    s.execute("timeline.switch", &json!({"timeline": timeline})).unwrap();
+    let main = s.project().timelines.iter().find(|t| !t.compound).unwrap().id.clone();
+    s.execute("timeline.switch", &json!({"timeline": main})).unwrap();
+    s.execute("promo.set", &json!({"clip": copy, "text": "去看看"})).unwrap();
+    assert_eq!(words(&s, &timeline), ["去看看"]);
+    let again = Project::from_json(&s.project().to_json()).unwrap();
+    again.check().unwrap();
+    assert_eq!(crate::made_of(&again, &clip).unwrap().1.text, "去看看");
+    // taken apart, it is ordinary clips again
+    s.execute("clip.remove", &json!({"clips": [copy]})).unwrap();
+    s.execute("clip.uncompound", &json!({"clip": clip})).unwrap();
+    assert!(s.project().timelines.iter().all(|t| t.id != timeline));
+    s.project().check().unwrap();
+}
+
+#[test]
+fn the_brand_gives_new_pieces_their_colours_font_and_logo() {
+    let mut s = Session::default();
+    assert_eq!(s.execute("brand.get", &json!({})).unwrap(), json!({"brand": {}}));
+    let fill_of = |s: &Session, out: &Value| match &s
+        .project()
+        .clip(out["clips"][0]["clip"].as_str().unwrap())
+        .unwrap()
+        .1
+        .content
+    {
+        ClipContent::Shape { shape } => shape.fill.clone(),
+        _ => None,
+    };
+    let red = s.execute("promo.add", &json!({"kind": "banner"})).unwrap();
+    let blue = [0.0, 0.4, 1.0, 1.0];
+    let cream = [1.0, 0.95, 0.8, 1.0];
+    let out = s.execute("brand.set", &json!({"primary": [0.0, 0.4, 1.0], "secondary": cream})).unwrap();
+    assert_eq!(out["brand"]["primary"], json!(blue));
+    // pieces made from then on take after it; those made before keep their look; a colour said wins
+    let made = s.execute("promo.add", &json!({"kind": "banner"})).unwrap();
+    assert!(matches!(fill_of(&s, &made), Some(Fill::Linear { to, .. }) if to == blue));
+    assert!(matches!(fill_of(&s, &red), Some(Fill::Linear { to, .. }) if to != blue));
+    let green = s.execute("promo.add", &json!({"kind": "banner", "color": [0.0, 0.6, 0.2]})).unwrap();
+    assert!(matches!(fill_of(&s, &green), Some(Fill::Linear { to, .. }) if to == [0.0, 0.6, 0.2, 1.0]));
+    // words over a light colour are dark
+    let tiers = s.execute("promo.add", &json!({"kind": "tiers"})).unwrap();
+    let p = s.project();
+    let ClipContent::Text { color, .. } = &p.clip(tiers["clips"][5]["clip"].as_str().unwrap()).unwrap().1.content
+    else {
+        panic!()
+    };
+    assert!(color[0] < 0.2, "ink on cream");
+
+    // a font and a logo are media of the project, of the right kind
+    let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../render/fonts/NotoSansSC-Bold.subset.ttf");
+    let font = s.execute("media.import", &json!({"path": file})).unwrap()["media"]["id"].as_str().unwrap().to_string();
+    let v = video_track(&s);
+    let sticker = s.execute("clip.add", &json!({"track": v, "sticker": "heart"})).unwrap();
+    let logo = match &s.project().clip(sticker["clip"].as_str().unwrap()).unwrap().1.content {
+        ClipContent::Media { media, .. } => media.clone(),
+        _ => panic!(),
+    };
+    s.execute("clip.remove", &json!({"clips": sticker["clip"]})).unwrap();
+    assert!(s.execute("brand.set", &json!({"font": logo})).is_err());
+    assert!(s.execute("brand.set", &json!({"logo": font})).is_err());
+    assert!(s.execute("brand.set", &json!({"logo": "m99"})).is_err());
+    assert!(s.execute("brand.set", &json!({"primary": [2, 0, 0]})).is_err());
+    assert!(s.execute("brand.set", &json!({"colour": [1, 0, 0]})).is_err());
+    let out = s.execute("brand.set", &json!({"font": font, "logo": logo})).unwrap();
+    assert_eq!((out["brand"]["font"].as_str(), out["brand"]["primary"].clone()), (Some(font.as_str()), json!(blue)));
+    // an end card shows the logo over its words, which are set in the brand's font
+    let card = s.execute("promo.add", &json!({"kind": "endCard"})).unwrap();
+    let clips = card["clips"].as_array().unwrap();
+    assert_eq!(clips.len(), 4);
+    let p = s.project();
+    let mark = p.clip(clips[0]["clip"].as_str().unwrap()).unwrap().1;
+    assert!(matches!(&mark.content, ClipContent::Media { media, .. } if *media == logo));
+    assert!((mark.transform.scale - 0.3).abs() < 1e-6 && mark.transform.y < 0.0);
+    let ClipContent::Text { style, .. } = &p.clip(clips[2]["clip"].as_str().unwrap()).unwrap().1.content else {
+        panic!()
+    };
+    assert_eq!(style.font.as_deref(), Some(font.as_str()));
+    s.execute("render.compile", &json!({})).unwrap();
+    // it survives saving, and is one undo step; null clears a part of it
+    let again = Project::from_json(&s.project().to_json()).unwrap();
+    assert_eq!(again.brand, s.project().brand);
+    s.execute("brand.set", &json!({"secondary": null})).unwrap();
+    assert_eq!(s.project().brand.secondary, None);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.project().brand.secondary, Some(cream));
+    // media the brand holds can go only once nothing uses it, and the brand lets go of it then
+    assert!(s.execute("media.remove", &json!({"media": logo})).is_err());
+    s.execute("clip.remove", &json!({"clips": clips[0]["clip"]})).unwrap();
+    s.execute("media.remove", &json!({"media": logo})).unwrap();
+    assert_eq!(s.project().brand.logo, None);
+    s.project().check().unwrap();
+}
+
+#[test]
+fn a_piece_carries_its_parts_and_shows_a_picture() {
+    let mut s = Session::default();
+    let (cw, ch) = (s.project().canvas.width as f32, s.project().canvas.height as f32);
+    let k = cw.min(ch) / 1080.0;
+    // everything on a product card is carried by the card, the button's words by the button
+    let out = s.execute("promo.add", &json!({"kind": "productCard", "start": {"seconds": 1}})).unwrap();
+    let ids: Vec<String> =
+        out["clips"].as_array().unwrap().iter().map(|c| c["clip"].as_str().unwrap().to_string()).collect();
+    assert_eq!(ids.len(), 6);
+    let p = s.project();
+    let part = |i: usize| p.clip(&ids[i]).unwrap().1;
+    let card = part(0);
+    assert_eq!(card.parent, None);
+    assert_eq!(card.anim.enter.map(|a| a.kind), Some(AnimKind::FlipY));
+    assert!(card.transform.motion_blur > 0.0);
+    for i in 1..5 {
+        assert_eq!(part(i).parent.as_deref(), Some(ids[0].as_str()), "part {i}");
+    }
+    assert_eq!(part(5).parent.as_deref(), Some(ids[4].as_str()));
+    // a carried part's place is counted from its carrier's, in shares of the frame
+    let name = part(2);
+    assert!(name.transform.x.abs() < 1e-6 && (name.transform.y - 130.0 * k / ch).abs() < 1e-6);
+    assert_eq!(part(5).transform.y, 0.0);
+    s.execute("render.compile", &json!({})).unwrap();
+    s.project().check().unwrap();
+    // made half as large, the card is: what it carries keeps its share of it
+    let small = s.execute("promo.add", &json!({"kind": "productCard", "scale": 0.5, "x": 0.2})).unwrap();
+    let p = s.project();
+    let small = |i: usize| p.clip(small["clips"][i]["clip"].as_str().unwrap()).unwrap().1;
+    assert!((small(0).transform.scale - 0.5 * k).abs() < 1e-6 && (small(0).transform.x - 0.2).abs() < 1e-6);
+    assert!((small(2).transform.scale - 1.0).abs() < 1e-6, "{}", small(2).transform.scale);
+    assert!((small(2).transform.y - 130.0 * k / ch).abs() < 1e-6 && small(2).transform.x.abs() < 1e-6);
+
+    // a card that flips: each face is carried words and all, and one shows while the other is away
+    let flip = s.execute("promo.add", &json!({"kind": "flipCard"})).unwrap();
+    let p = s.project();
+    let face = |i: usize| p.clip(flip["clips"][i]["clip"].as_str().unwrap()).unwrap().1;
+    assert_eq!(flip["clips"].as_array().unwrap().len(), 4);
+    assert_eq!(face(1).parent.as_deref(), flip["clips"][0]["clip"].as_str());
+    assert_eq!(face(3).parent.as_deref(), flip["clips"][2]["clip"].as_str());
+    for (front, back) in [(0, 2), (1, 3)] {
+        let (seen, hidden) = (&face(front).keys[&Prop::Opacity], &face(back).keys[&Prop::Opacity]);
+        assert_eq!((seen[0].v, seen[1].v, hidden[0].v, hidden[1].v), (1.0, 0.0, 0.0, 1.0));
+        assert_eq!(seen[1].t, hidden[1].t);
+    }
+    let turn = &face(0).keys[&Prop::RotationY];
+    assert_eq!((turn[0].v, turn.last().unwrap().v), (0.0, 90.0));
+    assert_eq!(face(2).keys[&Prop::RotationY].last().unwrap().v, 0.0);
+
+    // the picture a card shows is an image or video of the project
+    let v = video_track(&s);
+    let sticker = s.execute("clip.add", &json!({"track": v, "sticker": "heart"})).unwrap();
+    let picture = match &s.project().clip(sticker["clip"].as_str().unwrap()).unwrap().1.content {
+        ClipContent::Media { media, .. } => media.clone(),
+        _ => panic!(),
+    };
+    let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../render/fonts/NotoSansSC-Bold.subset.ttf");
+    let font = s.execute("media.import", &json!({"path": file})).unwrap()["media"]["id"].as_str().unwrap().to_string();
+    assert!(s.execute("promo.add", &json!({"kind": "productCard", "media": "m99"})).is_err());
+    assert!(s.execute("promo.add", &json!({"kind": "productCard", "media": font})).is_err());
+    assert!(s.execute("promo.add", &json!({"kind": "productCard", "media": 3})).is_err());
+    let out = s.execute("promo.add", &json!({"kind": "productCard", "media": picture, "compound": true})).unwrap();
+    let (clip, timeline) = (out["clip"].as_str().unwrap().to_string(), out["timeline"].as_str().unwrap().to_string());
+    let shown = |s: &Session| {
+        let p = s.project();
+        let inner = p.tracks_of(&timeline).unwrap();
+        // inside, each part is carried by one of the same timeline
+        let ids: Vec<&str> = inner.iter().flat_map(|t| &t.clips).map(|c| c.id.as_str()).collect();
+        assert!(inner.iter().flat_map(|t| &t.clips).skip(1).all(|c| ids.contains(&c.parent.as_deref().unwrap())));
+        let second = &inner[1].clips[0];
+        match &second.content {
+            ClipContent::Media { media, .. } => Some((media.clone(), second.transform.scale)),
+            _ => None,
+        }
+    };
+    assert_eq!(shown(&s), Some((picture.clone(), 0.5 / k)));
+    assert_eq!(s.execute("promo.get", &json!({"clip": clip})).unwrap()["piece"]["media"], json!(picture));
+    s.execute("render.compile", &json!({})).unwrap();
+    // it is taken off and put back like the piece's words; other changes leave it be
+    s.execute("promo.set", &json!({"clip": clip, "media": null})).unwrap();
+    assert_eq!(shown(&s), None);
+    assert!(s.execute("promo.set", &json!({"clip": clip, "media": font})).is_err());
+    assert!(s.execute("promo.set", &json!({"clip": clip, "media": "m99"})).is_err());
+    s.execute("promo.set", &json!({"clip": clip, "media": picture})).unwrap();
+    s.execute("promo.set", &json!({"clip": clip, "text": "随行杯"})).unwrap();
+    assert_eq!(shown(&s).map(|(m, _)| m), Some(picture));
+    s.execute("render.compile", &json!({})).unwrap();
+    s.project().check().unwrap();
+}
+
+#[test]
+fn every_piece_is_made_folded_and_compiles() {
+    let listed = Session::default().execute("promo.list", &json!({})).unwrap();
+    let mut s = Session::default();
+    for (i, promo) in listed["promos"].as_array().unwrap().iter().enumerate() {
+        let start = json!({"seconds": i as f64 * 5.0});
+        let out = s.execute("promo.add", &json!({"kind": promo["id"], "compound": true, "start": start})).unwrap();
+        assert_eq!(out["parts"].as_array().unwrap().len() as u64, promo["clips"].as_u64().unwrap(), "{}", promo["id"]);
+    }
+    s.execute("render.compile", &json!({})).unwrap();
+    s.project().check().unwrap();
+}
+
+/// `n` picture clips at the same time on tracks one above another, the first lowest: pictures
+/// `sizes` across and high.
+fn stacked_pictures(s: &mut Session, sizes: &[[u32; 2]]) -> Vec<String> {
+    let mut clips = vec![];
+    for (i, size) in sizes.iter().enumerate() {
+        let params = json!({
+            "path": format!("/nowhere/{i}.mp4"), "duration": {"seconds": 10}, "size": size,
+            "sha256": format!("{i:02x}").repeat(32),
+        });
+        let m = s.execute("media.import", &params).unwrap()["media"]["id"].as_str().unwrap().to_string();
+        let track = match i {
+            0 => video_track(s),
+            _ => s.execute("track.add", &json!({"kind": "video"})).unwrap()["track"].as_str().unwrap().to_string(),
+        };
+        let c = s.execute("clip.add", &json!({"track": track, "media": m, "duration": {"seconds": 4}})).unwrap();
+        clips.push(c["clip"].as_str().unwrap().to_string());
+    }
+    clips
+}
+
+#[test]
+fn a_layout_gives_each_clip_a_cell_it_fills() {
+    let listed = Session::default().execute("layout.list", &json!({})).unwrap();
+    let ids: Vec<&str> = listed["layouts"].as_array().unwrap().iter().map(|l| l["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["columns", "rows", "grid", "focus", "pip", "compare"]);
+
+    // where each picture shows on the canvas: the middle and the size of what its crop leaves,
+    // fitted inside the frame and scaled, in pixels
+    let shown = |s: &Session, id: &str| -> [f32; 4] {
+        let p = s.project();
+        let (cw, ch) = (p.canvas.width as f32, p.canvas.height as f32);
+        let clip = p.clip(id).unwrap().1;
+        let ClipContent::Media { media, .. } = &clip.content else { panic!() };
+        let [w, h] = p.media[media].size.unwrap().map(|v| v as f32);
+        let c = clip.look.crop;
+        let (vw, vh) = (w * (1.0 - c.left - c.right), h * (1.0 - c.top - c.bottom));
+        let fit = (cw / vw).min(ch / vh) * clip.transform.scale;
+        [(0.5 + clip.transform.x) * cw, (0.5 + clip.transform.y) * ch, vw * fit, vh * fit]
+    };
+    let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.6);
+
+    // two columns on the default upright frame: a wide picture and a tall one, each cut to its half
+    let mut s = Session::default();
+    let (cw, ch) = (s.project().canvas.width as f32, s.project().canvas.height as f32);
+    let clips = stacked_pictures(&mut s, &[[1920, 1080], [1080, 1920], [1000, 1000], [640, 480]]);
+    let gap = 0.012 * cw.min(ch);
+    let out = s.execute("layout.apply", &json!({"layout": "columns", "clips": clips[..2]})).unwrap();
+    let half = (cw - gap) / 2.0;
+    let (left, right) = (shown(&s, &clips[0]), shown(&s, &clips[1]));
+    assert!(near(left, [half / 2.0, ch / 2.0, half, ch]), "{left:?}");
+    assert!(near(right, [cw - half / 2.0, ch / 2.0, half, ch]), "{right:?}");
+    assert_eq!(out["clips"][0]["width"], json!(half.round()));
+    // the wide one lost its sides, evenly; nothing is squashed
+    let crop = s.project().clip(&clips[0]).unwrap().1.look.crop;
+    assert!(crop.left > 0.3 && crop.left == crop.right && crop.top == 0.0);
+    s.execute("render.compile", &json!({})).unwrap();
+    // one step
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.project().clip(&clips[0]).unwrap().1.look.crop.is_zero());
+
+    // every layout tiles its part of the frame without overlap, on upright and wide frames
+    for canvas in [[1080, 1920], [1920, 1080], [1080, 1080]] {
+        s.execute("project.setCanvas", &json!({"width": canvas[0], "height": canvas[1]})).unwrap();
+        let (cw, ch) = (canvas[0] as f32, canvas[1] as f32);
+        for (layout, n) in [("columns", 4), ("rows", 3), ("grid", 3), ("grid", 4), ("focus", 2), ("focus", 4)] {
+            let asked = json!({"layout": layout, "clips": clips[..n], "gap": 0, "margin": 0.05});
+            s.execute("layout.apply", &asked).unwrap_or_else(|e| panic!("{layout} of {n}: {e}"));
+            let cells: Vec<[f32; 4]> = clips[..n].iter().map(|c| shown(&s, c)).collect();
+            let m = 0.05 * cw.min(ch);
+            let area: f32 = cells.iter().map(|c| c[2] * c[3]).sum();
+            assert!((area - (cw - 2.0 * m) * (ch - 2.0 * m)).abs() < 0.002 * cw * ch, "{layout} of {n}: {cells:?}");
+            for (i, a) in cells.iter().enumerate() {
+                assert!(a[0] - a[2] / 2.0 > m - 1.0 && a[0] + a[2] / 2.0 < cw - m + 1.0, "{layout} of {n}: {a:?}");
+                assert!(a[1] - a[3] / 2.0 > m - 1.0 && a[1] + a[3] / 2.0 < ch - m + 1.0, "{layout} of {n}: {a:?}");
+                for b in &cells[..i] {
+                    let apart = (a[0] - b[0]).abs() > (a[2] + b[2]) / 2.0 - 1.0
+                        || (a[1] - b[1]).abs() > (a[3] + b[3]) / 2.0 - 1.0;
+                    assert!(apart, "{layout} of {n} on {canvas:?}: {a:?} meets {b:?}");
+                }
+            }
+            s.execute("render.compile", &json!({})).unwrap();
+        }
+    }
+    // the first of `focus` is twice the strip beside it
+    let (large, small) = (shown(&s, &clips[0]), shown(&s, &clips[1]));
+    assert!((large[3] / small[3] - 2.0).abs() < 0.01, "{large:?} {small:?}");
+
+    // what a layout cannot be given
+    assert!(s.execute("layout.apply", &json!({"layout": "spiral", "clips": clips[..2]})).is_err());
+    assert!(s.execute("layout.apply", &json!({"layout": "columns", "clips": clips[..1]})).is_err());
+    assert!(s.execute("layout.apply", &json!({"layout": "compare", "clips": clips[..3]})).is_err());
+    assert!(s.execute("layout.apply", &json!({"layout": "rows", "clips": [clips[0], clips[0]]})).is_err());
+    assert!(s.execute("layout.apply", &json!({"layout": "rows", "clips": [clips[0], "c999"]})).is_err());
+    assert!(s.execute("layout.apply", &json!({"layout": "rows", "clips": clips[..2], "gap": 0.5})).is_err());
+    assert!(s.execute("layout.apply", &json!({"layout": "pip", "clips": clips[..2], "corner": "middle"})).is_err());
+    assert!(s.execute("layout.apply", &json!({"layout": "pip", "clips": clips[..2], "border": 4})).is_err());
+    let title = s.execute("clip.add", &json!({"track": "t2", "text": "hi"})).unwrap()["clip"].clone();
+    assert!(s.execute("layout.apply", &json!({"layout": "rows", "clips": [clips[0], title]})).is_err());
+}
+
+#[test]
+fn small_pictures_and_a_comparison_are_drawn_over_the_first_clip() {
+    let mut s = Session::default();
+    let (cw, ch) = (s.project().canvas.width as f32, s.project().canvas.height as f32);
+    let clips = stacked_pictures(&mut s, &[[1080, 1920], [1920, 1080], [1920, 1080]]);
+    let shapes = |s: &Session| -> usize {
+        let p = s.project();
+        p.tracks.iter().flat_map(|t| &t.clips).filter(|c| matches!(c.content, ClipContent::Shape { .. })).count()
+    };
+
+    // picture in picture: the first fills the frame, the others sit in the corner, outlined
+    let out = s.execute("layout.apply", &json!({"layout": "pip", "clips": clips})).unwrap();
+    let p = s.project();
+    let (main, small) = (p.clip(&clips[0]).unwrap().1, p.clip(&clips[1]).unwrap().1);
+    assert_eq!((main.transform.x, main.transform.y, main.transform.scale), (0.0, 0.0, 1.0));
+    assert!(main.look.crop.is_zero());
+    assert!((small.transform.scale - 0.32).abs() < 1e-6 && small.transform.x > 0.25 && small.transform.y < -0.25);
+    // the second is under it, a gap away
+    let next = p.clip(&clips[2]).unwrap().1;
+    assert!((next.transform.y - small.transform.y - 0.32 - 0.012 * cw / ch).abs() < 1e-4);
+    // each outline is a shape its picture carries, as large as its cell whatever the picture's scale
+    let added = out["added"].as_array().unwrap();
+    assert_eq!((added.len(), shapes(&s)), (2, 2));
+    let (ti, edge) = p.clip(added[0].as_str().unwrap()).unwrap();
+    assert!(ti > p.clip(&clips[1]).unwrap().0);
+    assert_eq!(edge.parent.as_deref(), Some(clips[1].as_str()));
+    assert_eq!((edge.start, edge.duration), (small.start, small.duration));
+    assert!((edge.transform.scale * small.transform.scale - 1.0).abs() < 1e-5);
+    let ClipContent::Shape { shape } = &edge.content else { panic!() };
+    assert!(shape.fill.is_none() && shape.stroke.is_some());
+    assert!((shape.size[0] - 0.32 * cw).abs() < 0.5 && (shape.size[1] - 0.32 * ch).abs() < 0.5);
+    s.execute("render.compile", &json!({})).unwrap();
+
+    // again as circles in another corner: the old outlines are replaced, not added to
+    let asked = json!({"layout": "pip", "clips": clips, "round": true, "corner": "bottomLeft", "size": 0.25});
+    let out = s.execute("layout.apply", &asked).unwrap();
+    assert_eq!((out["added"].as_array().unwrap().len(), shapes(&s)), (2, 2));
+    let p = s.project();
+    let small = p.clip(&clips[1]).unwrap().1;
+    assert!(small.transform.x < -0.25 && small.transform.y > 0.25);
+    let mask = small.look.mask.unwrap();
+    assert_eq!((mask.kind, mask.size, mask.feather), (reelforge_model::MaskKind::Circle, [1.0, 1.0], 0.0));
+    // what shows is square
+    let c = small.look.crop;
+    assert!(((1920.0 * (1.0 - c.left - c.right)) - 1080.0 * (1.0 - c.top - c.bottom)).abs() < 1.0);
+    // without outlines, and the circles are gone from a layout that has none
+    s.execute("layout.apply", &json!({"layout": "pip", "clips": clips, "border": null})).unwrap();
+    assert_eq!(shapes(&s), 0);
+    assert!(s.project().clip(&clips[1]).unwrap().1.look.mask.is_none());
+    // a small picture under the large one would not show
+    let e = s.execute("layout.apply", &json!({"layout": "pip", "clips": [clips[1], clips[0]]})).unwrap_err();
+    assert!(e.to_string().contains("track above"), "{e}");
+
+    // a comparison: the upper clip shows past a line that travels, and a divider travels with it
+    let out = s.execute("layout.apply", &json!({"layout": "compare", "clips": clips[..2]})).unwrap();
+    let p = s.project();
+    let upper = p.clip(&clips[1]).unwrap().1;
+    let mask = upper.look.mask.unwrap();
+    assert_eq!((mask.kind, mask.rotation, mask.feather), (reelforge_model::MaskKind::Linear, 90.0, 0.0));
+    let wipe = &upper.keys[&Prop::MaskX];
+    assert_eq!((wipe[0].v, wipe[1].v), (0.85, 0.15));
+    assert!(wipe[0].t > Tick::ZERO && wipe[1].t < upper.duration);
+    let added: Vec<&str> = out["added"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+    assert_eq!(added.len(), 4);
+    let line = p.clip(added[0]).unwrap().1;
+    assert_eq!(line.parent.as_deref(), Some(clips[1].as_str()));
+    let travel = &line.keys[&Prop::X];
+    assert_eq!((travel[0].t, travel[1].t), (wipe[0].t, wipe[1].t));
+    assert!((travel[0].v - 0.35).abs() < 1e-6 && (travel[1].v + 0.35).abs() < 1e-6);
+    for part in &added[1..] {
+        let part = p.clip(part).unwrap().1;
+        assert_eq!((part.parent.as_deref(), part.group.as_ref()), (Some(added[0]), line.group.as_ref()));
+    }
+    s.execute("render.compile", &json!({})).unwrap();
+    s.project().check().unwrap();
+    // down the frame instead, without the line; the old divider goes
+    let asked =
+        json!({"layout": "compare", "clips": clips[..2], "axis": "y", "from": 0.3, "to": 0.7, "divider": false});
+    s.execute("layout.apply", &asked).unwrap();
+    let p = s.project();
+    let upper = p.clip(&clips[1]).unwrap().1;
+    assert_eq!(upper.look.mask.unwrap().rotation, 180.0);
+    assert!(upper.keys.contains_key(&Prop::MaskY) && !upper.keys.contains_key(&Prop::MaskX));
+    assert_eq!(shapes(&s), 0);
+    assert!(s.execute("layout.apply", &json!({"layout": "compare", "clips": clips[..2], "axis": "z"})).is_err());
+    assert!(s.execute("layout.apply", &json!({"layout": "compare", "clips": clips[..2], "from": 2})).is_err());
+    // a compound clip is laid out like any picture
+    let folded =
+        s.execute("clip.compound", &json!({"clips": [clips[2]]})).unwrap()["clip"].as_str().unwrap().to_string();
+    s.execute("layout.apply", &json!({"layout": "rows", "clips": [clips[0], folded], "gap": 0})).unwrap();
+    let p = s.project();
+    let c = p.clip(&folded).unwrap().1;
+    assert!((c.look.crop.top - 0.25).abs() < 1e-6 && (c.transform.y - 0.25).abs() < 1e-6 && c.transform.scale == 1.0);
+    s.execute("render.compile", &json!({})).unwrap();
+}
+
+#[test]
+fn spoken_lines_are_placed_on_voiceover_tracks_in_one_step() {
+    let mut s = Session::default();
+    let line = |n: u8, at: f64, secs: f64| {
+        json!({"path": format!("/nowhere/line{n}.wav"), "start": {"seconds": at}, "duration": {"seconds": secs},
+               "sha256": format!("{n:02x}").repeat(32)})
+    };
+    let tracks_before = s.project().tracks.len();
+    // the second line starts before the first has finished, so it goes a track down
+    let out = s
+        .execute("voiceover.add", &json!({"lines": [line(1, 0.0, 2.0), line(2, 1.5, 1.0), line(3, 2.0, 1.0)]}))
+        .unwrap();
+    let p = s.project();
+    let tracks: Vec<&str> = out["tracks"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
+    assert_eq!(tracks.len(), 2);
+    assert_eq!(p.tracks.len(), tracks_before + 2);
+    let (a, b) = (p.track(tracks[0]).unwrap(), p.track(tracks[1]).unwrap());
+    assert_eq!((a.name.as_str(), a.kind), (crate::VOICEOVER_TRACK, reelforge_model::TrackKind::Audio));
+    assert_eq!(b.name, "Voice-over 2");
+    assert_eq!(a.clips.iter().map(|c| c.start).collect::<Vec<_>>(), [Tick::ZERO, Tick::SECOND * 2]);
+    assert_eq!(b.clips[0].start, Tick::from_seconds(1.5));
+    assert_eq!(p.media.len(), 3);
+    // one undo takes it all away
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!((s.project().tracks.len(), s.project().media.len()), (tracks_before, 0));
+    // a bad line applies nothing and says which
+    let e = s.execute("voiceover.add", &json!({"lines": [line(1, 0.0, 1.0), {"path": "x.wav"}]})).unwrap_err();
+    assert!(e.to_string().contains("lines[1]") && e.to_string().contains("start"), "{e}");
+    let e = s.execute("voiceover.add", &json!({"lines": [{"path": "/nowhere/x.wav", "start": 0}]})).unwrap_err();
+    assert!(e.to_string().contains("how long"), "{e}");
+    assert_eq!(s.project().media.len(), 0);
+    let v = video_track(&s);
+    assert!(s.execute("voiceover.add", &json!({"lines": [line(1, 0.0, 1.0)], "track": v})).is_err());
+}
+
+#[test]
+fn a_voiceover_reads_the_titles_picked_or_the_captions() {
+    let mut s = Session::default();
+    assert!(crate::spoken_lines(&s.project(), &[]).unwrap_err().contains("add captions"));
+    let out = s
+        .execute(
+            "captions.add",
+            &json!({"cues": [
+                {"start": {"seconds": 2.0}, "end": {"seconds": 3.0}, "text": "第二句"},
+                {"start": {"seconds": 0.0}, "end": {"seconds": 1.0}, "text": "第一\n句"},
+                {"start": {"seconds": 1.0}, "end": {"seconds": 2.0}, "text": "  "}
+            ]}),
+        )
+        .unwrap();
+    let lines = crate::spoken_lines(&s.project(), &[]).unwrap();
+    assert_eq!(lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), ["第一 句", "第二句"]);
+    assert_eq!(lines[1].start, Tick::SECOND * 2);
+    let second = out["clips"][1].as_str().unwrap().to_string();
+    let picked = crate::spoken_lines(&s.project(), std::slice::from_ref(&second)).unwrap();
+    assert_eq!((picked.len(), picked[0].clip.as_str()), (1, second.as_str()));
+    let v = add_video(&mut s, 2.0);
+    assert!(crate::spoken_lines(&s.project(), &[v]).unwrap_err().contains("not a title"));
+}
+
+#[test]
+fn a_lottie_animation_is_imported_and_placed_like_a_video_that_goes_round() {
+    // a blue dot on a see-through 200 × 100 picture, two seconds long; it uses an expression
+    let json = r#"{"v":"5.7.0","fr":25,"ip":0,"op":50,"w":200,"h":100,"layers":[
+      {"ty":4,"ind":1,"ip":0,"op":50,"st":0,"ks":{"p":{"a":0,"k":[100,50],"x":"var $bm_rt = time;"}},
+       "shapes":[{"ty":"el","p":{"a":0,"k":[0,0]},"s":{"a":0,"k":[40,40]}},
+                 {"ty":"fl","c":{"a":0,"k":[0,0,1,1]},"o":{"a":0,"k":100}}]}]}"#;
+    let dir = std::env::temp_dir().join(format!("reelforge-engine-lottie-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("dot.json");
+    std::fs::write(&path, json).unwrap();
+
+    let mut s = Session::default();
+    let r = s.execute("media.import", &json!({"path": path.to_string_lossy()})).unwrap();
+    assert_eq!(r["media"]["kind"], "lottie");
+    assert_eq!(r["unsupported"], json!(["expressions"]));
+    let id = r["media"]["id"].as_str().unwrap().to_string();
+    let m = &s.project().media[&id];
+    // drawn larger than it says, so that it can be placed large
+    assert_eq!((m.size, m.duration), (Some([800, 400]), Some(Tick::SECOND * 2)));
+
+    // on a video track, not a sound track; and longer than it is, since it goes round
+    let audio = s.project().tracks.iter().find(|t| t.kind == TrackKind::Audio).unwrap().id.clone();
+    assert!(s.execute("clip.add", &json!({"track": audio, "media": id})).is_err());
+    let video = s.project().tracks.iter().find(|t| t.kind == TrackKind::Video).unwrap().id.clone();
+    let c = s.execute("clip.add", &json!({"track": video, "media": id})).unwrap();
+    assert_eq!(c["duration"], json!(Tick::SECOND * 2));
+    let c = c["clip"].as_str().unwrap().to_string();
+    s.execute("clip.trim", &json!({"clip": c, "end": {"seconds": 7}})).unwrap();
+    s.execute("clip.slip", &json!({"clip": c, "by": {"seconds": 5}})).unwrap();
+    assert_eq!(s.project().clip(&c).unwrap().1.duration, Tick::SECOND * 7);
+
+    // the renderer is told what it is, and that it must know how to draw one; it has no sound
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert_eq!(spec["assets"][&id]["kind"], "lottie");
+    assert_eq!(spec["assets"][&id]["probe"]["width"], 800);
+    assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("lottie/1")));
+    assert_eq!(spec["layers"][0]["content"]["asset"], json!(id));
+    assert!(spec["audio"].as_array().is_none_or(Vec::is_empty));
+
+    // any other JSON is refused, and nothing changes
+    std::fs::write(&path, br#"{"name": "not an animation"}"#).unwrap();
+    let before = s.revision();
+    assert!(s.execute("media.import", &json!({"path": path.to_string_lossy()})).is_err());
+    assert_eq!(s.revision(), before);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn every_storyboard_is_built_in_each_language_on_any_canvas_and_compiles() {
+    let boards = s_list("zh");
+    assert_eq!(boards.len(), 12);
+    for (i, lang) in ["zh", "en", "ja"].into_iter().enumerate() {
+        let canvas = [[1080, 1920], [1920, 1080], [1080, 1080]][i];
+        for board in &s_list(lang) {
+            let id = board["id"].as_str().unwrap();
+            let mut s = Session::default();
+            s.execute("project.setCanvas", &json!({"width": canvas[0], "height": canvas[1]})).unwrap();
+            let before = s.revision();
+            let out = s
+                .execute("storyboard.apply", &json!({"storyboard": id, "lang": lang, "captions": true}))
+                .unwrap_or_else(|e| panic!("{id} in {lang}: {e}"));
+            // a slot for each scene with a picture, a marker for each scene, every piece folded
+            let scenes = board["scenes"].as_array().unwrap();
+            assert_eq!(out["slots"].as_array().unwrap().len() as u64, board["slots"].as_u64().unwrap(), "{id}");
+            assert_eq!(out["scenes"].as_array().unwrap().len(), scenes.len());
+            let p = s.project();
+            assert_eq!(p.markers.len(), scenes.len());
+            let planned: usize = scenes.iter().map(|sc| sc["pieces"].as_array().unwrap().len()).sum();
+            assert_eq!(out["pieces"].as_array().unwrap().len(), planned);
+            for piece in out["pieces"].as_array().unwrap() {
+                assert!(crate::made_of(&p, piece["clip"].as_str().unwrap()).is_some(), "{id}: {piece}");
+            }
+            // as long as it says, with the music cut to it
+            let length = Tick::from_seconds(board["seconds"].as_f64().unwrap());
+            assert!((p.duration().0 - length.0).abs() < Tick::from_seconds(0.05).0, "{id}");
+            // the copy is the storyboard's, in the language asked for, and nothing is left unwritten
+            let fields = board["fields"].as_array().unwrap();
+            assert_eq!(p.copy.len(), fields.len());
+            for (kept, field) in p.copy.iter().zip(fields) {
+                assert_eq!(kept.name, field["name"].as_str().unwrap());
+                assert!(field["label"].as_str().unwrap() != kept.name, "{id}: {} has no label", kept.name);
+            }
+            let texts = p.timelines.iter().flat_map(|t| &t.tracks).chain(&p.tracks).flat_map(|t| &t.clips);
+            for clip in texts {
+                if let ClipContent::Text { text, .. } = &clip.content {
+                    assert!(!text.replace("{n}", "").contains('{'), "{id} in {lang}: {text:?} was left unwritten");
+                }
+            }
+            for scene in out["scenes"].as_array().unwrap() {
+                assert!(!scene["voice"].as_str().unwrap_or("").contains('{'), "{id}: {scene}");
+            }
+            s.execute("render.compile", &json!({})).unwrap_or_else(|e| panic!("{id} in {lang}: {e}"));
+            // one undo step for the lot
+            s.execute("edit.undo", &json!({})).unwrap();
+            assert!(s.project().tracks.iter().all(|t| t.clips.is_empty()) && s.project().copy.is_empty());
+            assert!(s.revision() > before);
+        }
+    }
+}
+
+fn s_list(lang: &str) -> Vec<Value> {
+    let mut s = Session::default();
+    s.execute("storyboard.list", &json!({"lang": lang})).unwrap()["storyboards"].as_array().unwrap().clone()
+}
+
+#[test]
+fn a_storyboard_s_copy_is_filled_by_name_and_its_pieces_are_made_again() {
+    let mut s = Session::default();
+    let inside = |s: &Session, clip: &str| -> Vec<String> {
+        let p = s.project();
+        let (timeline, _) = crate::made_of(&p, clip).unwrap();
+        let clips = p.tracks_of(timeline).unwrap().iter().flat_map(|t| &t.clips);
+        clips
+            .filter_map(|c| if let ClipContent::Text { text, .. } = &c.content { Some(text.clone()) } else { None })
+            .collect()
+    };
+    let piece = |out: &Value, kind: &str| -> String {
+        let all = out["pieces"].as_array().unwrap();
+        all.iter().find(|p| p["kind"] == kind).unwrap()["clip"].as_str().unwrap().to_string()
+    };
+    // built with some of the copy given; the rest is the storyboard's own
+    let out = s
+        .execute(
+            "storyboard.apply",
+            &json!({"storyboard": "launch", "copy": {"product": "云朵拖鞋", "price": 59, "oldPrice": "89"}}),
+        )
+        .unwrap();
+    let (third, tag, button, strike) =
+        (piece(&out, "lowerThird"), piece(&out, "priceTag"), piece(&out, "buyButton"), piece(&out, "strikePrice"));
+    assert!(inside(&s, &third).contains(&"云朵拖鞋".to_string()));
+    assert_eq!(crate::made_of(&s.project(), &tag).unwrap().1.value, Some(59.0));
+    assert_eq!(inside(&s, &strike), ["¥89"]);
+    assert_eq!(inside(&s, &button), ["立即抢购"]);
+    let voice = out["scenes"][1]["voice"].as_str().unwrap();
+    assert!(voice.starts_with("云朵拖鞋，"), "{voice}");
+    let copy = s.execute("storyboard.copy", &json!({})).unwrap();
+    let product = copy["copy"].as_array().unwrap().iter().find(|f| f["name"] == "product").unwrap().clone();
+    assert_eq!(
+        (product["label"].as_str(), product["value"].as_str(), product["pieces"].as_u64()),
+        (Some("商品名"), Some("云朵拖鞋"), Some(1))
+    );
+
+    // a clip is set like any other, then fields are filled: what is written from them is made again
+    s.execute("clip.set", &json!({"clip": button, "y": 0.3})).unwrap();
+    let before = s.revision();
+    let filled = s
+        .execute(
+            "storyboard.fill",
+            &json!({"copy": {"cta": "马上带一双回家", "price": 49.9, "product": "云朵拖鞋 2.0"}}),
+        )
+        .unwrap();
+    assert_eq!(filled["pieces"], json!(3));
+    assert_eq!(s.revision(), before + 1);
+    assert_eq!(inside(&s, &button), ["马上带一双回家"]);
+    assert_eq!(crate::made_of(&s.project(), &tag).unwrap().1.value, Some(49.9));
+    assert!(inside(&s, &third).contains(&"云朵拖鞋 2.0".to_string()));
+    assert_eq!(inside(&s, &strike), ["¥89"]);
+    assert_eq!(s.project().clip(&button).unwrap().1.transform.y, 0.3);
+    s.execute("render.compile", &json!({})).unwrap();
+    // it survives saving
+    let p = s.project();
+    assert_eq!(Project::from_json(&p.to_json()).unwrap(), *p);
+    // one undo step
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(inside(&s, &button), ["立即抢购"]);
+    s.execute("edit.redo", &json!({})).unwrap();
+
+    // a field a piece counts to is a number, or nothing changes
+    let before = s.revision();
+    let e = s.execute("storyboard.fill", &json!({"copy": {"price": "四十九"}})).unwrap_err().to_string();
+    assert!(e.contains("`price`") && e.contains("number"), "{e}");
+    assert!(s.execute("storyboard.fill", &json!({"copy": {}})).is_err());
+    assert!(s.execute("storyboard.fill", &json!({"copy": {"no good": "x"}})).is_err());
+    assert!(s.execute("storyboard.fill", &json!({"copy": {"n": "x"}})).is_err());
+    assert!(s.execute("storyboard.fill", &json!({"copy": {"cta": ["x"]}})).is_err());
+    assert_eq!(s.revision(), before);
+    // a field nothing is written from yet is kept for later
+    let filled = s.execute("storyboard.fill", &json!({"copy": {"shop": "南山店"}})).unwrap();
+    assert_eq!(filled["pieces"], json!(0));
+    assert!(s.project().copy.iter().any(|f| f.name == "shop" && f.value == "南山店"));
+
+    // a piece told its words directly is no longer written from the field
+    s.execute("promo.set", &json!({"clip": button, "text": "去看看"})).unwrap();
+    let filled = s.execute("storyboard.fill", &json!({"copy": {"cta": "不再跟着变"}})).unwrap();
+    assert_eq!(filled["pieces"], json!(0));
+    assert_eq!(inside(&s, &button), ["去看看"]);
+
+    // a second storyboard goes on a timeline of its own and shares the copy by name
+    let first = s.project().timeline.clone();
+    let second =
+        s.execute("storyboard.apply", &json!({"storyboard": "flashSale", "lang": "en", "seconds": 12})).unwrap();
+    assert_ne!(second["timeline"].as_str().unwrap(), first);
+    assert!((s.project().duration().seconds() - 12.0).abs() < 0.05);
+    assert_eq!(s.project().copy.iter().filter(|f| f.name == "product").count(), 1);
+    // what cannot be built is refused
+    assert!(s.execute("storyboard.apply", &json!({"storyboard": "nothing"})).is_err());
+    assert!(s.execute("storyboard.apply", &json!({"storyboard": "launch", "seconds": 300})).is_err());
+    assert!(s.execute("storyboard.apply", &json!({"storyboard": "launch", "lang": "fr"})).is_err());
+    assert!(s.execute("storyboard.apply", &json!({"storyboard": "launch", "copy": {"price": "free"}})).is_err());
+}
+
+#[test]
+fn a_storyboard_takes_the_person_s_pictures_in_scene_order() {
+    let mut s = Session::default();
+    let mut files = vec![];
+    for n in 0..4 {
+        let m = s
+            .execute(
+                "media.import",
+                &json!({"path": format!("/nowhere/{n}.mp4"), "kind": "video", "duration": {"seconds": 8}, "sha256": format!("{n:02x}").repeat(32)}),
+            )
+            .unwrap();
+        files.push(m["media"]["id"].as_str().unwrap().to_string());
+    }
+    let out = s.execute("storyboard.apply", &json!({"storyboard": "launch", "media": files})).unwrap();
+    assert_eq!(out["empty"], json!(0));
+    let p = s.project();
+    for (slot, file) in out["slots"].as_array().unwrap().iter().zip(&files) {
+        assert_eq!(slot["media"].as_str(), Some(file.as_str()));
+        let (_, clip) = p.clip(slot["clips"][0].as_str().unwrap()).unwrap();
+        assert!(matches!(&clip.content, ClipContent::Media { media, .. } if media == file));
+    }
+    // the last scene has no picture of the person's: a backdrop in the brand's colour
+    let last = p.tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| &t.clips);
+    assert!(last.into_iter().any(|c| c.slot.is_none() && matches!(c.content, ClipContent::Shape { .. })));
+}
+
+#[test]
+fn captions_written_from_the_copy_follow_it_until_changed_by_hand() {
+    let mut s = Session::default();
+    let out = s.execute("storyboard.apply", &json!({"storyboard": "launch", "captions": true})).unwrap();
+    let said = |s: &Session| -> Vec<String> {
+        let p = s.project();
+        let track = p.tracks.iter().find(|t| t.name == crate::CAPTIONS_TRACK).unwrap();
+        track
+            .clips
+            .iter()
+            .filter_map(|c| if let ClipContent::Text { text, .. } = &c.content { Some(text.clone()) } else { None })
+            .collect()
+    };
+    // a caption for each scene's line, as the scenes say them
+    let voices: Vec<String> =
+        out["scenes"].as_array().unwrap().iter().map(|sc| sc["voice"].as_str().unwrap().to_string()).collect();
+    assert_eq!(said(&s), voices);
+    assert_eq!(said(&s)[3], "新品首发 · 限时尝鲜价，到手只要 129 元。");
+    // the price is filled: its caption says the new one; the others are as they were
+    let filled = s.execute("storyboard.fill", &json!({"copy": {"price": 119}})).unwrap();
+    assert_eq!((filled["pieces"].as_u64(), filled["captions"].as_u64()), (Some(1), Some(1)));
+    assert_eq!(said(&s)[3], "新品首发 · 限时尝鲜价，到手只要 119 元。");
+    assert_eq!(said(&s)[0], voices[0]);
+    // one changed by hand is left alone from then on
+    let hook = s.project().copy_lines[0].clip.clone();
+    s.execute("clip.set", &json!({"clip": hook, "text": "还在喝凉水？"})).unwrap();
+    let filled = s.execute("storyboard.fill", &json!({"copy": {"hook": "杯子不保温？"}})).unwrap();
+    assert_eq!(filled["captions"].as_u64(), Some(0));
+    assert_eq!(said(&s)[0], "还在喝凉水？");
+    assert_eq!(s.project().copy_lines.len(), voices.len() - 1);
+    // and it survives saving
+    let p = s.project();
+    assert_eq!(Project::from_json(&p.to_json()).unwrap(), *p);
+}
+
+#[test]
+fn a_library_decoration_is_a_lottie_clip_over_the_picture_in_the_brand_s_colours() {
+    let mut s = Session::default();
+    let v = video_track(&s);
+    let list = s.execute("decor.list", &json!({})).unwrap();
+    let list = list["decor"].as_array().unwrap();
+    assert_eq!(list.len(), 20);
+    let rain = list.iter().find(|d| d["id"] == "confettiRain").unwrap();
+    assert_eq!(
+        (&rain["plays"], &rain["scale"], &rain["colours"]),
+        (&json!("round"), &json!(null), &json!(["color", "color2"]))
+    );
+    s.execute("clip.add", &json!({"track": v, "color": [0, 0, 0, 1], "duration": {"seconds": 5}})).unwrap();
+
+    // as drawn: its own colours, its own length and size, on a track above the picture
+    let a = s.execute("decor.add", &json!({"decor": "pulse", "start": {"seconds": 1}})).unwrap();
+    let p = s.project();
+    let m = &p.media[a["media"].as_str().unwrap()];
+    assert_eq!((m.uri.as_str(), m.kind, m.size), ("library:decor/pulse", MediaKind::Lottie, Some([1080, 1080])));
+    assert_eq!(
+        (m.name.as_str(), m.duration, m.sha256.as_ref().map(String::len)),
+        ("Pulse", Some(Tick::from_seconds(1.5)), Some(64))
+    );
+    let (ti, clip) = p.clip(a["clip"].as_str().unwrap()).unwrap();
+    let track = &p.tracks[ti];
+    assert_eq!(track.kind, TrackKind::Video);
+    assert!(ti > p.tracks.iter().position(|t| t.id == v).unwrap());
+    assert_eq!(
+        (clip.start, clip.duration, clip.transform.scale),
+        (Tick::from_seconds(1.0), Tick::from_seconds(3.0), 0.3)
+    );
+    let over = track.id.clone();
+
+    // again beside it: the same media, the same track; over it: the next track up
+    let b = s
+        .execute("decor.add", &json!({"decor": "pulse", "start": {"seconds": 4}, "duration": {"seconds": 1}}))
+        .unwrap();
+    assert_eq!((&b["media"], &b["track"]), (&a["media"], &json!(over)));
+    let c =
+        s.execute("decor.add", &json!({"decor": "pulse", "start": {"seconds": 2}, "x": 0.2, "scale": 0.5})).unwrap();
+    assert_eq!(&c["media"], &a["media"]);
+    assert_ne!(c["track"], json!(over));
+    assert_eq!(s.project().media.len(), 1);
+    // a track that is named must have room, and be for pictures
+    let full = s.execute("decor.add", &json!({"decor": "pulse", "start": {"seconds": 2}, "track": over}));
+    assert!(matches!(full, Err(EngineError::Refused(_))), "{full:?}");
+    let t = s.execute("track.add", &json!({"kind": "text"})).unwrap();
+    assert!(s.execute("decor.add", &json!({"decor": "pulse", "track": t["track"]})).is_err());
+    assert!(s.execute("decor.add", &json!({"decor": "kazoo"})).is_err());
+    assert!(s.execute("decor.add", &json!({"decor": "pulse", "duration": 0})).is_err());
+
+    // the brand's colours where it has them; told ones over the brand's; each look its own media
+    s.execute("brand.set", &json!({"primary": [0, 0, 1, 1], "secondary": [0, 1, 0, 1]})).unwrap();
+    let uri = |s: &Session, v: &serde_json::Value| s.project().media[v["media"].as_str().unwrap()].uri.clone();
+    let d = s.execute("decor.add", &json!({"decor": "pulse", "start": {"seconds": 6}})).unwrap();
+    assert_eq!(uri(&s, &d), "library:decor/pulse?primary=0000ff");
+    let e = s.execute("decor.add", &json!({"decor": "flame", "start": {"seconds": 6}, "color": [1, 0.5, 0]})).unwrap();
+    assert_eq!(uri(&s, &e), "library:decor/flame?primary=ff8000&secondary=00ff00");
+    assert_ne!(s.project().media[d["media"].as_str().unwrap()].sha256, m.sha256);
+
+    // one that covers: larger than fitting by how much the canvas is taller than it
+    let f = s.execute("decor.add", &json!({"decor": "confettiRain", "start": {"seconds": 8}})).unwrap();
+    let p = s.project();
+    let m = &p.media[f["media"].as_str().unwrap()];
+    assert_eq!(m.size, Some([1440, 1920]));
+    let scale = p.clip(f["clip"].as_str().unwrap()).unwrap().1.transform.scale;
+    assert!((scale - (1920.0 / 1920.0) / (1080.0 / 1440.0)).abs() < 1e-4, "{scale}");
+
+    // it all compiles, the animations as lottie assets, and one step takes one back
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let assets = spec["assets"].as_object().unwrap_or_else(|| panic!("{spec}"));
+    assert_eq!(assets.values().filter(|a| a["kind"] == "lottie").count(), 4);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.project().clip(f["clip"].as_str().unwrap()).is_none());
+}
+
+fn add_shape(s: &mut Session, track: &str, size: [u32; 2]) -> String {
+    let add = json!({"track": track, "start": 0, "duration": {"seconds": 2}, "shape": {
+        "kind": "rectangle", "size": size, "fill": [1, 0, 0, 1]
+    }});
+    s.execute("clip.add", &add).unwrap()["clip"].as_str().unwrap().to_string()
+}
+
+/// Where the clip's layer lands at `t`, as the renderer places it.
+fn outline(s: &Session, clip: &str, t: f64) -> [[f32; 2]; 4] {
+    let spec = reelforge_compile::compile(&s.project(), &Default::default()).expect("compiles");
+    reelforge_renderspec::validate(&spec).expect("valid");
+    let all = reelforge_render::layer_outlines(&spec, Tick::from_seconds(t), &reelforge_render::NoMedia);
+    all.into_iter().find(|(id, _)| id == clip).expect("on screen").1
+}
+
+fn close(a: [[f32; 2]; 4], b: [[f32; 2]; 4]) -> bool {
+    a.iter().flatten().zip(b.iter().flatten()).all(|(a, b)| (a - b).abs() < 0.6)
+}
+
+#[test]
+fn a_clip_is_stretched_turned_in_space_and_keeps_its_place_under_another_anchor() {
+    let mut s = Session::default();
+    let v = video_track(&s);
+    let c = add_shape(&mut s, &v, [540, 192]);
+    let flat = outline(&s, &c, 0.0);
+    assert_eq!(flat[0], [270.0, 864.0]);
+
+    // half as wide, swung in space, seen from nearer
+    s.execute("clip.set", &json!({"clip": c, "scaleX": 0.5, "rotationY": 30, "perspective": 1.5})).unwrap();
+    let t = s.project().clip(&c).unwrap().1.transform;
+    assert_eq!((t.scale_x, t.scale_y, t.rotation_y, t.distance), (0.5, 1.0, 30.0, 1.5));
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let tr = &spec["layers"][0]["transform"];
+    assert_eq!((&tr["stretch"], &tr["turn"]), (&json!([0.5, 1.0]), &json!({"x": 0.0, "y": 30.0, "distance": 1.5})));
+    let needs: Vec<&str> = spec["engine"]["features"].as_array().unwrap().iter().filter_map(|f| f.as_str()).collect();
+    assert!(needs.contains(&"transform.3d/1") && needs.contains(&"transform.stretch/1"), "{needs:?}");
+    // its left edge, nearer, is taller than its right
+    let o = outline(&s, &c, 0.0);
+    assert!(o[3][1] - o[0][1] > o[2][1] - o[1][1] + 6.0 && o[1][0] - o[0][0] < 260.0, "{o:?}");
+    for bad in [json!({"perspective": 0}), json!({"anchorX": 9}), json!({"scaleX": "wide"})] {
+        let mut with = bad.clone();
+        with["clip"] = json!(c);
+        assert!(s.execute("clip.set", &with).is_err(), "{bad}");
+    }
+
+    // another anchor: the picture stays where it lies, x and y say where the anchor now is
+    s.execute("clip.set", &json!({"clip": c, "rotationY": 0})).unwrap();
+    let before = outline(&s, &c, 0.0);
+    s.execute("clip.set", &json!({"clip": c, "anchorX": 0, "anchorY": 1})).unwrap();
+    let t = s.project().clip(&c).unwrap().1.transform;
+    assert_eq!(t.anchor, [0.0, 1.0]);
+    assert!((t.x + 0.125).abs() < 1e-4 && (t.y - 0.05).abs() < 1e-4, "{t:?}");
+    assert!(close(outline(&s, &c, 0.0), before));
+    // turned about it: its bottom left corner is where it was
+    s.execute("clip.set", &json!({"clip": c, "rotation": 90})).unwrap();
+    let turned = outline(&s, &c, 0.0);
+    assert!((turned[3][0] - before[3][0]).abs() < 0.6 && (turned[3][1] - before[3][1]).abs() < 0.6, "{turned:?}");
+    // and so when it is turned already; told not to keep it, only the anchor changes
+    s.execute("clip.set", &json!({"clip": c, "anchorX": 0.5, "anchorY": 0.5})).unwrap();
+    assert!(close(outline(&s, &c, 0.0), turned));
+    let was = s.project().clip(&c).unwrap().1.transform;
+    s.execute("clip.set", &json!({"clip": c, "anchorX": 1, "keep": false})).unwrap();
+    let t = s.project().clip(&c).unwrap().1.transform;
+    assert_eq!((t.anchor, t.x, t.y), ([1.0, 0.5], was.x, was.y));
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.project().clip(&c).unwrap().1.transform, was);
+
+    // a title is measured as it is laid out
+    let text = s.project().tracks.iter().find(|t| t.kind == TrackKind::Text).unwrap().id.clone();
+    let add = json!({"track": text, "text": "限时特价", "size": 96, "start": 0, "duration": {"seconds": 2}});
+    let title = s.execute("clip.add", &add).unwrap()["clip"].as_str().unwrap().to_string();
+    let before = outline(&s, &title, 0.0);
+    let y = s.project().clip(&title).unwrap().1.transform.y;
+    s.execute("clip.set", &json!({"clip": title, "anchorX": 0})).unwrap();
+    let t = s.project().clip(&title).unwrap().1.transform;
+    assert!(t.x < -0.1 && t.x > -0.3 && t.y == y, "{t:?}");
+    assert!(close(outline(&s, &title, 0.0), before));
+
+    // turns in space are keyed and animated like any other property
+    s.execute("clip.setKey", &json!({"clip": title, "prop": "rotationY", "at": 0, "value": -80})).unwrap();
+    s.execute("clip.setKey", &json!({"clip": title, "prop": "rotationY", "at": {"seconds": 1}, "value": 0})).unwrap();
+    s.execute("clip.setAnimation", &json!({"clip": c, "slot": "in", "kind": "flipX"})).unwrap();
+    s.execute("clip.setAnimation", &json!({"clip": c, "slot": "loop", "kind": "tilt"})).unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let layers = spec["layers"].as_array().unwrap();
+    let turn = |id: &str| layers.iter().find(|l| l["id"] == id).unwrap()["transform"]["turn"].clone();
+    assert_eq!((&turn(&title)["y"][0]["v"], &turn(&title)["y"][1]["v"]), (&json!(-80.0), &json!(0.0)));
+    // tipping up from edge on while it rocks from side to side
+    let lid = turn(&c);
+    assert!((lid["x"][0]["v"].as_f64().unwrap() + 82.0).abs() < 1e-3, "{}", lid["x"][0]);
+    assert!(lid["y"].as_array().unwrap().len() > 30 && lid["x"].as_array().unwrap().len() > 30);
+    // a door swung half open shows narrower than it lies
+    let o = outline(&s, &title, 0.5);
+    assert!(o[1][0] - o[0][0] < (before[1][0] - before[0][0]) * 0.9, "{o:?} {before:?}");
+}
+
+#[test]
+fn a_clip_carried_by_another_follows_it_and_keeps_its_place() {
+    let mut s = Session::default();
+    let v = video_track(&s);
+    let parent = add_shape(&mut s, &v, [400, 400]);
+    s.execute("clip.set", &json!({"clip": parent, "x": 0.2, "scale": 0.5, "rotation": 90})).unwrap();
+    let over = s.execute("track.add", &json!({"kind": "video"})).unwrap()["track"].as_str().unwrap().to_string();
+    let child = add_shape(&mut s, &over, [200, 100]);
+    s.execute("clip.set", &json!({"clip": child, "x": -0.1, "y": 0.1})).unwrap();
+    let before = outline(&s, &child, 0.0);
+
+    // carried: it stays where it shows, its placement now counted from its parent
+    let r = s.execute("clip.setParent", &json!({"clip": child, "parent": parent})).unwrap();
+    let t = s.project().clip(&child).unwrap().1.transform;
+    assert!((t.x - 384.0 / 1080.0).abs() < 1e-4 && (t.y - 648.0 / 1920.0).abs() < 1e-4, "{t:?}");
+    assert!((t.scale - 2.0).abs() < 1e-5 && (t.rotation + 90.0).abs() < 1e-4, "{t:?}");
+    assert_eq!((&r["parent"], r["scale"].as_f64().map(|v| v.round())), (&json!(parent), Some(2.0)));
+    assert!(close(outline(&s, &child, 0.0), before));
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let layer = spec["layers"].as_array().unwrap().iter().find(|l| l["id"] == json!(child)).unwrap();
+    assert_eq!(layer["parent"], json!(parent));
+    assert!(spec["engine"]["features"].as_array().unwrap().contains(&json!("layer.parent/1")));
+
+    // the parent moves, grows and turns: the child goes with it as one object
+    let centre = |o: [[f32; 2]; 4]| [(o[0][0] + o[2][0]) / 2.0, (o[0][1] + o[2][1]) / 2.0];
+    let (was, pivot) = (centre(before), centre(outline(&s, &parent, 0.0)));
+    s.execute("clip.set", &json!({"clip": parent, "x": 0.3, "scale": 1.0, "rotation": 180})).unwrap();
+    let (now, moved) = (centre(outline(&s, &child, 0.0)), centre(outline(&s, &parent, 0.0)));
+    // twice as far from the parent's middle, a quarter turn on
+    let (dx, dy) = (was[0] - pivot[0], was[1] - pivot[1]);
+    assert!((now[0] - (moved[0] - 2.0 * dy)).abs() < 0.6 && (now[1] - (moved[1] + 2.0 * dx)).abs() < 0.6, "{now:?}");
+
+    // a ring is refused, and so is what cannot carry
+    for (clip, of) in [(&parent, &child), (&child, &child)] {
+        assert!(s.execute("clip.setParent", &json!({"clip": clip, "parent": of})).is_err());
+    }
+    assert!(s.execute("clip.setParent", &json!({"clip": child, "parent": "c999"})).is_err());
+    // set free where it shows, then carried again without keeping its place
+    let carried = outline(&s, &child, 0.0);
+    s.execute("clip.setParent", &json!({"clip": child, "parent": null})).unwrap();
+    assert!(s.project().clip(&child).unwrap().1.parent.is_none());
+    assert!(close(outline(&s, &child, 0.0), carried));
+    let free = s.project().clip(&child).unwrap().1.transform;
+    s.execute("clip.setParent", &json!({"clip": child, "parent": parent, "keep": false})).unwrap();
+    assert_eq!(s.project().clip(&child).unwrap().1.transform, free);
+    assert!(!close(outline(&s, &child, 0.0), carried));
+
+    // its parent gone, it is drawn on its own
+    s.execute("clip.remove", &json!({"clips": [parent]})).unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert!(spec["layers"][0].get("parent").is_none(), "{}", spec["layers"][0]);
+}
+
+#[test]
+fn a_clip_travels_along_a_path_at_an_even_speed() {
+    let mut s = Session::default();
+    let v = video_track(&s);
+    let c = add_shape(&mut s, &v, [120, 60]);
+    let path = json!({"clip": c, "points": [[-0.3, 0.2], [0, -0.2], [0.3, 0.2]], "orient": true,
+        "duration": {"seconds": 1}, "ease": "linear"});
+    let r = s.execute("clip.setPath", &path).unwrap();
+    assert_eq!((&r["path"]["orient"], &r["path"]["points"][1][0]), (&json!(true), &json!(0.0)));
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let tr = &spec["layers"][0]["transform"];
+    // frame by frame while it travels, then it stays at the last point
+    let keys = tr["position"].as_array().unwrap();
+    assert_eq!(keys.len(), 32, "{keys:?}");
+    let at = |i: usize| [keys[i]["v"][0].as_f64().unwrap(), keys[i]["v"][1].as_f64().unwrap()];
+    let near = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() < 2e-3 && (a[1] - b[1]).abs() < 2e-3;
+    assert!(
+        near(at(0), [-0.3, 0.2]) && near(at(15), [0.0, -0.2]) && near(at(30), [0.3, 0.2]) && near(at(31), [0.3, 0.2])
+    );
+    // as far each frame, on the canvas (which is taller than it is wide)
+    let step = |i: usize| ((at(i + 1)[0] - at(i)[0]) * 1080.0).hypot((at(i + 1)[1] - at(i)[1]) * 1920.0);
+    assert!((step(3) / step(14) - 1.0).abs() < 0.03, "{} {}", step(3), step(14));
+    // facing the way it goes: up and to the right, level over the top, then down
+    let turn = |i: usize| tr["rotation"][i]["v"].as_f64().unwrap();
+    assert!(turn(1) < -45.0 && turn(15).abs() < 4.0 && turn(29) > 45.0, "{} {} {}", turn(1), turn(15), turn(29));
+
+    // its other settings change on their own; a path needs its points
+    let r = s.execute("clip.setPath", &json!({"clip": c, "closed": true, "start": {"seconds": 0.5}})).unwrap();
+    assert_eq!((&r["path"]["closed"], r["path"]["points"].as_array().map(Vec::len)), (&json!(true), Some(3)));
+    let p = s.project().clip(&c).unwrap().1.path.clone().unwrap();
+    assert_eq!((p.start, p.duration, p.orient), (Tick::from_seconds(0.5), Tick::SECOND, true));
+    for bad in [json!({"points": [[0, 0]]}), json!({"points": "round"}), json!({"duration": 0})] {
+        let mut with = bad.clone();
+        with["clip"] = json!(c);
+        assert!(s.execute("clip.setPath", &with).is_err(), "{bad}");
+    }
+    // taking the path away puts the clip back where its x and y say
+    s.execute("clip.setPath", &json!({"clip": c, "points": null})).unwrap();
+    assert!(s.project().clip(&c).unwrap().1.path.is_none());
+    assert!(s.execute("clip.setPath", &json!({"clip": c, "orient": true})).is_err());
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    assert!(spec["layers"][0]["transform"]["position"][0].is_number());
+}
+
+#[test]
+fn titles_come_in_by_the_word_are_written_on_and_sung() {
+    let mut s = Session::default();
+    let track = |kind: TrackKind| s.project().tracks.iter().find(|t| t.kind == kind).unwrap().id.clone();
+    let (video, text) = (track(TrackKind::Video), track(TrackKind::Text));
+    let add =
+        |s: &mut Session, params: Value| s.execute("clip.add", &params).unwrap()["clip"].as_str().unwrap().to_string();
+    let title = add(&mut s, json!({"track": text, "text": "限时特价 big sale", "duration": {"seconds": 4}}));
+    let content = |s: &mut Session| s.execute("render.compile", &json!({})).unwrap()["layers"][0]["content"].clone();
+    let features = |s: &mut Session| s.execute("render.compile", &json!({})).unwrap()["engine"]["features"].clone();
+    let has = |f: &Value, id: &str| f.as_array().unwrap().iter().any(|v| v == id);
+    assert!(!has(&features(&mut s), "text/7"));
+
+    // word by word, then springing letter by letter as it leaves... which settles instead
+    s.execute(
+        "clip.setAnimation",
+        &json!({"clip": title, "slot": "in", "kind": "wordRise", "duration": {"seconds": 1}}),
+    )
+    .unwrap();
+    s.execute("clip.setAnimation", &json!({"clip": title, "slot": "out", "kind": "charElastic"})).unwrap();
+    let c = content(&mut s);
+    let chars = c["chars"].as_array().unwrap();
+    assert_eq!((chars[0]["unit"].as_str(), chars[0]["curve"].as_str()), (Some("word"), Some("settle")));
+    assert_eq!(
+        (chars[1].get("unit"), chars[1]["curve"].as_str(), chars[1]["reverse"].as_bool()),
+        (None, Some("settle"), Some(true))
+    );
+    assert!(has(&features(&mut s), "text/7"));
+    s.execute("clip.setAnimation", &json!({"clip": title, "slot": "in", "kind": "charBounce"})).unwrap();
+    s.execute("clip.setAnimation", &json!({"clip": title, "slot": "out", "kind": null})).unwrap();
+    assert_eq!(content(&mut s)["chars"][0]["curve"], "bounce");
+    s.execute("clip.setAnimation", &json!({"clip": title, "slot": "in", "kind": "lineRise"})).unwrap();
+    assert_eq!(content(&mut s)["chars"][0]["unit"], "line");
+
+    // written on: a pen over the animation's length, and off again
+    s.execute("clip.setAnimation", &json!({"clip": title, "slot": "in", "kind": "draw", "duration": {"seconds": 2}}))
+        .unwrap();
+    let c = content(&mut s);
+    let keys = c["draw"]["progress"].as_array().unwrap();
+    assert_eq!((keys[0]["v"].as_f64(), keys[1]["v"].as_f64()), (Some(0.0), Some(1.0)));
+    assert_eq!(keys[1]["t"], json!(Tick::from_seconds(2.0)));
+    assert!(c.get("chars").is_none() && c["draw"]["width"].as_f64().unwrap() > 0.0);
+    // a picture has no outline for a pen, and words are a title's
+    let picture = add(
+        &mut s,
+        json!({"track": video, "shape": {"kind": "rectangle", "size": [200, 200]}, "duration": {"seconds": 2}}),
+    );
+    assert!(s.execute("clip.setAnimation", &json!({"clip": picture, "slot": "in", "kind": "wordFade"})).is_err());
+    s.execute("clip.setAnimation", &json!({"clip": picture, "slot": "in", "kind": "draw"})).unwrap();
+    // any clip springs in or drops in: its scale goes past its size, its place comes down from above
+    s.execute(
+        "clip.setAnimation",
+        &json!({"clip": picture, "slot": "in", "kind": "elastic", "duration": {"seconds": 1}}),
+    )
+    .unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let scales = spec["layers"][0]["transform"]["scale"].as_array().unwrap();
+    assert!(scales.iter().any(|k| k["v"].as_f64().unwrap() > 1.15) && scales.last().unwrap()["v"] == json!(1.0));
+    s.execute("clip.setAnimation", &json!({"clip": picture, "slot": "in", "kind": "drop", "duration": {"seconds": 1}}))
+        .unwrap();
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let places = spec["layers"][0]["transform"]["position"].as_array().unwrap();
+    let y = |k: &Value| k["v"][1].as_f64().unwrap();
+    assert!(y(&places[0]) < -0.3 && places.iter().all(|k| y(k) <= 1e-6) && y(places.last().unwrap()).abs() < 1e-6);
+    s.execute("clip.remove", &json!({"clips": [picture]})).unwrap();
+    s.execute("clip.setAnimation", &json!({"clip": title, "slot": "in", "kind": null})).unwrap();
+
+    // sung: the voice goes through the title over its length, yellow unless told
+    let k = s.execute("clip.set", &json!({"clip": title, "karaoke": {}})).unwrap();
+    assert_eq!(k["clip"]["content"]["style"]["karaoke"]["mode"], "sweep");
+    let c = content(&mut s);
+    let h = &c["highlight"];
+    let keys = h["progress"].as_array().unwrap();
+    assert_eq!((keys.len(), keys[0]["v"].as_f64(), keys[1]["v"].as_f64()), (2, Some(0.0), Some(1.0)));
+    assert_eq!((keys[0]["t"].clone(), keys[1]["t"].clone()), (json!(Tick::ZERO), json!(Tick::from_seconds(4.0))));
+    assert!(h.get("unit").is_none() && h["color"][0] == json!(1.0));
+    // the word being said, from one second in for two: none lit before, and what it had is kept
+    s.execute(
+        "clip.set",
+        &json!({"clip": title, "karaoke": {"mode": "word", "color": [1, 0, 0, 1], "start": {"seconds": 1}, "duration": {"seconds": 2}}}),
+    )
+    .unwrap();
+    s.execute("clip.set", &json!({"clip": title, "karaoke": {"mode": "word"}})).unwrap();
+    let c = content(&mut s);
+    let h = &c["highlight"];
+    let keys = h["progress"].as_array().unwrap();
+    assert_eq!((h["unit"].as_str(), h["color"].clone()), (Some("word"), json!([1.0, 0.0, 0.0, 1.0])));
+    assert_eq!((keys[0]["v"].as_f64(), keys[0]["ease"].as_str()), (Some(-1.0), Some("hold")));
+    assert_eq!(
+        (keys[1]["t"].clone(), keys[2]["t"].clone()),
+        (json!(Tick::from_seconds(1.0)), json!(Tick::from_seconds(3.0)))
+    );
+    // a voice that would outlast the clip keeps its pace and is cut short
+    s.execute("clip.set", &json!({"clip": title, "karaoke": {"start": 0, "duration": {"seconds": 8}}})).unwrap();
+    let keys = content(&mut s)["highlight"]["progress"].as_array().unwrap().clone();
+    assert_eq!((keys.len(), keys[1]["v"].as_f64()), (2, Some(0.5)));
+    // the frame shows it: red ink half way through, none without
+    s.execute("clip.set", &json!({"clip": title, "karaoke": {"mode": "sweep", "duration": null}})).unwrap();
+    let red = |s: &mut Session| {
+        let spec: reelforge_renderspec::RenderSpec =
+            serde_json::from_value(s.execute("render.compile", &json!({})).unwrap()).unwrap();
+        let (img, _) = reelforge_render::render_frame(
+            &spec,
+            Tick::from_seconds(2.0),
+            0.25,
+            &reelforge_render::NoMedia,
+            reelforge_render::Quality::Final,
+        )
+        .unwrap();
+        img.pixels.iter().filter(|p| p[0] > 0.8 && p[1] < 0.2 && p[3] > 0.8).count()
+    };
+    assert!(red(&mut s) > 20);
+    // bad values are refused, null takes it off, and captions take it from one another
+    for bad in [json!({"mode": "loud"}), json!({"start": {"seconds": -1}}), json!({"duration": 0}), json!(3)] {
+        assert!(s.execute("clip.set", &json!({"clip": title, "karaoke": bad})).is_err(), "{bad}");
+    }
+    let other =
+        add(&mut s, json!({"track": text, "text": "第二句", "start": {"seconds": 5}, "duration": {"seconds": 2}}));
+    s.execute("captions.restyle", &json!({"from": title})).unwrap();
+    let style = |s: &Session, id: &str| match &s.project().clip(id).unwrap().1.content {
+        ClipContent::Text { style, .. } => style.karaoke,
+        _ => None,
+    };
+    assert_eq!(style(&s, &other).map(|k| (k.mode, k.duration)), Some((reelforge_model::KaraokeMode::Sweep, None)));
+    s.execute("clip.set", &json!({"clip": title, "karaoke": null})).unwrap();
+    assert!(style(&s, &title).is_none() && red(&mut s) == 0);
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(style(&s, &title).is_some());
+}
+
+#[test]
+fn the_next_clip_is_wiped_opened_flipped_and_torn_in() {
+    let mut s = Session::default();
+    let track = video_track(&s);
+    add_red(&mut s, 0.0, 2.0);
+    let blue = s
+        .execute(
+            "clip.add",
+            &json!({"track": track, "color": [0, 0, 1], "start": {"seconds": 2}, "duration": {"seconds": 2}}),
+        )
+        .unwrap()["clip"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let set = |s: &mut Session, kind: &str| {
+        s.execute("clip.setTransition", &json!({"clip": blue, "kind": kind, "duration": {"seconds": 1}})).unwrap();
+    };
+    let spec = |s: &mut Session| s.execute("render.compile", &json!({})).unwrap();
+    // a frame a quarter the size, and the pixel at a place in it as [red, blue] (sRGB-ish, 0 to 1)
+    let frame = |s: &mut Session, at: f64| {
+        let spec: reelforge_renderspec::RenderSpec = serde_json::from_value(spec(s)).unwrap();
+        reelforge_render::render_frame(
+            &spec,
+            Tick::from_seconds(at),
+            0.25,
+            &reelforge_render::NoMedia,
+            reelforge_render::Quality::Final,
+        )
+        .unwrap()
+        .0
+    };
+    let at = |img: &reelforge_render::Image, x: f32, y: f32| {
+        let (px, py) = ((x * img.width as f32) as u32, (y * img.height as f32) as u32);
+        let p = img.pixels[(py.min(img.height - 1) * img.width + px.min(img.width - 1)) as usize];
+        [p[0], p[2]]
+    };
+    let (is_red, is_blue) = (|p: [f32; 2]| p[0] > 0.9 && p[1] < 0.1, |p: [f32; 2]| p[1] > 0.9 && p[0] < 0.1);
+    let plain = frame(&mut s, 3.0);
+    for kind in reelforge_model::TransitionKind::ALL {
+        set(&mut s, kind.name());
+        // before it the last clip, after it the next, as if there were no transition
+        let (before, after) = (frame(&mut s, 1.0), frame(&mut s, 3.0));
+        assert!(is_red(at(&before, 0.5, 0.5)) && is_red(at(&before, 0.05, 0.05)), "{kind:?}");
+        assert!(after.pixels == plain.pixels, "{kind:?}");
+    }
+
+    // a wipe to the right has uncovered the left half at the cut, behind a soft edge
+    set(&mut s, "wipeRight");
+    let mid = frame(&mut s, 2.0);
+    assert!(is_blue(at(&mid, 0.2, 0.5)) && is_red(at(&mid, 0.8, 0.5)), "{:?}", at(&mid, 0.2, 0.5));
+    let edge = at(&mid, 0.5, 0.5);
+    assert!(edge[0] > 0.05 && edge[1] > 0.05, "{edge:?}");
+    set(&mut s, "wipeUp");
+    let mid = frame(&mut s, 2.0);
+    assert!(is_blue(at(&mid, 0.5, 0.8)) && is_red(at(&mid, 0.5, 0.2)));
+    // a circle and a diamond open from the middle
+    for kind in ["circle", "diamond", "box"] {
+        set(&mut s, kind);
+        let early = frame(&mut s, 1.75);
+        assert!(is_blue(at(&early, 0.5, 0.5)) && is_red(at(&early, 0.1, 0.1)), "{kind}");
+    }
+    let layers = spec(&mut s)["layers"].clone();
+    assert_eq!(layers[1]["shape_mask"]["shape"], "rectangle");
+    assert!(layers[1]["shape_mask_keys"]["size"].as_array().unwrap().len() > 20);
+    // a clip with a mask of its own dissolves instead
+    s.execute("clip.setMask", &json!({"clip": blue, "shape": "circle"})).unwrap();
+    let layers = spec(&mut s)["layers"].clone();
+    assert!(layers[1]["shape_mask"]["shape"] == "circle" && layers[1].get("shape_mask_keys").is_none());
+    assert!(layers[1]["opacity"].as_array().unwrap()[0]["v"] == json!(0.0));
+    s.execute("clip.setMask", &json!({"clip": blue, "shape": null})).unwrap();
+
+    // a card: before the cut the last clip is turned, seen narrower; after it the next one is
+    set(&mut s, "flip");
+    let (early, late) = (frame(&mut s, 1.85), frame(&mut s, 2.15));
+    assert!(is_red(at(&early, 0.5, 0.5)) && !is_red(at(&early, 0.03, 0.5)) && !is_blue(at(&early, 0.5, 0.5)));
+    assert!(is_blue(at(&late, 0.5, 0.5)) && !is_blue(at(&late, 0.03, 0.5)));
+    let features = spec(&mut s)["engine"]["features"].clone();
+    assert!(features.as_array().unwrap().iter().any(|f| f == "transform.3d/1"));
+    // a page closes from the right edge: at the cut the left of the frame still shows the last clip
+    set(&mut s, "pageTurn");
+    let mid = frame(&mut s, 2.0);
+    assert!(
+        is_red(at(&mid, 0.1, 0.5)) && is_blue(at(&mid, 0.9, 0.5)),
+        "{:?} {:?}",
+        at(&mid, 0.1, 0.5),
+        at(&mid, 0.9, 0.5)
+    );
+
+    // light: three glows screened over both clips, brightest at the cut
+    set(&mut s, "lightLeak");
+    let layers = spec(&mut s)["layers"].clone();
+    let glows: Vec<&Value> =
+        layers.as_array().unwrap().iter().filter(|l| l["id"].as_str().unwrap().contains("~light")).collect();
+    assert!(glows.len() == 3 && glows.iter().all(|l| l["blend"] == "screen" && l["content"]["type"] == "shape"));
+    let mid = frame(&mut s, 2.0);
+    let lit: f32 = mid.pixels.iter().map(|p| p[1]).sum::<f32>() / mid.pixels.len() as f32;
+    assert!(lit > 0.1, "green of the warm light over red and blue: {lit}");
+
+    // torn: both layers jump in bands with their colours apart while it plays, and it cuts
+    set(&mut s, "glitch");
+    let layers = spec(&mut s)["layers"].clone();
+    for l in [&layers[0], &layers[1]] {
+        let ids: Vec<&str> = l["fx"].as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap()).collect();
+        assert!(ids.contains(&"distort.glitch@1") && ids.contains(&"distort.split@1"), "{ids:?}");
+    }
+    let (early, late) = (frame(&mut s, 1.9), frame(&mut s, 2.1));
+    assert!(at(&early, 0.5, 0.5)[1] < 0.1 && at(&late, 0.5, 0.5)[0] < 0.1);
+    // larger: the last clip has grown past the frame by the cut (pictures are blurred as well,
+    // which the compiler's own test looks at)
+    set(&mut s, "zoomBlur");
+    let layers = spec(&mut s)["layers"].clone();
+    let grown = layers[0]["transform"]["scale"].as_array().unwrap().last().unwrap()["v"].as_f64().unwrap();
+    assert!(grown > 2.0, "{grown}");
+}
+
+#[test]
+fn a_clip_is_smeared_along_its_way_when_it_is_asked_to_be() {
+    let mut s = Session::default();
+    // red all over the frame, pushed out to the left by the blue clip after it
+    add_red(&mut s, 0.0, 2.0);
+    let track = video_track(&s);
+    let blue = s
+        .execute(
+            "clip.add",
+            &json!({"track": track, "color": [0, 0, 1], "start": {"seconds": 2}, "duration": {"seconds": 2}}),
+        )
+        .unwrap()["clip"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    s.execute("clip.setTransition", &json!({"clip": blue, "kind": "pushLeft", "duration": {"seconds": 0.5}})).unwrap();
+    let spec = |s: &mut Session| -> reelforge_renderspec::RenderSpec {
+        serde_json::from_value(s.execute("render.compile", &json!({})).unwrap()).unwrap()
+    };
+    // the middle row at the cut, a quarter the size: how blue each column is
+    let row = |s: &mut Session, at: f64| -> Vec<f32> {
+        let (img, _) = reelforge_render::render_frame(
+            &spec(s),
+            Tick::from_seconds(at),
+            0.25,
+            &reelforge_render::NoMedia,
+            reelforge_render::Quality::Final,
+        )
+        .unwrap();
+        let y = img.height / 2;
+        (0..img.width).map(|x| img.pixels[(y * img.width + x) as usize][2]).collect()
+    };
+    let soft = |row: &[f32]| row.iter().filter(|b| **b > 0.02 && **b < 0.98).count();
+    // without it the edge between the two is a column at most
+    assert!(spec(&mut s).layers.iter().all(|l| l.motion_blur.is_none()));
+    assert!(soft(&row(&mut s, 2.0)) <= 1);
+
+    // on: a film camera's shutter unless a number says how long, on the clip and on its layer
+    let set = |s: &mut Session, v: Value| s.execute("clip.set", &json!({"clip": blue, "motionBlur": v}));
+    let on = set(&mut s, json!(true)).unwrap();
+    assert_eq!(on["clip"]["transform"]["motion_blur"], 0.5);
+    let compiled = spec(&mut s);
+    assert_eq!(compiled.layers[1].motion_blur, Some(reelforge_renderspec::MotionBlur { shutter: 0.5 }));
+    assert!(compiled.layers[0].motion_blur.is_none() && compiled.required_features().contains("motion.blur/1"));
+    // the blue clip's leading edge is a ramp now, several columns wide, and wider for a longer shutter
+    let half = soft(&row(&mut s, 2.0));
+    assert!(half >= 3, "{half}");
+    set(&mut s, json!(1.5)).unwrap();
+    assert!(soft(&row(&mut s, 2.0)) > half);
+    // where it stands still it is as it was
+    set(&mut s, json!(false)).unwrap();
+    let plain = row(&mut s, 3.0);
+    set(&mut s, json!(true)).unwrap();
+    assert_eq!(row(&mut s, 3.0), plain);
+    // off again, by false or by 0; and a shutter is 0 to 2
+    let off = set(&mut s, json!(0)).unwrap();
+    assert!(off["clip"]["transform"].get("motion_blur").is_none());
+    assert!(spec(&mut s).layers.iter().all(|l| l.motion_blur.is_none()));
+    for bad in [json!(3), json!(-0.5), json!("on")] {
+        assert!(matches!(set(&mut s, bad), Err(EngineError::Params(m)) if m.contains("motionBlur")));
+    }
+    // one undo for each set
+    s.execute("clip.set", &json!({"clip": blue, "motionBlur": true})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.project().clip(&blue).unwrap().1.transform.motion_blur, 0.0);
+}
+
+#[test]
+fn a_clip_lands_turned_in_space_in_one_step_and_the_outline_says_so() {
+    let mut s = Session::default();
+    let t = video_track(&s);
+    let r = s
+        .execute(
+            "clip.add",
+            &json!({"track": t, "color": [1, 0, 0], "rotationY": 30, "scaleX": -1, "motionBlur": true, "anchorX": 0}),
+        )
+        .unwrap();
+    let id = r["clip"].as_str().unwrap();
+    let tr = s.project().clip(id).unwrap().1.transform;
+    assert_eq!((tr.rotation_y, tr.scale_x, tr.anchor[0]), (30.0, -1.0, 0.0));
+    assert!(tr.motion_blur > 0.0);
+    assert_eq!(s.history(), ["Add Clip"], "one undo step");
+    let outline = s.execute("project.outline", &json!({})).unwrap();
+    let space = &outline["tracks"][0]["clips"][0]["space"];
+    assert_eq!(
+        (&space["rotationY"], &space["scaleX"], &space["motionBlur"]),
+        (&json!(30.0), &json!(-1.0), &json!(0.5))
+    );
+    // what clip.set refuses, clip.add refuses, and adds nothing
+    assert!(s.execute("clip.add", &json!({"track": t, "color": [1, 0, 0], "perspective": 0})).is_err());
+    assert_eq!(s.project().tracks[0].clips.len(), 1);
+}
+
+#[test]
+fn clips_move_on_the_beat_and_are_cut_on_it() {
+    let listed = Session::default().execute("beat.list", &json!({})).unwrap();
+    let ids: Vec<&str> = listed["moves"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["punch", "pulse", "shake", "flash", "strobe", "tilt", "bounce", "squash"]);
+
+    let mut s = Session::default();
+    let fps = s.project().canvas.fps;
+    let frame = fps.frame_duration();
+    let video = add_video(&mut s, 10.0);
+    let at = |secs: f64| fps.snap(Tick::from_seconds(secs));
+    let keys =
+        |s: &Session, id: &str, p: Prop| s.project().clip(id).unwrap().1.keys.get(&p).cloned().unwrap_or_default();
+    let value = |s: &Session, id: &str, p: Prop, t: Tick| s.project().clip(id).unwrap().1.value_at(p, t);
+
+    // with no beat said and none marked, it says what to do
+    let ask = json!({"clips": [video], "move": "punch"});
+    assert!(matches!(s.execute("beat.apply", &ask), Err(EngineError::Refused(m)) if m.contains("audio.beats")));
+
+    // a tempo: 120 a minute is a beat every half second, the first at 1 s
+    let out = s
+        .execute("beat.apply", &json!({"clips": [video], "move": "punch", "bpm": 120, "first": {"seconds": 1}}))
+        .unwrap();
+    assert_eq!(out["beats"], 18, "{out}");
+    assert_eq!(out["props"], json!(["scale"]));
+    // at rest before the first beat, at its largest on the beat, at rest again before the next
+    assert_eq!(value(&s, &video, Prop::Scale, at(0.9)), 1.0);
+    assert!((value(&s, &video, Prop::Scale, at(1.0)) - 1.14).abs() < 1e-4);
+    let after = value(&s, &video, Prop::Scale, at(1.0) + frame * 3);
+    assert!(after > 1.0 && after < 1.14, "{after}");
+    assert_eq!(value(&s, &video, Prop::Scale, at(1.4)), 1.0);
+    assert!((value(&s, &video, Prop::Scale, at(1.5)) - 1.14).abs() < 1e-4);
+    // every key is at the start of a frame
+    assert!(keys(&s, &video, Prop::Scale).iter().all(|k| fps.snap(k.t) == k.t));
+
+    // the same kind again replaces it: twice as strong, every second beat
+    let stronger =
+        json!({"clips": [video], "move": "punch", "bpm": 120, "first": {"seconds": 1}, "every": 2, "strength": 1});
+    assert_eq!(s.execute("beat.apply", &stronger).unwrap()["beats"], 9);
+    assert!((value(&s, &video, Prop::Scale, at(1.0)) - 1.28).abs() < 1e-4);
+    assert_eq!(value(&s, &video, Prop::Scale, at(1.5)), 1.0);
+    // another kind adds to it, and measures from the clip's own place
+    s.execute("clip.set", &json!({"clip": video, "rotation": 10})).unwrap();
+    s.execute("beat.apply", &json!({"clips": [video], "move": "tilt", "at": [{"seconds": 2}, {"seconds": 3}]}))
+        .unwrap();
+    assert_eq!(value(&s, &video, Prop::Rotation, at(2.0)), 13.5);
+    assert_eq!(value(&s, &video, Prop::Rotation, at(3.0)), 6.5);
+    assert_eq!(value(&s, &video, Prop::Rotation, at(2.9)), 10.0);
+    assert!(!keys(&s, &video, Prop::Scale).is_empty());
+
+    // the timeline's beat markers are the beat when nothing else is said; other markers are not
+    for (secs, note) in [(0.5, "♪"), (1.25, "♪"), (2.0, "♪"), (2.6, "here")] {
+        s.execute("marker.add", &json!({"at": {"seconds": secs}, "note": note})).unwrap();
+    }
+    for mv in ids.iter().filter(|m| **m != "punch" && **m != "tilt") {
+        let out = s.execute("beat.apply", &json!({"clips": [video], "move": mv})).unwrap();
+        assert_eq!(out["beats"], 3, "{mv}: {out}");
+    }
+    assert!(value(&s, &video, Prop::Exposure, at(1.25)) > 0.8 && value(&s, &video, Prop::Exposure, at(2.6)) == 0.0);
+    assert!(value(&s, &video, Prop::Opacity, at(2.0)) < 0.6 && value(&s, &video, Prop::Opacity, at(1.9)) == 1.0);
+    assert!(value(&s, &video, Prop::ScaleX, at(0.5)) > 1.05 && value(&s, &video, Prop::ScaleY, at(0.5)) < 0.95);
+    // a hop goes up and comes down; a shake ends where it began
+    assert!(value(&s, &video, Prop::Y, at(0.5) + frame * 3) < 0.0 && value(&s, &video, Prop::Y, at(1.2)) == 0.0);
+    // what comes out is a project that compiles
+    s.execute("render.compile", &json!({})).unwrap();
+    // one undo takes a move off again
+    let had = keys(&s, &video, Prop::ScaleX).len();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(had > 0 && keys(&s, &video, Prop::ScaleX).is_empty());
+
+    // what cannot be: an unknown move, both a tempo and times, no beat within the clips, a
+    // title asked to flash, a sound clip, a clip on a path asked to shake
+    let text = s.project().tracks.iter().find(|t| t.kind == TrackKind::Text).unwrap().id.clone();
+    let title = s.execute("clip.add", &json!({"track": text, "text": "SALE", "duration": {"seconds": 2}})).unwrap();
+    let title = title["clip"].as_str().unwrap().to_string();
+    for bad in [
+        json!({"clips": [video], "move": "wobble"}),
+        json!({"clips": [video], "move": "punch", "bpm": 120, "at": [0]}),
+        json!({"clips": [video], "move": "punch", "at": [{"seconds": 60}]}),
+        json!({"clips": [video], "move": "punch", "first": 0}),
+        json!({"clips": [video], "move": "punch", "every": 0}),
+        json!({"clips": [video], "move": "punch", "strength": 2}),
+        json!({"clips": [title], "move": "flash"}),
+        json!({"clips": [video, video], "move": "punch"}),
+        json!({"clips": ["c999"], "move": "punch"}),
+    ] {
+        assert!(s.execute("beat.apply", &bad).is_err(), "{bad}");
+    }
+    s.execute("beat.apply", &json!({"clips": [title], "move": "shake"})).unwrap();
+    let path = json!({"clip": title, "points": [[-0.2, 0], [0.2, 0]]});
+    s.execute("clip.setPath", &path).unwrap();
+    assert!(
+        matches!(s.execute("beat.apply", &json!({"clips": [title], "move": "bounce"})), Err(EngineError::Refused(m)) if m.contains("path"))
+    );
+    assert!(s.execute("beat.apply", &json!({"clips": [title], "move": "punch"})).is_ok());
+}
+
+#[test]
+fn a_montage_is_cut_so_that_every_clip_ends_on_a_beat() {
+    let mut s = Session::default();
+    let fps = s.project().canvas.fps;
+    let track = video_track(&s);
+    let span = |s: &Session, id: &str| {
+        let c = s.project().clip(id).unwrap().1.clone();
+        (c.start.seconds(), c.duration.seconds())
+    };
+    let near = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 0.02 && (a.1 - b.1).abs() < 0.02;
+    // three stills end to end, 1.3 s each, and a video of 0.9 s
+    let mut stills = vec![];
+    for i in 0..3 {
+        let params = json!({"track": track, "color": [1, 0, 0], "start": {"seconds": 1.3 * i as f64}, "duration": {"seconds": 1.3}});
+        stills.push(s.execute("clip.add", &params).unwrap()["clip"].as_str().unwrap().to_string());
+    }
+    let m = s
+        .execute("media.import", &json!({"path": "/nowhere/short.mp4", "kind": "video", "duration": {"seconds": 0.9}, "sha256": "ab".repeat(32)}))
+        .unwrap()["media"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let short = s.execute("clip.add", &json!({"track": track, "media": m, "start": {"seconds": 3.9}})).unwrap();
+    let short = short["clip"].as_str().unwrap().to_string();
+
+    // 120 a minute, two beats a clip: every still is a second long, one after another
+    let out = s.execute("beat.cut", &json!({"clips": stills, "bpm": 120, "every": 2})).unwrap();
+    assert_eq!(out["onBeat"], 3, "{out}");
+    for (i, id) in stills.iter().enumerate() {
+        assert!(near(span(&s, id), (i as f64, 1.0)), "{:?}", span(&s, id));
+    }
+    assert_eq!(out["cuts"][1]["start"], json!(fps.snap(Tick::from_seconds(1.0))));
+    // one undo puts them back
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(near(span(&s, &stills[2]), (2.6, 1.3)));
+
+    // a video too short for two beats ends on the one it reaches, and the next cut is on the
+    // beat again; a still is made longer to reach its beat
+    let order = [stills[0].clone(), short.clone(), stills[1].clone(), stills[2].clone()];
+    // at 150 a minute a beat is 0.4 s: the short video takes two of them when asked for three
+    let out = s.execute("beat.cut", &json!({"clips": order, "bpm": 150, "every": 3})).unwrap();
+    assert!(near(span(&s, &stills[0]), (0.0, 1.2)), "{out}");
+    assert!(near(span(&s, &short), (1.2, 0.8)), "{:?}", span(&s, &short));
+    assert!(near(span(&s, &stills[1]), (2.0, 0.4)) && near(span(&s, &stills[2]), (2.4, 1.2)), "{out}");
+    assert_eq!(out["onBeat"], 4);
+    s.execute("edit.undo", &json!({})).unwrap();
+    // and is refused when it reaches no beat at all, with nothing changed
+    let slow = s.execute("beat.cut", &json!({"clips": order, "bpm": 60, "every": 2}));
+    assert!(matches!(slow, Err(EngineError::Refused(m)) if m.contains("0.90 s") && m.contains("1.00 s")));
+    assert!(near(span(&s, &stills[0]), (0.0, 1.3)));
+
+    // times given: clips left over when the beats run out follow at their own length; each
+    // arrives with a flash, once, at its cut
+    let ask = json!({"clips": stills, "at": [{"seconds": 0.5}, {"seconds": 1.5}], "move": "punch", "from": 0});
+    let out = s.execute("beat.cut", &ask).unwrap();
+    assert_eq!(out["onBeat"], 2);
+    assert!(near(span(&s, &stills[0]), (0.0, 0.5)) && near(span(&s, &stills[1]), (0.5, 1.0)));
+    assert!(near(span(&s, &stills[2]), (1.5, 1.3)), "{:?}", span(&s, &stills[2]));
+    for id in &stills {
+        let c = s.project().clip(id).unwrap().1.clone();
+        assert!(c.value_at(Prop::Scale, Tick::ZERO) > 1.1 && c.value_at(Prop::Scale, c.duration) == 1.0);
+    }
+    s.execute("render.compile", &json!({})).unwrap();
+
+    // refused: clips of two tracks, a clip in the way, no beat after the start
+    let other = s.execute("track.add", &json!({"kind": "video"})).unwrap()["track"].as_str().unwrap().to_string();
+    let above =
+        s.execute("clip.add", &json!({"track": other, "color": [0, 0, 1], "duration": {"seconds": 1}})).unwrap();
+    let above = above["clip"].as_str().unwrap().to_string();
+    let two = s.execute("beat.cut", &json!({"clips": [stills[0], above], "bpm": 120}));
+    assert!(matches!(two, Err(EngineError::Refused(m)) if m.contains("one track")));
+    let crowded = s.execute("beat.cut", &json!({"clips": [stills[0], stills[1]], "bpm": 20}));
+    assert!(matches!(crowded, Err(EngineError::Refused(m)) if m.contains("in the way")), "{:?}", span(&s, &stills[2]));
+    let late = s.execute("beat.cut", &json!({"clips": [above], "at": [0]}));
+    assert!(matches!(late, Err(EngineError::Refused(m)) if m.contains("no beat")));
 }
 
 #[test]

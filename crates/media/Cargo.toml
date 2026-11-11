@@ -13,6 +13,7 @@ workspace = true
 reelforge-time = { workspace = true }
 reelforge-renderspec = { workspace = true }
 reelforge-render = { workspace = true }
+reelforge-lottie = { workspace = true }
 thiserror = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-codecs = { workspace = true }

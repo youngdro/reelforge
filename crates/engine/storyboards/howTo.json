@@ -1,0 +1,275 @@
+{
+ "id": "howTo",
+ "name": {
+  "en": "Three steps",
+  "zh": "三步教程",
+  "ja": "3 ステップ"
+ },
+ "about": {
+  "en": "The finished result first, then three numbered steps with a line read out under each",
+  "zh": "先看成品，再分三步演示，每步配一句跟读字幕",
+  "ja": "完成形を先に見せ、番号付きの 3 ステップを字幕とともに"
+ },
+ "music": "lofi",
+ "fields": [
+  {
+   "id": "hook",
+   "text": {
+    "en": "Pour-over in 3 steps",
+    "zh": "三步冲好手冲咖啡",
+    "ja": "3 ステップでハンドドリップ"
+   }
+  },
+  {
+   "id": "product",
+   "text": {
+    "en": "Pour-over starter kit",
+    "zh": "手冲入门套装",
+    "ja": "ハンドドリップ入門セット"
+   }
+  },
+  {
+   "id": "step1",
+   "text": {
+    "en": "Grind",
+    "zh": "磨豆",
+    "ja": "豆を挽く"
+   }
+  },
+  {
+   "id": "note1",
+   "text": {
+    "en": "Medium grind, 15 grams",
+    "zh": "中度研磨 15 克",
+    "ja": "中挽きで 15 グラム"
+   }
+  },
+  {
+   "id": "step2",
+   "text": {
+    "en": "Bloom",
+    "zh": "闷蒸",
+    "ja": "蒸らす"
+   }
+  },
+  {
+   "id": "note2",
+   "text": {
+    "en": "A little water, wait 30 seconds",
+    "zh": "少量注水 等 30 秒",
+    "ja": "少し注いで 30 秒待つ"
+   }
+  },
+  {
+   "id": "step3",
+   "text": {
+    "en": "Pour",
+    "zh": "注水",
+    "ja": "注ぐ"
+   }
+  },
+  {
+   "id": "note3",
+   "text": {
+    "en": "Slow circles up to 225 ml",
+    "zh": "绕圈注水 到 225 毫升",
+    "ja": "円を描いて 225 ml まで"
+   }
+  },
+  {
+   "id": "closing",
+   "text": {
+    "en": "Your turn",
+    "zh": "你也试试",
+    "ja": "あなたもぜひ"
+   }
+  },
+  {
+   "id": "cta",
+   "text": {
+    "en": "Get the kit",
+    "zh": "同款套装",
+    "ja": "セットを見る"
+   }
+  },
+  {
+   "id": "hint",
+   "text": {
+    "en": "Tap the link below",
+    "zh": "点击下方小黄车",
+    "ja": "下のリンクをタップ"
+   }
+  }
+ ],
+ "scenes": [
+  {
+   "id": "hook",
+   "seconds": 3.0,
+   "shot": {
+    "en": "The finished result",
+    "zh": "成品展示",
+    "ja": "完成したところ"
+   },
+   "fx": "zoomIn",
+   "voice": {
+    "en": "{hook}.",
+    "zh": "{hook}。",
+    "ja": "{hook}。"
+   },
+   "pieces": [
+    {
+     "kind": "elasticTitle",
+     "at": 0.2,
+     "text": "{hook}",
+     "lines": [
+      "{product}"
+     ],
+     "y": -0.3
+    }
+   ]
+  },
+  {
+   "id": "step1",
+   "seconds": 4.5,
+   "shot": {
+    "en": "Step 1, hands in frame",
+    "zh": "步骤 1 的操作画面",
+    "ja": "ステップ 1 の手元"
+   },
+   "sweep": "right",
+   "voice": {
+    "en": "Step 1: {step1}. {note1}.",
+    "zh": "第 1 步，{step1}：{note1}。",
+    "ja": "ステップ 1、{step1}。{note1}。"
+   },
+   "pieces": [
+    {
+     "kind": "indexPlate",
+     "at": 0.2,
+     "value": 1,
+     "text": "{step1}",
+     "y": -0.36,
+     "scale": 0.9
+    },
+    {
+     "kind": "karaokeCaption",
+     "at": 0.6,
+     "text": "{note1}",
+     "y": 0.15
+    }
+   ]
+  },
+  {
+   "id": "step2",
+   "seconds": 4.5,
+   "shot": {
+    "en": "Step 2, hands in frame",
+    "zh": "步骤 2 的操作画面",
+    "ja": "ステップ 2 の手元"
+   },
+   "sweep": "up",
+   "voice": {
+    "en": "Step 2: {step2}. {note2}.",
+    "zh": "第 2 步，{step2}：{note2}。",
+    "ja": "ステップ 2、{step2}。{note2}。"
+   },
+   "pieces": [
+    {
+     "kind": "indexPlate",
+     "at": 0.2,
+     "value": 2,
+     "text": "{step2}",
+     "y": -0.36,
+     "scale": 0.9
+    },
+    {
+     "kind": "karaokeCaption",
+     "at": 0.6,
+     "text": "{note2}",
+     "y": 0.15
+    }
+   ]
+  },
+  {
+   "id": "step3",
+   "seconds": 4.5,
+   "shot": {
+    "en": "Step 3, hands in frame",
+    "zh": "步骤 3 的操作画面",
+    "ja": "ステップ 3 の手元"
+   },
+   "sweep": "left",
+   "voice": {
+    "en": "Step 3: {step3}. {note3}.",
+    "zh": "第 3 步，{step3}：{note3}。",
+    "ja": "ステップ 3、{step3}。{note3}。"
+   },
+   "pieces": [
+    {
+     "kind": "indexPlate",
+     "at": 0.2,
+     "value": 3,
+     "text": "{step3}",
+     "y": -0.36,
+     "scale": 0.9
+    },
+    {
+     "kind": "karaokeCaption",
+     "at": 0.6,
+     "text": "{note3}",
+     "y": 0.15
+    }
+   ]
+  },
+  {
+   "id": "cta",
+   "seconds": 3.5,
+   "backdrop": "brand",
+   "sweep": "down",
+   "voice": {
+    "en": "{closing}. {hint}.",
+    "zh": "{closing}，{hint}。",
+    "ja": "{closing}。{hint}。"
+   },
+   "pieces": [
+    {
+     "kind": "endCard",
+     "at": 0.1,
+     "text": "{closing}",
+     "lines": [
+      "{product}"
+     ],
+     "y": -0.22
+    },
+    {
+     "kind": "buyButton",
+     "at": 0.7,
+     "text": "{cta}",
+     "y": -0.01
+    },
+    {
+     "kind": "followPrompt",
+     "at": 1.0,
+     "lines": [
+      {
+       "en": "Follow",
+       "zh": "关注",
+       "ja": "フォロー"
+      },
+      {
+       "en": "Save",
+       "zh": "收藏",
+       "ja": "保存"
+      },
+      {
+       "en": "Share",
+       "zh": "转发",
+       "ja": "シェア"
+      }
+     ],
+     "y": 0.17
+    }
+   ]
+  }
+ ]
+}

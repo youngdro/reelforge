@@ -10,18 +10,27 @@
 //! checks the invariants and only then commits, pushing the old snapshot onto the undo stack. A
 //! reader (a preview, an export) holds a snapshot and never blocks an edit.
 
+mod beat;
 mod canvas;
 mod capcut;
 mod captions;
 mod commands;
 mod compound;
 mod cut;
+mod decor;
+mod layout;
 pub mod listen;
+mod outline;
 mod params;
+mod pieces;
+mod promo;
 mod remix;
 mod schema;
 mod shared;
+pub mod space;
+mod storyboard;
 mod templates;
+mod voiceover;
 
 use std::sync::Arc;
 
@@ -29,14 +38,20 @@ use reelforge_model::Project;
 use serde_json::{Value, json};
 use thiserror::Error;
 
+pub use beat::{MOVES as BEAT_MOVES, Move as BeatMove};
 pub use canvas::RATIOS;
 pub use captions::{CAPTIONS_TRACK, CAPTIONS_TRACK_2, Cue, format_srt, parse_srt};
 pub use commands::{CommandSpec, media_uses, registry};
+pub use layout::{LAYOUTS, Layout};
 pub use params::parse_time;
+pub use pieces::{Category, PROMOS, Promo};
+pub use promo::made_of;
 pub use remix::{TimelineTemplate, is_empty_slot, slot_colour, slot_states, timeline_template, timeline_templates};
 pub use schema::input_schema;
 pub use shared::{Change, SharedSession};
+pub use storyboard::{Field, Lang, Said, Scene, Storyboard, field_label, scene_label, storyboards};
 pub use templates::{TitleTemplate, title_template, title_templates};
+pub use voiceover::{Spoken, VOICEOVER_TRACK, spoken_lines};
 
 /// How many undo steps a session keeps.
 pub const UNDO_DEPTH: usize = 200;
@@ -100,12 +115,13 @@ impl Session {
     /// Runs the command `id` with `params` (an object, or null for none).
     pub fn execute(&mut self, id: &str, params: &Value) -> CmdResult {
         let spec = registry().iter().find(|c| c.id == id).ok_or_else(|| EngineError::Unknown(id.to_string()))?;
-        (spec.enabled)(self).map_err(EngineError::Disabled)?;
         let empty = json!({});
         let params = if params.is_null() { &empty } else { params };
         if !params.is_object() {
             return Err(EngineError::Params("parameters must be a JSON object".into()));
         }
+        schema::check_names(id, params).map_err(EngineError::Params)?;
+        (spec.enabled)(self).map_err(EngineError::Disabled)?;
         (spec.run)(self, params)
     }
 

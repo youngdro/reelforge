@@ -113,6 +113,11 @@
           "const": "lut",
           "description": "A colour lookup table.",
           "type": "string"
+        },
+        {
+          "const": "lottie",
+          "description": "A Lottie animation (feature `lottie/1`): Bodymovin JSON or a dotLottie archive. It has\nno frames of its own: any instant is drawn, at the size the asset's `probe` gives, and\npast its length it goes round again. A media layer shows it as it shows a video.",
+          "type": "string"
         }
       ]
     },
@@ -448,6 +453,16 @@
           "const": "hop",
           "description": "To `pose` and back in the first half of every round, at rest in the second.",
           "type": "string"
+        },
+        {
+          "const": "elastic",
+          "description": "With `text/7`: from `pose` to rest once, swinging past rest and back several times, less\neach time, like something on a spring.",
+          "type": "string"
+        },
+        {
+          "const": "bounce",
+          "description": "With `text/7`: from `pose` to rest once, falling faster and faster, then bouncing back\ntowards `pose` three times, less each time, like a dropped ball.",
+          "type": "string"
         }
       ]
     },
@@ -475,6 +490,10 @@
           "description": "How much later each character starts than the one before. For `settle` and `spring`, in\nunits of one character's own time: 0 moves them all together, 1 starts each as the one\nbefore arrives. For `wave` and `hop`, in rounds.",
           "format": "float",
           "type": "number"
+        },
+        "unit": {
+          "$ref": "#/$defs/TextUnit",
+          "description": "With `text/7`: what moves as one, about its own centre, where this says \"character\"."
         }
       },
       "required": [
@@ -851,10 +870,28 @@
             "null"
           ]
         },
+        "motion_blur": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MotionBlur"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The layer smeared along its own movement, as a camera with its shutter open sees it\n(feature `motion.blur/1`)."
+        },
         "opacity": {
           "$ref": "#/$defs/Animated",
           "default": 1.0,
           "description": "Opacity, 0 to 1."
+        },
+        "parent": {
+          "description": "The layer that carries this one, among the layers it is listed with (feature\n`layer.parent/1`). This layer is placed as it would be alone, and then moved, scaled and\nturned as the parent's transform moves the frame: its `position` is counted from the\nparent's (a layer at the centre sits on the parent's anchor), along the parent's own\nturned and scaled axes. A parent at the centre, at scale 1 and unturned changes nothing.\nThe parent's transform is taken at the same output instant on the parent's own clock,\nheld at its first value before the parent starts and at its last after it ends, so the\nparent need not be on screen; nothing else of the parent (its opacity, crop, effects) is\npassed on. A parent may have a parent, eight deep.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "shape_mask": {
           "anyOf": [
@@ -988,6 +1025,17 @@
               "$ref": "#/$defs/Color",
               "description": "Fill colour."
             },
+            "draw": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TextDraw"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `text/7`: the text is written on, each character's outline drawn by a pen before its\nfill comes in."
+            },
             "font": {
               "description": "A `font` asset; absent means the renderer's bundled default face (Noto Sans SC, which also\ncovers Latin). Characters the face lacks fall back to the other faces the renderer has.",
               "type": [
@@ -1006,6 +1054,17 @@
               ],
               "description": "With `text/2`: the fill fades from `color` at the block's top to this at its bottom."
             },
+            "highlight": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TextHighlight"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `text/7`: part of the text takes another colour as it is said (karaoke)."
+            },
             "italic": {
               "description": "With `text/4`: slanted; the face's own italic when it has one, otherwise sheared.",
               "type": "boolean"
@@ -1014,6 +1073,17 @@
               "description": "With `text/4`: space added between lines, in ems (negative: closer together).",
               "format": "float",
               "type": "number"
+            },
+            "number": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NumberText"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `text/6`: a number that changes over time (a price, a count, a clock), written into\n`text` where it says `{n}`, or as the whole text when it does not."
             },
             "outer": {
               "anyOf": [
@@ -1108,6 +1178,109 @@
         },
         {
           "additionalProperties": false,
+          "description": "A drawn shape (feature `shape/1`): a box, ellipse, line, polygon, star, price tag or\narrow, filled and outlined, its outline drawn on over time. Its centre is placed by the\nlayer's transform; its size is in output pixels, before the layer's scale.",
+          "properties": {
+            "fill": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Paint"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What fills it; none leaves only the outline."
+            },
+            "fill_opacity": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Animated"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How much of the fill shows, 0 to 1 (1 when absent)."
+            },
+            "inner": {
+              "default": 0.5,
+              "description": "How far in a star's inner corners are, 0.05 to 1 of the way to its points.",
+              "format": "float",
+              "type": "number"
+            },
+            "kind": {
+              "$ref": "#/$defs/ShapeKind",
+              "description": "Which shape."
+            },
+            "points": {
+              "default": 5,
+              "description": "Sides of a polygon, points of a star: 3 to 64.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "radius": {
+              "description": "Corner radius of a rectangle or a tag.",
+              "format": "float",
+              "type": "number"
+            },
+            "shadow": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ShapeShadow"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A soft shadow of the fill and outline, beneath them."
+            },
+            "size": {
+              "description": "Width and height of its box.",
+              "items": {
+                "format": "float",
+                "type": "number"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "stroke": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ShapeStroke"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The outline, centred on the shape's edge (a line's only ink)."
+            },
+            "trim": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Trim"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The part of the outline drawn, as fractions of its length from its start: an outline that\ndraws itself on (its end rising from 0 to 1) or a stroke that runs round it."
+            },
+            "type": {
+              "const": "shape",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "kind",
+            "size"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "The picture of a composition (feature `comp/1`): drawn first, on a see-through frame the\nsize of the output, then placed, cropped, masked and given this layer's effects as one\npicture.",
           "properties": {
             "comp": {
@@ -1156,6 +1329,51 @@
           "type": "string"
         }
       ]
+    },
+    "MotionBlur": {
+      "additionalProperties": false,
+      "description": "A layer seen through a shutter that stays open for part of each frame: where the layer is\nplaced is taken at several instants of that time and what it shows at each is averaged, so\nthat it is smeared along the way it moves, grows or turns, and is as sharp as ever while it\nstands still. Only its placement is taken at those instants (its `transform`, and those of the\nlayers that carry it): its picture, opacity, crop, mask and effects are the frame's own. The\ntime the shutter is open is centred on the frame's instant. A renderer takes as many instants\nas it sees fit (at least two where the layer moves a pixel or more), and may take fewer for a\ndraft.",
+      "properties": {
+        "shutter": {
+          "description": "How long the shutter is open, as a share of the time from one frame to the next: 0.5 is a\nfilm camera's half turn (180°), 1 the whole time. Above 0, at most 2.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "shutter"
+      ],
+      "type": "object"
+    },
+    "NumberText": {
+      "additionalProperties": false,
+      "description": "A number shown by a text (`text/6`).",
+      "properties": {
+        "clock": {
+          "description": "Written as a clock of whole seconds: `m:ss`, or `h:mm:ss` from an hour.",
+          "type": "boolean"
+        },
+        "decimals": {
+          "default": 0,
+          "description": "Digits after the decimal point, 0 to 4.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "group": {
+          "description": "Thousands separated by commas.",
+          "type": "boolean"
+        },
+        "value": {
+          "$ref": "#/$defs/Animated",
+          "description": "The value over the layer's time."
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "type": "object"
     },
     "Output": {
       "additionalProperties": false,
@@ -1251,6 +1469,84 @@
         }
       ]
     },
+    "Paint": {
+      "description": "How a shape is filled.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "One colour.",
+          "properties": {
+            "color": {
+              "$ref": "#/$defs/Color",
+              "description": "The colour."
+            },
+            "type": {
+              "const": "solid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "color"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "From one colour to another along a line across the box.",
+          "properties": {
+            "angle": {
+              "default": 0.0,
+              "description": "Which way the line runs, degrees clockwise from left-to-right (90: top to bottom).",
+              "format": "float",
+              "type": "number"
+            },
+            "from": {
+              "$ref": "#/$defs/Color",
+              "description": "The colour where the line starts."
+            },
+            "to": {
+              "$ref": "#/$defs/Color",
+              "description": "The colour where it ends."
+            },
+            "type": {
+              "const": "linear",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "from",
+            "to"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "From one colour at the box's centre to another at its edge.",
+          "properties": {
+            "from": {
+              "$ref": "#/$defs/Color",
+              "description": "The colour at the centre."
+            },
+            "to": {
+              "$ref": "#/$defs/Color",
+              "description": "The colour at the edge (and beyond, in the corners)."
+            },
+            "type": {
+              "const": "radial",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "from",
+            "to"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "Probe": {
       "additionalProperties": false,
       "description": "Measured properties of an asset.",
@@ -1286,6 +1582,46 @@
         }
       },
       "type": "object"
+    },
+    "ShapeKind": {
+      "description": "Shapes.",
+      "oneOf": [
+        {
+          "const": "rectangle",
+          "description": "A box, its corners rounded by `radius`.",
+          "type": "string"
+        },
+        {
+          "const": "ellipse",
+          "description": "An ellipse filling the box.",
+          "type": "string"
+        },
+        {
+          "const": "line",
+          "description": "A line across the middle of the box, left to right; it shows by its stroke.",
+          "type": "string"
+        },
+        {
+          "const": "polygon",
+          "description": "A regular polygon of `points` sides, a corner at the top, stretched to the box.",
+          "type": "string"
+        },
+        {
+          "const": "star",
+          "description": "A star of `points` points, stretched to the box: a burst badge with many.",
+          "type": "string"
+        },
+        {
+          "const": "tag",
+          "description": "A price tag: a box pointed at its left end, with a hole near the point.",
+          "type": "string"
+        },
+        {
+          "const": "arrow",
+          "description": "An arrow pointing right.",
+          "type": "string"
+        }
+      ]
     },
     "ShapeMask": {
       "additionalProperties": false,
@@ -1374,6 +1710,57 @@
       ],
       "type": "object"
     },
+    "ShapeShadow": {
+      "additionalProperties": false,
+      "description": "A shape's shadow.",
+      "properties": {
+        "blur": {
+          "default": 0.0,
+          "description": "Softness: the blur's standard deviation.",
+          "format": "float",
+          "type": "number"
+        },
+        "color": {
+          "$ref": "#/$defs/Color",
+          "description": "Colour."
+        },
+        "offset": {
+          "description": "Offset `[right, down]`, on the frame (it does not turn with the shape).",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "color",
+        "offset"
+      ],
+      "type": "object"
+    },
+    "ShapeStroke": {
+      "additionalProperties": false,
+      "description": "A shape's outline.",
+      "properties": {
+        "color": {
+          "$ref": "#/$defs/Color",
+          "description": "Colour."
+        },
+        "width": {
+          "description": "Width, centred on the edge.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "color",
+        "width"
+      ],
+      "type": "object"
+    },
     "SpeedKey": {
       "additionalProperties": false,
       "description": "One point of a speed ramp.",
@@ -1443,6 +1830,55 @@
       ],
       "type": "object"
     },
+    "TextDraw": {
+      "additionalProperties": false,
+      "description": "A text written on (`text/7`).",
+      "properties": {
+        "progress": {
+          "$ref": "#/$defs/Animated",
+          "description": "0, nothing shows, to 1, the text as it is. In between the characters are written one\nafter another: a pen follows each one's outline, then its fill, outlines and shadow fade\nin and the pen's line goes."
+        },
+        "step": {
+          "description": "How much later each character starts than the one before, in units of one character's\nown time: 0 writes them all together, 1 starts each as the one before is done.",
+          "format": "float",
+          "type": "number"
+        },
+        "width": {
+          "description": "The pen's width in ems. It draws in the colour of the text's outline, or of its fill when\nit has none.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "progress",
+        "width",
+        "step"
+      ],
+      "type": "object"
+    },
+    "TextHighlight": {
+      "additionalProperties": false,
+      "description": "Part of a text in another colour as it is said (`text/7`).",
+      "properties": {
+        "color": {
+          "$ref": "#/$defs/Color",
+          "description": "The fill of what is highlighted, in place of the text's own colour or gradient."
+        },
+        "progress": {
+          "$ref": "#/$defs/Animated",
+          "description": "How much of the text has been said: 0, none of it, to 1, all of it, counted in characters,\nwhite space left out."
+        },
+        "unit": {
+          "$ref": "#/$defs/TextUnit",
+          "description": "`char`: everything said so far, the edge passing smoothly through the character being\nsaid. `word` and `line`: the word or line being said, alone; none before 0 or from 1 on."
+        }
+      },
+      "required": [
+        "progress",
+        "color"
+      ],
+      "type": "object"
+    },
     "TextShadow": {
       "additionalProperties": false,
       "description": "A shadow beneath text.",
@@ -1494,6 +1930,26 @@
       ],
       "type": "object"
     },
+    "TextUnit": {
+      "description": "What of a text moves as one, or is said as one (`text/7`).",
+      "oneOf": [
+        {
+          "const": "char",
+          "description": "Each character.",
+          "type": "string"
+        },
+        {
+          "const": "word",
+          "description": "Each word: characters with no white space between them. A Chinese character or a kana is\na word of its own, together with the punctuation that follows it.",
+          "type": "string"
+        },
+        {
+          "const": "line",
+          "description": "Each line, as the text is laid out.",
+          "type": "string"
+        }
+      ]
+    },
     "Tick": {
       "description": "A position or a duration in ticks.",
       "format": "int64",
@@ -1528,6 +1984,19 @@
       "additionalProperties": false,
       "description": "A layer's placement, about the frame's centre.",
       "properties": {
+        "anchor": {
+          "description": "The point of the layer's picture that sits at `position`, and that the layer is scaled and\nturned about: fractions of the picture as it shows (after any crop) from its top left.\nIts centre, `[0.5, 0.5]`, when absent (feature `transform.anchor/1`).",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "position": {
           "$ref": "#/$defs/Animated2",
           "default": [
@@ -1545,6 +2014,68 @@
           "$ref": "#/$defs/Animated",
           "default": 1.0,
           "description": "Uniform scale; 1 is the fitted size."
+        },
+        "stretch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Animated2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Width and height scaled apart, `[across, down]`, on top of `scale` (feature\n`transform.stretch/1`)."
+        },
+        "turn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Turn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The layer turned in space, seen in perspective (feature `transform.3d/1`)."
+        }
+      },
+      "type": "object"
+    },
+    "Trim": {
+      "additionalProperties": false,
+      "description": "The part of an outline that is drawn.",
+      "properties": {
+        "end": {
+          "$ref": "#/$defs/Animated",
+          "default": 1.0,
+          "description": "Where it ends, 0 to 1; nothing is drawn where it is not past `start`."
+        },
+        "start": {
+          "$ref": "#/$defs/Animated",
+          "default": 0.0,
+          "description": "Where the drawn part starts, 0 to 1."
+        }
+      },
+      "type": "object"
+    },
+    "Turn": {
+      "additionalProperties": false,
+      "description": "A layer turned out of the frame's plane about its anchor, after its `rotation` in the plane\nis undone and before it is done again: first about the horizontal axis, then the vertical.\nIt is seen from straight in front of where its anchor is, so a layer turned on its own closes\nlike a door or a lid evenly, wherever in the frame it is. A layer carried by another\n([`Layer::parent`]) that is turned is seen from where the outermost turned layer carrying it\nis, so the two stay one object. Past 90 degrees a layer shows its back, mirrored.",
+      "properties": {
+        "distance": {
+          "default": 2.0,
+          "description": "How far the eye is, in frame heights: nearer is a stronger perspective. Positive.",
+          "format": "float",
+          "type": "number"
+        },
+        "x": {
+          "$ref": "#/$defs/Animated",
+          "default": 0.0,
+          "description": "Degrees about the horizontal axis: positive tips the top edge away."
+        },
+        "y": {
+          "$ref": "#/$defs/Animated",
+          "default": 0.0,
+          "description": "Degrees about the vertical axis: positive swings the right edge away."
         }
       },
       "type": "object"

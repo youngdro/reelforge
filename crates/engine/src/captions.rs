@@ -190,6 +190,8 @@ pub(crate) fn place(
             group: None,
             slot: None,
             steady: None,
+            parent: None,
+            path: None,
         });
     }
     let track = proj.tracks.iter_mut().find(|t| t.id == track_id).expect("found or made above");

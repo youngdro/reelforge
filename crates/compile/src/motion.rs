@@ -20,18 +20,20 @@
 use reelforge_model::{
     Clip, Ease as MEase, Fades, Fx, FxChannel, FxSample, Key as MKey, Offset, Prop, Steadied, Timing, TransitionKind,
 };
-use reelforge_renderspec::{Animated, CharCurve, CharMotion, CharPose, Ease, Key};
+use reelforge_renderspec::{Animated, CharCurve, CharMotion, CharPose, Ease, Key, TextDraw, TextHighlight, TextUnit};
 use reelforge_time::Tick;
 
 /// Whether an animation preset changes `p`.
 fn moves(kind: reelforge_model::AnimKind, p: Prop) -> bool {
     use reelforge_model::AnimKind::*;
     match p {
-        Prop::Opacity => !kind.titles_only(),
+        Prop::Opacity => !kind.titles_only() && !kind.drawn_only(),
         Prop::X => matches!(kind, SlideLeft | SlideRight),
-        Prop::Y => matches!(kind, SlideUp | SlideDown),
-        Prop::Scale => matches!(kind, ZoomIn | ZoomOut | Pop | Spin),
+        Prop::Y => matches!(kind, SlideUp | SlideDown | Drop),
+        Prop::Scale => matches!(kind, ZoomIn | ZoomOut | Pop | Spin | Elastic),
         Prop::Rotation => matches!(kind, Spin),
+        Prop::RotationX => kind == FlipX,
+        Prop::RotationY => kind == FlipY,
         _ => false,
     }
 }
@@ -45,6 +47,8 @@ fn loops(kind: reelforge_model::LoopKind, p: Prop) -> bool {
         Prop::Y => matches!(kind, Float | Bounce | Shake),
         Prop::Scale => matches!(kind, Breathe | Heartbeat),
         Prop::Rotation => matches!(kind, Swing | Spin),
+        Prop::RotationX => kind == Tilt,
+        Prop::RotationY => matches!(kind, Flip | Tilt),
         _ => false,
     }
 }
@@ -56,36 +60,53 @@ pub fn chars(clip: &Clip, shape: &Shape) -> Vec<CharMotion> {
     let key = |t: Tick, v: f32| Key { t, v, ease: Ease::Linear };
     let len = shape.len;
     let (a, b) = clip.anim.spans(len);
-    // where a character waits before it comes in, and goes as it leaves
-    let pose = |kind: AnimKind| -> Option<(CharCurve, CharPose)> {
+    // where a character (or a word, or a line) waits before it comes in, and goes as it leaves;
+    // how it travels, and how much later each starts than the one before
+    let pose = |kind: AnimKind| -> Option<(CharCurve, CharPose, TextUnit, f32)> {
         let hidden = CharPose { opacity: 0.0, ..CharPose::REST };
+        let (below, above) = (CharPose { offset: [0.0, 0.6], ..hidden }, CharPose { offset: [0.0, -0.6], ..hidden });
+        let nothing = CharPose { scale: 0.0, ..hidden };
         match kind {
-            AnimKind::CharFade => Some((CharCurve::Settle, hidden)),
-            AnimKind::CharRise => Some((CharCurve::Settle, CharPose { offset: [0.0, 0.6], ..hidden })),
-            AnimKind::CharDrop => Some((CharCurve::Settle, CharPose { offset: [0.0, -0.6], ..hidden })),
-            AnimKind::CharPop => Some((CharCurve::Spring, CharPose { scale: 0.0, ..hidden })),
+            AnimKind::CharFade => Some((CharCurve::Settle, hidden, TextUnit::Char, 0.35)),
+            AnimKind::CharRise => Some((CharCurve::Settle, below, TextUnit::Char, 0.35)),
+            AnimKind::CharDrop => Some((CharCurve::Settle, above, TextUnit::Char, 0.35)),
+            AnimKind::CharPop => Some((CharCurve::Spring, nothing, TextUnit::Char, 0.35)),
+            AnimKind::WordFade => Some((CharCurve::Settle, hidden, TextUnit::Word, 0.5)),
+            AnimKind::WordRise => Some((CharCurve::Settle, below, TextUnit::Word, 0.5)),
+            AnimKind::WordPop => Some((CharCurve::Spring, nothing, TextUnit::Word, 0.5)),
+            AnimKind::LineRise => Some((CharCurve::Settle, below, TextUnit::Line, 0.6)),
+            // a spring and a ball take their time: each starts well before the one before is still
+            AnimKind::CharElastic => Some((CharCurve::Elastic, nothing, TextUnit::Char, 0.15)),
+            AnimKind::CharBounce => {
+                Some((CharCurve::Bounce, CharPose { offset: [0.0, -1.2], ..hidden }, TextUnit::Char, 0.15))
+            }
             _ => None,
         }
     };
     let mut out = vec![];
-    if let Some((curve, pose)) = clip.anim.enter.and_then(|x| pose(x.kind))
+    if let Some((curve, pose, unit, step)) = clip.anim.enter.and_then(|x| pose(x.kind))
         && a > Tick::ZERO
     {
         let mut keys = vec![key(Tick::ZERO, 0.0), key(a, 1.0)];
         if a < len {
             keys.push(key(len, 1.0));
         }
-        out.push(CharMotion { progress: Animated::Keys(keys), step: 0.35, curve, pose, reverse: false });
+        out.push(CharMotion { progress: Animated::Keys(keys), step, curve, pose, reverse: false, unit });
     }
-    if let Some((curve, pose)) = clip.anim.exit.and_then(|x| pose(x.kind))
+    if let Some((curve, pose, unit, step)) = clip.anim.exit.and_then(|x| pose(x.kind))
         && b > Tick::ZERO
     {
+        // going out nothing springs or bounces: it leaves the way it would have settled
+        let curve = match curve {
+            CharCurve::Elastic | CharCurve::Bounce => CharCurve::Settle,
+            c => c,
+        };
         let mut keys = vec![key(len - b, 1.0), key(len, 0.0)];
         if b < len {
             keys.insert(0, key(Tick::ZERO, 1.0));
         }
         // the first character goes first
-        out.push(CharMotion { progress: Animated::Keys(keys), step: 0.35, curve, pose, reverse: true });
+        out.push(CharMotion { progress: Animated::Keys(keys), step, curve, pose, reverse: true, unit });
     }
     if let Some(l) = clip.anim.repeat
         && l.kind.titles_only()
@@ -99,9 +120,62 @@ pub fn chars(clip: &Clip, shape: &Shape) -> Vec<CharMotion> {
         // so it runs from the first to the last
         let rounds = l.phase(len) as f32;
         let progress = Animated::Keys(vec![key(Tick::ZERO, 0.0), key(len, rounds)]);
-        out.push(CharMotion { progress, step, curve, pose, reverse: false });
+        out.push(CharMotion { progress, step, curve, pose, reverse: false, unit: TextUnit::Char });
     }
     out
+}
+
+/// How a title is written on over its layer, when it comes in or goes out with `draw`: a pen
+/// follows each character's outline and its ink comes in behind. `None` when it does neither.
+pub fn written(clip: &Clip, shape: &Shape) -> Option<TextDraw> {
+    use reelforge_model::AnimKind::Draw;
+    let len = shape.len;
+    let (a, b) = clip.anim.spans(len);
+    let enter = clip.anim.enter.filter(|x| x.kind == Draw && a > Tick::ZERO).map(|_| a);
+    let exit = clip.anim.exit.filter(|x| x.kind == Draw && b > Tick::ZERO).map(|_| b);
+    if enter.is_none() && exit.is_none() {
+        return None;
+    }
+    let key = |t: Tick, v: f32| Key { t, v, ease: Ease::Linear };
+    let mut keys = vec![];
+    if let Some(a) = enter {
+        keys.extend([key(Tick::ZERO, 0.0), key(a, 1.0)]);
+    }
+    if let Some(b) = exit {
+        keys.extend([key(len - b, 1.0), key(len, 0.0)]);
+    }
+    keys.dedup_by_key(|k| k.t);
+    Some(TextDraw { progress: Animated::Keys(keys), width: 0.025, step: 0.4 })
+}
+
+/// What of a title takes its karaoke colour over its layer: nothing before the voice starts,
+/// then more and more of it (or the word or line the voice is in), in a straight line over the
+/// time the voice takes.
+pub fn said(clip: &Clip, shape: &Shape) -> Option<TextHighlight> {
+    use reelforge_model::KaraokeMode;
+    let reelforge_model::ClipContent::Text { style, .. } = &clip.content else { return None };
+    let k = style.karaoke?;
+    let from = (shape.lead + k.start).max(Tick::ZERO);
+    let takes = k.duration.unwrap_or(clip.duration - k.start).max(Tick(1));
+    let color = reelforge_renderspec::Color(k.color);
+    let unit = match k.mode {
+        KaraokeMode::Sweep => TextUnit::Char,
+        KaraokeMode::Word => TextUnit::Word,
+        KaraokeMode::Line => TextUnit::Line,
+    };
+    if from >= shape.len {
+        // the layer is over before the voice starts
+        return Some(TextHighlight { progress: Animated::Constant(-1.0), color, unit });
+    }
+    // as far as the voice gets before the layer ends
+    let to = (from + takes).min(shape.len);
+    let reached = ((to - from).0 as f64 / takes.0 as f64) as f32;
+    let mut keys = vec![Key { t: from, v: 0.0, ease: Ease::Linear }, Key { t: to, v: reached, ease: Ease::Linear }];
+    // a word is not lit before the voice gets to it
+    if from > Tick::ZERO && k.mode != KaraokeMode::Sweep {
+        keys.insert(0, Key { t: Tick::ZERO, v: -1.0, ease: Ease::Hold });
+    }
+    Some(TextHighlight { progress: Animated::Keys(keys), color, unit })
 }
 
 /// How much of a title shows over its layer (`reveal`), when it types in or erases itself out: 0
@@ -139,10 +213,22 @@ pub fn reveal(clip: &Clip, shape: &Shape) -> Option<Animated<f32>> {
 fn shifts(kind: TransitionKind, incoming: bool, p: Prop) -> bool {
     use TransitionKind::*;
     match p {
-        Prop::Opacity => incoming && matches!(kind, Dissolve | FadeBlack | FadeWhite | Zoom),
-        Prop::X => matches!((kind, incoming), (PushLeft | PushRight, _) | (SlideLeft | SlideRight, true)),
+        Prop::Opacity => {
+            matches!(kind, Flip | FlipUp)
+                || incoming
+                    && (kind.reveals()
+                        || matches!(
+                            kind,
+                            Dissolve | FadeBlack | FadeWhite | Zoom | PageTurn | LightLeak | Glitch | ZoomBlur
+                        ))
+        }
+        Prop::X => {
+            matches!((kind, incoming), (PushLeft | PushRight, _) | (SlideLeft | SlideRight | PageTurn, true))
+        }
         Prop::Y => matches!((kind, incoming), (PushUp | PushDown, _) | (SlideUp | SlideDown, true)),
-        Prop::Scale => kind == Zoom,
+        Prop::Scale => matches!(kind, Zoom | ZoomBlur),
+        Prop::RotationY => kind == Flip || (kind == PageTurn && incoming),
+        Prop::RotationX => kind == FlipUp,
         _ => false,
     }
 }
@@ -169,6 +255,16 @@ impl Overlay {
             return self.kind.offset(1.0, self.incoming);
         }
         self.kind.offset(((t - self.from).0 as f64 / (self.to - self.from).0 as f64) as f32, self.incoming)
+    }
+
+    /// How far through it is at `t`, 0 to 1.
+    pub fn progress(&self, t: Tick) -> f32 {
+        (((t - self.from).0 as f64 / (self.to - self.from).0.max(1) as f64) as f32).clamp(0.0, 1.0)
+    }
+
+    /// What it does to the layer's look at `t`: nothing outside it.
+    fn look(&self, t: Tick) -> FxSample {
+        if t <= self.from || t >= self.to { FxSample::REST } else { self.kind.look(self.progress(t)) }
     }
 }
 
@@ -209,6 +305,9 @@ pub struct Shape {
     pub canvas: [f32; 2],
     /// What holds the layer's picture steady, when it is steadied.
     pub steady: Option<Fix>,
+    /// Whether another clip carries it: effects from above then move what carries it, and it
+    /// goes along.
+    pub carried: bool,
 }
 
 /// A steadied clip's picture, moved against the camera's shake (`reelforge_model::Steady`).
@@ -263,6 +362,7 @@ impl Shape {
             frames: vec![],
             canvas: [1.0, 1.0],
             steady: None,
+            carried: false,
         }
     }
 
@@ -276,6 +376,9 @@ impl Shape {
         for f in self.frames.iter().filter(|f| f.fx.kind.changes(channel)) {
             s = s.and(f.sample(t));
         }
+        for o in self.overlays.iter().filter(|o| o.kind.touches(channel)) {
+            s = s.and(o.look(t));
+        }
         s.channel(channel)
     }
 }
@@ -286,6 +389,8 @@ pub fn fx_channel(clip: &Clip, shape: &Shape, channel: FxChannel, step: Tick) ->
     let own = clip.fx.iter().any(|fx| fx.kind.changes(channel));
     let mut windows: Vec<(Tick, Tick)> =
         shape.frames.iter().filter(|f| f.fx.kind.changes(channel)).map(|f| (f.from, f.to)).collect();
+    // a transition's look comes and goes over its own length
+    windows.extend(shape.overlays.iter().filter(|o| o.kind.touches(channel)).map(|o| (o.from, o.to)));
     if own {
         windows = vec![(Tick::ZERO, shape.len)];
     }
@@ -343,6 +448,8 @@ struct Curve<'a> {
     own: Vec<Fx>,
     /// Effects from above that move it.
     frames: Vec<Frame>,
+    /// The stretch of the layer over which the clip's path moves this property.
+    journey: Option<(Tick, Tick)>,
 }
 
 /// How an interval of a curve can be drawn exactly from its end values.
@@ -372,15 +479,35 @@ impl Curve<'_> {
             .iter()
             .copied()
             .filter(|f| match prop {
+                // what is carried is moved by what carries it
+                Prop::X | Prop::Y | Prop::Scale | Prop::Rotation if shape.carried => false,
                 Prop::X | Prop::Y => f.fx.kind.moves_any(),
                 p => f.fx.kind.moves(p),
             })
             .collect();
-        Curve { prop, clip, shape, keys, animated, overlays, fades, own, frames }
+        let journey = clip.path.as_ref().filter(|p| p.points.len() >= 2).and_then(|p| {
+            let moved = matches!(prop, Prop::X | Prop::Y) || (prop == Prop::Rotation && p.orient);
+            moved.then_some((shape.lead + p.start, shape.lead + p.start + p.duration))
+        });
+        Curve { prop, clip, shape, keys, animated, overlays, fades, own, frames, journey }
+    }
+
+    /// Property `p` at `t` as the clip's keys have it, or its path, before anything is laid over.
+    fn base(&self, p: Prop, t: Tick) -> f32 {
+        let at = t - self.shape.lead;
+        let own = self.clip.value_at(p, at);
+        let [w, h] = self.shape.canvas;
+        match (p, self.clip.on_path(at, w / h)) {
+            (Prop::X, Some((to, _))) => to[0],
+            (Prop::Y, Some((to, _))) => to[1],
+            (Prop::Rotation, Some((_, heading))) => own + heading,
+            _ => own,
+        }
     }
 
     fn still(&self) -> bool {
         self.keys.is_empty()
+            && self.journey.is_none()
             && !self.steady()
             && !self.animated
             && self.overlays.is_empty()
@@ -397,7 +524,7 @@ impl Curve<'_> {
 
     /// [`own_value`](Self::own_value) before the picture is steadied.
     fn shaky(&self, p: Prop, t: Tick) -> f32 {
-        let base = self.clip.value_at(p, t - self.shape.lead);
+        let base = self.base(p, t);
         let mut o = self.clip.anim.offset(t, self.shape.len);
         for ov in self.shape.overlays.iter().filter(|o| shifts(o.kind, o.incoming, p)) {
             o = o.and(ov.offset(t));
@@ -459,7 +586,7 @@ impl Curve<'_> {
         if !self.frames.is_empty() {
             return self.framed(t);
         }
-        let base = self.clip.value_at(self.prop, t - self.shape.lead);
+        let base = self.base(self.prop, t);
         let mut o = if self.animated { self.clip.anim.offset(t, self.shape.len) } else { Offset::REST };
         for ov in &self.overlays {
             o = o.and(ov.offset(t));
@@ -488,6 +615,8 @@ impl Curve<'_> {
             w.push((lead + self.clip.duration - fo, lead + self.clip.duration));
         }
         w.extend(self.frames.iter().map(|f| (f.from, f.to)));
+        // along a curve, frame by frame
+        w.extend(self.journey);
         if !self.own.is_empty() || (self.steady() && self.prop != Prop::Scale) {
             // an effect or a steadied picture moves all the while (steadied, its size alone does
             // not: it is as much larger from start to end)
@@ -614,6 +743,80 @@ pub fn lower_pair(clip: &Clip, props: [Prop; 2], shape: &Shape, step: Tick) -> A
     Animated::Keys(keys.into_iter().map(|(t, e)| Key { t, v: [x.value(t), y.value(t)], ease: e }).collect())
 }
 
+/// `f` at every frame of a layer `len` long from its start up to `until`, and held from there to
+/// its end; `step` is a frame.
+fn framed_keys(len: Tick, step: Tick, until: Tick, f: impl Fn(Tick) -> f32) -> Animated<f32> {
+    let until = until.clamp(Tick::ZERO, len);
+    let mut keys = vec![];
+    let mut t = Tick::ZERO;
+    while t < until {
+        keys.push(Key { t, v: f(t), ease: Ease::Linear });
+        t = Tick((t.0 / step.0 + 1) * step.0);
+    }
+    keys.push(Key { t: until, v: f(until), ease: Ease::Linear });
+    if until < len {
+        keys.push(Key { t: len, v: f(len), ease: Ease::Linear });
+    }
+    keys.dedup_by_key(|k| k.t);
+    Animated::Keys(keys)
+}
+
+/// How a shape's outline is drawn over its layer (its trim, start and end) and how much of its
+/// fill shows: its `drawStart` and `drawEnd` and its `draw` animations. `None` for each where
+/// nothing changes it.
+pub fn draw(
+    clip: &Clip,
+    shape: &Shape,
+    step: Tick,
+    stroked: bool,
+) -> (Option<[Animated<f32>; 2]>, Option<Animated<f32>>) {
+    use reelforge_model::AnimKind::Draw;
+    let len = shape.len;
+    let (a, b) = clip.anim.spans(len);
+    let enter = clip.anim.enter.filter(|x| x.kind == Draw && a > Tick::ZERO).map(|_| a);
+    let exit = clip.anim.exit.filter(|x| x.kind == Draw && b > Tick::ZERO).map(|_| b);
+    let keyed = Prop::DRAW.iter().any(|p| clip.keyed(*p));
+    let base = Prop::DRAW.map(|p| clip.base(p));
+    // how far in (1 at rest) the clip is at `t`, coming in and going out
+    let into = |t: Tick| enter.map_or(1.0, |a| (t.0 as f64 / a.0 as f64).clamp(0.0, 1.0) as f32);
+    let away = |t: Tick| exit.map_or(1.0, |b| ((len - t).0 as f64 / b.0 as f64).clamp(0.0, 1.0) as f32);
+    let ease = |u: f32| 1.0 - (1.0 - u.clamp(0.0, 1.0)).powi(3);
+    let trim = (stroked && (keyed || base != [0.0, 1.0] || enter.is_some() || exit.is_some())).then(|| {
+        let start = |t: Tick| {
+            let s = clip.value_at(Prop::DrawStart, t - shape.lead);
+            let e = clip.value_at(Prop::DrawEnd, t - shape.lead);
+            // going out, the outline is wiped from its start
+            s + (e - s).max(0.0) * (1.0 - ease(away(t) / 0.7))
+        };
+        let end = |t: Tick| clip.value_at(Prop::DrawEnd, t - shape.lead) * ease(into(t) / 0.7);
+        if !keyed && enter.is_none() && exit.is_none() {
+            return [Animated::Constant(base[0]), Animated::Constant(base[1])];
+        }
+        [framed_keys(len, step, len, start), framed_keys(len, step, len, end)]
+    });
+    let fill = (enter.is_some() || exit.is_some()).then(|| {
+        // with an outline the fill follows it in and leaves before it; without, it fades
+        let k = |u: f32| match stroked {
+            _ if u >= 1.0 => 1.0,
+            true => ((u - 0.6) / 0.4).clamp(0.0, 1.0),
+            false => u,
+        };
+        framed_keys(len, step, len, |t| k(into(t)) * k(away(t)))
+    });
+    (trim, fill)
+}
+
+/// The number a title's counter shows over its layer, or `None` when it has none.
+pub fn count(clip: &Clip, shape: &Shape, step: Tick) -> Option<Animated<f32>> {
+    let reelforge_model::ClipContent::Text { style, .. } = &clip.content else { return None };
+    let c = style.counter?;
+    if clip.keyed(Prop::Count) {
+        return Some(framed_keys(shape.len, step, shape.len, |t| clip.value_at(Prop::Count, t - shape.lead)));
+    }
+    let until = shape.lead + c.over.unwrap_or(clip.duration);
+    Some(framed_keys(shape.len, step, until, |t| c.at((t - shape.lead).max(Tick::ZERO), clip.duration)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,6 +844,8 @@ mod tests {
             group: None,
             slot: None,
             steady: None,
+            parent: None,
+            path: None,
         }
     }
 

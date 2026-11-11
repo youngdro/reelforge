@@ -1,0 +1,304 @@
+{
+ "id": "roundup",
+ "name": {
+  "en": "Three good finds",
+  "zh": "好物合集",
+  "ja": "おすすめ 3 選"
+ },
+ "about": {
+  "en": "A hook, three items each with its number, its point and its price, then follow and save",
+  "zh": "钩子开场，三件好物依次带序号、亮点和价格，结尾引导关注收藏",
+  "ja": "つかみ、3 つのアイテムを番号・魅力・価格つきで紹介、最後にフォローと保存へ"
+ },
+ "music": "lofi",
+ "fields": [
+  {
+   "id": "hook",
+   "text": {
+    "en": "Got these three yet?",
+    "zh": "这三件好物你有了吗？",
+    "ja": "この 3 つ、もう持ってる？"
+   }
+  },
+  {
+   "id": "item1",
+   "text": {
+    "en": "Folding kettle",
+    "zh": "折叠烧水壶",
+    "ja": "折りたたみケトル"
+   }
+  },
+  {
+   "id": "why1",
+   "text": {
+    "en": "Folds flat for travel",
+    "zh": "出差旅行都能带",
+    "ja": "旅行にも持っていける"
+   }
+  },
+  {
+   "id": "price1",
+   "number": 89
+  },
+  {
+   "id": "item2",
+   "text": {
+    "en": "Desk riser",
+    "zh": "桌面收纳架",
+    "ja": "デスク収納ラック"
+   }
+  },
+  {
+   "id": "why2",
+   "text": {
+    "en": "Half your desk back",
+    "zh": "一秒腾出半张桌",
+    "ja": "机が一瞬で広くなる"
+   }
+  },
+  {
+   "id": "price2",
+   "number": 39
+  },
+  {
+   "id": "item3",
+   "text": {
+    "en": "Wireless night light",
+    "zh": "无线小夜灯",
+    "ja": "ワイヤレスナイトライト"
+   }
+  },
+  {
+   "id": "why3",
+   "text": {
+    "en": "A month on one charge",
+    "zh": "充一次用一个月",
+    "ja": "1 回の充電で 1 か月"
+   }
+  },
+  {
+   "id": "price3",
+   "number": 59
+  },
+  {
+   "id": "closing",
+   "text": {
+    "en": "Save this for later",
+    "zh": "喜欢就收藏",
+    "ja": "気に入ったら保存"
+   }
+  },
+  {
+   "id": "deadline",
+   "text": {
+    "en": "Links for all three below",
+    "zh": "三件好物链接都在下方",
+    "ja": "3 点のリンクは下に"
+   }
+  }
+ ],
+ "scenes": [
+  {
+   "id": "hook",
+   "seconds": 3.0,
+   "shot": {
+    "en": "All three items together",
+    "zh": "三件好物同框",
+    "ja": "3 つのアイテムを一緒に"
+   },
+   "fx": "zoomIn",
+   "voice": {
+    "en": "{hook}",
+    "zh": "{hook}",
+    "ja": "{hook}"
+   },
+   "pieces": [
+    {
+     "kind": "hookQuestion",
+     "at": 0.2,
+     "text": "{hook}",
+     "y": -0.05
+    }
+   ]
+  },
+  {
+   "id": "item1",
+   "seconds": 5.0,
+   "shot": {
+    "en": "Item 1, close up and in use",
+    "zh": "好物 1 的特写和使用画面",
+    "ja": "アイテム 1 のアップと使用シーン"
+   },
+   "sweep": "right",
+   "voice": {
+    "en": "Number 1: {item1}. {why1}.",
+    "zh": "第 1 件：{item1}，{why1}。",
+    "ja": "1 つ目：{item1}。{why1}。"
+   },
+   "pieces": [
+    {
+     "kind": "indexPlate",
+     "at": 0.2,
+     "value": 1,
+     "text": "{item1}",
+     "y": -0.36,
+     "scale": 0.9
+    },
+    {
+     "kind": "lowerThird",
+     "at": 0.6,
+     "text": "{why1}",
+     "lines": [],
+     "y": 0.2
+    },
+    {
+     "kind": "priceTag",
+     "at": 1.0,
+     "text": {
+      "en": "${n}",
+      "zh": "¥{n}",
+      "ja": "¥{n}"
+     },
+     "value": "{price1}",
+     "x": 0.2,
+     "y": 0.07,
+     "scale": 0.7
+    }
+   ]
+  },
+  {
+   "id": "item2",
+   "seconds": 5.0,
+   "shot": {
+    "en": "Item 2, close up and in use",
+    "zh": "好物 2 的特写和使用画面",
+    "ja": "アイテム 2 のアップと使用シーン"
+   },
+   "sweep": "up",
+   "voice": {
+    "en": "Number 2: {item2}. {why2}.",
+    "zh": "第 2 件：{item2}，{why2}。",
+    "ja": "2 つ目：{item2}。{why2}。"
+   },
+   "pieces": [
+    {
+     "kind": "indexPlate",
+     "at": 0.2,
+     "value": 2,
+     "text": "{item2}",
+     "y": -0.36,
+     "scale": 0.9
+    },
+    {
+     "kind": "lowerThird",
+     "at": 0.6,
+     "text": "{why2}",
+     "lines": [],
+     "y": 0.2
+    },
+    {
+     "kind": "priceTag",
+     "at": 1.0,
+     "text": {
+      "en": "${n}",
+      "zh": "¥{n}",
+      "ja": "¥{n}"
+     },
+     "value": "{price2}",
+     "x": 0.2,
+     "y": 0.07,
+     "scale": 0.7
+    }
+   ]
+  },
+  {
+   "id": "item3",
+   "seconds": 5.0,
+   "shot": {
+    "en": "Item 3, close up and in use",
+    "zh": "好物 3 的特写和使用画面",
+    "ja": "アイテム 3 のアップと使用シーン"
+   },
+   "sweep": "left",
+   "voice": {
+    "en": "Number 3: {item3}. {why3}.",
+    "zh": "第 3 件：{item3}，{why3}。",
+    "ja": "3 つ目：{item3}。{why3}。"
+   },
+   "pieces": [
+    {
+     "kind": "indexPlate",
+     "at": 0.2,
+     "value": 3,
+     "text": "{item3}",
+     "y": -0.36,
+     "scale": 0.9
+    },
+    {
+     "kind": "lowerThird",
+     "at": 0.6,
+     "text": "{why3}",
+     "lines": [],
+     "y": 0.2
+    },
+    {
+     "kind": "priceTag",
+     "at": 1.0,
+     "text": {
+      "en": "${n}",
+      "zh": "¥{n}",
+      "ja": "¥{n}"
+     },
+     "value": "{price3}",
+     "x": 0.2,
+     "y": 0.07,
+     "scale": 0.7
+    }
+   ]
+  },
+  {
+   "id": "cta",
+   "seconds": 3.0,
+   "backdrop": "brand",
+   "sweep": "down",
+   "voice": {
+    "en": "{closing}. {deadline}.",
+    "zh": "{closing}，{deadline}。",
+    "ja": "{closing}。{deadline}。"
+   },
+   "pieces": [
+    {
+     "kind": "endCard",
+     "at": 0.1,
+     "text": "{closing}",
+     "lines": [
+      "{deadline}"
+     ],
+     "y": -0.1
+    },
+    {
+     "kind": "followPrompt",
+     "at": 0.8,
+     "lines": [
+      {
+       "en": "Follow",
+       "zh": "关注",
+       "ja": "フォロー"
+      },
+      {
+       "en": "Save",
+       "zh": "收藏",
+       "ja": "保存"
+      },
+      {
+       "en": "Add to cart",
+       "zh": "加购",
+       "ja": "カートへ"
+      }
+     ],
+     "y": 0.17
+    }
+   ]
+  }
+ ]
+}

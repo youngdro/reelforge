@@ -13,6 +13,7 @@ use std::process::{Command, ExitCode};
 const LAYERS: &[(&str, u8)] = &[
     ("reelforge-time", 0),
     ("reelforge-matte", 0),
+    ("reelforge-lottie", 0),
     ("reelforge-renderspec", 1),
     ("reelforge-model", 1),
     ("reelforge-compile", 2),
@@ -21,6 +22,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("reelforge-engine", 4),
     ("reelforge-hwenc", 4),
     ("reelforge-speech", 4),
+    ("reelforge-voice", 4),
     ("reelforge-ui", 5),
     ("reelforge-server", 5),
     ("reelforge", 6),
@@ -47,7 +49,7 @@ const FORBIDDEN: &[(&str, &str, &str)] = &[
 ];
 
 /// Crates below the app layer that never run in the browser (they listen on sockets).
-const NATIVE_ONLY: &[&str] = &["reelforge-server", "reelforge-speech"];
+const NATIVE_ONLY: &[&str] = &["reelforge-server", "reelforge-speech", "reelforge-voice"];
 
 /// External crates allowed only from this layer up.
 const UI_ONLY: &[&str] = &["egui", "eframe", "egui-wgpu", "egui-winit", "winit", "wasm-bindgen", "web-sys", "rfd"];

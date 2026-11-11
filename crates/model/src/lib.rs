@@ -18,10 +18,13 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod anim;
+pub mod brand;
 pub mod color;
 pub mod export;
 pub mod fx;
 pub mod look;
+pub mod path;
+pub mod shape;
 pub mod steady;
 pub mod timeline;
 pub mod timing;
@@ -29,10 +32,13 @@ pub mod transition;
 pub mod voice;
 
 pub use anim::{AnimKind, Animation, Animations, Ease, Key, Keys, Loop, LoopKind, Offset, Prop};
+pub use brand::{Brand, CopyField, CopyLine, Forms, Made, fields_in, is_field_name, written};
 pub use color::{Adjust, ColorGrade, Filter, FilterKind, LutUse};
 pub use export::{Codec, ExportSettings, Quality, Resolution};
 pub use fx::{Fx, FxChannel, FxGroup, FxKind, FxSample};
-pub use look::{BlendMode, ChromaKey, Crop, Look, Mask, MaskKind};
+pub use look::{BlendMode, CastShadow, ChromaKey, Crop, Cutout, Look, Mask, MaskKind};
+pub use path::MotionPath;
+pub use shape::{Counter, Fill, Shape, ShapeKind, ShapeShadow, Stroke};
 pub use steady::{Steadied, Steady};
 pub use timeline::{Timeline, TimelineInfo};
 pub use timing::{CurvePoint, CurvePreset, Inbetween, Timing};
@@ -72,6 +78,16 @@ pub struct Project {
     /// beside an exported video. Past the end, the last frame stands in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover: Option<Tick>,
+    /// The colours, face and mark the ready-made pieces are made in.
+    #[serde(default, skip_serializing_if = "Brand::is_empty")]
+    pub brand: Brand,
+    /// The project's copy by name (a storyboard's fields: the hook, the product's name, the
+    /// price), which ready-made pieces are written from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copy: Vec<CopyField>,
+    /// The captions written from the copy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copy_lines: Vec<CopyLine>,
 }
 
 /// A mark on a timeline: a place to come back to, and to snap to.
@@ -150,6 +166,32 @@ pub enum MediaKind {
     Lut,
     /// A font file (TrueType or OpenType), set on titles rather than placed.
     Font,
+    /// A Lottie animation (Bodymovin JSON or a dotLottie archive): placed like a video, drawn
+    /// as sharp as its `size` says, see-through where it draws nothing, and going round again
+    /// when a clip of it is longer than it is.
+    Lottie,
+}
+
+impl MediaKind {
+    /// Whether it has a picture, and so goes on a video track.
+    pub fn pictured(self) -> bool {
+        matches!(self, MediaKind::Video | MediaKind::Image | MediaKind::Lottie)
+    }
+
+    /// Whether its picture changes over time: it can be sped up, slowed, reversed and frozen.
+    pub fn moves(self) -> bool {
+        matches!(self, MediaKind::Video | MediaKind::Lottie)
+    }
+
+    /// Whether it may have sound.
+    pub fn sounds(self) -> bool {
+        matches!(self, MediaKind::Video | MediaKind::Audio)
+    }
+
+    /// Whether it goes round again past its end, so a clip of it can be any length.
+    pub fn loops(self) -> bool {
+        self == MediaKind::Lottie
+    }
 }
 
 /// A track.
@@ -253,6 +295,14 @@ pub struct Clip {
     /// shake is taken out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steady: Option<Steady>,
+    /// The clip that carries this one (on any track of the same timeline): this clip's placement
+    /// is counted from that clip's anchor, along its axes as it is turned and scaled, so moving,
+    /// turning or scaling the parent takes this one along. Nothing else is passed on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// A path the clip travels along, in place of its `x` and `y`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<MotionPath>,
 }
 
 fn yes() -> bool {
@@ -410,6 +460,11 @@ pub enum ClipContent {
         #[serde(default)]
         style: TitleStyle,
     },
+    /// A drawn shape: a box, ellipse, line, polygon, star, price tag or arrow (picture tracks).
+    Shape {
+        /// What it draws.
+        shape: Shape,
+    },
     /// An adjustment layer: it shows nothing itself; its effects ([`Clip::fx`]) and its colour
     /// (filter and adjustments) apply to the clips on the tracks below it while it lasts.
     Adjustment,
@@ -471,6 +526,62 @@ pub struct TitleStyle {
     /// Underlined.
     #[serde(default, skip_serializing_if = "is_no")]
     pub underline: bool,
+    /// A number it shows, running from one value to another: where its words say `{n}`, or as
+    /// all of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counter: Option<Counter>,
+    /// Another colour for what is being said (karaoke).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub karaoke: Option<Karaoke>,
+}
+
+/// Part of a title in another colour as it is said: a voice goes through its characters at an
+/// even pace, white space left out.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Karaoke {
+    /// The colour of what is lit, straight sRGB.
+    pub color: [f32; 4],
+    /// What is lit.
+    #[serde(default)]
+    pub mode: KaraokeMode,
+    /// When the voice starts, from the clip's start.
+    #[serde(default, skip_serializing_if = "Tick::is_zero")]
+    pub start: Tick,
+    /// How long the voice takes; absent, until the clip ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<Tick>,
+}
+
+/// What a karaoke title lights.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum KaraokeMode {
+    /// Everything said so far, the edge passing smoothly through the character being said.
+    #[default]
+    Sweep,
+    /// The word being said, alone (a Chinese character is a word of its own).
+    Word,
+    /// The line being said, alone.
+    Line,
+}
+
+impl KaraokeMode {
+    /// Every mode, in menu order.
+    pub const ALL: [KaraokeMode; 3] = [KaraokeMode::Sweep, KaraokeMode::Word, KaraokeMode::Line];
+
+    /// The name commands use.
+    pub fn name(self) -> &'static str {
+        match self {
+            KaraokeMode::Sweep => "sweep",
+            KaraokeMode::Word => "word",
+            KaraokeMode::Line => "line",
+        }
+    }
+
+    /// The mode a command names.
+    pub fn parse(name: &str) -> Option<KaraokeMode> {
+        KaraokeMode::ALL.into_iter().find(|m| m.name() == name)
+    }
 }
 
 fn is_zero(v: &f32) -> bool {
@@ -516,6 +627,8 @@ impl Default for TitleStyle {
             leading: 0.0,
             italic: false,
             underline: false,
+            counter: None,
+            karaoke: None,
         }
     }
 }
@@ -535,6 +648,8 @@ impl TitleStyle {
             leading: self.leading,
             italic: self.italic,
             underline: self.underline,
+            counter: self.counter,
+            karaoke: self.karaoke,
             ..look.clone()
         }
     }
@@ -567,8 +682,9 @@ pub struct Outline {
     pub width: f32,
 }
 
-/// A clip's placement: offset from the canvas centre as fractions of the canvas, scale and
-/// clockwise rotation in degrees.
+/// A clip's placement: where its anchor is, as an offset from the canvas centre in fractions of
+/// the canvas (from its parent's anchor, when it has one), its scale and clockwise rotation in
+/// degrees, and how it is stretched and turned in space about its anchor.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ClipTransform {
     /// Horizontal offset, fraction of the canvas width.
@@ -579,11 +695,89 @@ pub struct ClipTransform {
     pub scale: f32,
     /// Degrees clockwise.
     pub rotation: f32,
+    /// Its width alone, on top of the scale: 1 as it is, negative mirrored.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub scale_x: f32,
+    /// Its height alone, on top of the scale.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub scale_y: f32,
+    /// Degrees about the horizontal axis through its anchor: positive tips its top edge away.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rotation_x: f32,
+    /// Degrees about the vertical axis through its anchor: positive swings its right edge away.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rotation_y: f32,
+    /// The point of the picture (as it shows) that the placement places and that it is scaled
+    /// and turned about, as fractions of its width and height from its top left: its middle
+    /// unless told.
+    #[serde(default = "middle", skip_serializing_if = "is_middle")]
+    pub anchor: [f32; 2],
+    /// How far the eye is from a clip turned in space, in canvas heights: nearer is a stronger
+    /// perspective.
+    #[serde(default = "far", skip_serializing_if = "is_far")]
+    pub distance: f32,
+    /// Motion blur: how long the shutter is open while the clip moves, grows or turns, as a share
+    /// of the time from one frame to the next. 0 is none (it is sharp wherever it is), 0.5 a
+    /// film camera's.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub motion_blur: f32,
+}
+
+impl ClipTransform {
+    /// How far the eye is unless told, in canvas heights.
+    pub const DISTANCE: f32 = 2.0;
+    /// The nearest and farthest the eye may be.
+    pub const DISTANCES: (f32, f32) = (0.2, 50.0);
+    /// How long the shutter is open when motion blur is turned on and nothing more is said, and
+    /// the longest it may be, as shares of a frame's time.
+    pub const SHUTTERS: (f32, f32) = (0.5, 2.0);
+
+    /// Whether the clip is stretched, turned in space or placed by another point than its
+    /// middle: more than a move, an even scale and a turn in the plane.
+    pub fn in_space(&self) -> bool {
+        self.scale_x != 1.0
+            || self.scale_y != 1.0
+            || self.rotation_x != 0.0
+            || self.rotation_y != 0.0
+            || self.anchor != [0.5, 0.5]
+    }
+}
+
+fn is_one(v: &f32) -> bool {
+    *v == 1.0
+}
+
+fn middle() -> [f32; 2] {
+    [0.5, 0.5]
+}
+
+fn is_middle(v: &[f32; 2]) -> bool {
+    *v == [0.5, 0.5]
+}
+
+fn far() -> f32 {
+    ClipTransform::DISTANCE
+}
+
+fn is_far(v: &f32) -> bool {
+    *v == ClipTransform::DISTANCE
 }
 
 impl Default for ClipTransform {
     fn default() -> ClipTransform {
-        ClipTransform { x: 0.0, y: 0.0, scale: 1.0, rotation: 0.0 }
+        ClipTransform {
+            x: 0.0,
+            y: 0.0,
+            scale: 1.0,
+            rotation: 0.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            rotation_x: 0.0,
+            rotation_y: 0.0,
+            anchor: [0.5, 0.5],
+            distance: ClipTransform::DISTANCE,
+            motion_blur: 0.0,
+        }
     }
 }
 
@@ -630,6 +824,9 @@ pub enum ModelError {
     /// The list of timelines does not hold together.
     #[error("timelines: {0}")]
     BadTimeline(&'static str),
+    /// The brand names a file that is not there, or a colour that is none.
+    #[error("brand: {0}")]
+    BadBrand(String),
 }
 
 impl Default for Project {
@@ -652,6 +849,9 @@ impl Project {
             timeline: String::new(),
             markers: Vec::new(),
             cover: None,
+            brand: Brand::default(),
+            copy: Vec::new(),
+            copy_lines: Vec::new(),
         };
         p.tracks = timeline::empty_tracks(&mut p);
         p
@@ -729,12 +929,27 @@ impl Project {
         if self.timelines.is_empty() != self.timeline.is_empty() {
             return Err(ModelError::BadTimeline("the current timeline is not in the list"));
         }
+        for (i, field) in self.copy.iter().enumerate() {
+            if !is_field_name(&field.name) || self.copy[..i].iter().any(|f| f.name == field.name) {
+                return Err(ModelError::BadBrand(format!(
+                    "the copy's field {:?} is misnamed or named twice",
+                    field.name
+                )));
+            }
+        }
         for t in &self.timelines {
             if !ids.insert(t.id.clone()) {
                 return Err(ModelError::DuplicateId(t.id.clone()));
             }
             if t.id == self.timeline && !t.tracks.is_empty() {
                 return Err(ModelError::BadTimeline("the current timeline's tracks are the project's"));
+            }
+            if let Some(made) = &t.made {
+                let mut colours = made.color.iter().chain(&made.color2);
+                let sized = made.scale.is_finite() && made.scale > 0.0;
+                if !t.compound || colours.any(|c| !(0.0..=1.0).contains(c)) || !sized {
+                    return Err(ModelError::BadTimeline("a ready-made piece is a compound clip's, its colours 0 to 1"));
+                }
             }
         }
         if !self.timelines.is_empty() && !self.timelines.iter().any(|t| t.id == self.timeline) {
@@ -849,12 +1064,18 @@ impl Project {
                             }
                         }
                         match track.kind {
-                            TrackKind::Video => matches!(m.kind, MediaKind::Video | MediaKind::Image),
-                            TrackKind::Audio => matches!(m.kind, MediaKind::Video | MediaKind::Audio),
+                            TrackKind::Video => m.kind.pictured(),
+                            TrackKind::Audio => m.kind.sounds(),
                             TrackKind::Text => false,
                         }
                     }
                     ClipContent::Solid { .. } => track.kind == TrackKind::Video,
+                    ClipContent::Shape { shape } => {
+                        if let Some(why) = shape.problem() {
+                            return motion(why);
+                        }
+                        track.kind == TrackKind::Video
+                    }
                     ClipContent::Compound { timeline, source_in } => {
                         if !self.timelines.iter().any(|t| t.id == *timeline) {
                             return Err(ModelError::BadTimeline("a compound clip plays a timeline that is not there"));
@@ -888,6 +1109,18 @@ impl Project {
                         if ![style.tracking, style.leading].iter().all(|v| v.is_finite() && (lo..=hi).contains(v)) {
                             return bad("letter and line spacing must be -0.5 to 4 em");
                         }
+                        if let Some(why) = style.counter.as_ref().and_then(Counter::problem) {
+                            return bad(why);
+                        }
+                        if let Some(k) = &style.karaoke
+                            && (k.start < Tick::ZERO
+                                || k.duration.is_some_and(|d| d <= Tick::ZERO)
+                                || !k.color.iter().all(|v| v.is_finite()))
+                        {
+                            return bad(
+                                "karaoke needs a colour, a start at or after the clip's and a length above nothing",
+                            );
+                        }
                         if let Some(font) = &style.font
                             && self.media.get(font).is_none_or(|m| m.kind != MediaKind::Font)
                         {
@@ -913,6 +1146,16 @@ impl Project {
         for t in &self.timelines {
             if self.timeline_reaches(&t.id, &t.id) {
                 return Err(ModelError::BadTimeline("a compound clip plays the timeline it is in"));
+            }
+        }
+        if let Some(why) = self.brand.problem() {
+            return Err(ModelError::BadBrand(why.into()));
+        }
+        for (id, kind) in [(&self.brand.font, MediaKind::Font), (&self.brand.logo, MediaKind::Image)] {
+            if let Some(id) = id
+                && self.media.get(id).is_none_or(|m| m.kind != kind)
+            {
+                return Err(ModelError::BadBrand(format!("{id:?} is not a file of the kind it must be")));
             }
         }
         Ok(())
@@ -982,6 +1225,8 @@ mod tests {
             group: None,
             slot: None,
             steady: None,
+            parent: None,
+            path: None,
         }
     }
 

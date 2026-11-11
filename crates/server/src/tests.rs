@@ -639,6 +639,46 @@ fn pauses_are_heard_and_cut_with_what_goes_with_the_voice() {
 }
 
 #[test]
+fn a_long_export_runs_as_a_job_and_unknown_parameters_are_refused() {
+    let path = temp("job.reel.json");
+    let _ = std::fs::remove_file(&path);
+    let hub = Hub::open(&path).unwrap();
+    let video = track(&hub, "video");
+    hub.call("clip.add", &json!({"track": video, "color": [0, 0, 1], "duration": {"frame": 4}})).unwrap();
+    hub.call("project.setCanvas", &json!({"width": 64, "height": 64})).unwrap();
+
+    // the service's own operations check their parameters as the engine's commands do
+    let err = hub.call("render.frame", &json!({"seconds": 1})).unwrap_err().to_string();
+    assert!(err.contains("no parameter `seconds`") && err.contains("`at`"), "{err}");
+    let err = hub.call("audio.beats", &json!({"clip": "c1", "evry": 2})).unwrap_err().to_string();
+    assert!(err.contains("no parameter `evry`"), "{err}");
+
+    let Output::Json(started) =
+        hub.call("render.export", &json!({"path": "job.mp4", "renderer": "cpu", "wait": false})).unwrap()
+    else {
+        panic!("json")
+    };
+    let job = started["job"].as_str().unwrap().to_string();
+    let done = (0..600)
+        .find_map(|_| {
+            let Output::Json(j) = hub.call("render.jobs", &json!({"job": job})).unwrap() else { panic!("json") };
+            if j["state"] == "running" {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                None
+            } else {
+                Some(j)
+            }
+        })
+        .expect("the export ends");
+    assert_eq!((&done["state"], &done["done"], &done["total"]), (&json!("done"), &json!(4), &json!(4)), "{done}");
+    assert_eq!(done["result"]["frames"], 4);
+    assert!(path.with_file_name("job.mp4").exists());
+    let Output::Json(all) = hub.call("render.jobs", &json!({})).unwrap() else { panic!("json") };
+    assert_eq!(all["jobs"].as_array().unwrap().len(), 1);
+    assert!(hub.call("render.jobs", &json!({"job": "e9"})).is_err());
+}
+
+#[test]
 fn transcribing_without_a_model_says_where_to_put_one() {
     let hub = Hub::new(Session::default()).with_speech_model(temp("no-model"));
     let err = hub.call("captions.transcribe", &json!({"language": "zh"})).unwrap_err();
@@ -695,4 +735,37 @@ fn an_agent_gets_captions_from_the_timeline_sound() {
     // parameters are checked before any listening
     let bad = hub.call("captions.transcribe", &json!({"from": "soon"})).unwrap_err();
     assert!(bad.to_string().contains("`from`"), "{bad}");
+}
+
+#[test]
+fn captions_are_read_aloud_onto_a_voiceover_track() {
+    let hub = Hub::new(Session::default()).with_voice_model(temp("no-voice-model"));
+    let err = hub.call("voice.speak", &json!({})).unwrap_err();
+    assert!(err.to_string().contains("add captions"), "{err}");
+    hub.call(
+        "captions.add",
+        &json!({"cues": [
+            {"start": {"seconds": 1}, "end": {"seconds": 2}, "text": "你好。"},
+            {"start": {"seconds": 4}, "end": {"seconds": 5}, "text": "剪辑视频"}
+        ]}),
+    )
+    .unwrap();
+    let err = hub.call("voice.speak", &json!({})).unwrap_err();
+    assert!(err.to_string().contains("fetch-model --kokoro"), "{err}");
+
+    // a model shaped like Kokoro (random, tiny): checks the chain, not the voice
+    let model = temp("tiny-kokoro");
+    reelforge_voice::tiny::write(&model).unwrap();
+    let hub = hub.with_voice_model(model);
+    assert!(hub.call("voice.speak", &json!({"speed": 5})).is_err());
+    let Output::Json(out) = hub.call("voice.speak", &json!({})).unwrap() else { panic!("json") };
+    assert_eq!((out["count"].as_u64(), out["voice"].as_str()), (Some(2), Some(reelforge_voice::DEFAULT_VOICE)));
+    let p = hub.session().project();
+    let vo = p.tracks.iter().find(|t| t.name == reelforge_engine::VOICEOVER_TRACK).expect("a Voice-over track");
+    let starts: Vec<_> = vo.clips.iter().map(|c| c.start).collect();
+    assert_eq!(starts, [reelforge_time::Tick::SECOND, reelforge_time::Tick::SECOND * 4]);
+    for m in p.media.values() {
+        assert!(std::path::Path::new(&m.uri).is_file(), "{}", m.uri);
+        assert!(m.duration.is_some_and(|d| d > reelforge_time::Tick::ZERO));
+    }
 }

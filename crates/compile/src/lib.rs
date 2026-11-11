@@ -11,14 +11,15 @@
 use std::collections::BTreeMap;
 
 use reelforge_model::{
-    Adjust, BlendMode, Clip, ClipContent, ClipTransform, Codec, FxChannel, Inbetween, Mask, MaskKind, MediaKind,
-    Project, Prop, Timing, TitleAlign, Track, TrackKind, TransitionKind, export::Format,
+    Adjust, BlendMode, Clip, ClipContent, ClipTransform, Codec, Fill, FxChannel, Inbetween, Mask, MaskKind, MediaKind,
+    Project, Prop, ShapeKind, Timing, TitleAlign, Track, TrackKind, TransitionKind, export::Format,
 };
 use reelforge_renderspec::{
     Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Between, Blend, Color, Comp, Crop, CropKeys,
-    Ease, Effect, Fit, Key, Layer, LayerContent, MaskShape, Output, OutputFormat, Probe, RenderSpec, ShapeMask,
-    ShapeMaskKeys, SpeedKey, TextAlign, TextBackground, TextContent, TextShadow, TextStroke, TimeMap, Transform,
-    VideoCodec, VideoEncoding, effects, validate,
+    Ease, Effect, Fit, Key, Layer, LayerContent, MaskShape, MotionBlur, NumberText, Output, OutputFormat, Paint, Probe,
+    RenderSpec, ShapeContent, ShapeKind as SpecShape, ShapeMask, ShapeMaskKeys, ShapeShadow, ShapeStroke, SpeedKey,
+    TextAlign, TextBackground, TextContent, TextShadow, TextStroke, TimeMap, Transform, Trim, Turn, VideoCodec,
+    VideoEncoding, effects, validate,
 };
 use reelforge_time::Tick;
 use thiserror::Error;
@@ -205,6 +206,7 @@ fn lower_tracks(
                         MediaKind::Audio => AssetKind::Audio,
                         MediaKind::Lut => AssetKind::Lut,
                         MediaKind::Font => AssetKind::Font,
+                        MediaKind::Lottie => AssetKind::Lottie,
                     },
                     sha256,
                     uri: m.uri.clone(),
@@ -220,6 +222,7 @@ fn lower_tracks(
         Ok(media_id.to_string())
     };
 
+    let carried = carriers(tracks);
     for (ti, track) in tracks.iter().enumerate() {
         let cuts = transitions(track);
         // the adjustment clips above this track
@@ -233,6 +236,7 @@ fn lower_tracks(
             if picture {
                 let mut shape = shape(clip, cuts[i], cuts.get(i + 1).copied().flatten());
                 shape.canvas = [c.width as f32, c.height as f32];
+                shape.carried = carried.contains_key(clip.id.as_str());
                 if let ClipContent::Media { media, .. } = &clip.content {
                     // a file whose size is not known is taken to fill the canvas
                     let size = project.media.get(media).and_then(|m| m.size).unwrap_or([c.width, c.height]);
@@ -257,6 +261,18 @@ fn lower_tracks(
                     }));
                 }
                 let media = matches!(clip.content, ClipContent::Media { .. });
+                // a transition that uncovers this clip through a shape, and the picture's width
+                // and height in units of its shorter side, which is what a mask is measured in
+                let reveal = cuts[i].filter(|(kind, _)| kind.reveals());
+                let sides = {
+                    let [w, h] = match &clip.content {
+                        ClipContent::Media { media, .. } => project.media.get(media).and_then(|m| m.size),
+                        _ => None,
+                    }
+                    .unwrap_or([c.width, c.height])
+                    .map(|v| v.max(1) as f32);
+                    [w / w.min(h), h / w.min(h)]
+                };
                 // what is cropped, mirrored and put out of focus like a picture
                 let pictured = clip.is_picture();
                 let crop_keyed = Prop::CROP.iter().any(|p| clip.keyed(*p));
@@ -272,6 +288,44 @@ fn lower_tracks(
                         },
                     },
                     ClipContent::Solid { color } => LayerContent::Solid { color: Color(*color) },
+                    ClipContent::Shape { shape: sh } => {
+                        let stroked = sh.stroke.as_ref().is_some_and(|s| s.width > 0.0);
+                        let (trim, fill_opacity) = motion::draw(clip, &shape, step, stroked);
+                        LayerContent::Shape(Box::new(ShapeContent {
+                            kind: match sh.kind {
+                                ShapeKind::Rectangle => SpecShape::Rectangle,
+                                ShapeKind::Ellipse => SpecShape::Ellipse,
+                                ShapeKind::Line => SpecShape::Line,
+                                ShapeKind::Polygon => SpecShape::Polygon,
+                                ShapeKind::Star => SpecShape::Star,
+                                ShapeKind::Tag => SpecShape::Tag,
+                                ShapeKind::Arrow => SpecShape::Arrow,
+                            },
+                            size: sh.size,
+                            radius: sh.radius,
+                            points: sh.points,
+                            inner: sh.inner,
+                            fill: sh.fill.as_ref().map(|f| match f {
+                                Fill::Solid { color } => Paint::Solid { color: Color(*color) },
+                                Fill::Linear { from, to, angle } => {
+                                    Paint::Linear { from: Color(*from), to: Color(*to), angle: *angle }
+                                }
+                                Fill::Radial { from, to } => Paint::Radial { from: Color(*from), to: Color(*to) },
+                            }),
+                            stroke: sh
+                                .stroke
+                                .as_ref()
+                                .filter(|s| s.width > 0.0)
+                                .map(|s| ShapeStroke { color: Color(s.color), width: s.width }),
+                            shadow: sh.shadow.as_ref().map(|s| ShapeShadow {
+                                color: Color(s.color),
+                                offset: s.offset,
+                                blur: s.blur,
+                            }),
+                            trim: trim.map(|[start, end]| Trim { start, end }),
+                            fill_opacity,
+                        }))
+                    }
                     // its timeline's picture, from where the clip starts in it
                     ClipContent::Compound { timeline, source_in } => {
                         LayerContent::Comp { comp: timeline.clone(), from: *source_in - shape.lead }
@@ -309,11 +363,19 @@ fn lower_tracks(
                         }),
                         reveal: motion::reveal(clip, &shape),
                         chars: motion::chars(clip, &shape),
+                        draw: motion::written(clip, &shape),
+                        highlight: motion::said(clip, &shape),
                         font: style.font.as_ref().map(|f| asset_for(f)).transpose()?,
                         tracking: style.tracking,
                         leading: style.leading,
                         italic: style.italic,
                         underline: style.underline,
+                        number: style.counter.map(|c| NumberText {
+                            value: motion::count(clip, &shape, step).expect("a counter"),
+                            decimals: c.decimals.min(4),
+                            group: c.group,
+                            clock: c.clock,
+                        }),
                         ..TextContent::new(text.clone(), *size, Color(*color))
                     })),
                 };
@@ -356,6 +418,7 @@ fn lower_tracks(
                             position: motion::lower_position(&still, &frame, step),
                             scale: motion::lower(&still, Prop::Scale, &frame, step),
                             rotation: motion::lower(&still, Prop::Rotation, &frame, step),
+                            ..Transform::default()
                         },
                         opacity: motion::lower(clip, Prop::Opacity, &shape, step),
                         blend: Blend::Normal,
@@ -367,6 +430,8 @@ fn lower_tracks(
                         crop_keys: None,
                         shape_mask_keys: None,
                         fx,
+                        parent: None,
+                        motion_blur: None,
                     });
                 }
                 layers.push(Layer {
@@ -374,11 +439,11 @@ fn lower_tracks(
                     at: clip.start - shape.lead,
                     dur: shape.len,
                     content,
-                    transform: Transform {
-                        position: motion::lower_position(clip, &shape, step),
-                        scale: motion::lower(clip, Prop::Scale, &shape, step),
-                        rotation: motion::lower(clip, Prop::Rotation, &shape, step),
-                    },
+                    transform: placement(clip, &shape, step),
+                    parent: carried.get(clip.id.as_str()).map(|p| p.to_string()),
+                    // seen through a shutter while it moves, if the clip asks
+                    motion_blur: (clip.transform.motion_blur > 0.0)
+                        .then(|| MotionBlur { shutter: clip.transform.motion_blur.min(ClipTransform::SHUTTERS.1) }),
                     opacity: motion::lower(clip, Prop::Opacity, &shape, step),
                     blend: blend(clip.look.blend),
                     mask: None,
@@ -388,25 +453,35 @@ fn lower_tracks(
                     }),
                     flip_x: pictured && clip.look.flip_x,
                     flip_y: pictured && clip.look.flip_y,
-                    shape_mask: clip.look.mask.map(shape_mask),
+                    shape_mask: clip
+                        .look
+                        .mask
+                        .or_else(|| reveal.and_then(|(kind, _)| kind.reveal(1.0, sides)))
+                        .map(shape_mask),
                     crop_keys: (pictured && crop_keyed).then(|| {
                         let [left, top, right, bottom] = Prop::CROP.map(|p| motion::lower(clip, p, &shape, step));
                         CropKeys { left, top, right, bottom }
                     }),
-                    shape_mask_keys: (clip.look.mask.is_some() && Prop::MASK.iter().any(|p| clip.keyed(*p))).then(
-                        || ShapeMaskKeys {
+                    shape_mask_keys: (clip.look.mask.is_some() && Prop::MASK.iter().any(|p| clip.keyed(*p)))
+                        .then(|| ShapeMaskKeys {
                             center: motion::lower_pair(clip, [Prop::MaskX, Prop::MaskY], &shape, step),
                             size: motion::lower_pair(clip, [Prop::MaskWidth, Prop::MaskHeight], &shape, step),
                             rotation: motion::lower(clip, Prop::MaskRotation, &shape, step),
                             feather: motion::lower(clip, Prop::MaskFeather, &shape, step),
-                        },
-                    ),
+                        })
+                        .or_else(|| reveal.map(|(kind, half)| uncovering(kind, half, sides, step))),
                     fx: {
                         // people are cut out of the picture as it was shot, and a keyed colour
                         // goes from that before anything changes the colours
                         let mut fx: Vec<Effect> = Vec::new();
                         if media && clip.look.person {
                             fx.push(Effect { id: effects::PERSON_KEY.into(), params: Default::default(), asset: None });
+                        }
+                        if pictured && let Some(c) = clip.look.cutout {
+                            fx.push(constant_fx(
+                                effects::BACKDROP_KEY,
+                                &[("tolerance", c.tolerance), ("holes", c.holes)],
+                            ));
                         }
                         fx.extend(clip.look.chroma.iter().filter(|_| media).map(chroma_fx));
                         fx.extend(color_fx(clip, &shape, step, &mut asset_for)?);
@@ -417,6 +492,21 @@ fn lower_tracks(
                         }));
                         fx.extend(above_fx(clip, &shape, &covers, step));
                         fx.extend(distort_fx(clip, &shape, step));
+                        // its shadow, of the outline its keys, crop and mask leave
+                        if pictured && let Some(s) = clip.look.shadow.filter(|s| s.opacity > 0.0) {
+                            let values = [
+                                ("r", s.color[0]),
+                                ("g", s.color[1]),
+                                ("b", s.color[2]),
+                                ("opacity", s.opacity),
+                                ("x", s.x),
+                                ("y", s.y),
+                                ("blur", s.blur),
+                                ("flat", s.flat),
+                                ("lean", s.lean),
+                            ];
+                            fx.push(constant_fx(effects::SHADOW, &values));
+                        }
                         // out of focus: pictures only, and one blur a layer
                         if pictured
                             && !fx.iter().any(|e| e.id == effects::BLUR)
@@ -455,14 +545,18 @@ fn lower_tracks(
                         shape_mask: None,
                         crop_keys: None,
                         shape_mask_keys: None,
+                        parent: None,
+                        motion_blur: None,
                     });
+                }
+                // a light leak is light: soft warm glows that drift across over both clips
+                if let Some((TransitionKind::LightLeak, half)) = cuts[i] {
+                    layers.extend(light_leak(&clip.id, clip.start - half, half, [c.width as f32, c.height as f32]));
                 }
             }
             let sound = !track.muted
                 && match &clip.content {
-                    ClipContent::Media { media, silent, .. } => {
-                        !silent && project.media[media].kind != MediaKind::Image
-                    }
+                    ClipContent::Media { media, silent, .. } => !silent && project.media[media].kind.sounds(),
                     _ => false,
                 };
             // a freeze frame is silent
@@ -594,6 +688,15 @@ fn above_fx(clip: &Clip, shape: &Shape, covers: &[(Tick, Tick, &Clip)], step: Ti
     fx
 }
 
+/// An effect whose parameters do not change.
+fn constant_fx(id: &str, values: &[(&str, f32)]) -> Effect {
+    Effect {
+        id: id.into(),
+        params: values.iter().map(|(name, v)| (name.to_string(), Animated::Constant(*v))).collect(),
+        asset: None,
+    }
+}
+
 /// A clip's keyed colour as `key.chroma@1`.
 fn chroma_fx(k: &reelforge_model::ChromaKey) -> Effect {
     let values = [
@@ -660,9 +763,67 @@ fn transitions(track: &Track) -> Vec<Option<(TransitionKind, Tick)>> {
                 return None;
             }
             let half = Tick(t.duration.min(prev.duration).min(clip.duration).0 / 2);
-            (half > Tick::ZERO).then_some((t.kind, half))
+            // a clip shown through a shape of its own cannot be uncovered through another
+            let kind = if t.kind.reveals() && clip.look.mask.is_some() { TransitionKind::Dissolve } else { t.kind };
+            (half > Tick::ZERO).then_some((kind, half))
         })
         .collect()
+}
+
+/// Which clip carries which among the clips of `tracks` that are drawn, by id. A parent that is
+/// not one of them carries nothing, and neither does any clip of a ring or of a chain longer
+/// than the renderer follows.
+fn carriers(tracks: &[Track]) -> BTreeMap<&str, &str> {
+    let drawn: Vec<&Clip> = tracks
+        .iter()
+        .filter(|t| t.kind != TrackKind::Audio && !t.hidden)
+        .flat_map(|t| t.clips.iter().filter(|c| !c.is_adjustment()))
+        .collect();
+    let mut by: BTreeMap<&str, &str> = drawn
+        .iter()
+        .filter_map(|c| Some((c.id.as_str(), c.parent.as_deref()?)))
+        .filter(|(id, parent)| id != parent && drawn.iter().any(|c| c.id == *parent))
+        .collect();
+    loop {
+        // up each chain: it has to end, and soon enough
+        let endless: Vec<&str> = by
+            .keys()
+            .copied()
+            .filter(|id| {
+                let (mut up, mut steps) = (by.get(id), 0);
+                while let Some(p) = up {
+                    steps += 1;
+                    if p == id || steps > reelforge_renderspec::PARENTS {
+                        return true;
+                    }
+                    up = by.get(p);
+                }
+                false
+            })
+            .collect();
+        if endless.is_empty() {
+            return by;
+        }
+        for id in endless {
+            by.remove(id);
+        }
+    }
+}
+
+/// Where a clip's layer is and how it is turned, over its layer.
+fn placement(clip: &Clip, shape: &Shape, step: Tick) -> Transform {
+    let stretch = motion::lower_pair(clip, [Prop::ScaleX, Prop::ScaleY], shape, step);
+    let [x, y] = [Prop::RotationX, Prop::RotationY].map(|p| motion::lower(clip, p, shape, step));
+    let flat = Animated::Constant(0.0);
+    let (near, far) = ClipTransform::DISTANCES;
+    Transform {
+        position: motion::lower_position(clip, shape, step),
+        scale: motion::lower(clip, Prop::Scale, shape, step),
+        rotation: motion::lower(clip, Prop::Rotation, shape, step),
+        stretch: (stretch != Animated::Constant([1.0, 1.0])).then_some(stretch),
+        anchor: (clip.transform.anchor != [0.5, 0.5]).then_some(clip.transform.anchor),
+        turn: (x != flat || y != flat).then(|| Turn { x, y, distance: clip.transform.distance.clamp(near, far) }),
+    }
 }
 
 /// A clip's layer, given the transitions into it and out of it (with half their lengths).
@@ -677,7 +838,101 @@ fn shape(clip: &Clip, into: Option<(TransitionKind, Tick)>, out: Option<(Transit
         let cut = lead + clip.duration;
         overlays.push(Overlay { from: cut - h, to: cut + h, kind, incoming: false });
     }
-    Shape { lead, len: lead + clip.duration + tail, overlays, frames: vec![], canvas: [1.0, 1.0], steady: None }
+    Shape {
+        lead,
+        len: lead + clip.duration + tail,
+        overlays,
+        frames: vec![],
+        canvas: [1.0, 1.0],
+        steady: None,
+        carried: false,
+    }
+}
+
+/// The shape a clip is uncovered through over a transition `half` either side of the cut, from
+/// its layer's start: sampled at every frame, and open for good afterwards.
+fn uncovering(kind: TransitionKind, half: Tick, sides: [f32; 2], step: Tick) -> ShapeMaskKeys {
+    let len = half * 2;
+    let mut times = vec![];
+    let mut t = Tick::ZERO;
+    while t < len {
+        times.push(t);
+        t += step;
+    }
+    times.push(len);
+    let at = |t: Tick| kind.reveal((t.0 as f64 / len.0.max(1) as f64) as f32, sides).expect("a kind that uncovers");
+    let key = |t: Tick, v: [f32; 2]| Key { t, v, ease: Ease::Linear };
+    let rest = at(len);
+    ShapeMaskKeys {
+        center: Animated::Keys(times.iter().map(|t| key(*t, at(*t).center)).collect()),
+        size: Animated::Keys(times.iter().map(|t| key(*t, at(*t).size)).collect()),
+        rotation: Animated::Constant(rest.rotation),
+        feather: Animated::Constant(rest.feather),
+    }
+}
+
+/// The glows of a light leak over the frame, from `at` for `half` either side of the cut: large
+/// soft ellipses, warm at the middle and fading to nothing, screened over what is below, each
+/// drifting across at its own pace and brightest at the cut.
+fn light_leak(clip: &str, at: Tick, half: Tick, canvas: [f32; 2]) -> Vec<Layer> {
+    let key = |t: Tick, v: f32| Key { t, v, ease: Ease::InOut };
+    /// One glow: its colour at the middle, its height in frame heights, where it comes from and
+    /// goes to, and how bright it gets.
+    struct Glow {
+        color: [f32; 3],
+        size: f32,
+        from: [f32; 2],
+        to: [f32; 2],
+        bright: f32,
+    }
+    let glows = [
+        Glow { color: [1.0, 0.78, 0.42], size: 1.5, from: [-0.75, -0.15], to: [0.55, 0.1], bright: 0.95 },
+        Glow { color: [1.0, 0.45, 0.25], size: 1.1, from: [0.8, 0.3], to: [-0.5, -0.2], bright: 0.7 },
+        Glow { color: [1.0, 0.92, 0.75], size: 0.7, from: [-0.6, 0.35], to: [0.7, -0.3], bright: 0.6 },
+    ];
+    glows
+        .into_iter()
+        .enumerate()
+        .map(|(n, Glow { color: [r, g, b], size, from, to, bright })| {
+            let side = size * canvas[1];
+            Layer {
+                id: format!("{clip}~light{n}"),
+                at,
+                dur: half * 2,
+                content: LayerContent::Shape(Box::new(ShapeContent {
+                    kind: SpecShape::Ellipse,
+                    size: [side * 1.25, side],
+                    radius: 0.0,
+                    points: 5,
+                    inner: 0.5,
+                    fill: Some(Paint::Radial { from: Color([r, g, b, 1.0]), to: Color([r, g * 0.6, b * 0.4, 0.0]) }),
+                    stroke: None,
+                    shadow: None,
+                    trim: None,
+                    fill_opacity: None,
+                })),
+                transform: Transform {
+                    position: Animated::Keys(vec![
+                        Key { t: Tick::ZERO, v: from, ease: Ease::Linear },
+                        Key { t: half * 2, v: to, ease: Ease::Linear },
+                    ]),
+                    ..Transform::default()
+                },
+                opacity: Animated::Keys(vec![key(Tick::ZERO, 0.0), key(half, bright), key(half * 2, 0.0)]),
+                blend: Blend::Screen,
+                mask: None,
+                fx: vec![],
+                crop: None,
+                flip_x: false,
+                flip_y: false,
+                shape_mask: None,
+                crop_keys: None,
+                shape_mask_keys: None,
+                parent: None,
+                motion_blur: None,
+            }
+        })
+        .collect()
 }
 
 /// What a clip's changed voice does to its sound, in the order it is done: noise out first, then
@@ -726,6 +981,8 @@ mod tests {
             group: None,
             slot: None,
             steady: None,
+            parent: None,
+            path: None,
         }
     }
 
@@ -814,6 +1071,70 @@ mod tests {
         assert_eq!(b.opacity.sample(Tick::SECOND), 1.0);
         assert_eq!((c.at, c.dur), (Tick::SECOND * 5, Tick::SECOND));
         assert_eq!(c.opacity, Animated::Constant(1.0));
+    }
+
+    #[test]
+    fn a_zoom_blur_puts_both_pictures_out_of_focus_and_a_glitch_tears_them() {
+        use reelforge_model::Transition;
+        let mut p = Project::default();
+        p.media.insert(
+            "m9".into(),
+            Media {
+                id: "m9".into(),
+                name: "a.mp4".into(),
+                uri: "file:///a.mp4".into(),
+                sha256: Some("ab".repeat(32)),
+                kind: MediaKind::Video,
+                duration: Some(Tick::SECOND * 10),
+                size: Some([1920, 1080]),
+                folder: None,
+            },
+        );
+        let a = clip("c20", Tick::ZERO, Tick::SECOND * 2, ClipContent::media("m9", Tick::ZERO));
+        let mut b = clip("c21", Tick::SECOND * 2, Tick::SECOND * 2, ClipContent::media("m9", Tick::SECOND * 4));
+        b.transition = Some(Transition { kind: TransitionKind::ZoomBlur, duration: Tick::SECOND });
+        p.tracks[0].clips = vec![a, b];
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        let cut = Tick::SECOND * 2;
+        for l in &spec.layers[..2] {
+            let blur = l.fx.iter().find(|e| e.id == effects::BLUR).expect("a blur");
+            let radius = &blur.params["radius"];
+            // sharp away from the cut and softest at it, in the layer's own time
+            let near = |t: Tick| radius.sample(t - l.at);
+            assert!(near(cut) > 0.05, "{}", near(cut));
+            assert!(near(cut - Tick(Tick::SECOND.0 / 2)) < 0.01 && near(cut + Tick(Tick::SECOND.0 / 2)) < 0.01);
+        }
+        p.tracks[0].clips[1].transition = Some(Transition { kind: TransitionKind::Glitch, duration: Tick::SECOND });
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        for l in &spec.layers[..2] {
+            let ids: Vec<&str> = l.fx.iter().map(|e| e.id.as_str()).collect();
+            assert!(ids.contains(&"distort.glitch@1") && ids.contains(&"distort.split@1"), "{ids:?}");
+            assert!(!ids.contains(&effects::BLUR));
+        }
+        // and a wipe gives the clip coming in a mask that is keyed across the overlap only
+        p.tracks[0].clips[1].transition = Some(Transition { kind: TransitionKind::WipeLeft, duration: Tick::SECOND });
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        assert!(spec.layers[0].shape_mask.is_none() && spec.layers[1].shape_mask.is_some());
+        assert!(spec.layers[1].shape_mask_keys.is_some());
+    }
+
+    #[test]
+    fn a_clip_seen_through_a_shutter_asks_its_layer_for_motion_blur() {
+        let mut p = Project::default();
+        let mut c = clip("c30", Tick::ZERO, Tick::SECOND, ClipContent::Solid { color: [1.0; 4] });
+        p.tracks[0].clips.push(c.clone());
+        let plain = compile(&p, &CompileOptions::default()).unwrap();
+        assert!(plain.layers[0].motion_blur.is_none() && !plain.required_features().contains("motion.blur/1"));
+        c.transform.motion_blur = 0.5;
+        p.tracks[0].clips[0] = c.clone();
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        assert_eq!(spec.layers[0].motion_blur, Some(MotionBlur { shutter: 0.5 }));
+        assert!(spec.required_features().contains("motion.blur/1"));
+        // no longer than a renderer takes, whatever the file says
+        c.transform.motion_blur = 9.0;
+        p.tracks[0].clips[0] = c;
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        assert_eq!(spec.layers[0].motion_blur, Some(MotionBlur { shutter: 2.0 }));
     }
 
     #[test]
@@ -946,9 +1267,13 @@ mod tests {
         video.look.person = true;
         video.look.chroma = Some(reelforge_model::ChromaKey::new([0.1, 0.8, 0.2]));
         video.look.backdrop = Some(0.5);
-        // a colour has no people to cut out, whatever its look says
+        video.look.cutout = Some(reelforge_model::Cutout { tolerance: 0.7, holes: 0.0 });
+        video.look.shadow = reelforge_model::CastShadow::kind("ground");
+        // a colour has no people to cut out, whatever its look says, and casts no shadow
         let mut flat = clip("c21", Tick::SECOND * 2, Tick::SECOND, ClipContent::Solid { color: [1.0; 4] });
         flat.look.person = true;
+        flat.look.cutout = Some(reelforge_model::Cutout::default());
+        flat.look.shadow = Some(reelforge_model::CastShadow::default());
         p.tracks[0].clips = vec![video, flat];
         let spec = compile(&p, &CompileOptions::default()).unwrap();
         let fx = |id: &str| -> Vec<&str> {
@@ -956,15 +1281,31 @@ mod tests {
         };
         // the people first, then the colour keyed out of what is left; the blurred copy behind
         // stays whole (the people are cut out of the clip, not out of the frame)
-        assert_eq!(fx("c20"), ["key.person@1", "key.chroma@1"]);
+        assert_eq!(fx("c20"), ["key.person@1", "key.backdrop@1", "key.chroma@1", "shadow.drop@1"]);
         assert_eq!(fx("c20~backdrop"), ["blur.gaussian@1"]);
+        let of = |id: &str| -> Vec<(String, f32)> {
+            let layer = spec.layers.iter().find(|l| l.id == "c20").unwrap();
+            let fx = layer.fx.iter().find(|e| e.id == id).unwrap();
+            fx.params.iter().map(|(k, v)| (k.clone(), v.sample(Tick::ZERO))).collect()
+        };
+        assert_eq!(of("key.backdrop@1"), [("holes".to_string(), 0.0), ("tolerance".to_string(), 0.7)]);
+        let shadow = of("shadow.drop@1");
+        assert_eq!(shadow.len(), 9);
+        assert!(shadow.contains(&("flat".to_string(), 0.86)) && shadow.contains(&("opacity".to_string(), 0.5)));
+        for needed in ["key.backdrop@1", "shadow.drop@1"] {
+            assert!(spec.engine.features.contains(&needed.to_string()), "{needed}");
+        }
         assert!(fx("c21").is_empty());
         assert!(spec.engine.features.contains(&"key.person@1".to_string()));
         assert!(spec.layers.iter().find(|l| l.id == "c20").unwrap().fx[0].params.is_empty());
         // off: nothing is asked of the renderer
         p.tracks[0].clips[0].look.person = false;
+        p.tracks[0].clips[0].look.cutout = None;
+        p.tracks[0].clips[0].look.shadow.as_mut().unwrap().opacity = 0.0;
         let spec = compile(&p, &CompileOptions::default()).unwrap();
-        assert!(!spec.engine.features.contains(&"key.person@1".to_string()));
+        for gone in ["key.person@1", "key.backdrop@1", "shadow.drop@1"] {
+            assert!(!spec.engine.features.contains(&gone.to_string()), "{gone}");
+        }
     }
 
     #[test]
@@ -1093,5 +1434,89 @@ mod tests {
         let spec = compile(&p, &CompileOptions::default()).unwrap();
         let c13 = spec.layers.iter().find(|l| l.id == "c13").unwrap();
         assert_eq!((c13.at, c13.dur), (Tick::SECOND * 3, Tick::SECOND));
+    }
+
+    #[test]
+    fn clips_in_space_are_lowered_and_carried_ones_go_with_what_carries_them() {
+        use reelforge_model::{AnimKind, Animation, Ease as MEase, Fx, FxKind, MotionPath};
+        let solid = |id: &str| clip(id, Tick::ZERO, Tick::SECOND * 2, ClipContent::Solid { color: [1.0; 4] });
+        let mut p = Project::default();
+        let mut carrier = solid("c1");
+        carrier.transform.x = 0.25;
+        let mut carried = solid("c2");
+        carried.parent = Some("c1".into());
+        carried.transform = ClipTransform {
+            x: 0.1,
+            scale_x: 0.5,
+            rotation_y: 30.0,
+            anchor: [0.0, 0.5],
+            distance: 1.5,
+            ..ClipTransform::default()
+        };
+        carried.anim.enter = Some(Animation { kind: AnimKind::FlipX, duration: Tick::SECOND });
+        // a third rides the second, and sets out along a curve half a second in
+        let mut rider = solid("c3");
+        rider.parent = Some("c2".into());
+        rider.path = Some(MotionPath {
+            points: vec![[-0.2, 0.0], [0.0, -0.2], [0.2, 0.0]],
+            closed: false,
+            orient: true,
+            start: Tick(Tick::SECOND.0 / 2),
+            duration: Tick::SECOND,
+            ease: MEase::Linear,
+        });
+        let mut over = p.tracks[0].clone();
+        over.id = "t8".into();
+        let mut top = over.clone();
+        top.id = "t9".into();
+        p.tracks[0].clips = vec![carrier];
+        over.clips = vec![carried];
+        top.clips = vec![rider];
+        p.tracks.insert(1, over);
+        p.tracks.insert(2, top);
+        // an effect from above shakes the frame: what carries is shaken, what is carried goes along
+        let mut shake = clip("c4", Tick::ZERO, Tick::SECOND * 2, ClipContent::Adjustment);
+        shake.fx = vec![Fx::new(FxKind::ZoomOut)];
+        let mut above = p.tracks[0].clone();
+        above.id = "t10".into();
+        above.clips = vec![shake];
+        p.tracks.insert(3, above);
+        p.check().unwrap();
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        let layer = |id: &str| spec.layers.iter().find(|l| l.id == id).unwrap();
+        let (a, b, c) = (layer("c1"), layer("c2"), layer("c3"));
+        assert_eq!((&a.parent, b.parent.as_deref(), c.parent.as_deref()), (&None, Some("c1"), Some("c2")));
+        assert_eq!((&a.transform.stretch, &a.transform.anchor, &a.transform.turn), (&None, &None, &None));
+        assert!(matches!(a.transform.scale, Animated::Keys(_)));
+        // stretched and anchored as told, swung as told while it tips up into place
+        let t = &b.transform;
+        assert_eq!((&t.stretch, t.anchor), (&Some(Animated::Constant([0.5, 1.0])), Some([0.0, 0.5])));
+        let turn = t.turn.as_ref().unwrap();
+        assert_eq!((turn.distance, &turn.y), (1.5, &Animated::Constant(30.0)));
+        assert!((turn.x.sample(Tick::ZERO) + 90.0).abs() < 1e-3 && turn.x.sample(Tick::SECOND) == 0.0);
+        // the frame's zoom is not laid on it again
+        assert_eq!((&t.scale, &t.position), (&Animated::Constant(1.0), &Animated::Constant([0.1, 0.0])));
+        // the rider waits, travels frame by frame facing the way it goes, and stays
+        let at = |s: f64| c.transform.position.sample(Tick::from_seconds(s));
+        assert_eq!((at(0.0), at(0.5), at(1.5), at(2.0)), ([-0.2, 0.0], [-0.2, 0.0], [0.2, 0.0], [0.2, 0.0]));
+        assert!((at(1.0)[1] + 0.2).abs() < 2e-3 && at(1.0)[0].abs() < 2e-3, "{:?}", at(1.0));
+        let Animated::Keys(keys) = &c.transform.rotation else { panic!("turns") };
+        assert!(keys.len() > 30 && c.transform.rotation.sample(Tick::SECOND).abs() < 4.0);
+        let needs = &spec.engine.features;
+        for f in ["layer.parent/1", "transform.3d/1", "transform.stretch/1", "transform.anchor/1"] {
+            assert!(needs.contains(&f.to_string()), "{f}");
+        }
+
+        // a ring carries nothing; a parent that is hidden or gone is no parent
+        p.tracks[0].clips[0].parent = Some("c3".into());
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        assert!(spec.layers.iter().all(|l| l.parent.is_none()));
+        p.tracks[0].clips[0].parent = None;
+        p.tracks[1].hidden = true;
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        assert_eq!(
+            spec.layers.iter().map(|l| (l.id.as_str(), &l.parent)).collect::<Vec<_>>(),
+            [("c1", &None), ("c3", &None)]
+        );
     }
 }

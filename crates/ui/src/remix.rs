@@ -29,7 +29,7 @@ fn tone(n: u32) -> Color32 {
 /// One template, `w` wide: its slots in a row, its name, how much it takes and what it is for.
 /// Clicking it uses it.
 pub(crate) fn card(ui: &mut egui::Ui, index: usize, t: &TimelineTemplate, s: &Strings, w: f32) -> egui::Response {
-    let pad = 10.0;
+    let pad = 12.0;
     let about = {
         let mut job = egui::text::LayoutJob::single_section(
             s.remix_abouts[index].to_string(),
@@ -44,9 +44,10 @@ pub(crate) fn card(ui: &mut egui::Ui, index: usize, t: &TimelineTemplate, s: &St
     let h = pad + strip_h + 8.0 + 18.0 + 4.0 + about.size().y.max(28.0) + pad;
     let (rect, r) = ui.allocate_exact_size(vec2(w, h), Sense::click());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 8.0, if r.hovered() { color::RAISED } else { color::ROW });
-    let stroke = if r.hovered() { Stroke::new(1.0, color::ACCENT) } else { Stroke::new(1.0, color::LINE) };
-    painter.rect_stroke(rect, 8.0, stroke, StrokeKind::Inside);
+    painter.rect_filled(rect, 14.0, if r.hovered() { color::GLASS_HOVER } else { color::ROW });
+    let stroke =
+        if r.hovered() { Stroke::new(1.0, color::ACCENT) } else { Stroke::new(1.0, Color32::from_white_alpha(18)) };
+    painter.rect_stroke(rect, 14.0, stroke, StrokeKind::Inside);
 
     // the slots, each as wide as it is long
     let strip = Rect::from_min_size(rect.min + vec2(pad, pad), vec2(w - pad * 2.0, strip_h));
@@ -57,7 +58,7 @@ pub(crate) fn card(ui: &mut egui::Ui, index: usize, t: &TimelineTemplate, s: &St
     for (i, len) in t.shots().enumerate() {
         let n = i as u32 + 1;
         let piece = Rect::from_min_size(egui::pos2(x, strip.top()), vec2(room * len as f32 / total, strip_h));
-        painter.rect_filled(piece, 4.0, tone(n).gamma_multiply(if r.hovered() { 1.0 } else { 0.9 }));
+        painter.rect_filled(piece, 6.0, tone(n).gamma_multiply(if r.hovered() { 1.0 } else { 0.9 }));
         if piece.width() >= 14.0 {
             painter.text(
                 piece.center(),

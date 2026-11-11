@@ -99,6 +99,15 @@ impl<'a> P<'a> {
         Ok(Some(c))
     }
 
+    /// A colour, `null` for none, or nothing said.
+    pub fn opt_color_or_null(&self, name: &str) -> Result<Option<Option<[f32; 4]>>, EngineError> {
+        match self.v.get(name) {
+            None => Ok(None),
+            Some(Value::Null) => Ok(Some(None)),
+            Some(_) => self.opt_color(name).map(Some),
+        }
+    }
+
     pub fn strings(&self, name: &str) -> Result<Vec<String>, EngineError> {
         match self.opt(name) {
             None => Err(Self::missing(name)),

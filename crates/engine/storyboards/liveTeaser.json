@@ -1,0 +1,228 @@
+{
+ "id": "liveTeaser",
+ "name": {
+  "en": "Livestream teaser",
+  "zh": "直播预告",
+  "ja": "ライブ配信予告"
+ },
+ "about": {
+  "en": "When the stream starts in very large words, what viewers get, a coupon for the room, and a reminder to book",
+  "zh": "大字报出开播时间，列出直播间福利和专属券，引导预约",
+  "ja": "配信時刻を大きく見せ、特典と限定クーポンを伝えて予約を促す"
+ },
+ "music": "upbeat",
+ "fields": [
+  {
+   "id": "liveTime",
+   "text": {
+    "en": "Live tonight 8pm",
+    "zh": "今晚 八点 开播",
+    "ja": "今夜 8時 配信"
+   }
+  },
+  {
+   "id": "offer",
+   "text": {
+    "en": "Fan night",
+    "zh": "宠粉专场",
+    "ja": "ファン感謝ライブ"
+   }
+  },
+  {
+   "id": "perk1",
+   "text": {
+    "en": "Lowest prices of the year",
+    "zh": "全年最低价",
+    "ja": "年間最安値"
+   }
+  },
+  {
+   "id": "perk2",
+   "text": {
+    "en": "A free gift with every order",
+    "zh": "下单就送赠品",
+    "ja": "注文ごとにプレゼント"
+   }
+  },
+  {
+   "id": "perk3",
+   "text": {
+    "en": "Lucky draws every half hour",
+    "zh": "每半小时抽奖",
+    "ja": "30 分ごとに抽選"
+   }
+  },
+  {
+   "id": "coupon",
+   "number": 50
+  },
+  {
+   "id": "couponRule",
+   "text": {
+    "en": "On orders over 199",
+    "zh": "满 199 可用",
+    "ja": "199 以上で使える"
+   }
+  },
+  {
+   "id": "closing",
+   "text": {
+    "en": "See you in the stream",
+    "zh": "直播间见",
+    "ja": "ライブで会いましょう"
+   }
+  },
+  {
+   "id": "cta",
+   "text": {
+    "en": "Set a reminder",
+    "zh": "预约直播",
+    "ja": "配信を予約"
+   }
+  },
+  {
+   "id": "hint",
+   "text": {
+    "en": "Tap to be told when it starts",
+    "zh": "点击预约，开播提醒",
+    "ja": "タップで開始をお知らせ"
+   }
+  }
+ ],
+ "scenes": [
+  {
+   "id": "hook",
+   "seconds": 3.0,
+   "shot": {
+    "en": "The host, waving to camera",
+    "zh": "主播对镜头打招呼",
+    "ja": "配信者がカメラに手を振る"
+   },
+   "fx": "zoomIn",
+   "voice": {
+    "en": "{liveTime}: {offer}!",
+    "zh": "{liveTime}，{offer}！",
+    "ja": "{liveTime}、{offer}！"
+   },
+   "pieces": [
+    {
+     "kind": "posterWords",
+     "at": 0.1,
+     "text": "{liveTime}",
+     "scale": 0.85,
+     "y": -0.05
+    }
+   ]
+  },
+  {
+   "id": "perks",
+   "seconds": 5.0,
+   "shot": {
+    "en": "The products laid out on the table",
+    "zh": "直播商品摆满桌面",
+    "ja": "配信で紹介する商品を並べる"
+   },
+   "cut": "zoomBlur",
+   "voice": {
+    "en": "{perk1}. {perk2}. {perk3}.",
+    "zh": "{perk1}，{perk2}，{perk3}。",
+    "ja": "{perk1}。{perk2}。{perk3}。"
+   },
+   "pieces": [
+    {
+     "kind": "banner",
+     "at": 0.2,
+     "text": "{offer}",
+     "y": -0.38
+    },
+    {
+     "kind": "checklist",
+     "at": 0.5,
+     "lines": [
+      "{perk1}",
+      "{perk2}",
+      "{perk3}"
+     ],
+     "y": 0.05
+    }
+   ]
+  },
+  {
+   "id": "deal",
+   "seconds": 4.5,
+   "shot": {
+    "en": "The star product, close up",
+    "zh": "主推款特写",
+    "ja": "イチオシ商品のアップ"
+   },
+   "sweep": "right",
+   "voice": {
+    "en": "And a {coupon} coupon, only in the stream.",
+    "zh": "直播间专属 {coupon} 元券。",
+    "ja": "配信限定の {coupon} 円クーポンも。"
+   },
+   "pieces": [
+    {
+     "kind": "hotBurst",
+     "at": 0.2,
+     "text": {
+      "en": "LIVE",
+      "zh": "专享",
+      "ja": "限定"
+     },
+     "x": 0.3,
+     "y": -0.36,
+     "scale": 0.7
+    },
+    {
+     "kind": "coupon",
+     "at": 0.4,
+     "value": "{coupon}",
+     "text": "{couponRule}",
+     "lines": [
+      {
+       "en": "Only in the stream",
+       "zh": "仅限直播间",
+       "ja": "配信限定"
+      }
+     ],
+     "y": 0.0
+    }
+   ]
+  },
+  {
+   "id": "cta",
+   "seconds": 3.5,
+   "backdrop": "brand",
+   "sweep": "up",
+   "voice": {
+    "en": "{closing}. {hint}.",
+    "zh": "{closing}，{hint}。",
+    "ja": "{closing}。{hint}。"
+   },
+   "pieces": [
+    {
+     "kind": "endCard",
+     "at": 0.1,
+     "text": "{closing}",
+     "lines": [
+      "{liveTime}"
+     ],
+     "y": -0.22
+    },
+    {
+     "kind": "buyButton",
+     "at": 0.7,
+     "text": "{cta}",
+     "y": -0.01
+    },
+    {
+     "kind": "arrowHint",
+     "at": 1.0,
+     "text": "{hint}",
+     "y": 0.14
+    }
+   ]
+  }
+ ]
+}
