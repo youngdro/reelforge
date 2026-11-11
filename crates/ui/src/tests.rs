@@ -1397,3 +1397,55 @@ fn scrolling_over_the_picture_moves_it_and_keeps_some_of_it_in_sight() {
     }
     assert_eq!(app.pan, before);
 }
+
+#[test]
+fn the_agents_window_starts_sharing_and_an_agent_reaches_the_project() {
+    use crate::i18n::Lang;
+    let mut app = EditorApp::demo().with_lang(Lang::En);
+    let hub = Arc::new(Hub::shared(app.session().clone(), None).unwrap());
+    app = app.with_agent_host(Box::new(move |addr: &str, token| {
+        // the test asks for any free port, whatever the window says
+        assert!(addr.starts_with("0.0.0.0:"), "{addr}");
+        let server = HttpServer::bind(hub.clone(), "127.0.0.1:0", token)?;
+        let base = format!("http://{}", server.local_addr());
+        std::thread::spawn(move || server.run());
+        Ok(base)
+    }));
+    app.agents.open = true;
+    let draw = |app: &mut EditorApp| {
+        for lang in Lang::ALL {
+            app.lang = lang;
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx, lang == Lang::Ja);
+            ctx.run_ui(Default::default(), |ui| app.agents_window(ui.ctx())).textures_delta.clear();
+        }
+        app.lang = Lang::En;
+    };
+    draw(&mut app);
+
+    // other computers need a token: without one, nothing starts
+    app.agents.port = "nope".into();
+    app.start_sharing();
+    assert!(app.agents.error.as_deref().unwrap().contains("port"), "{:?}", app.agents.error);
+    app.agents.port = "7878".into();
+    app.agents.others = true;
+    app.agents.token = " ".into();
+    app.start_sharing();
+    assert!(app.agents.serving.is_none());
+    app.agents.token = "t".into();
+    app.start_sharing();
+    let (base, token) = app.agents.serving.clone().expect("sharing");
+    assert_eq!(token.as_deref(), Some("t"));
+    assert!(app.agents.error.is_none());
+    draw(&mut app);
+
+    // an agent's edit through that address lands in this editor's project
+    let mut other = EditorApp::join(&base, token, "agent");
+    let remote = other.remote().expect("joined").clone();
+    until("the agent has the project", || remote.settled());
+    let video = first_track(&other, reelforge_model::TrackKind::Video);
+    let added =
+        other.execute("clip.add", json!({"track": video, "color": [0, 1, 0], "duration": {"seconds": 1}})).unwrap();
+    let id = added["clip"].as_str().unwrap().to_string();
+    until("the editor has the agent's clip", || app.session().project().clip(&id).is_some());
+}

@@ -144,6 +144,11 @@ impl Remote {
         &self.inner.base
     }
 
+    /// The token this editor sends the server, if any.
+    pub fn token(&self) -> Option<String> {
+        self.inner.token.clone()
+    }
+
     /// Whether the server's project has arrived.
     pub fn joined(&self) -> bool {
         self.state().joined
