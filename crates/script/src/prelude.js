@@ -147,36 +147,96 @@
 
   // ---- nodes ---------------------------------------------------------------------------
   const PLACE = ["x", "y", "scale", "rotation", "opacity"];
+  // width and height apart, and turned in space about the horizontal and the vertical axis
+  const SPACE = ["scaleX", "scaleY", "rotationX", "rotationY"];
+  const MORE = ["perspective", "motionBlur", "transformOrigin", "origin", "parent"];
+  // GSAP's other names for what a node has
+  const ALIAS = { rotate: "rotation", rotateZ: "rotation", rotationZ: "rotation", rotateX: "rotationX", rotateY: "rotationY",
+    autoAlpha: "opacity", alpha: "opacity" };
+  function named(o, what) {
+    let out = o;
+    for (const k of Object.keys(o)) {
+      if (ALIAS[k] === undefined) continue;
+      if (out === o) out = Object.assign({}, o);
+      if (o[ALIAS[k]] !== undefined) fail(`${what}: \`${k}\` and \`${ALIAS[k]}\` are the same property; give one`);
+      out[ALIAS[k]] = o[k];
+      delete out[k];
+    }
+    return out;
+  }
+  // the point a node is placed, scaled and turned about, as shares of its own box from the top left
+  function origin(v, label) {
+    const bad = () => fail(`${label}: \`transformOrigin\` is "left top", "center bottom", "50% 100%" and the like, or [across, down] as shares of the node's own box (0.5, 0.5 is its middle)`);
+    if (Array.isArray(v)) {
+      if (v.length !== 2 || !v.every((x) => isNum(x) && x >= -4 && x <= 5)) bad();
+      return v.slice();
+    }
+    if (typeof v !== "string") bad();
+    const words = v.trim().toLowerCase().split(/\s+/);
+    if (words.length < 1 || words.length > 2) bad();
+    const out = [null, null];
+    const rest = [];
+    for (const w of words) {
+      if (w === "left" || w === "right") { if (out[0] !== null) bad(); out[0] = w === "left" ? 0 : 1; }
+      else if (w === "top" || w === "bottom") { if (out[1] !== null) bad(); out[1] = w === "top" ? 0 : 1; }
+      else if (w === "center" || w === "centre") rest.push(0.5);
+      else if (/^-?\d*\.?\d+%$/.test(w) && Math.abs(parseFloat(w)) <= 400) rest.push(parseFloat(w) / 100);
+      else bad();
+    }
+    for (const r of rest) { const i = out[0] === null ? 0 : 1; if (out[i] !== null) bad(); out[i] = r; }
+    return [out[0] === null ? 0.5 : out[0], out[1] === null ? 0.5 : out[1]];
+  }
   const ADJUST = ["exposure", "contrast", "saturation", "temperature", "tint", "highlights", "shadows", "fade", "vignette"];
   const SHAPES = ["rectangle", "ellipse", "line", "polygon", "star", "tag", "arrow"];
   const SHAPE_OPTS = ["width", "height", "radius", "points", "inner", "fill", "stroke", "shadow", "trim"];
   const TEXT_OPTS = ["size", "color", "weight", "align", "wrap", "outline", "background", "radius", "gradient", "outer",
     "shadow", "lineBoxes", "font", "tracking", "leading", "italic", "underline", "template", "counter"];
-  const BASE = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, drawStart: 0, drawEnd: 1,
+  const BASE = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, scaleX: 1, scaleY: 1, rotationX: 0, rotationY: 0, drawStart: 0, drawEnd: 1,
     exposure: 0, contrast: 0, saturation: 0, temperature: 0, tint: 0, highlights: 0, shadows: 0, fade: 0, vignette: 0,
     cropLeft: 0, cropTop: 0, cropRight: 0, cropBottom: 0 };
 
   let state = null;
 
-  function Node(kind, name) { this.kind = kind; this.name = name; this.base = {}; this.add = {}; this.props = []; }
+  function Node(kind, name) { this.kind = kind; this.name = name; this.base = {}; this.add = {}; this.props = []; this.more = {}; this.origin = null; this.parent = null; this.path = null; }
 
   function node(kind, opts, allowed, label) {
     if (opts === undefined) opts = {};
     if (opts === null || typeof opts !== "object" || Array.isArray(opts)) fail(`${label}: its options must be an object`);
     if (state.nodes.length >= LIMIT.nodes) fail(`a script makes at most ${LIMIT.nodes} nodes; draw more than that in frame mode`);
-    const ok = PLACE.concat(["name"], allowed);
+    opts = named(opts, label);
+    const ok = PLACE.concat(SPACE, MORE, ["name"], allowed);
     for (const k of Object.keys(opts)) {
       if (!ok.includes(k)) fail(`${label}: no option \`${k}\`; it takes ${ok.join(", ")}`);
     }
     const n = new Node(kind, typeof opts.name === "string" && opts.name ? opts.name : `${label.replace("scene.", "")}${state.nodes.length + 1}`);
-    for (const k of PLACE) {
+    for (const k of PLACE.concat(SPACE)) {
       const v = opts[k] === undefined ? BASE[k] : opts[k];
       if (!isNum(v)) fail(`${label}: \`${k}\` must be a number`);
       n.base[k] = v;
     }
     if (n.base.opacity < 0 || n.base.opacity > 1) fail(`${label}: \`opacity\` is from 0 to 1`);
     if (!(n.base.scale >= 0)) fail(`${label}: \`scale\` must not be negative`);
-    n.props = PLACE.concat(ADJUST);
+    if (opts.perspective !== undefined) {
+      // the eye's distance, in pixels as CSS says it; the editor counts it in canvas heights
+      if (!isNum(opts.perspective) || opts.perspective <= 0) fail(`${label}: \`perspective\` is the eye's distance in pixels, above 0`);
+      n.more.perspective = Math.min(50, Math.max(0.2, opts.perspective / state.canvas[1]));
+    }
+    if (opts.motionBlur !== undefined) {
+      const b = opts.motionBlur;
+      if (typeof b !== "boolean" && !(isNum(b) && b >= 0 && b <= 2)) fail(`${label}: \`motionBlur\` is true, false, or the share of a frame the shutter is open (up to 2)`);
+      n.more.motionBlur = b;
+    }
+    if (opts.transformOrigin !== undefined && opts.origin !== undefined) fail(`${label}: \`origin\` and \`transformOrigin\` are the same; give one`);
+    const o = opts.transformOrigin !== undefined ? opts.transformOrigin : opts.origin;
+    if (o !== undefined) n.origin = origin(o, label);
+    if (opts.parent !== undefined && opts.parent !== null) {
+      if (!(opts.parent instanceof Node)) fail(`${label}: \`parent\` is a node that scene made`);
+      let depth = 1;
+      for (let up = opts.parent; up.parent; up = up.parent) depth++;
+      if (depth > 8) fail(`${label}: nodes carry one another at most 8 deep`);
+      n.parent = opts.parent;
+    }
+    n.props = PLACE.concat(SPACE, ADJUST);
     state.nodes.push(n);
     return n;
   }
@@ -214,6 +274,19 @@
       const o = Object.assign({}, opts || {});
       if (o.radius !== undefined) { o.width = o.height = 2 * o.radius; delete o.radius; }
       return shape("ellipse")(o);
+    },
+    // nothing to see: a node that carries others (`parent: group`), so they move, grow and turn as one
+    group(opts) {
+      const o = opts || {};
+      if (o && typeof o === "object" && o.opacity !== undefined) fail("scene.group: a group has no opacity (it passes on where it is, its size and its turn, nothing else); fade the nodes it carries");
+      const n = node("shape", opts, ["width", "height"], "scene.group");
+      const w = o.width === undefined ? 100 : o.width, h = o.height === undefined ? 100 : o.height;
+      if (!isNum(w) || !isNum(h) || w <= 0 || h <= 0) fail("scene.group: `width` and `height` are pixels (they matter only to `transformOrigin`)");
+      n.add = { shape: { kind: "rectangle", size: [w, h], fill: null } };
+      n.base.opacity = 0;
+      n.props = n.props.filter((k) => k !== "opacity" && !ADJUST.includes(k));
+      n.group = true;
+      return n;
     },
     line: shape("line"),
     polygon: shape("polygon"),
@@ -274,7 +347,35 @@
   }
 
   // ---- timelines -----------------------------------------------------------------------
-  const SPECIAL = ["duration", "ease", "delay", "stagger", "repeat", "yoyo", "repeatDelay"];
+  const SPECIAL = ["duration", "ease", "delay", "stagger", "repeat", "yoyo", "repeatDelay", "motionPath"];
+  // GSAP properties with nothing behind them yet, and what to do meanwhile
+  const NOT_YET = {
+    skewX: "nothing skews yet", skewY: "nothing skews yet", skew: "nothing skews yet",
+    width: "a size is not tweened yet; tween scaleX", height: "a size is not tweened yet; tween scaleY",
+    fill: "a colour is not tweened yet; cross-fade two nodes", color: "a colour is not tweened yet; cross-fade two nodes",
+    backgroundColor: "a colour is not tweened yet; cross-fade two nodes",
+    radius: "a corner is not tweened yet", borderRadius: "a corner is not tweened yet",
+    blur: "a blur is not tweened yet", filter: "filters are not tweened yet; exposure, contrast, saturation and the other adjustments are",
+    z: "there is no depth yet; rotationX and rotationY turn a node in space", xPercent: "write pixels", yPercent: "write pixels",
+    transformOrigin: "it does not move; give it to the node when making it", fontSize: "tween scale", text: "tween a counter's `count`, or make two titles",
+  };
+
+  // the points of a path, as a tween's `motionPath` gives them
+  function pathOf(v, n, what) {
+    const bad = () => fail(`${what}: \`motionPath\` is a list of points ([{x, y}, …] or [[x, y], …], pixels from the canvas centre), or {path, autoRotate?, closed?, fromCurrent?}`);
+    const o = Array.isArray(v) ? { path: v } : v;
+    if (!o || typeof o !== "object" || !Array.isArray(o.path)) bad();
+    for (const k of Object.keys(o)) if (!["path", "autoRotate", "closed", "fromCurrent"].includes(k)) fail(`${what}: motionPath has no \`${k}\`; it takes path, autoRotate, closed, fromCurrent (a path passes through its points; there are no control points)`);
+    const points = o.path.map((p) => {
+      const q = Array.isArray(p) ? p : p && typeof p === "object" ? [p.x, p.y] : bad();
+      if (q.length !== 2 || !q.every(isNum)) bad();
+      return q;
+    });
+    // as GSAP does: from where the node is, unless told otherwise
+    if (o.fromCurrent !== false) points.unshift([n.base.x, n.base.y]);
+    if (points.length < 2 || points.length > 64) fail(`${what}: a path has 2 to 64 points`);
+    return { points, orient: !!o.autoRotate, closed: !!o.closed };
+  }
 
   function targets(t, what) {
     const list = Array.isArray(t) ? t.flat(Infinity) : [t];
@@ -311,6 +412,8 @@
   Timeline.prototype.duration = function () { return this.end; };
   Timeline.prototype.tween = function (what, t, from, to, pos) {
     const list = targets(t, what);
+    if (from) from = named(from, what);
+    if (to) to = named(to, what);
     const vars = Object.assign({}, this.defaults, to || from);
     const dur = what === "set" ? 0 : vars.duration;
     if (!isNum(dur) || dur < 0) fail(`${what}: \`duration\` is seconds`);
@@ -339,8 +442,18 @@
       const t0 = start + rank(i) * each;
       const names = new Set();
       for (const src of [from, to]) for (const k of Object.keys(src || {})) if (!SPECIAL.includes(k)) names.add(k);
-      if (!names.size) fail(`${what}: it changes nothing; name a property, such as opacity or x`);
+      if (vars.motionPath !== undefined) {
+        if (what !== "to") fail(`${what}: a path is travelled with \`to\``);
+        if (n.path) fail(`${what}: ${n.name} already travels a path; a node has one (give it every point)`);
+        if (repeat || vars.yoyo) fail(`${what}: a path is travelled once; \`closed: true\` brings it back to where it set off`);
+        if (!(dur > 0)) fail(`${what}: a path takes time; give a \`duration\``);
+        if (e.fn) fail(`${what}: a path's ease must be one a curve can say (not elastic, bounce, steps or a function)`);
+        if (names.has("x") || names.has("y")) fail(`${what}: the path says where ${n.name} is; leave \`x\` and \`y\` out`);
+        n.path = Object.assign(pathOf(vars.motionPath, n, what), { start: this.offset + t0, duration: dur,
+          ease: e.linear ? "linear" : e.hold ? "hold" : e.bezier, what });
+      } else if (!names.size) fail(`${what}: it changes nothing; name a property, such as opacity or x`);
       for (const k of names) {
+        if (NOT_YET[k] !== undefined && !n.props.includes(k)) fail(`${what}: \`${k}\` cannot be tweened: ${NOT_YET[k]}`);
         if (!n.props.includes(k)) fail(`${what}: ${n.name} has no \`${k}\` to tween; it has ${n.props.join(", ")}`);
         if (state.tweens.length >= LIMIT.tweens) fail(`a script makes at most ${LIMIT.tweens} tweens`);
         state.tweens.push({ node: n, prop: k, t0: this.offset + t0, dur, ease: e, repeat, gap, yoyo: !!vars.yoyo,
@@ -395,6 +508,7 @@
     const out = [];
     let count = 0;
     for (const tr of tracks.values()) {
+      if (tr.node.path && (tr.prop === "x" || tr.prop === "y")) fail(`${tr.node.path.what}: ${tr.node.name} travels a path, which says where it is; do not tween its \`${tr.prop}\` as well`);
       const keys = new Map(); // frame number → {v, ease}
       const put = (t, v, e) => keys.set(Math.round(t * fps), { v, ease: e });
       const segs = tr.segs.slice().sort((a, b) => a.t0 - b.t0);
@@ -479,7 +593,7 @@
 
   globalThis.__rf_run = function (build, declared, input) {
     const { canvas, fps, seed, params, duration } = JSON.parse(input);
-    state = { nodes: [], tweens: [], end: 0, duration: null, log: [] };
+    state = { nodes: [], tweens: [], end: 0, duration: null, log: [], canvas };
     // the same numbers every run: what a script makes depends on its source and parameters alone
     let a = seed >>> 0;
     Math.random = () => {
@@ -499,8 +613,12 @@
     const length = duration ?? state.duration ?? Math.max(state.end, 1 / fps);
     const keys = keysOf(fps);
     const nodes = state.nodes.map((n) => {
-      const add = Object.assign({}, n.add, { x: n.base.x / canvas[0], y: n.base.y / canvas[1], scale: n.base.scale, rotation: n.base.rotation, opacity: n.base.opacity });
-      return { name: n.name, kind: n.kind, add, counter: n.counter || null, keys: {} };
+      const add = Object.assign({}, n.add, { x: n.base.x / canvas[0], y: n.base.y / canvas[1], scale: n.base.scale, rotation: n.base.rotation, opacity: n.base.opacity }, n.more);
+      for (const k of SPACE) if (n.base[k] !== BASE[k]) add[k] = n.base[k];
+      const path = n.path && { points: n.path.points.map((q) => [q[0] / canvas[0], q[1] / canvas[1]]), closed: n.path.closed,
+        orient: n.path.orient, start: n.path.start, duration: n.path.duration, ease: n.path.ease };
+      return { name: n.name, kind: n.group ? "group" : n.kind, add, counter: n.counter || null, keys: {},
+        origin: n.origin, parent: n.parent ? state.nodes.indexOf(n.parent) : null, path: path || null };
     });
     for (const k of keys) {
       const per = k.prop === "x" ? canvas[0] : k.prop === "y" ? canvas[1] : 1;

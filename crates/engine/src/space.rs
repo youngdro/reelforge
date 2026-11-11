@@ -173,6 +173,19 @@ pub(crate) fn set_anchor(proj: &mut Project, id: &str, anchor: [f32; 2], keep: b
     shift(clip, by);
 }
 
+/// Gives `clip` another anchor the way CSS's `transform-origin` does: its box stays where it lies
+/// when it is neither scaled nor turned, so its `x` and `y` (their keyframes, its path) go on
+/// saying where its middle rests. Counted from the middle: the anchor it has is taken for 0.5.
+pub(crate) fn set_origin(proj: &mut Project, id: &str, anchor: [f32; 2]) {
+    let Some((_, clip)) = proj.clip(id) else { return };
+    let canvas = [proj.canvas.width as f32, proj.canvas.height as f32];
+    let [w, h] = box_of(proj, clip, 1.0);
+    let by = [(anchor[0] - 0.5) * w / canvas[0], (anchor[1] - 0.5) * h / canvas[1]];
+    let clip = proj.clip_mut(id).expect("found above");
+    clip.transform.anchor = anchor;
+    shift(clip, by);
+}
+
 fn pictured(proj: &Project, id: &str, what: &str) -> Result<(), EngineError> {
     let (ti, clip) = proj.clip(id).ok_or_else(|| not_found("clip", id))?;
     if proj.tracks[ti].kind == TrackKind::Audio || clip.is_adjustment() {

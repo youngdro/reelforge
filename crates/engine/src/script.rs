@@ -136,6 +136,37 @@ fn build(
         proj.scripts.insert(group.clone(), Script { declared: declared.clone(), ..script.clone() });
         Ok(())
     })?;
+    // what one node has of another, and what needs the clips as they now are
+    for (id, _, node) in &made {
+        let named = |e: EngineError| EngineError::Refused(format!("script: {}: {e}", node.name));
+        if let Some(path) = &node.path {
+            let at = |seconds: f64| fps.tick_of((seconds * fps.fps()).round() as i64);
+            let (from, took) = (at(path.start).max(Tick::ZERO), at(path.duration).max(fps.frame_duration()));
+            if from < length {
+                s.execute(
+                    "clip.setPath",
+                    &json!({
+                        "clip": id, "points": path.points, "closed": path.closed, "orient": path.orient,
+                        "start": from.0, "duration": took.0, "ease": path.ease,
+                    }),
+                )
+                .map_err(named)?;
+            }
+        }
+        if let Some(parent) = node.parent.and_then(|i| made.get(i)) {
+            s.execute("clip.setParent", &json!({"clip": id, "parent": parent.0, "keep": false})).map_err(named)?;
+        }
+    }
+    if made.iter().any(|(_, _, node)| node.origin.is_some()) {
+        s.edit("Script", |proj| {
+            for (id, _, node) in &made {
+                if let Some([x, y]) = node.origin {
+                    crate::space::set_origin(proj, id, [x as f32, y as f32]);
+                }
+            }
+            Ok(())
+        })?;
+    }
     Ok(json!({
         "group": group,
         "clips": reply,
