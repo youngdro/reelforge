@@ -1550,7 +1550,7 @@ fn sound_brought_in_is_with_the_library_sounds_and_not_among_the_pictures() {
     let mut app = EditorApp::demo().with_lang(Lang::En);
     let ctx = egui::Context::default();
     crate::theme::install(&ctx, false);
-    let mut panel = |app: &mut EditorApp| {
+    let panel = |app: &mut EditorApp| {
         let mut shown = String::new();
         for _ in 0..2 {
             let input = egui::RawInput {
