@@ -144,8 +144,16 @@ pub struct EditorApp {
     /// A voice-over being recorded, and how many were.
     recorder: Option<record::Recorder>,
     takes: u32,
+    /// The folder the export's save dialog starts in: where the person saved last.
     #[cfg(not(target_arch = "wasm32"))]
     export_dir: std::path::PathBuf,
+    /// The folder was picked and is not written to storage yet.
+    #[cfg(not(target_arch = "wasm32"))]
+    export_dir_unsaved: bool,
+    /// The last finished export: what the status said of it, and the file, for "Show in Finder"
+    /// while the status still says it.
+    #[cfg(not(target_arch = "wasm32"))]
+    last_export: Option<(String, std::path::PathBuf)>,
     playhead: Tick,
     playing: bool,
     /// Preview sound, and the project revision its mix was compiled from.
@@ -486,7 +494,11 @@ impl EditorApp {
             recorder: None,
             takes: 0,
             #[cfg(not(target_arch = "wasm32"))]
-            export_dir: std::env::current_dir().unwrap_or_default(),
+            export_dir: export_job::default_dir(),
+            #[cfg(not(target_arch = "wasm32"))]
+            export_dir_unsaved: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            last_export: None,
             playhead: Tick::ZERO,
             playing: false,
             sound: audio::Playback::default(),
@@ -600,6 +612,12 @@ impl EditorApp {
             self.lang_chosen = true;
         }
         self.full_quality = cc.storage.and_then(|s| s.get_string(QUALITY_KEY)).as_deref() == Some("full");
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(dir) = cc.storage.and_then(|s| s.get_string(EXPORT_DIR_KEY)).map(std::path::PathBuf::from)
+            && dir.is_dir()
+        {
+            self.export_dir = dir;
+        }
         if let Some(rs) = &cc.wgpu_render_state {
             let info = rs.adapter.get_info();
             if reelforge_render::gpu::GpuCompositor::supports(&rs.adapter) {
@@ -662,7 +680,8 @@ impl EditorApp {
         self
     }
 
-    /// Where Export writes its files (the desktop app passes the project's folder).
+    /// Where Export's save dialog starts until the person picks a folder (the desktop app passes
+    /// the project's folder).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_export_dir(mut self, dir: std::path::PathBuf) -> EditorApp {
         self.export_dir = dir;
@@ -3102,6 +3121,8 @@ impl EditorApp {
             let (glyph, tint) =
                 if warn { (icon::WARNING, theme::color::WARN) } else { (icon::DONE, theme::color::WEAK) };
             ui.label(egui::RichText::new(format!("{glyph}  {}", self.status)).small().color(tint));
+            #[cfg(not(target_arch = "wasm32"))]
+            self.reveal_button(ui);
             if self.narrow {
                 return;
             }
@@ -5146,6 +5167,9 @@ fn is_subrip(name: &str) -> bool {
 const LANG_KEY: &str = "reelforge.lang";
 /// Where the preview quality is kept between runs (`full` or `smooth`).
 const QUALITY_KEY: &str = "reelforge.preview";
+/// Where the folder the person last exported to is kept between runs.
+#[cfg(not(target_arch = "wasm32"))]
+const EXPORT_DIR_KEY: &str = "reelforge.export_dir";
 /// Where a project with no file and no server is kept ([`EditorApp::with_recovery`]).
 const RECOVERY_KEY: &str = "reelforge.project";
 /// How long after a change the project is kept, in seconds.
@@ -5195,6 +5219,8 @@ impl eframe::App for EditorApp {
             storage.set_string(LANG_KEY, self.lang.code().to_string());
         }
         storage.set_string(QUALITY_KEY, if self.full_quality { "full" } else { "smooth" }.to_string());
+        #[cfg(not(target_arch = "wasm32"))]
+        storage.set_string(EXPORT_DIR_KEY, self.export_dir.display().to_string());
         if self.recovery {
             self.keep_draft(&mut drafts::Kept(storage));
         }
@@ -5202,7 +5228,11 @@ impl eframe::App for EditorApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        if (std::mem::take(&mut self.lang_unsaved) | std::mem::take(&mut self.quality_unsaved))
+        #[cfg(not(target_arch = "wasm32"))]
+        let export_dir_unsaved = std::mem::take(&mut self.export_dir_unsaved);
+        #[cfg(target_arch = "wasm32")]
+        let export_dir_unsaved = false;
+        if (std::mem::take(&mut self.lang_unsaved) | std::mem::take(&mut self.quality_unsaved) | export_dir_unsaved)
             && let Some(storage) = frame.storage_mut()
         {
             self.save(storage);
