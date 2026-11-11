@@ -112,8 +112,10 @@ script.
   and alpha goes its own straight way, so fade with `opacity` rather than to a transparent black);
   the colour adjustments
   `exposure`, `contrast`, `saturation`, `temperature`, `tint`, `highlights`, `shadows`, `fade`,
-  `vignette`; `drawStart` and `drawEnd` on a shape with a stroke (0 to 1 round its outline: from 0
-  to 1, `drawEnd` draws it on); `count` on a title with a counter; `cropLeft`, `cropTop`,
+  `vignette`; `width` and `height` on a shape (pixels; a line has only `width`, its length), and
+  `radius` (`borderRadius`) on a rectangle, a tag or an arrow; on a shape made with a `stroke`,
+  `stroke` (`borderColor`, its colour), `strokeWidth` (`borderWidth`, pixels) and `drawStart` and
+  `drawEnd` (0 to 1 round its outline: from 0 to 1, `drawEnd` draws it on); `count` on a title with a counter; `cropLeft`, `cropTop`,
   `cropRight`, `cropBottom` on a picture. A property a node has not is refused, with those it has.
 - **Paths**: `tl.to(node, { motionPath: [{x, y}, …], duration, ease })` sends a node through those
   points on a smooth curve at an even pace, from where it is (`{path, fromCurrent: false}` starts
@@ -185,9 +187,8 @@ what to write meanwhile (a script that uses one is refused, and told so):
 | GSAP | State | Meanwhile |
 | --- | --- | --- |
 | `skewX`, `skewY` | nothing skews | |
-| `width`, `height` | a shape's size is not keyed | `scaleX`, `scaleY` with a `transformOrigin` |
-| `borderRadius` | a corner is not keyed | |
-| `stroke`, a shadow's colour, a gradient's second colour, a title's box | only a fill's colour and a title's are keyed | cross-fade two nodes |
+| `width`, `height` of a title or a picture | only a shape's box is keyed | `scaleX`, `scaleY` with a `transformOrigin` |
+| a shadow's colour, a gradient's second colour, a title's box | a fill's, a title's and an outline's colour are keyed | cross-fade two nodes |
 | `filter: blur()` and other filters | not keyed | the colour adjustments are; `motionBlur` |
 | `z`, `rotationX/Y` with depth sorting | nodes are drawn in the order made | order them yourself |
 | `SplitText` (characters, words, lines as targets) | a title is one node | `animate` with the editor's character, word and line animations; or one node a word |
