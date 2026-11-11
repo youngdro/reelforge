@@ -20,6 +20,8 @@ pub(crate) struct AgentsWindow {
     pub(crate) open: bool,
     /// Where agents reach this project (`http://127.0.0.1:7878`) and the token they send.
     pub(crate) serving: Option<(String, Option<String>)>,
+    /// Where other computers reach it (`http://192.168.1.4:7878`), when they may.
+    pub(crate) lan: Option<String>,
     pub(crate) host: Option<AgentHost>,
     /// The port being typed.
     pub(crate) port: String,
@@ -34,6 +36,7 @@ impl Default for AgentsWindow {
         AgentsWindow {
             open: false,
             serving: None,
+            lan: None,
             host: None,
             port: PORT.into(),
             others: false,
@@ -49,6 +52,22 @@ fn new_token() -> String {
     let now = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let seed = format!("{now}-{:p}", &now);
     Sha256::digest(seed.as_bytes()).iter().take(12).map(|b| format!("{b:02x}")).collect()
+}
+
+/// Where other computers on the network reach a server on `port` here (`http://192.168.1.4:7878`):
+/// this computer's address on the interface that leads out.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn lan_base(port: u16) -> Option<String> {
+    // connecting a UDP socket sends nothing; it only picks the interface that would be used
+    let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    s.connect("192.0.2.1:9").ok()?;
+    let ip = s.local_addr().ok()?.ip();
+    (!ip.is_unspecified() && !ip.is_loopback()).then(|| format!("http://{}", std::net::SocketAddr::new(ip, port)))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn lan_base(_port: u16) -> Option<String> {
+    None
 }
 
 /// What to paste where, for the server at `base` with `token`: (where it goes, the text).
@@ -84,8 +103,10 @@ impl EditorApp {
 
     /// Says the project is already shared with agents at `base` (`http://127.0.0.1:7878`),
     /// as when the app was started with `--serve`.
-    pub fn with_agents_at(mut self, base: String, token: Option<String>) -> EditorApp {
+    /// `lan` is where other computers reach it, when it listens beyond this one.
+    pub fn with_agents_at(mut self, base: String, token: Option<String>, lan: Option<String>) -> EditorApp {
         self.agents.serving = Some((base, token));
+        self.agents.lan = lan;
         self
     }
 
@@ -120,6 +141,9 @@ impl EditorApp {
                             ui.label(egui::RichText::new(theme::icon::CONNECTED).color(theme::color::ACCENT));
                             ui.label(crate::i18n::fill(s.agents_serving, &[&format!("{base}/mcp")]));
                         });
+                        if let Some(lan) = &self.agents.lan {
+                            ui.label(weak(&crate::i18n::fill(s.agents_lan, &[&format!("{lan}/mcp")])));
+                        }
                         if let Some(t) = token {
                             ui.horizontal(|ui| {
                                 ui.label(weak(s.agents_token));
@@ -212,6 +236,7 @@ impl EditorApp {
             match host(&addr, token.clone()) {
                 Ok(base) => {
                     a.error = None;
+                    a.lan = if a.others { port.parse().ok().and_then(lan_base) } else { None };
                     a.serving = Some((base, token));
                 }
                 Err(e) => a.error = Some(e),

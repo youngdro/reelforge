@@ -28,7 +28,7 @@ sys-locale = { workspace = true }
 web-time = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-eframe = { workspace = true, features = ["x11", "wayland"] }
+eframe = { workspace = true, features = ["x11", "wayland", "clipboard"] }
 cpal = { workspace = true }
 rfd = { workspace = true }
 reelforge-speech = { workspace = true }

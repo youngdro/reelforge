@@ -76,12 +76,21 @@ fn main() -> eframe::Result {
     if let Some(addr) = serve {
         let mut server = HttpServer::bind(hub.clone(), &addr, token.clone()).unwrap_or_else(|e| fail(e));
         let base = base_url(server.local_addr());
+        let lan = server
+            .local_addr()
+            .ip()
+            .is_unspecified()
+            .then(|| reelforge_ui::agents::lan_base(server.local_addr().port()))
+            .flatten();
         eprintln!("reelforge: agents can edit this project over MCP at {base}/mcp");
+        if let Some(lan) = &lan {
+            eprintln!("reelforge: and from other computers at {lan}/mcp");
+        }
         if let Some(dir) = web.clone() {
             eprintln!("reelforge: and people in a browser at {base}/");
             server = server.with_web(dir);
         }
-        app = app.with_status(format!("Agents can edit over MCP at {base}/mcp")).with_agents_at(base, token);
+        app = app.with_status(format!("Agents can edit over MCP at {base}/mcp")).with_agents_at(base, token, lan);
         std::thread::spawn(move || server.run());
     }
     // the agents window starts sharing from inside the app, too
@@ -107,19 +116,10 @@ fn main() -> eframe::Result {
     )
 }
 
-/// The address other programs use for a server bound at `at`: for one bound to every interface,
-/// this computer's address on the local network, which other computers can reach.
+/// The address programs on this computer use for a server bound at `at`.
 #[cfg(not(target_arch = "wasm32"))]
 fn base_url(at: std::net::SocketAddr) -> String {
-    let ip = if at.ip().is_unspecified() {
-        // connecting a UDP socket sends nothing; it only picks the interface that would be used
-        std::net::UdpSocket::bind("0.0.0.0:0")
-            .and_then(|s| s.connect("192.0.2.1:9").and_then(|_| s.local_addr()))
-            .map(|a| a.ip())
-            .unwrap_or(std::net::Ipv4Addr::LOCALHOST.into())
-    } else {
-        at.ip()
-    };
+    let ip = if at.ip().is_unspecified() { std::net::Ipv4Addr::LOCALHOST.into() } else { at.ip() };
     format!("http://{}", std::net::SocketAddr::new(ip, at.port()))
 }
 
