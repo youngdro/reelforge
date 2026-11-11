@@ -160,6 +160,23 @@ Building a group again replaces its clips, so changes made to them by hand are l
 to keep them. A script whose clips are all deleted is forgotten. Copies of its clips are ordinary
 clips.
 
+## Presets
+
+A script with the values it was given can be kept to use again. In the editor, **Save as Preset**
+under a script's parameters keeps it in **My Presets** (the Stickers tab, under Promo), which every
+project on that computer or browser shows; click one to add it at the playhead, or drag it onto the
+timeline. Agents keep presets with the project:
+
+| Command | |
+| --- | --- |
+| `preset.save {group}` or `preset.save {source, params?, name?, seed?, duration?}` | Keeps the script that built a group, with its values, or the script given. |
+| `preset.list`, `preset.get {preset}` | The project's presets; one whole, with its source. `preset` is an id (`p12`) or a name. |
+| `preset.apply {preset, start?, params?, duration?, seed?}` | Builds it as `script.add` would; `params` go over the saved values, `null` takes the default. |
+| `preset.set {preset, name}`, `preset.remove {preset}` | Renames or forgets one; what it built stays. |
+
+Only the values given are kept: a parameter left at its default follows the script, so a colour
+the script takes from elsewhere is not frozen at the one of the day it was saved.
+
 ## Not yet
 
 A script can only tween what the editor can key. What GSAP can say and a script cannot yet, with

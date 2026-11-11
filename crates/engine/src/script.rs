@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use reelforge_model::{ClipContent, Ease, Key, Project, Prop, Script, TrackKind, anim};
+use reelforge_model::{ClipContent, Ease, Key, Preset, Project, Prop, Script, TrackKind, anim};
 use reelforge_script::{Built, Input, KeyOut};
 use reelforge_time::Tick;
 use serde_json::{Value, json};
@@ -405,5 +405,126 @@ pub(crate) fn script_detach(s: &mut Session, v: &Value) -> CmdResult {
         let clips: Vec<String> = clips_of(proj, &group).into_iter().map(|c| c.1).collect();
         crate::compound::tidy_groups(proj);
         Ok(json!({ "group": group, "clips": clips }))
+    })
+}
+
+/// What a preset is shown as: everything but its source, unless `whole`.
+fn preset_out(p: &Preset, whole: bool) -> Value {
+    let mut out = json!({
+        "preset": p.id,
+        "name": p.script.name,
+        "params": p.script.params,
+        "declared": p.script.declared,
+        "seed": p.script.seed,
+        "duration": p.script.duration,
+    });
+    if whole {
+        out["source"] = json!(p.script.source);
+    }
+    out
+}
+
+fn preset_of<'a>(proj: &'a Project, p: &P) -> Result<&'a Preset, EngineError> {
+    let id = p.str("preset")?;
+    proj.presets.iter().find(|x| x.id == id || x.script.name == id).ok_or_else(|| {
+        let have: Vec<String> = proj.presets.iter().map(|x| format!("{} ({})", x.id, x.script.name)).collect();
+        EngineError::Params(format!(
+            "no preset {id:?}; {}",
+            if have.is_empty() { "the project has none".to_string() } else { format!("there are {}", have.join(", ")) }
+        ))
+    })
+}
+
+/// `preset.save`: keeps a motion script to use again, from a group a script built or from source.
+pub(crate) fn preset_save(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let mut script = if v.get("group").is_some() {
+        if v.get("source").is_some() {
+            return Err(EngineError::Params("give `group` or `source`, not both".into()));
+        }
+        script_of(&s.project, v, fps(s))?.1.clone()
+    } else {
+        let source = source(&p)?;
+        let declared = reelforge_script::declared(&source).map_err(|e| refused(&e))?;
+        let params = values(v)?;
+        if let Some(k) = params.keys().find(|k| !declared.contains_key(*k)) {
+            return Err(EngineError::Params(format!("the script declares no parameter {k:?}")));
+        }
+        Script {
+            name: String::new(),
+            source,
+            params,
+            declared: declared.into_iter().collect(),
+            seed: seed(&p)?.unwrap_or(1),
+            duration: length(&p)?,
+        }
+    };
+    if let Some(name) = p.opt_str("name")? {
+        script.name = name.trim().to_string();
+    }
+    if script.name.is_empty() {
+        script.name = format!("Preset {}", s.project.presets.len() + 1);
+    }
+    s.edit("Save Preset", |proj| {
+        let id = proj.mint("p");
+        let preset = Preset { id, script };
+        let out = preset_out(&preset, false);
+        proj.presets.push(preset);
+        Ok(out)
+    })
+}
+
+/// `preset.list`.
+pub(crate) fn preset_list(s: &mut Session, _: &Value) -> CmdResult {
+    Ok(json!({ "presets": s.project.presets.iter().map(|p| preset_out(p, false)).collect::<Vec<_>>() }))
+}
+
+/// `preset.get`.
+pub(crate) fn preset_get(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    Ok(preset_out(preset_of(&s.project, &p)?, true))
+}
+
+/// `preset.apply`: builds a preset as `script.add` would, its saved values under those given.
+pub(crate) fn preset_apply(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let mut script = preset_of(&s.project, &p)?.script.clone();
+    script.params.extend(values(v)?);
+    script.params.retain(|_, value| !value.is_null());
+    if let Some(n) = seed(&p)? {
+        script.seed = n;
+    }
+    if let Some(d) = length(&p)? {
+        script.duration = Some(d);
+    }
+    let start = p.opt_time("start")?.unwrap_or(Tick::ZERO);
+    if start < Tick::ZERO {
+        return Err(EngineError::Params("`start` must not be negative".into()));
+    }
+    one_step(s, "Apply Preset", |s| build(s, script, None, start, 0))
+}
+
+/// `preset.set`: renames a preset.
+pub(crate) fn preset_set(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = preset_of(&s.project, &p)?.id.clone();
+    let name = p.str("name")?.trim().to_string();
+    if name.is_empty() {
+        return Err(EngineError::Params("`name` is empty".into()));
+    }
+    s.edit("Rename Preset", |proj| {
+        let preset = proj.presets.iter_mut().find(|x| x.id == id).ok_or_else(|| not_found("preset", &id))?;
+        preset.script.name = name;
+        Ok(preset_out(preset, false))
+    })
+}
+
+/// `preset.remove`.
+pub(crate) fn preset_remove(s: &mut Session, v: &Value) -> CmdResult {
+    let p = P::new(v, fps(s));
+    let id = preset_of(&s.project, &p)?.id.clone();
+    s.edit("Remove Preset", |proj| {
+        proj.presets.retain(|x| x.id != id);
+        Ok(json!({ "preset": id }))
     })
 }
