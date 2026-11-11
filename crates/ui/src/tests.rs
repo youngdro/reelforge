@@ -1397,3 +1397,17 @@ fn scrolling_over_the_picture_moves_it_and_keeps_some_of_it_in_sight() {
     }
     assert_eq!(app.pan, before);
 }
+
+#[test]
+fn a_script_s_colour_parameter_is_read_for_the_picker_where_it_can_be() {
+    use crate::script_rgb;
+    assert_eq!(script_rgb(&json!("#ff3b5c")), Some([255, 59, 92]));
+    assert_eq!(script_rgb(&json!("#F00")), Some([255, 0, 0]));
+    assert_eq!(script_rgb(&json!("#11223344")), Some([17, 34, 51]));
+    assert_eq!(script_rgb(&json!([1.0, 0.5, 0.0, 1.0])), Some([255, 128, 0]));
+    // a name or a function is left to be typed
+    assert_eq!(
+        (script_rgb(&json!("gold")), script_rgb(&json!("rgb(1, 2, 3)")), script_rgb(&json!("#12"))),
+        (None, None, None)
+    );
+}

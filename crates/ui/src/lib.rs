@@ -351,6 +351,36 @@ struct Inspector {
     voice: Option<VoiceEdit>,
     /// A ready-made piece folded into one clip: its words, its lines and its number.
     piece: Option<PieceEdit>,
+    /// A clip a motion script made: the script's parameters.
+    script: Option<ScriptEdit>,
+}
+
+/// A motion script's parameters, as the inspector edits them.
+#[derive(Clone, PartialEq)]
+struct ScriptEdit {
+    /// The group the script built.
+    group: String,
+    /// The script's own name, if it has one.
+    name: String,
+    /// Each parameter: its name, what the script declared of it, and its value.
+    params: Vec<(String, Value, Value)>,
+}
+
+/// A colour a script's parameter holds, where the picker can show it: `#rgb`, `#rrggbb` (and with
+/// alpha, which is kept out of the picker), or `[r, g, b]` with each from 0 to 1.
+fn script_rgb(v: &Value) -> Option<[u8; 3]> {
+    if let Some(list) = v.as_array() {
+        let part = |i: usize| list.get(i).and_then(Value::as_f64).map(|x| (x.clamp(0.0, 1.0) * 255.0).round() as u8);
+        return Some([part(0)?, part(1)?, part(2)?]);
+    }
+    let hex = v.as_str()?.trim().strip_prefix('#')?;
+    let wide: String = match hex.len() {
+        3 | 4 => hex.chars().flat_map(|c| [c, c]).collect(),
+        6 | 8 => hex.to_string(),
+        _ => return None,
+    };
+    let part = |i: usize| u8::from_str_radix(wide.get(i..i + 2)?, 16).ok();
+    Some([part(0)?, part(2)?, part(4)?])
 }
 
 /// A ready-made piece's words and number, as the inspector edits them.
@@ -3282,6 +3312,18 @@ impl EditorApp {
                 cutout: clip.look.cutout,
                 shadow: clip.look.shadow,
             }),
+            script: clip.group.as_ref().and_then(|g| Some((g, p.scripts.get(g)?))).map(|(group, script)| ScriptEdit {
+                group: group.clone(),
+                name: script.name.clone(),
+                params: script
+                    .declared
+                    .iter()
+                    .map(|(name, spec)| {
+                        let value = script.params.get(name).or(spec.get("default")).cloned().unwrap_or(Value::Null);
+                        (name.clone(), spec.clone(), value)
+                    })
+                    .collect(),
+            }),
             piece: reelforge_engine::made_of(&p, &id).and_then(|(_, made)| {
                 let (i, promo) = reelforge_engine::PROMOS.iter().enumerate().find(|(_, x)| x.id == made.kind)?;
                 Some(PieceEdit {
@@ -3459,6 +3501,132 @@ impl EditorApp {
             (cmd, json!({"clip": id, "prop": prop.name(), "at": at}))
         };
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            if let Some(script) = &mut edit.script {
+                // a motion script's clip: the script's parameters, and the group is built again
+                let title = if script.name.is_empty() { s.script_section } else { script.name.as_str() };
+                theme::section(ui, title, |ui| {
+                    let mut told = serde_json::Map::new();
+                    egui::Grid::new("script").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                        for (name, spec, value) in &mut script.params {
+                            let label = spec.get("label").and_then(Value::as_str).unwrap_or(name.as_str()).to_string();
+                            let kind = spec.get("type").and_then(Value::as_str).unwrap_or("text");
+                            let mut changed = false;
+                            match kind {
+                                "number" => {
+                                    let mut v = value.as_f64().unwrap_or(0.0) as f32;
+                                    let lo = spec.get("min").and_then(Value::as_f64).map_or(-1e9, |x| x as f32);
+                                    let hi = spec.get("max").and_then(Value::as_f64).map_or(1e9, |x| x as f32);
+                                    let step = spec.get("step").and_then(Value::as_f64).unwrap_or(1.0);
+                                    if row(ui, &label, &mut v, step, lo..=hi.max(lo), "") {
+                                        *value = json!(v);
+                                        changed = true;
+                                    } else if value.as_f64().map(|x| x as f32) != Some(v) {
+                                        // dragged, not let go yet: shown, not sent
+                                        *value = json!(v);
+                                    }
+                                }
+                                "boolean" => {
+                                    theme::field_name(ui, &label);
+                                    let mut on = value.as_bool().unwrap_or(false);
+                                    if ui.checkbox(&mut on, "").changed() {
+                                        *value = json!(on);
+                                        changed = true;
+                                    }
+                                    ui.end_row();
+                                }
+                                "color" if script_rgb(value).is_some() => {
+                                    theme::field_name(ui, &label);
+                                    let mut rgb = script_rgb(value).unwrap_or([255; 3]);
+                                    if ui.color_edit_button_srgb(&mut rgb).changed() {
+                                        *value = json!(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]));
+                                        changed = true;
+                                    }
+                                    ui.end_row();
+                                }
+                                "select" => {
+                                    theme::field_name(ui, &label);
+                                    let shown = |v: &Value| v.as_str().map_or_else(|| v.to_string(), str::to_string);
+                                    let options =
+                                        spec.get("options").and_then(Value::as_array).cloned().unwrap_or_default();
+                                    let was = value.clone();
+                                    egui::ComboBox::from_id_salt(("script", name.as_str()))
+                                        .selected_text(shown(value))
+                                        .width(ui.available_width())
+                                        .truncate()
+                                        .show_ui(ui, |ui| {
+                                            for o in &options {
+                                                ui.selectable_value(value, o.clone(), shown(o));
+                                            }
+                                        });
+                                    changed = *value != was;
+                                    ui.end_row();
+                                }
+                                "list" => {
+                                    theme::field_name(ui, &label);
+                                    let rows: Vec<String> = value
+                                        .as_array()
+                                        .map(|l| {
+                                            l.iter()
+                                                .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string))
+                                                .collect()
+                                        })
+                                        .unwrap_or_default();
+                                    let mut text = rows.join("\n");
+                                    let r = ui.add(
+                                        egui::TextEdit::multiline(&mut text)
+                                            .desired_rows(rows.len().clamp(2, 6))
+                                            .desired_width(f32::INFINITY),
+                                    );
+                                    if r.changed() {
+                                        let lines: Vec<&str> = text.lines().collect();
+                                        *value = json!(lines);
+                                    }
+                                    changed = r.lost_focus();
+                                    ui.end_row();
+                                }
+                                _ => {
+                                    theme::field_name(ui, &label);
+                                    let mut text = value.as_str().map_or_else(|| value.to_string(), str::to_string);
+                                    let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(f32::INFINITY));
+                                    if r.changed() {
+                                        *value = json!(text);
+                                    }
+                                    changed = r.lost_focus();
+                                    ui.end_row();
+                                }
+                            }
+                            let before =
+                                current.script.as_ref().and_then(|c| c.params.iter().find(|(n, ..)| n == name));
+                            if changed && before.is_some_and(|(_, _, was)| was != value) {
+                                // a list is sent without the rows left empty
+                                let sent = match value.as_array() {
+                                    Some(l) if kind == "list" => {
+                                        json!(
+                                            l.iter()
+                                                .filter(|v| v.as_str().is_none_or(|t| !t.trim().is_empty()))
+                                                .collect::<Vec<_>>()
+                                        )
+                                    }
+                                    _ => value.clone(),
+                                };
+                                told.insert(name.clone(), sent);
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button(s.script_rebuild).clicked() {
+                            actions.push(("script.setParams", json!({"group": script.group})));
+                        }
+                        if ui.button(s.script_detach).on_hover_text(s.script_detach_tip).clicked() {
+                            actions.push(("script.detach", json!({"group": script.group})));
+                        }
+                    });
+                    ui.label(egui::RichText::new(s.script_tip).small().color(theme::color::WEAK));
+                    if !told.is_empty() {
+                        actions.push(("script.setParams", json!({"group": script.group, "params": told})));
+                    }
+                });
+            }
             if let Some(piece) = &mut edit.piece {
                 // a ready-made piece: its words are given here, and it is made again to fit them
                 let was = current.piece.as_ref();
@@ -4581,6 +4749,20 @@ impl EditorApp {
                 self.status = self.s().steady_watching.to_string();
                 self.later = Some((2, cmd, params));
                 ui.ctx().request_repaint();
+            } else if cmd == "script.setParams" {
+                // the group's clips are made again: the one of the same node stays selected
+                let group = params["group"].as_str().unwrap_or_default().to_string();
+                let nth = p
+                    .tracks
+                    .iter()
+                    .flat_map(|t| &t.clips)
+                    .filter(|c| c.group.as_deref() == Some(&group))
+                    .position(|c| c.id == id);
+                if let Ok(out) = self.execute(cmd, params) {
+                    let again = nth.and_then(|i| out["clips"].get(i)).or(out["clips"].get(0));
+                    self.selected = again.and_then(|c| c["clip"].as_str()).map(str::to_string);
+                    self.inspector = None;
+                }
             } else {
                 let _ = self.execute(cmd, params);
             }
