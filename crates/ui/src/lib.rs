@@ -23,6 +23,7 @@
 //! ([`EditorApp::with_recovery`], `drafts`). A narrow window (a phone held upright) shows one panel
 //! at a time under the preview.
 
+pub mod agents;
 mod ahead;
 mod assets;
 mod audio;
@@ -132,6 +133,7 @@ pub struct EditorApp {
     export_open: bool,
     /// The canvas settings.
     canvas: canvas::CanvasEdit,
+    agents: agents::AgentsWindow,
     /// The panel on the left: media, sounds, titles.
     assets: assets::AssetPanel,
     /// The SubRip file being picked is a second language's (asked from the captions list).
@@ -488,6 +490,7 @@ impl EditorApp {
             voice: Arc::default(),
             export_open: false,
             canvas: canvas::CanvasEdit::default(),
+            agents: agents::AgentsWindow::default(),
             assets: assets::AssetPanel::default(),
             second_captions: false,
             timelines_open: false,
@@ -2272,6 +2275,7 @@ impl EditorApp {
             Entry::new(icon::ZOOM_OUT, plain(s.zoom_out_tip), "−", Run::ZoomOut),
             Entry::new(icon::SCREEN, plain(s.preview_only_tip), "F", Run::PreviewOnly),
             Entry::new(icon::SEARCH, s.hint_keys, "?", Run::Keys),
+            Entry::new(icon::AGENT, s.agents_title, "", Run::Agents),
         ]);
         for m in &p.markers {
             let at = theme::timecode(m.at.seconds());
@@ -2328,6 +2332,7 @@ impl EditorApp {
             Run::ZoomOut => self.timeline.zoom(1.0 / 1.5),
             Run::PreviewOnly => self.preview_only = !self.preview_only,
             Run::Keys => self.keys_open = true,
+            Run::Agents => self.agents.open = true,
             Run::Seek(t) => self.seek(t.min(self.project().duration())),
             Run::Media(id) => self.add_item(&assets::Item::Media(id), self.playhead, None),
             Run::Clip(id, at) => {
@@ -2419,6 +2424,14 @@ impl EditorApp {
                 let keys = if narrow { String::new() } else { i18n::keys(ui.ctx(), "Ctrl+K") };
                 if theme::tool(ui, icon::SEARCH, &keys, s.palette_tip, true).clicked() {
                     self.palette.toggle();
+                }
+                ui.add_space(4.0);
+                // who else edits: agents connect here
+                let on = self.agents.serving.is_some() || self.remote.is_some();
+                let agent = egui::RichText::new(icon::AGENT).size(14.0);
+                let agent = if on { agent.color(theme::color::ACCENT) } else { agent };
+                if ui.add(egui::Button::new(agent)).on_hover_text(s.agents_tip).clicked() {
+                    self.agents.open = !self.agents.open;
                 }
                 ui.add_space(4.0);
                 let mut lang = self.lang;
@@ -5307,6 +5320,7 @@ impl eframe::App for EditorApp {
         self.take_dropped_files(&ctx);
         self.export_window(&ctx);
         self.canvas_window(&ctx);
+        self.agents_window(&ctx);
         self.timelines_window(&ctx);
         self.spoken_window(&ctx);
         self.keys_window(&ctx);

@@ -26,6 +26,8 @@ pub(crate) enum Run {
     PreviewOnly,
     /// The list of keys.
     Keys,
+    /// Connecting agents.
+    Agents,
     Seek(Tick),
     /// Place this file at the playhead.
     Media(String),
