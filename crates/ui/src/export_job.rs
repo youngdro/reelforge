@@ -1,7 +1,8 @@
 //! Export: the settings dialog, and the job that writes the file. The RenderSpec is compiled on the
 //! UI thread (a snapshot, so later edits do not change a running export).
 //!
-//! On the desktop a worker thread draws and encodes H.264 and writes an MP4 beside the project. In
+//! On the desktop the person picks where the file goes (a save dialog that starts in the folder they
+//! saved to last), and a worker thread draws and encodes H.264 and writes the MP4 there. In
 //! the browser the job runs between frames of the page: frames are drawn on the CPU and encoded by
 //! the browser's own encoder (WebCodecs, in hardware where there is one: H.264, HEVC or AV1, with
 //! FilmCraft's H.264 when the browser has none), and the MP4 is downloaded.
@@ -58,6 +59,25 @@ pub(crate) enum What {
     Frame(Tick),
 }
 
+/// Where the save dialog starts before the person has picked a folder: Movies on a Mac, Videos
+/// where there is one, else the home folder. Not the working folder: an app opened from the Finder
+/// runs in `/`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn default_dir() -> std::path::PathBuf {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from);
+    let Some(home) = home.filter(|h| h.is_dir()) else { return std::env::current_dir().unwrap_or_default() };
+    ["Movies", "Videos"].into_iter().map(|d| home.join(d)).find(|d| d.is_dir()).unwrap_or(home)
+}
+
+/// A file name made of a draft's name: without what a file system refuses, `reelforge` if
+/// nothing is left.
+pub(crate) fn file_stem(name: &str) -> String {
+    let cleaned: String =
+        name.chars().map(|c| if c.is_control() || "/\\:*?\"<>|".contains(c) { '-' } else { c }).collect();
+    let cleaned = cleaned.trim().trim_matches('.').trim();
+    if cleaned.is_empty() { "reelforge".to_string() } else { cleaned.to_string() }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use std::path::{Path, PathBuf};
@@ -71,9 +91,48 @@ mod native {
 
     use super::{CANCELLED, ExportJob, What};
 
-    /// The first `reelforge-N.<ext>` in `dir` that does not exist yet.
-    fn free_name(dir: &Path, ext: &str) -> PathBuf {
-        (1..).map(|n| dir.join(format!("reelforge-{n}.{ext}"))).find(|p| !p.exists()).expect("some name is free")
+    /// The first of `<stem>.<ext>`, `<stem>-2.<ext>`, … in `dir` that does not exist yet: what the
+    /// save dialog suggests.
+    pub(crate) fn free_name(dir: &Path, stem: &str, ext: &str) -> PathBuf {
+        std::iter::once(dir.join(format!("{stem}.{ext}")))
+            .chain((2..).map(|n| dir.join(format!("{stem}-{n}.{ext}"))))
+            .find(|p| !p.exists())
+            .expect("some name is free")
+    }
+
+    /// `path` ending in `.<ext>`: a name typed without it gets it, so the file opens as what it is.
+    pub(crate) fn with_ext(path: PathBuf, ext: &str) -> PathBuf {
+        let has = path.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext));
+        if has {
+            return path;
+        }
+        let mut name = path.file_name().unwrap_or_default().to_os_string();
+        name.push(format!(".{ext}"));
+        path.with_file_name(name)
+    }
+
+    /// The extension of the file `what` writes for `p`.
+    pub(crate) fn extension(p: &Project, what: What) -> &'static str {
+        match what {
+            What::Frame(_) => "png",
+            What::Timeline => p.export.format.name(),
+        }
+    }
+
+    /// Shows `path` in the file manager: selected in the Finder on a Mac, in Explorer on Windows,
+    /// its folder elsewhere.
+    pub(crate) fn reveal(path: &Path) -> std::io::Result<()> {
+        use std::process::Command;
+        if cfg!(target_os = "macos") {
+            Command::new("open").arg("-R").arg(path).spawn()?;
+        } else if cfg!(target_os = "windows") {
+            let mut arg = std::ffi::OsString::from("/select,");
+            arg.push(path);
+            Command::new("explorer").arg(arg).spawn()?;
+        } else {
+            Command::new("xdg-open").arg(path.parent().unwrap_or(Path::new("."))).spawn()?;
+        }
+        Ok(())
     }
 
     /// `path` with `.part` after its name: where a file is written until it is whole.
@@ -96,13 +155,14 @@ mod native {
         if missing.is_empty() { Ok(()) } else { Err(format!("cannot export yet: {}", missing.join(", "))) }
     }
 
-    pub(super) fn start(p: &Project, dir: &Path, what: What) -> Result<ExportJob, String> {
+    /// Writes what `what` asks for to `out` (and a video's cover beside it).
+    pub(super) fn start(p: &Project, out: &Path, what: What) -> Result<ExportJob, String> {
+        let out = out.to_path_buf();
         // the timeline as it is drawn, without encode settings: for a frame, and for the cover
         let frames = || compile(p, &CompileOptions { encode: false }).map_err(|e| e.to_string());
         if let What::Frame(t) = what {
             let spec = frames()?;
             supported(&spec)?;
-            let out = free_name(dir, "png");
             let job = ExportJob::new(out.display().to_string());
             let (done, result) = (job.done.clone(), job.result.clone());
             std::thread::spawn(move || {
@@ -119,7 +179,6 @@ mod native {
             Some(at) => Some((frames()?, at)),
             None => None,
         };
-        let out = free_name(dir, spec.output.format.extension());
         let job = ExportJob::new(out.display().to_string());
         let (done, total, cancel, result) =
             (job.done.clone(), job.total.clone(), job.cancel.clone(), job.result.clone());
@@ -205,6 +264,7 @@ export function rf_save(name, bytes, mime) {
         ctx: egui::Context,
         mut gpu: Option<GpuCompositor>,
         what: What,
+        stem: &str,
     ) -> Result<ExportJob, String> {
         let supported = |spec: &RenderSpec| {
             let missing = reelforge_render::unsupported_features(spec);
@@ -215,7 +275,7 @@ export function rf_save(name, bytes, mime) {
         if let What::Frame(t) = what {
             let spec = frames()?;
             supported(&spec)?;
-            let job = ExportJob::new("reelforge-frame.png".into());
+            let job = ExportJob::new(format!("{stem}-frame.png"));
             let (done, result, name) = (job.done.clone(), job.result.clone(), job.name.clone());
             wasm_bindgen_futures::spawn_local(async move {
                 let r = picture(&spec, &media, t, StillFormat::Png, &name).await;
@@ -233,10 +293,11 @@ export function rf_save(name, bytes, mime) {
             None => None,
         };
         let format = spec.output.format;
-        let job = ExportJob::new(format!("reelforge.{}", format.extension()));
+        let job = ExportJob::new(format!("{stem}.{}", format.extension()));
         let (done, total, cancel, result) =
             (job.done.clone(), job.total.clone(), job.cancel.clone(), job.result.clone());
         let name = job.name.clone();
+        let cover_name = format!("{stem}.cover.jpg");
         wasm_bindgen_futures::spawn_local(async move {
             let r = async {
                 let how = match format {
@@ -248,7 +309,7 @@ export function rf_save(name, bytes, mime) {
                 };
                 // a video's cover is downloaded after it
                 if let Some((frames, at)) = &cover {
-                    picture(frames, &media, *at, StillFormat::Jpeg, "reelforge.cover.jpg").await?;
+                    picture(frames, &media, *at, StillFormat::Jpeg, &cover_name).await?;
                 }
                 Ok(how)
             }
@@ -494,6 +555,54 @@ fn encodes(c: Codec) -> bool {
 }
 
 impl EditorApp {
+    /// What exported files are called: the draft's name.
+    fn export_stem(&self) -> String {
+        file_stem(self.drafts.as_ref().and_then(|d| d.current()).map_or("", |d| d.name.as_str()))
+    }
+
+    /// "Show in Finder" beside the status, while it tells of a finished export.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn reveal_button(&mut self, ui: &mut egui::Ui) {
+        let Some((said, path)) = &self.last_export else { return };
+        if *said != self.status {
+            return;
+        }
+        let s = self.s();
+        let label = if cfg!(target_os = "macos") { s.export_reveal_finder } else { s.export_reveal };
+        let r = ui
+            .add(egui::Button::new(egui::RichText::new(label).small().color(theme::color::ACCENT_2)).frame(false))
+            .on_hover_text(path.display().to_string());
+        if r.clicked()
+            && let Err(e) = native::reveal(path)
+        {
+            self.status = format!("{}: {e}", path.display());
+        }
+    }
+
+    /// Asks where to save what `what` writes; `None` when the person closes the dialog. The
+    /// folder picked is where the dialog starts next time.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn ask_where(&mut self, p: &Project, what: What) -> Option<std::path::PathBuf> {
+        let ext = native::extension(p, what);
+        let stem = match what {
+            What::Timeline => self.export_stem(),
+            What::Frame(_) => format!("{}-frame", self.export_stem()),
+        };
+        let suggested = native::free_name(&self.export_dir, &stem, ext);
+        let picked = rfd::FileDialog::new()
+            .set_title(self.s().export_save_title)
+            .add_filter(ext.to_uppercase(), &[ext])
+            .set_directory(&self.export_dir)
+            .set_file_name(suggested.file_name().unwrap_or_default().to_string_lossy())
+            .save_file()?;
+        let out = native::with_ext(picked, ext);
+        if let Some(dir) = out.parent().filter(|d| d.is_dir()) {
+            self.export_dir = dir.to_path_buf();
+            self.export_dir_unsaved = true;
+        }
+        Some(out)
+    }
+
     /// The Export button, or the progress of a running export.
     pub(crate) fn export_controls(&mut self, ui: &mut egui::Ui, p: &Project) {
         if let Some(job) = &self.export {
@@ -501,6 +610,10 @@ impl EditorApp {
             match finished {
                 Some(Ok(how)) => {
                     self.status = format!("{} · {how}", fill(self.s().exported, &[&job.name]));
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        self.last_export = Some((self.status.clone(), std::path::PathBuf::from(&job.name)));
+                    }
                     self.export = None;
                 }
                 Some(Err(e)) if e == CANCELLED => {
@@ -696,6 +809,12 @@ impl EditorApp {
                 if let Some(note) = note {
                     ui.label(egui::RichText::new(note).small().color(theme::color::WEAK));
                 }
+                #[cfg(not(target_arch = "wasm32"))]
+                ui.label(
+                    egui::RichText::new(fill(s.export_where, &[&self.export_dir.display()]))
+                        .small()
+                        .color(theme::color::WEAK),
+                );
                 let encodes = !video || encodes(e.codec);
                 if !encodes {
                     ui.label(egui::RichText::new(s.export_codec_web_only).small().color(theme::color::WARN));
@@ -721,10 +840,13 @@ impl EditorApp {
         if let Some(v) = cover {
             let _ = self.execute("project.setCover", v);
         }
+        // on the desktop, where it goes; the settings stay open when the dialog is closed
+        #[cfg(not(target_arch = "wasm32"))]
+        let go = go.and_then(|what| self.ask_where(&p, what).map(|out| (what, out)));
         self.export_open = open && go.is_none();
-        if let Some(what) = go {
+        if let Some(go) = go {
             #[cfg(not(target_arch = "wasm32"))]
-            let started = native::start(&p, &self.export_dir, what);
+            let started = native::start(&p, &go.1, go.0);
             // the preview's device draws the frames where it can convert them to 4:2:0 (WebGPU)
             #[cfg(target_arch = "wasm32")]
             let started = web::start(
@@ -732,7 +854,8 @@ impl EditorApp {
                 self.media.clone(),
                 ctx.clone(),
                 self.gpu.as_ref().map(|g| g.compositor.sibling()).filter(|g| g.converts_yuv()),
-                what,
+                go,
+                &self.export_stem(),
             );
             match started {
                 Ok(job) => self.export = Some(job),
@@ -762,6 +885,27 @@ mod tests {
     }
 
     #[test]
+    fn the_save_dialog_suggests_a_free_name_from_the_draft_and_keeps_the_extension() {
+        assert_eq!(super::file_stem("Beach cut"), "Beach cut");
+        assert_eq!(super::file_stem("a/b: c?"), "a-b- c-");
+        assert_eq!(super::file_stem("  ..  "), "reelforge");
+        assert_eq!(super::file_stem(""), "reelforge");
+
+        let dir = std::env::temp_dir().join(format!("reelforge-export-names-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(native::free_name(&dir, "Beach", "mp4"), dir.join("Beach.mp4"));
+        std::fs::write(dir.join("Beach.mp4"), b"").unwrap();
+        std::fs::write(dir.join("Beach-2.mp4"), b"").unwrap();
+        assert_eq!(native::free_name(&dir, "Beach", "mp4"), dir.join("Beach-3.mp4"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(native::with_ext(dir.join("cut"), "mp4"), dir.join("cut.mp4"));
+        assert_eq!(native::with_ext(dir.join("cut.MP4"), "mp4"), dir.join("cut.MP4"));
+        assert_eq!(native::with_ext(dir.join("v1.2"), "gif"), dir.join("v1.2.gif"));
+        assert!(super::default_dir().is_absolute() || super::default_dir().as_os_str().is_empty());
+    }
+
+    #[test]
     fn a_job_writes_the_kind_of_file_asked_for_with_the_cover_beside_pictures() {
         let dir = std::env::temp_dir().join(format!("reelforge-export-job-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -773,14 +917,16 @@ mod tests {
         s.execute("project.setCover", &json!({"at": {"frame": 2}})).unwrap();
 
         // the frame under the playhead: a PNG at the canvas's size, whatever the format
-        let (name, how) = wait(native::start(&s.project(), &dir, What::Frame(Tick::ZERO)).unwrap());
+        let (name, how) =
+            wait(native::start(&s.project(), &dir.join("reelforge-1.png"), What::Frame(Tick::ZERO)).unwrap());
         assert_eq!((name.ends_with("reelforge-1.png"), how.as_deref()), (true, Ok("64×64")));
         assert_eq!(&std::fs::read(dir.join("reelforge-1.png")).unwrap()[1..4], b"PNG");
 
         let mut kinds = Vec::new();
         for f in [Format::Gif, Format::Wav, Format::M4a] {
             s.execute("project.setExport", &json!({"format": f.name()})).unwrap();
-            let (name, how) = wait(native::start(&s.project(), &dir, What::Timeline).unwrap());
+            let out = dir.join(format!("reelforge-1.{}", f.name()));
+            let (name, how) = wait(native::start(&s.project(), &out, What::Timeline).unwrap());
             assert!(name.ends_with(&format!("reelforge-1.{}", f.name())), "{name}");
             kinds.push(how.unwrap());
             assert!(!dir.join(format!("reelforge-1.{}.part", f.name())).exists());
