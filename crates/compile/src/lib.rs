@@ -324,6 +324,7 @@ fn lower_tracks(
                             }),
                             trim: trim.map(|[start, end]| Trim { start, end }),
                             fill_opacity,
+                            fill_color: motion::color(clip, &shape, step).filter(|_| sh.fill.is_some()),
                         }))
                     }
                     // its timeline's picture, from where the clip starts in it
@@ -332,6 +333,7 @@ fn lower_tracks(
                     }
                     ClipContent::Adjustment => unreachable!("an adjustment clip is not a picture"),
                     ClipContent::Text { text, size, color, style } => LayerContent::Text(Box::new(TextContent {
+                        color_keys: motion::color(clip, &shape, step),
                         weight: style.weight,
                         align: match style.align {
                             TitleAlign::Left => TextAlign::Left,
@@ -910,6 +912,7 @@ fn light_leak(clip: &str, at: Tick, half: Tick, canvas: [f32; 2]) -> Vec<Layer> 
                     shadow: None,
                     trim: None,
                     fill_opacity: None,
+                    fill_color: None,
                 })),
                 transform: Transform {
                     position: Animated::Keys(vec![
@@ -1116,6 +1119,37 @@ mod tests {
         let spec = compile(&p, &CompileOptions::default()).unwrap();
         assert!(spec.layers[0].shape_mask.is_none() && spec.layers[1].shape_mask.is_some());
         assert!(spec.layers[1].shape_mask_keys.is_some());
+    }
+
+    #[test]
+    fn a_title_s_or_a_fill_s_keyed_colour_is_keys_on_its_layer() {
+        use reelforge_model::{Key as ModelKey, Prop};
+        let mut p = Project::default();
+        let text = ClipContent::Text {
+            text: "Hi".into(),
+            size: 80.0,
+            color: [1.0, 0.5, 0.0, 1.0],
+            style: TitleStyle::subtitle(),
+        };
+        let mut c = clip("c40", Tick::ZERO, Tick::SECOND, text);
+        p.tracks[1].clips.push(c.clone());
+        let plain = compile(&p, &CompileOptions::default()).unwrap();
+        assert!(!plain.to_json().contains("color_keys") && !plain.required_features().contains("text.color/1"));
+        c.keys.insert(
+            Prop::ColorR,
+            vec![
+                ModelKey { t: Tick::ZERO, v: 1.0, ease: Default::default() },
+                ModelKey { t: Tick::SECOND, v: 0.0, ease: Default::default() },
+            ],
+        );
+        p.tracks[1].clips[0] = c;
+        let spec = compile(&p, &CompileOptions::default()).unwrap();
+        assert!(spec.required_features().contains("text.color/1"));
+        let LayerContent::Text(t) = &spec.layers[0].content else { panic!("a title") };
+        let keys = t.color_keys.as_ref().unwrap();
+        // what is not keyed stays the title's own
+        assert_eq!((&keys.g, &keys.a), (&Animated::Constant(0.5), &Animated::Constant(1.0)));
+        assert_eq!(keys.sample(Tick::from_seconds(0.5)).0, [0.5, 0.5, 0.0, 1.0]);
     }
 
     #[test]

@@ -458,6 +458,10 @@ fn plan_layers(
             LayerContent::Solid { color } => (PlannedSource::Solid(premultiply_srgb(color.0)), Fit::Stretch),
             LayerContent::Text(text) => {
                 let mut text = text.clone();
+                // its colour is a value of this instant: written into the words
+                if let Some(keys) = text.color_keys.take() {
+                    text.color = keys.sample(local);
+                }
                 // how much shows is a value of this instant: the sprite is drawn for it
                 if let Some(r) = &text.reveal {
                     text.reveal = Some(Animated::Constant(r.sample(local).clamp(0.0, 1.0)));
@@ -487,6 +491,18 @@ fn plan_layers(
                 }
                 if let Some(o) = &shape.fill_opacity {
                     shape.fill_opacity = Some(Animated::Constant(o.sample(local).clamp(0.0, 1.0)));
+                }
+                // its colour is a value of this instant too: written into its fill
+                if let Some(keys) = shape.fill_color.take() {
+                    let now = keys.sample(local);
+                    match &mut shape.fill {
+                        Some(reelforge_renderspec::Paint::Solid { color }) => *color = now,
+                        Some(
+                            reelforge_renderspec::Paint::Linear { from, .. }
+                            | reelforge_renderspec::Paint::Radial { from, .. },
+                        ) => *from = now,
+                        None => {}
+                    }
                 }
                 (PlannedSource::Shape(shape), Fit::Contain)
             }
@@ -710,6 +726,12 @@ mod tests {
                 end: Animated::Keys(vec![key(0.0, 0.0), key(1.0, 2.0)]),
             }),
             fill_opacity: Some(Animated::Keys(vec![key(0.0, 0.0), key(1.0, 1.0)])),
+            fill_color: Some(reelforge_renderspec::ColorKeys {
+                r: Animated::Keys(vec![key(0.0, 1.0), key(1.0, 0.0)]),
+                g: Animated::Constant(0.5),
+                b: Animated::Constant(0.0),
+                a: Animated::Keys(vec![key(0.0, 0.0), key(1.0, 2.0)]),
+            }),
         }));
         spec.layers.push(shape);
         let plan = plan_frame(&spec, Tick::from_seconds(0.25), 1.0);
@@ -719,6 +741,8 @@ mod tests {
         let trim = s.trim.as_ref().unwrap();
         assert_eq!((&trim.start, &trim.end), (&Animated::Constant(0.0), &Animated::Constant(0.5)));
         assert_eq!(s.fill_opacity, Some(Animated::Constant(0.25)));
+        // its colour as it is at that instant is its fill, each part kept within 0 to 1
+        assert_eq!((&s.fill, &s.fill_color), (&Some(Paint::Solid { color: Color([0.75, 0.5, 0.0, 0.5]) }), &None));
         // a trim past the whole outline is the whole outline
         let plan = plan_frame(&spec, Tick::from_seconds(0.9), 1.0);
         let PlannedSource::Shape(s) = &plan.layers[1].source else { panic!() };

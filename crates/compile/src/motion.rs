@@ -727,6 +727,14 @@ pub fn lower(clip: &Clip, prop: Prop, shape: &Shape, step: Tick) -> Animated<f32
     Animated::Keys(keys.into_iter().map(|(t, e)| Key { t, v: c.value(t), ease: e }).collect())
 }
 
+/// The colour of `clip`'s title or of its shape's fill over time, where it has colour keys.
+pub fn color(clip: &Clip, shape: &Shape, step: Tick) -> Option<reelforge_renderspec::ColorKeys> {
+    Prop::COLOR.iter().any(|p| clip.keyed(*p)).then(|| {
+        let [r, g, b, a] = Prop::COLOR.map(|p| lower(clip, p, shape, step));
+        reelforge_renderspec::ColorKeys { r, g, b, a }
+    })
+}
+
 /// Position `[x, y]` of `clip`'s layer, keyed together.
 pub fn lower_position(clip: &Clip, shape: &Shape, step: Tick) -> Animated<[f32; 2]> {
     lower_pair(clip, [Prop::X, Prop::Y], shape, step)

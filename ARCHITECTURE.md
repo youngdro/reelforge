@@ -141,6 +141,11 @@ In rough priority order for short videos:
    points, walked by length so the speed is even, lowered to keys of position and rotation one per
    frame of the journey). The compiler drops a parent that is missing, hidden or in a ring;
    `reelforge_engine::space` keeps a clip where it shows when its anchor or parent changes.
+   `shape.color/1` (`ShapeContent.fill_color`) and `text.color/1` (`TextContent.color_keys`) key a
+   colour, each part apart (`ColorKeys`; in the project, `Prop::COLOR`: `colorR`, `colorG`,
+   `colorB`, `colorA` of a title's words or of a shape's fill, of a gradient the colour it starts
+   from). The plan writes the colour of the instant into the fill or the words, so neither
+   compositor knows of it.
    `motion.blur/1` (`Layer.motion_blur`, a shutter open for a share of a frame's time) smears a
    layer along its own movement. The plan places the layer at several instants of that time
    (`PlannedLayer.smear`, as many as keep them a couple of pixels apart, `plan::SMEAR` at most,

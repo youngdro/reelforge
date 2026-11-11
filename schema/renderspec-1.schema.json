@@ -553,6 +553,35 @@
       "minItems": 4,
       "type": "array"
     },
+    "ColorKeys": {
+      "additionalProperties": false,
+      "description": "A colour that changes (features `shape.color/1`, `text.color/1`): each part keyed, as the\ncolour itself is written (not premultiplied), 0 to 1.",
+      "properties": {
+        "a": {
+          "$ref": "#/$defs/Animated",
+          "description": "How solid."
+        },
+        "b": {
+          "$ref": "#/$defs/Animated",
+          "description": "Blue."
+        },
+        "g": {
+          "$ref": "#/$defs/Animated",
+          "description": "Green."
+        },
+        "r": {
+          "$ref": "#/$defs/Animated",
+          "description": "Red."
+        }
+      },
+      "required": [
+        "r",
+        "g",
+        "b",
+        "a"
+      ],
+      "type": "object"
+    },
     "Comp": {
       "additionalProperties": false,
       "description": "A composition: an edit inside the edit (a compound clip's timeline). Its picture is as large\nas the output and see-through where no layer draws; its time starts at 0.",
@@ -1025,6 +1054,17 @@
               "$ref": "#/$defs/Color",
               "description": "Fill colour."
             },
+            "color_keys": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ColorKeys"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The fill colour over time, in place of `color` (feature `text.color/1`)."
+            },
             "draw": {
               "anyOf": [
                 {
@@ -1190,6 +1230,17 @@
                 }
               ],
               "description": "What fills it; none leaves only the outline."
+            },
+            "fill_color": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ColorKeys"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The fill's colour over time (feature `shape.color/1`): in place of a solid fill's colour,\nor of the colour a gradient starts from."
             },
             "fill_opacity": {
               "anyOf": [

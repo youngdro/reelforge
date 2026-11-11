@@ -248,6 +248,9 @@ fn layers_ok(spec: &RenderSpec, at: &str, layers: &[crate::Layer]) -> Result<(),
         }
         keys_ok(&format!("{path}.opacity"), &layer.opacity, layer.dur)?;
         if let LayerContent::Text(text) = &layer.content {
+            if let Some(c) = &text.color_keys {
+                color_keys_ok(&format!("{path}.content.color_keys"), c, layer.dur)?;
+            }
             if let Some(r) = &text.reveal {
                 keys_ok(&format!("{path}.content.reveal"), r, layer.dur)?;
             }
@@ -393,6 +396,9 @@ fn shape_ok(path: &str, sh: &crate::ShapeContent, dur: Tick) -> Result<(), Valid
     if let Some(o) = &sh.fill_opacity {
         keys_ok(&format!("{path}.fill_opacity"), o, dur)?;
     }
+    if let Some(c) = &sh.fill_color {
+        color_keys_ok(&format!("{path}.fill_color"), c, dur)?;
+    }
     Ok(())
 }
 
@@ -511,6 +517,13 @@ fn color_ok(path: &str, c: [f32; 4]) -> Result<(), ValidationError> {
     } else {
         Err(bad(path, "each channel must be between 0 and 1"))
     }
+}
+
+pub(crate) fn color_keys_ok(path: &str, c: &crate::ColorKeys, dur: Tick) -> Result<(), ValidationError> {
+    for (name, part) in [("r", &c.r), ("g", &c.g), ("b", &c.b), ("a", &c.a)] {
+        keys_ok(&format!("{path}.{name}"), part, dur)?;
+    }
+    Ok(())
 }
 
 fn keys_ok<T>(path: &str, value: &Animated<T>, dur: Tick) -> Result<(), ValidationError> {
