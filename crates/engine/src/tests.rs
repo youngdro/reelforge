@@ -4691,3 +4691,30 @@ fn a_script_s_nodes_carry_one_another_turn_about_an_origin_and_travel_paths() {
     s.execute("edit.undo", &json!({})).unwrap();
     assert!(s.project().scripts.is_empty());
 }
+
+#[test]
+fn a_script_s_masks_and_animations_are_the_clips_own() {
+    let mut s = Session::default();
+    let src = r#"export function build({ scene, timeline }) {
+        const band = scene.rect({ name: "band", mask: { shape: "rectangle", x: 0, width: 0.01, height: 3 } });
+        scene.text("hello there", { name: "head", animate: { in: { kind: "wordPop", duration: 0.8 } } });
+        timeline().to(band, { maskWidth: 6, duration: 1, ease: "none" });
+    }"#;
+    let out = s.execute("script.add", &json!({"source": src})).unwrap();
+    assert_eq!(s.history().len(), 1);
+    let proj = s.project();
+    let band = proj.clip(out["clips"][0]["clip"].as_str().unwrap()).unwrap().1;
+    let mask = band.look.mask.as_ref().unwrap();
+    assert_eq!((mask.kind, mask.center[0]), (reelforge_model::MaskKind::Rectangle, 0.0));
+    assert_eq!(band.keys[&Prop::MaskWidth].iter().map(|k| k.v).collect::<Vec<_>>(), [0.01, 6.0]);
+    let head = proj.clip(out["clips"][1]["clip"].as_str().unwrap()).unwrap().1;
+    assert!(serde_json::to_string(head).unwrap().contains("wordPop"));
+    // what the clip refuses is said by its node
+    let e = s
+        .execute(
+            "script.check",
+            &json!({"source": "export function build({ scene }) { scene.rect({ name: 'box', animate: { in: 'charRise' } }); }"}),
+        )
+        .unwrap_err();
+    assert!(e.to_string().starts_with("script: box: "), "{e}");
+}

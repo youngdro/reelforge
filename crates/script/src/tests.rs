@@ -248,7 +248,7 @@ fn what_is_wrong_with_a_script_is_said() {
     assert_eq!(err(&body("")), "the script made nothing: call scene.rect, scene.text, … in build");
     assert_eq!(
         err(&body("scene.rect({ widht: 3 });")),
-        "scene.rect: no option `widht`; it takes x, y, scale, rotation, opacity, scaleX, scaleY, rotationX, rotationY, perspective, motionBlur, transformOrigin, origin, parent, name, width, height, radius, points, inner, fill, stroke, shadow, trim"
+        "scene.rect: no option `widht`; it takes x, y, scale, rotation, opacity, scaleX, scaleY, rotationX, rotationY, perspective, motionBlur, transformOrigin, origin, parent, mask, animate, name, width, height, radius, points, inner, fill, stroke, shadow, trim"
     );
     let e = err(&body("const a = scene.rect({ name: 'card' }); timeline().to(a, { wobble: 3 });"));
     assert!(e.starts_with("to: card has no `wobble` to tween; it has x, y, scale, rotation, opacity"), "{e}");
@@ -381,6 +381,36 @@ fn a_node_travels_a_path_from_where_it_is() {
         ("tl.to(a, { motionPath: 'M0,0' });", "`motionPath` is a list of points"),
     ] {
         let e = err(&body(&format!("{one}\n{src}")));
+        assert!(e.contains(said), "{src}: {e}");
+    }
+}
+
+#[test]
+fn a_node_is_masked_and_takes_the_editor_s_own_animations() {
+    let b = go(&body(
+        r#"const band = scene.rect({ mask: { shape: "rectangle", x: 0, width: 0.01, height: 3 } });
+           const head = scene.text("hello there", { mask: "circle", animate: { in: { kind: "charRise", duration: 0.8 }, loop: "wave" } });
+           timeline().to(band, { maskWidth: 6, duration: 1, ease: "none" });"#,
+    ))
+    .unwrap();
+    let steps = |i: usize| -> Vec<Value> { b.nodes[i].after.iter().map(|s| json!([s.command, s.params])).collect() };
+    assert_eq!(steps(0), [json!(["clip.setMask", {"shape": "rectangle", "x": 0, "width": 0.01, "height": 3}])]);
+    assert_eq!(tv(keys(&b, 0, "maskWidth")), [(0.0, 0.01), (1.0, 6.0)]);
+    assert_eq!(
+        steps(1),
+        [
+            json!(["clip.setMask", {"shape": "circle"}]),
+            json!(["clip.setAnimation", {"slot": "in", "kind": "charRise", "duration": {"seconds": 0.8}}]),
+            json!(["clip.setAnimation", {"slot": "loop", "kind": "wave"}]),
+        ]
+    );
+    for (src, said) in [
+        ("scene.rect({ mask: { x: 1 } });", "`mask` is a shape's name, or"),
+        ("scene.rect({ mask: { shape: 'circle', blur: 1 } });", "mask has no `blur`"),
+        ("scene.rect({ animate: { middle: 'pop' } });", "animate has no `middle`"),
+        ("const a = scene.rect(); timeline().to(a, { maskWidth: 2 });", "has no `maskWidth` to tween"),
+    ] {
+        let e = err(&body(src));
         assert!(e.contains(said), "{src}: {e}");
     }
 }

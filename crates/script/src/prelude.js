@@ -149,7 +149,9 @@
   const PLACE = ["x", "y", "scale", "rotation", "opacity"];
   // width and height apart, and turned in space about the horizontal and the vertical axis
   const SPACE = ["scaleX", "scaleY", "rotationX", "rotationY"];
-  const MORE = ["perspective", "motionBlur", "transformOrigin", "origin", "parent"];
+  const MORE = ["perspective", "motionBlur", "transformOrigin", "origin", "parent", "mask", "animate"];
+  // a mask's own numbers, as the editor keys them
+  const MASK = { x: "maskX", y: "maskY", width: "maskWidth", height: "maskHeight", rotation: "maskRotation", feather: "maskFeather" };
   // GSAP's other names for what a node has
   const ALIAS = { rotate: "rotation", rotateZ: "rotation", rotationZ: "rotation", rotateX: "rotationX", rotateY: "rotationY",
     autoAlpha: "opacity", alpha: "opacity" };
@@ -193,11 +195,12 @@
     "shadow", "lineBoxes", "font", "tracking", "leading", "italic", "underline", "template", "counter"];
   const BASE = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, scaleX: 1, scaleY: 1, rotationX: 0, rotationY: 0, drawStart: 0, drawEnd: 1,
     exposure: 0, contrast: 0, saturation: 0, temperature: 0, tint: 0, highlights: 0, shadows: 0, fade: 0, vignette: 0,
-    cropLeft: 0, cropTop: 0, cropRight: 0, cropBottom: 0 };
+    cropLeft: 0, cropTop: 0, cropRight: 0, cropBottom: 0,
+    maskX: 0.5, maskY: 0.5, maskWidth: 1, maskHeight: 1, maskRotation: 0, maskFeather: 0 };
 
   let state = null;
 
-  function Node(kind, name) { this.kind = kind; this.name = name; this.base = {}; this.add = {}; this.props = []; this.more = {}; this.origin = null; this.parent = null; this.path = null; }
+  function Node(kind, name) { this.kind = kind; this.name = name; this.base = {}; this.add = {}; this.props = []; this.more = {}; this.origin = null; this.parent = null; this.path = null; this.after = []; }
 
   function node(kind, opts, allowed, label) {
     if (opts === undefined) opts = {};
@@ -237,6 +240,40 @@
       n.parent = opts.parent;
     }
     n.props = PLACE.concat(SPACE, ADJUST);
+    if (opts.mask !== undefined && opts.mask !== null) {
+      // what of the node shows: a shape over it, in the node's own measures (x and y as shares of
+      // its box, 0.5 the middle; width and height in its shorter side)
+      const m = typeof opts.mask === "string" ? { shape: opts.mask } : opts.mask;
+      const ok = ["shape", "invert"].concat(Object.keys(MASK));
+      if (!m || typeof m !== "object" || typeof m.shape !== "string") fail(`${label}: \`mask\` is a shape's name, or {shape, x?, y?, width?, height?, rotation?, feather?, invert?}`);
+      for (const k of Object.keys(m)) if (!ok.includes(k)) fail(`${label}: mask has no \`${k}\`; it takes ${ok.join(", ")}`);
+      const set = { shape: m.shape };
+      if (m.invert !== undefined) set.invert = !!m.invert;
+      for (const k of Object.keys(MASK)) {
+        if (m[k] === undefined) continue;
+        if (!isNum(m[k])) fail(`${label}: mask \`${k}\` must be a number`);
+        set[k] = m[k];
+        n.base[MASK[k]] = m[k];
+      }
+      n.after.push({ command: "clip.setMask", params: set });
+      n.props = n.props.concat(Object.values(MASK));
+    }
+    if (opts.animate !== undefined && opts.animate !== null) {
+      // the editor's own animations: in, out, and one that goes round (a title's, character by character)
+      const a = opts.animate;
+      if (typeof a !== "object" || Array.isArray(a)) fail(`${label}: \`animate\` is {in?, out?, loop?}, each a kind's name or {kind, duration?}`);
+      for (const slot of Object.keys(a)) {
+        if (!["in", "out", "loop"].includes(slot)) fail(`${label}: animate has no \`${slot}\`; it takes in, out, loop`);
+        const v = typeof a[slot] === "string" ? { kind: a[slot] } : a[slot];
+        if (!v || typeof v !== "object" || typeof v.kind !== "string") fail(`${label}: animate.${slot} is a kind's name or {kind, duration?}`);
+        const set = { slot, kind: v.kind };
+        if (v.duration !== undefined) {
+          if (!isNum(v.duration) || v.duration <= 0) fail(`${label}: animate.${slot}.duration is seconds`);
+          set.duration = { seconds: v.duration };
+        }
+        n.after.push({ command: "clip.setAnimation", params: set });
+      }
+    }
     state.nodes.push(n);
     return n;
   }
@@ -618,7 +655,7 @@
       const path = n.path && { points: n.path.points.map((q) => [q[0] / canvas[0], q[1] / canvas[1]]), closed: n.path.closed,
         orient: n.path.orient, start: n.path.start, duration: n.path.duration, ease: n.path.ease };
       return { name: n.name, kind: n.group ? "group" : n.kind, add, counter: n.counter || null, keys: {},
-        origin: n.origin, parent: n.parent ? state.nodes.indexOf(n.parent) : null, path: path || null };
+        origin: n.origin, parent: n.parent ? state.nodes.indexOf(n.parent) : null, path: path || null, after: n.after };
     });
     for (const k of keys) {
       const per = k.prop === "x" ? canvas[0] : k.prop === "y" ? canvas[1] : 1;
