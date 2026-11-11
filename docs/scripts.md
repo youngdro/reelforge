@@ -65,7 +65,17 @@ replies use). Later nodes lie over earlier ones. Every node also takes:
   the parent's axes, so moving, scaling or turning the parent (in space too) takes it along as one
   object. Opacity is not passed on. Up to 8 deep;
 - `motionBlur`: `true`, or the share of a frame the shutter is open, smears it along its own
-  movement.
+  movement;
+- `mask`: what of the node shows, `"rectangle"`, `"circle"`, `"linear"` or `"mirror"`, or
+  `{shape, x?, y?, width?, height?, rotation?, feather?, invert?}` in the node's own measures (`x`
+  and `y` shares of its box, 0.5 the middle; `width` and `height` in its shorter side). Tween
+  `maskX`, `maskY`, `maskWidth`, `maskHeight`, `maskRotation`, `maskFeather` to wipe it on or open
+  it like an iris, as CSS's `clip-path` does;
+- `animate`: the editor's own animations, `{in?, out?, loop?}`, each a kind's name or
+  `{kind, duration?}` (`clip.setAnimation` lists them). For a title these go character by
+  character, word by word or line by line (`charRise`, `wordPop`, `lineRise`, `typewriter`,
+  `wave`…), which is what a script has in place of `SplitText`. `in` plays from the script's start
+  and `out` up to its end.
 
 GSAP's names `rotate`, `rotateX`, `rotateY`, `autoAlpha` and `alpha` are understood.
 
@@ -96,7 +106,8 @@ script.
   `repeat` (a whole number of extra times), `yoyo`, `repeatDelay`.
 - A value is a number, or `"+=n"` / `"-=n"` from where the property is.
 - **Properties**: `x`, `y`, `scale`, `rotation`, `opacity`, `scaleX`, `scaleY`, `rotationX`,
-  `rotationY` on every node; the colour adjustments
+  `rotationY` on every node; `maskX`, `maskY`, `maskWidth`, `maskHeight`, `maskRotation`,
+  `maskFeather` on a node with a `mask`; the colour adjustments
   `exposure`, `contrast`, `saturation`, `temperature`, `tint`, `highlights`, `shadows`, `fade`,
   `vignette`; `drawStart` and `drawEnd` on a shape with a stroke (0 to 1 round its outline: from 0
   to 1, `drawEnd` draws it on); `count` on a title with a counter; `cropLeft`, `cropTop`,
@@ -159,8 +170,8 @@ what to write meanwhile (a script that uses one is refused, and told so):
 | `fill`, `color`, `backgroundColor`, gradients | colours are not keyed | cross-fade two nodes |
 | `filter: blur()` and other filters | not keyed | the colour adjustments are; `motionBlur` |
 | `z`, `rotationX/Y` with depth sorting | nodes are drawn in the order made | order them yourself |
-| `SplitText` (characters, words, lines as targets) | a title is one node | one node a word; the editor's own text animations |
-| `clip-path`, masks | the editor keys masks; scripts do not reach them yet | |
+| `SplitText` (characters, words, lines as targets) | a title is one node | `animate` with the editor's character, word and line animations; or one node a word |
+| `clip-path` with a path of its own | a mask is a rectangle, a circle, a line or a band | `mask` |
 | `motionPath` with control points, `start` / `end`, several paths | a path passes through its points, once | |
 | group opacity | a parent passes on place, size and turn only | fade the children |
 | `repeat: -1` | a piece has a length | repeat as often as it is long |

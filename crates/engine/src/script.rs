@@ -109,6 +109,14 @@ fn build(
         if let Some(counter) = &node.counter {
             s.execute("clip.setCounter", &json!({"clip": id, "counter": counter})).map_err(named)?;
         }
+        for step in &node.after {
+            if !["clip.setMask", "clip.setAnimation"].contains(&step.command.as_str()) {
+                return Err(named(EngineError::Refused(format!("a script does not run {}", step.command))));
+            }
+            let mut params = step.params.clone();
+            params.insert("clip".into(), json!(id));
+            s.execute(&step.command, &Value::Object(params)).map_err(named)?;
+        }
         made.push((id, track, node));
     }
     let declared: BTreeMap<String, Value> = built.params.clone().into_iter().collect();

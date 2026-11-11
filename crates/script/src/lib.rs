@@ -102,6 +102,18 @@ pub struct Node {
     /// The path it travels.
     #[serde(default)]
     pub path: Option<PathOut>,
+    /// What else is set on its clip once it is there: a mask, the editor's own animations.
+    #[serde(default)]
+    pub after: Vec<Step>,
+}
+
+/// A command run on a node's clip, which it names itself.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Step {
+    /// `clip.setMask` or `clip.setAnimation`.
+    pub command: String,
+    /// Its parameters, but for the clip.
+    pub params: Map<String, Value>,
 }
 
 /// A path a node travels: through its points at an even pace, eased as a whole.
