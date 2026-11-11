@@ -148,7 +148,7 @@
   // ---- nodes ---------------------------------------------------------------------------
   const PLACE = ["x", "y", "scale", "rotation", "opacity"];
   // width and height apart, turned in space about the horizontal and the vertical axis, leaning
-  const SPACE = ["scaleX", "scaleY", "rotationX", "rotationY", "skewX", "skewY"];
+  const SPACE = ["scaleX", "scaleY", "rotationX", "rotationY", "skewX", "skewY", "blur"];
   // a colour's parts, as the editor keys them
   const RGBA = ["colorR", "colorG", "colorB", "colorA"];
   const OUTLINE = ["strokeR", "strokeG", "strokeB", "strokeA"];
@@ -163,7 +163,15 @@
     autoAlpha: "opacity", alpha: "opacity", borderRadius: "radius", borderColor: "stroke", borderWidth: "strokeWidth" };
   function named(o, what) {
     let out = o;
-    for (const k of Object.keys(o)) {
+    if (o.filter !== undefined) {
+      // CSS says a blur as a filter: `blur(12px)`, or `none`
+      const m = typeof o.filter === "string" && (o.filter.trim() === "none" ? ["", "0"] : /^blur\(\s*([0-9.]+)(px)?\s*\)$/.exec(o.filter.trim()));
+      if (!m || !isNum(Number(m[1]))) fail(`${what}: \`filter\` is "blur(12px)" or "none" (pixels); the colour adjustments have names of their own (exposure, contrast, saturation, …)`);
+      if (o.blur !== undefined) fail(`${what}: \`filter\` and \`blur\` are the same property; give one`);
+      out = Object.assign({}, o, { blur: Number(m[1]) });
+      delete out.filter;
+    }
+    for (const k of Object.keys(out)) {
       if (ALIAS[k] === undefined) continue;
       if (out === o) out = Object.assign({}, o);
       if (o[ALIAS[k]] !== undefined) fail(`${what}: \`${k}\` and \`${ALIAS[k]}\` are the same property; give one`);
@@ -199,7 +207,7 @@
   const SHAPE_OPTS = ["width", "height", "radius", "points", "inner", "fill", "stroke", "shadow", "trim"];
   const TEXT_OPTS = ["size", "color", "weight", "align", "wrap", "outline", "background", "radius", "gradient", "outer",
     "shadow", "lineBoxes", "font", "tracking", "leading", "italic", "underline", "template", "counter"];
-  const BASE = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, scaleX: 1, scaleY: 1, rotationX: 0, rotationY: 0, skewX: 0, skewY: 0, drawStart: 0, drawEnd: 1,
+  const BASE = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, scaleX: 1, scaleY: 1, rotationX: 0, rotationY: 0, skewX: 0, skewY: 0, blur: 0, drawStart: 0, drawEnd: 1,
     exposure: 0, contrast: 0, saturation: 0, temperature: 0, tint: 0, highlights: 0, shadows: 0, fade: 0, vignette: 0,
     cropLeft: 0, cropTop: 0, cropRight: 0, cropBottom: 0,
     maskX: 0.5, maskY: 0.5, maskWidth: 1, maskHeight: 1, maskRotation: 0, maskFeather: 0 };
@@ -225,6 +233,7 @@
     }
     if (n.base.opacity < 0 || n.base.opacity > 1) fail(`${label}: \`opacity\` is from 0 to 1`);
     if (!(n.base.scale >= 0)) fail(`${label}: \`scale\` must not be negative`);
+    if (n.base.blur < 0 || n.base.blur > 500) fail(`${label}: \`blur\` is 0 to 500 pixels`);
     if (Math.abs(n.base.skewX) > 89 || Math.abs(n.base.skewY) > 89) fail(`${label}: \`skewX\` and \`skewY\` are degrees within ±89`);
     if (opts.perspective !== undefined) {
       // the eye's distance, in pixels as CSS says it; the editor counts it in canvas heights
@@ -338,7 +347,7 @@
       if (!isNum(w) || !isNum(h) || w <= 0 || h <= 0) fail("scene.group: `width` and `height` are pixels (they matter only to `transformOrigin`)");
       n.add = { shape: { kind: "rectangle", size: [w, h], fill: null } };
       n.base.opacity = 0;
-      n.props = n.props.filter((k) => k !== "opacity" && !ADJUST.includes(k));
+      n.props = n.props.filter((k) => k !== "opacity" && k !== "blur" && !ADJUST.includes(k));
       n.group = true;
       return n;
     },
@@ -412,7 +421,7 @@
     backgroundColor: "tween `fill` on a shape, or `color` on a title", stroke: "only a shape made with a `stroke` has an outline colour to tween",
     strokeWidth: "only a shape made with a `stroke` has an outline to widen",
     radius: "only a rectangle, a tag or an arrow has corners to round",
-    blur: "a blur is not tweened yet", filter: "filters are not tweened yet; exposure, contrast, saturation and the other adjustments are",
+    blur: "a group has nothing to blur; blur the nodes it carries",
     z: "there is no depth yet; rotationX and rotationY turn a node in space", xPercent: "write pixels", yPercent: "write pixels",
     transformOrigin: "it does not move; give it to the node when making it", fontSize: "tween scale", text: "tween a counter's `count`, or make two titles",
   };

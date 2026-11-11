@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use reelforge_renderspec::{Blend, RenderSpec, effects};
+use reelforge_renderspec::{Blend, Fit, RenderSpec, effects};
 
 use crate::distort::Warp;
 use crate::plan::{FramePlan, Map, PlannedLayer, PlannedSource, bounds, invert, then};
@@ -82,7 +82,7 @@ pub(crate) fn resolve(
             if takes.yuv
                 && fit == 1
                 && between.is_nearest()
-                && blur_radius(layer).is_none()
+                && !blurs(layer)
                 && !crate::cutout::cuts(&layer.fx)
                 && let Some(y) = media.yuv(asset, def, *at).map_err(RenderError::Media)?
                 && y.is_whole()
@@ -98,7 +98,7 @@ pub(crate) fn resolve(
                 media.picture(asset, def, *at)
             };
             match pic.map_err(RenderError::Media)? {
-                Some(pic) => Resolved::Picture(treated(layer, pic)?),
+                Some(pic) => Resolved::Picture(treated(spec, plan, layer, pic)?),
                 None => {
                     placeholder("media offline or not decodable yet")?;
                     let size = def
@@ -114,7 +114,7 @@ pub(crate) fn resolve(
             // the composition's own frame, then a picture like any other
             let (pic, drawn) = composite(spec, inner, media, quality)?;
             report.placeholders.extend(drawn.placeholders);
-            Resolved::Picture(treated(layer, Arc::new(pic))?)
+            Resolved::Picture(treated(spec, plan, layer, Arc::new(pic))?)
         }
         PlannedSource::Shadow(of) => {
             // from the layer's picture as it is: what it lacks is reported for the layer itself
@@ -134,9 +134,12 @@ pub(crate) fn resolve(
             let k = plan.width as f32 / spec.output.width as f32;
             let drawn = if layer.plain() && layer.smear.is_empty() {
                 crate::shape::rasterize(layer, shape, k, [plan.width, plan.height])
+                    .map(|sp| softened(layer, sp, k, [plan.width, plan.height]))
             } else {
                 let size = [shape.size[0] * k * layer.scale, shape.size[1] * k * layer.scale];
-                flat_sprite(layer, size, |flat, canvas| crate::shape::rasterize(flat, shape, k, canvas))
+                flat_sprite(layer, size, |flat, canvas| {
+                    crate::shape::rasterize(flat, shape, k, canvas).map(|sp| softened(flat, sp, k, canvas))
+                })
             };
             match drawn {
                 Some(sp) => Resolved::Sprite(sp),
@@ -162,10 +165,13 @@ pub(crate) fn resolve(
             };
             let drawn = if layer.plain() && layer.smear.is_empty() {
                 crate::text::rasterize(layer, text, &family, k, [plan.width, plan.height])
+                    .map(|sp| softened(layer, sp, k, [plan.width, plan.height]))
             } else {
                 let [w, h] = crate::text::block(text, &family);
                 let size = [w * k * layer.scale, h * k * layer.scale];
-                flat_sprite(layer, size, |flat, canvas| crate::text::rasterize(flat, text, &family, k, canvas))
+                flat_sprite(layer, size, |flat, canvas| {
+                    crate::text::rasterize(flat, text, &family, k, canvas).map(|sp| softened(flat, sp, k, canvas))
+                })
             };
             match drawn {
                 Some(sp) => Resolved::Sprite(sp),
@@ -237,12 +243,64 @@ pub fn draft_shrink(asset: &reelforge_renderspec::Asset, plan: &FramePlan, layer
 
 /// `pic` as `layer`'s effects on a whole picture leave it: cut out (its people kept, its backdrop
 /// gone), then blurred.
-fn treated(layer: &PlannedLayer, pic: Arc<Image>) -> Result<Arc<Image>, RenderError> {
+fn treated(
+    spec: &RenderSpec,
+    plan: &FramePlan,
+    layer: &PlannedLayer,
+    pic: Arc<Image>,
+) -> Result<Arc<Image>, RenderError> {
     let pic = crate::cutout::of(&layer.fx, &pic).map_err(RenderError::Media)?;
-    Ok(match blur_radius(layer) {
-        Some(r) => Arc::new(crate::image::blurred(&pic, r)),
-        None => pic,
-    })
+    // its own blur is counted in output pixels before its scale: in the picture's own pixels it
+    // is as much smaller as the picture is fitted larger
+    let own = soft_radius(layer).map_or(0.0, |px| {
+        let (w, h) = (pic.width.max(1) as f32, pic.height.max(1) as f32);
+        let k = plan.width as f32 / spec.output.width.max(1) as f32;
+        let (across, down) = (plan.width as f32 / w, plan.height as f32 / h);
+        let fit = match layer.fit {
+            Fit::Contain => across.min(down),
+            Fit::Cover => across.max(down),
+            Fit::Stretch => (across * down).sqrt(),
+        };
+        px * k / fit.max(1e-6) / w.min(h)
+    });
+    // two blurs are one, of the two variances together
+    let r = blur_radius(layer).unwrap_or(0.0).hypot(own);
+    Ok(if r > 0.0 { Arc::new(crate::image::blurred(&pic, r)) } else { pic })
+}
+
+/// The radius of `layer`'s `blur.layer@1`, in output pixels before the layer's scale.
+pub(crate) fn soft_radius(layer: &PlannedLayer) -> Option<f32> {
+    let (_, params) = layer.fx.iter().find(|(id, _)| id == effects::SOFT)?;
+    let r = params.iter().find(|(k, _)| k == "radius").map_or(0.0, |(_, v)| v.clamp(0.0, 500.0));
+    (r > 0.0).then_some(r)
+}
+
+/// Whether `layer`'s picture is blurred, one way or the other: it is then made on the CPU.
+pub(crate) fn blurs(layer: &PlannedLayer) -> bool {
+    blur_radius(layer).is_some() || soft_radius(layer).is_some()
+}
+
+/// A drawn title or shape as `layer`'s `blur.layer@1` leaves it: out of focus, with room around
+/// it for its edges to soften into. `k` is target pixels per output pixel.
+/// `canvas` is what it was drawn on: it grows no further than that.
+fn softened(layer: &PlannedLayer, sp: Sprite, k: f32, canvas: [u32; 2]) -> Sprite {
+    let Some(px) = soft_radius(layer) else { return sp };
+    // past a few hundred pixels there is nothing left to see of it
+    let sigma = (px * k * layer.scale).min(256.0);
+    if sigma < 0.05 {
+        return sp;
+    }
+    let all = crate::image::soft_room(sigma) as i64;
+    let within = |from: i64, to: i64| all.min((to - from).max(0)) as u32;
+    let (right, bottom) = (i64::from(sp.x) + i64::from(sp.image.width), i64::from(sp.y) + i64::from(sp.image.height));
+    let room = [
+        within(0, sp.x.into()),
+        within(0, sp.y.into()),
+        within(right, canvas[0].into()),
+        within(bottom, canvas[1].into()),
+    ];
+    let image = crate::image::soft(&sp.image, sigma, room);
+    Sprite { x: sp.x - room[0] as i32, y: sp.y - room[1] as i32, image: Arc::new(image), ..sp }
 }
 
 /// The radius of `layer`'s `blur.gaussian@1`, as a fraction of its picture's shorter side.

@@ -1804,6 +1804,12 @@ pub struct Effect {
 ///   standard deviation as a fraction of the picture's shorter side (default 0.02). Text and colour
 ///   layers are left as they are. Editors use it for a blurred copy of a clip behind it (a
 ///   "canvas blur" background).
+/// - `blur.layer@1`: puts a media, composition, text or shape layer out of focus, as CSS
+///   `filter: blur()` does; `radius` is the blur's standard deviation in output pixels before
+///   the layer's scale (so a layer scaled up is blurred as much more), 0 to 500. A picture is
+///   blurred before it is placed with its edges held (together with any `blur.gaussian@1`);
+///   a title's or a shape's drawing is blurred with room around it, so its edges soften
+///   outwards. Colour layers are left as they are.
 /// - `key.chroma@1`: makes one colour see-through, as for a green screen. `r`, `g`, `b` are the
 ///   key colour, sRGB-encoded (default green, 0 1 0). A pixel's distance from it is measured on
 ///   the chroma plane (BT.601 Cb and Cr of the encoded colour, so light and shade count little):
@@ -1860,6 +1866,8 @@ pub mod effects {
     pub const DISTORT: [&str; 4] = [WAVE, GLITCH, MOSAIC, SPLIT];
     /// A blur of the layer's picture.
     pub const BLUR: &str = "blur.gaussian@1";
+    /// A blur of whatever the layer shows, in the layer's own pixels.
+    pub const SOFT: &str = "blur.layer@1";
     /// Brightness.
     pub const BRIGHTNESS: &str = "color.brightness@1";
     /// Saturation.

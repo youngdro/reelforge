@@ -579,6 +579,14 @@ fn lower_tracks(
                                 asset: None,
                             });
                         }
+                        // out of focus by its own blur: whatever it shows
+                        if clip.keyed(Prop::Blur) || clip.look.blur > 0.0 {
+                            fx.push(Effect {
+                                id: effects::SOFT.into(),
+                                params: [("radius".to_string(), motion::lower(clip, Prop::Blur, &shape, step))].into(),
+                                asset: None,
+                            });
+                        }
                         fx
                     },
                 });

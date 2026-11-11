@@ -248,7 +248,7 @@ fn what_is_wrong_with_a_script_is_said() {
     assert_eq!(err(&body("")), "the script made nothing: call scene.rect, scene.text, … in build");
     assert_eq!(
         err(&body("scene.rect({ widht: 3 });")),
-        "scene.rect: no option `widht`; it takes x, y, scale, rotation, opacity, scaleX, scaleY, rotationX, rotationY, skewX, skewY, perspective, motionBlur, transformOrigin, origin, parent, mask, animate, name, width, height, radius, points, inner, fill, stroke, shadow, trim"
+        "scene.rect: no option `widht`; it takes x, y, scale, rotation, opacity, scaleX, scaleY, rotationX, rotationY, skewX, skewY, blur, perspective, motionBlur, transformOrigin, origin, parent, mask, animate, name, width, height, radius, points, inner, fill, stroke, shadow, trim"
     );
     let e = err(&body("const a = scene.rect({ name: 'card' }); timeline().to(a, { wobble: 3 });"));
     assert!(e.starts_with("to: card has no `wobble` to tween; it has x, y, scale, rotation, opacity"), "{e}");
@@ -335,6 +335,10 @@ fn a_node_is_stretched_turned_in_space_and_carried_with_gsap_s_names() {
         (r#"const g = scene.group(); timeline().to(g, { opacity: 1 });"#, "has no `opacity` to tween"),
         (r#"const a = scene.rect(); timeline().to(a, { skew: 10 });"#, "write `skewX` and `skewY`"),
         (r#"scene.rect({ skewX: 90 });"#, "within ±89"),
+        (r#"scene.rect({ filter: "sepia(1)" });"#, "`filter` is \"blur(12px)\""),
+        (r#"scene.rect({ filter: "blur(4px)", blur: 4 });"#, "are the same property"),
+        (r#"scene.rect({ blur: 600 });"#, "0 to 500 pixels"),
+        (r#"const g = scene.group(); timeline().to(g, { blur: 4 });"#, "blur the nodes it carries"),
     ] {
         let e = err(&body(src));
         assert!(e.contains(said), "{src}: {e}");

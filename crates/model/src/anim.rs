@@ -111,6 +111,9 @@ pub enum Prop {
     SkewX,
     /// Degrees it leans down, its right edge going down (as CSS `skewY`).
     SkewY,
+    /// How far out of focus the clip is: a blur's standard deviation in canvas pixels, before
+    /// the clip's scale.
+    Blur,
 }
 
 impl Prop {
@@ -161,7 +164,7 @@ impl Prop {
     /// A shape's outline colour: red, green, blue, and how solid.
     pub const STROKE: [Prop; 4] = [Prop::StrokeR, Prop::StrokeG, Prop::StrokeB, Prop::StrokeA];
     /// Every property.
-    pub const ALL: [Prop; 46] = [
+    pub const ALL: [Prop; 47] = [
         Prop::X,
         Prop::Y,
         Prop::Scale,
@@ -208,6 +211,7 @@ impl Prop {
         Prop::StrokeA,
         Prop::SkewX,
         Prop::SkewY,
+        Prop::Blur,
     ];
 
     /// The name commands use (`x`, `volumeDb`, `cropLeft`, `maskX`, `exposure`…).
@@ -259,6 +263,7 @@ impl Prop {
             Prop::StrokeA => "strokeA",
             Prop::SkewX => "skewX",
             Prop::SkewY => "skewY",
+            Prop::Blur => "blur",
         }
     }
 
@@ -278,6 +283,7 @@ impl Prop {
             p if Prop::COLOR.contains(&p) || Prop::STROKE.contains(&p) => Some((0.0, 1.0)),
             p if Prop::SHAPE.contains(&p) => Some((0.0, f32::MAX)),
             Prop::SkewX | Prop::SkewY => Some((-89.0, 89.0)),
+            Prop::Blur => Some((0.0, crate::Look::BLURS)),
             p if Prop::CROP.contains(&p) => Some((0.0, 0.98)),
             Prop::MaskWidth | Prop::MaskHeight | Prop::MaskFeather => Some((0.0, f32::MAX)),
             _ => None,
@@ -952,6 +958,7 @@ impl Clip {
             Prop::RotationY => self.transform.rotation_y,
             Prop::SkewX => self.transform.skew[0],
             Prop::SkewY => self.transform.skew[1],
+            Prop::Blur => self.look.blur,
             Prop::Opacity => self.opacity,
             Prop::VolumeDb => self.volume_db,
             Prop::CropLeft => self.look.crop.left,
@@ -1012,6 +1019,7 @@ impl Clip {
             Prop::RotationY => self.transform.rotation_y = v,
             Prop::SkewX => self.transform.skew[0] = v,
             Prop::SkewY => self.transform.skew[1] = v,
+            Prop::Blur => self.look.blur = v,
             Prop::Opacity => self.opacity = v,
             Prop::VolumeDb => self.volume_db = v,
             Prop::CropLeft => self.look.crop.left = v,

@@ -132,6 +132,36 @@ pub fn blurred(img: &Image, radius: f32) -> Image {
     small
 }
 
+/// How far a blur of standard deviation `sigma` (pixels) spreads what it blurs, as [`soft`]
+/// does it.
+pub fn soft_room(sigma: f32) -> u32 {
+    3 * soft_box(sigma) as u32
+}
+
+/// The half-width of each of three box blurs that together blur by `sigma`.
+fn soft_box(sigma: f32) -> i64 {
+    (((4.0 * sigma * sigma + 1.0).sqrt() - 1.0) / 2.0).round().max(1.0) as i64
+}
+
+/// `img` blurred with a standard deviation of `sigma` of its own pixels, with nothing around it:
+/// the picture grown by `room` (left, top, right, bottom) for its edges to soften into
+/// ([`soft_room`] holds all of it). Three box blurs, within a few per cent of a Gaussian.
+pub fn soft(img: &Image, sigma: f32, room: [u32; 4]) -> Image {
+    let r = soft_box(sigma);
+    let (w, h) = (img.width + room[0] + room[2], img.height + room[1] + room[3]);
+    let mut out = Image { width: w, height: h, pixels: vec![[0.0; 4]; w as usize * h as usize] };
+    for y in 0..img.height as usize {
+        let from = y * img.width as usize;
+        let to = (y + room[1] as usize) * w as usize + room[0] as usize;
+        out.pixels[to..to + img.width as usize].copy_from_slice(&img.pixels[from..from + img.width as usize]);
+    }
+    for _ in 0..3 {
+        box_pass(&mut out, r, true);
+        box_pass(&mut out, r, false);
+    }
+    out
+}
+
 /// `img` shrunk to `w × h`, each pixel the mean of the pixels it covers.
 /// `img` averaged down to `w` by `h` (no larger than it).
 pub(crate) fn shrink(img: &Image, w: u32, h: u32) -> Image {

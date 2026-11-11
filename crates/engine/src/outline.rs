@@ -89,6 +89,7 @@ fn clip(project: &Project, c: &Clip) -> Value {
         ("rotationY", t.rotation_y, 0.0),
         ("skewX", t.skew[0], 0.0),
         ("skewY", t.skew[1], 0.0),
+        ("blur", c.look.blur, 0.0),
         ("perspective", t.distance, reelforge_model::ClipTransform::DISTANCE),
         ("motionBlur", t.motion_blur, 0.0),
     ] {

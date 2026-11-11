@@ -4989,3 +4989,51 @@ fn a_clip_leans_and_a_script_skews_it() {
     assert!(s.execute("clip.setKey", &json!({"clip": id, "prop": "skewY", "at": 0, "value": 120})).is_err());
     s.execute("clip.setKey", &json!({"clip": id, "prop": "skewY", "at": 0, "value": 30})).unwrap();
 }
+
+#[test]
+fn a_script_pulls_a_layer_into_focus() {
+    let mut s = Session::default();
+    let src = r##"export function build({ scene, timeline }) {
+        const title = scene.text("NEW", { name: "title", blur: 40 });
+        const card = scene.rect({ name: "card" });
+        timeline({ defaults: { duration: 1, ease: "none" } })
+            .to(title, { filter: "blur(0px)" })
+            .to(card, { blur: 24 }, 0);
+    }"##;
+    let out = s.execute("script.add", &json!({"source": src})).unwrap();
+    let ids: Vec<String> =
+        out["clips"].as_array().unwrap().iter().map(|c| c["clip"].as_str().unwrap().to_string()).collect();
+    let proj = s.project();
+    let blurs = |id: &str| {
+        let c = proj.clip(id).unwrap().1;
+        (c.look.blur, c.keys[&Prop::Blur].iter().map(|k| k.v).collect::<Vec<_>>())
+    };
+    assert_eq!(blurs(&ids[0]), (40.0, vec![40.0, 0.0]));
+    assert_eq!(blurs(&ids[1]), (0.0, vec![0.0, 24.0]));
+    let spec = reelforge_compile::compile(&proj, &reelforge_compile::CompileOptions { encode: false }).unwrap();
+    assert!(spec.required_features().contains("blur.layer@1"));
+    reelforge_renderspec::validate(&spec).unwrap();
+    for (id, half) in [(&ids[0], 20.0), (&ids[1], 12.0)] {
+        let layer = spec.layers.iter().find(|l| &l.id == id).unwrap();
+        let soft = layer.fx.iter().find(|e| e.id == "blur.layer@1").unwrap();
+        assert_eq!(soft.params["radius"].sample(Tick::from_seconds(0.5)), half);
+    }
+    drop(proj);
+
+    // by hand: a sharp clip carries no effect; set, and refused past the edge or over keys
+    let plain = s
+        .execute(
+            "clip.add",
+            &json!({"track": out_track(&s), "shape": {"kind": "rectangle"}, "duration": {"seconds": 1}}),
+        )
+        .unwrap();
+    let pid = plain["clip"].as_str().unwrap().to_string();
+    let spec = reelforge_compile::compile(&s.project(), &reelforge_compile::CompileOptions { encode: false }).unwrap();
+    assert!(spec.layers.iter().find(|l| l.id == pid).unwrap().fx.iter().all(|e| e.id != "blur.layer@1"));
+    s.execute("clip.set", &json!({"clip": pid, "blur": 8})).unwrap();
+    assert_eq!(s.project().clip(&pid).unwrap().1.look.blur, 8.0);
+    assert!(s.execute("clip.set", &json!({"clip": pid, "blur": 501})).is_err());
+    assert!(s.execute("clip.set", &json!({"clip": pid, "blur": -1})).is_err());
+    assert!(s.execute("clip.set", &json!({"clip": ids[1], "blur": 8})).is_err());
+    assert!(s.execute("clip.setKey", &json!({"clip": ids[1], "prop": "blur", "at": 0, "value": 900})).is_err());
+}
