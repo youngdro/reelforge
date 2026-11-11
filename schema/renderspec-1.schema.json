@@ -1032,6 +1032,11 @@
               "default": "center",
               "description": "Alignment of the lines within the block."
             },
+            "arc": {
+              "description": "With `text/8`: the lines are bent round a circle: the block's width spans this many\ndegrees, arching up when positive and hanging down when negative. Each character is turned\nto stand on the curve; boxes and underlines stay straight.",
+              "format": "float",
+              "type": "number"
+            },
             "background": {
               "anyOf": [
                 {
@@ -1042,6 +1047,17 @@
                 }
               ],
               "description": "A box behind the block."
+            },
+            "bevel": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TextBevel"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `text/8`: the glyphs' edges are lit from one side and shaded on the other, as if\nthey stood up from the page."
             },
             "chars": {
               "description": "With `text/5`: the characters move one after another, each about its own centre, from where\nthe layout puts them. Several movements add up. Boxes and underlines stay where they are.",
@@ -1065,6 +1081,17 @@
               ],
               "description": "The fill colour over time, in place of `color` (feature `text.color/1`)."
             },
+            "depth": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TextDepth"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `text/8`: the glyphs and their outlines are drawn out to one side as a solid block\n(a letter with depth), beneath them and above the shadows, which the block casts too."
+            },
             "draw": {
               "anyOf": [
                 {
@@ -1075,6 +1102,17 @@
                 }
               ],
               "description": "With `text/7`: the text is written on, each character's outline drawn by a pen before its\nfill comes in."
+            },
+            "fill": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TextFill"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `text/8`: the fill is a gradient through several colours at an angle, in place of\n`color` and `gradient`."
             },
             "font": {
               "description": "A `font` asset; absent means the renderer's bundled default face (Noto Sans SC, which also\ncovers Latin). Characters the face lacks fall back to the other faces the renderer has.",
@@ -1104,6 +1142,14 @@
                 }
               ],
               "description": "With `text/7`: part of the text takes another colour as it is said (karaoke)."
+            },
+            "hollow": {
+              "description": "With `text/8`: only a line this wide (in ems) just inside each glyph's edge is inked, and\neverything else (the fill's colours, outlines, depth, shadows) is of that line.",
+              "format": "float",
+              "type": [
+                "number",
+                "null"
+              ]
             },
             "italic": {
               "description": "With `text/4`: slanted; the face's own italic when it has one, otherwise sheared.",
@@ -1136,6 +1182,17 @@
               ],
               "description": "With `text/2`: a second outline, outside `stroke` (its width counts from `stroke`'s edge)."
             },
+            "palette": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TextPalette"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `text/8`: its units take colours in turn (the first character the first colour, the\nnext the second, and round again), over whatever else fills them."
+            },
             "reveal": {
               "anyOf": [
                 {
@@ -1147,6 +1204,17 @@
               ],
               "description": "With `text/3`: how much of the text shows, 0 to 1, counted in characters from the start\n(a typewriter). The lines stay where the whole text puts them; a box behind each line\ngrows with what shows of it."
             },
+            "scatter": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TextScatter"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `text/8`: each character is turned, moved and sized a little by chance, about its own\ncentre: the same way every time for the same `seed`."
+            },
             "shadow": {
               "anyOf": [
                 {
@@ -1157,6 +1225,13 @@
                 }
               ],
               "description": "With `text/2`: a soft shadow of the glyphs and their outlines, beneath them."
+            },
+            "shadows": {
+              "description": "With `text/8`: more shadows beneath `shadow`, the last one lowest: a glow is a shadow with\nno offset, and two of them a neon tube's halo.",
+              "items": {
+                "$ref": "#/$defs/TextShadow"
+              },
+              "type": "array"
             },
             "size": {
               "description": "Size of the em in output pixels.",
@@ -1856,6 +1931,17 @@
       "additionalProperties": false,
       "description": "A box behind text.",
       "properties": {
+        "border": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextStroke"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "With `text/8`: a line drawn just inside its edge."
+        },
         "color": {
           "$ref": "#/$defs/Color",
           "description": "Colour."
@@ -1874,10 +1960,106 @@
           "description": "With `text/2`: corner radius, in ems.",
           "format": "float",
           "type": "number"
+        },
+        "shape": {
+          "$ref": "#/$defs/TextBacking",
+          "description": "With `text/8`: what it is, when not a box."
+        },
+        "skew": {
+          "description": "With `text/8`: its sides lean this many degrees (a parallelogram), to the right when\npositive.",
+          "format": "float",
+          "type": "number"
         }
       },
       "required": [
         "color"
+      ],
+      "type": "object"
+    },
+    "TextBacking": {
+      "description": "What stands behind a text's lines (`text/8`).",
+      "oneOf": [
+        {
+          "const": "box",
+          "description": "A box behind the block, or behind each line.",
+          "type": "string"
+        },
+        {
+          "const": "marker",
+          "description": "A band behind the lower half of each line, as a highlighter pen leaves.",
+          "type": "string"
+        },
+        {
+          "const": "tiles",
+          "description": "A tile behind each character: as wide as the character's place in the line (the space\n`tracking` adds after it shared between its two sides) and as tall as the line, less a\nhair on every side that keeps it apart from the next. `padding` does not count.",
+          "type": "string"
+        }
+      ]
+    },
+    "TextBevel": {
+      "additionalProperties": false,
+      "description": "Lit and shaded edges inside a text's glyphs (`text/8`).",
+      "properties": {
+        "angle": {
+          "description": "Where the light is, in degrees clockwise from straight above: 315 is the top left.",
+          "format": "float",
+          "type": "number"
+        },
+        "dark": {
+          "$ref": "#/$defs/Color",
+          "description": "The colour of the shaded edge."
+        },
+        "light": {
+          "$ref": "#/$defs/Color",
+          "description": "The colour of the lit edge."
+        },
+        "size": {
+          "description": "How wide the edges are, in ems.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "light",
+        "dark",
+        "size",
+        "angle"
+      ],
+      "type": "object"
+    },
+    "TextDepth": {
+      "additionalProperties": false,
+      "description": "A text drawn out to one side as a solid block (`text/8`).",
+      "properties": {
+        "color": {
+          "$ref": "#/$defs/Color",
+          "description": "The block's colour, next to the glyphs."
+        },
+        "fade": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Color"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The colour at its far end, when it changes along the way."
+        },
+        "offset": {
+          "description": "How far it reaches, `[right, down]` in ems, on the frame.",
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "color",
+        "offset"
       ],
       "type": "object"
     },
@@ -1907,6 +2089,42 @@
       ],
       "type": "object"
     },
+    "TextFill": {
+      "additionalProperties": false,
+      "description": "A text's fill through several colours (`text/8`). The way runs across the lines as they are\ninked: from side to side of the widest line, and from the top of the first line's em box\n(0.88 em above its baseline) to the bottom of the last one's (0.12 em below).",
+      "properties": {
+        "angle": {
+          "default": 90.0,
+          "description": "Which way the colours run, in degrees clockwise: 0 from left to right, 90 from top to\nbottom.",
+          "format": "float",
+          "type": "number"
+        },
+        "bands": {
+          "description": "Bands with hard edges (stripes) in place of a smooth run from colour to colour.",
+          "type": "boolean"
+        },
+        "colors": {
+          "description": "The colours, two to eight, evenly spaced along the way.",
+          "items": {
+            "$ref": "#/$defs/Color"
+          },
+          "type": "array"
+        },
+        "lines": {
+          "description": "The colours run across each line on its own, not once across the whole block.",
+          "type": "boolean"
+        },
+        "repeat": {
+          "description": "How many times the colours go round along the way; 1 unless told.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "colors"
+      ],
+      "type": "object"
+    },
     "TextHighlight": {
       "additionalProperties": false,
       "description": "Part of a text in another colour as it is said (`text/7`).",
@@ -1928,6 +2146,60 @@
         "progress",
         "color"
       ],
+      "type": "object"
+    },
+    "TextPalette": {
+      "additionalProperties": false,
+      "description": "Colours a text's units take in turn (`text/8`).",
+      "properties": {
+        "colors": {
+          "description": "The colours, one to eight.",
+          "items": {
+            "$ref": "#/$defs/Color"
+          },
+          "type": "array"
+        },
+        "unit": {
+          "$ref": "#/$defs/TextUnit",
+          "default": "char",
+          "description": "What takes one colour: each character, word or line."
+        }
+      },
+      "required": [
+        "colors"
+      ],
+      "type": "object"
+    },
+    "TextScatter": {
+      "additionalProperties": false,
+      "description": "Characters set a little out of line by chance (`text/8`).",
+      "properties": {
+        "rotate": {
+          "default": 0.0,
+          "description": "The most a character turns either way, in degrees.",
+          "format": "float",
+          "type": "number"
+        },
+        "scale": {
+          "default": 0.0,
+          "description": "The most it grows or shrinks, as a share of its size.",
+          "format": "float",
+          "type": "number"
+        },
+        "seed": {
+          "default": 0,
+          "description": "Which arrangement: another number, another one.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "shift": {
+          "default": 0.0,
+          "description": "The most it moves up or down, in ems.",
+          "format": "float",
+          "type": "number"
+        }
+      },
       "type": "object"
     },
     "TextShadow": {

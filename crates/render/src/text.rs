@@ -13,7 +13,7 @@ use filmcraft_text::layout::{Align, Glyph, Layout, ParagraphStyle, StyleRun, Tex
 use filmcraft_text::mask::{StrokeKind, blur, offset, stroke};
 use filmcraft_text::raster::{IDENTITY, Mask, Path, Xform, compose, fill_into};
 use filmcraft_text::render::{device_bounds, draw, glyph_path};
-use reelforge_renderspec::{CharPose, TextAlign, TextContent, TextUnit};
+use reelforge_renderspec::{CharPose, TextAlign, TextBacking, TextContent, TextUnit};
 
 use crate::Image;
 use crate::cpu::{apply_fx, blend};
@@ -292,7 +292,7 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
     }
     // characters on the move are drawn one by one, each about its own centre
     let mut movers = vec![];
-    if !text.chars.is_empty() {
+    if !text.chars.is_empty() || text.scatter.is_some() || text.arc != 0.0 {
         let mut rest = (*l).clone();
         movers = moved(text, &mut rest);
         l = Arc::new(rest);
@@ -309,15 +309,91 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
 
     let stroke_px = text.stroke.as_ref().map_or(0.0, |st| st.width * s);
     let outer_px = text.outer.as_ref().map_or(0.0, |st| st.width * s);
-    // the shadow's offset (on the frame) and softness, in target pixels
-    let shadow = text.shadow.as_ref().map(|sh| {
-        let em = text.size * s;
-        ((sh.offset[0] * em).round() as i32, (sh.offset[1] * em).round() as i32, sh.blur * em)
-    });
+    let em = text.size * s;
+    // each shadow's offset (on the frame) and softness, in target pixels: the first, then the
+    // ones beneath it
+    let shadows: Vec<(i32, i32, f32)> = text
+        .shadow
+        .iter()
+        .chain(&text.shadows)
+        .map(|sh| ((sh.offset[0] * em).round() as i32, (sh.offset[1] * em).round() as i32, sh.blur * em))
+        .collect();
+    let finish = Finish {
+        stroke_px,
+        outer_px,
+        shadows,
+        depth: text.depth.as_ref().map(|d| ((d.offset[0] * em).round() as i32, (d.offset[1] * em).round() as i32)),
+        hollow_px: text.hollow.map(|w| (w * em).max(1.0)),
+        bevel: text.bevel.as_ref().map(|bv| {
+            let (sin, cos) = bv.angle.to_radians().sin_cos();
+            let reach = (bv.size * em).max(1.0);
+            ((sin * reach).round() as i32, (-cos * reach).round() as i32, reach)
+        }),
+    };
+    // where a target pixel is in the text's own space, as the lines were laid out flat
+    let det = m[0] * m[3] - m[1] * m[2];
+    let round = bend(text, &l);
+    let flat = move |x: f32, y: f32| -> (f32, f32) {
+        if det.abs() <= 1e-9 {
+            return (b[0], b[1]);
+        }
+        let (px, py) = (x - m[4], y - m[5]);
+        let (tx, ty) = ((m[3] * px - m[2] * py) / det, (m[0] * py - m[1] * px) / det);
+        match round {
+            None => (tx, ty),
+            // back off the circle the lines were bent round
+            Some((mx, yref, r)) => {
+                let (vx, vy, side) = (tx - mx, ty - (yref + r), r.signum());
+                let rho = (vx * vx + vy * vy).sqrt() * side;
+                (mx + (vx * side).atan2(-vy * side) * r, yref + r - rho)
+            }
+        }
+    };
     // the box (or one per line) hugs the inked lines, not the wrap width
     let backing: Vec<Path> = text.background.as_ref().map_or(vec![], |bg| {
         let pad = bg.padding * text.size;
         let r = bg.radius * text.size;
+        // its sides lean about its own middle
+        let lean = bg.skew.to_radians().tan();
+        let boxed = |x0: f32, y0: f32, x1: f32, y1: f32| {
+            let shear: Xform = [1.0, 0.0, -lean, 1.0, lean * (y0 + y1) / 2.0, 0.0];
+            Path::round_rect(x0, y0, x1, y1, r).transformed(&compose(&m, &shear))
+        };
+        match bg.shape {
+            TextBacking::Box => {}
+            // a band behind the lower half of each line, as far as the line shows
+            TextBacking::Marker => {
+                return l
+                    .lines
+                    .iter()
+                    .filter(|ln| ln.range.start < cut && ln.width > 0.0)
+                    .map(|ln| {
+                        let end = if cut >= ln.range.end {
+                            ln.x + ln.width
+                        } else {
+                            ln.carets.iter().filter(|(at, _)| *at <= cut).map(|(_, x)| *x).fold(ln.x, f32::max)
+                        };
+                        boxed(ln.x - pad, ln.baseline - ln.ascent * 0.42, end + pad, ln.baseline + ln.descent * 0.6)
+                    })
+                    .collect();
+            }
+            // a tile behind each character that shows
+            TextBacking::Tiles => {
+                // each stands about its character: the space the tracking adds after one is
+                // shared between its sides, and a hair is left between two tiles
+                let (lead, gap) = ((text.tracking * text.size).max(0.0) / 2.0, text.size * 0.05);
+                return starts(&text.text)
+                    .into_iter()
+                    .filter(|at| *at < cut)
+                    .filter_map(|at| {
+                        let (k, x0, x1) = span(&l, at)?;
+                        let ln = &l.lines[k];
+                        let (top, bottom) = (ln.baseline - ln.ascent, ln.baseline + ln.descent);
+                        Some(boxed(x0 - lead + gap, top + gap, x1 - lead - gap, bottom - gap))
+                    })
+                    .collect();
+            }
+        }
         if bg.lines {
             return l
                 .lines
@@ -331,13 +407,13 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
                         ln.carets.iter().filter(|(at, _)| *at <= cut).map(|(_, x)| *x).fold(ln.x, f32::max)
                     };
                     let (top, bottom) = (ln.baseline - ln.ascent, ln.baseline + ln.descent);
-                    Path::round_rect(ln.x - pad, top - pad * 0.5, end + pad, bottom + pad * 0.5, r).transformed(&m)
+                    boxed(ln.x - pad, top - pad * 0.5, end + pad, bottom + pad * 0.5)
                 })
                 .collect();
         }
         let (x0, x1) = l.lines.iter().fold((f32::MAX, f32::MIN), |(a, z), ln| (a.min(ln.x), z.max(ln.x + ln.width)));
         let (x0, x1) = if x0 <= x1 { (x0, x1) } else { (b[0], b[2]) };
-        vec![Path::round_rect(x0 - pad, b[1] - pad, x1 + pad, b[3] + pad, r).transformed(&m)]
+        vec![boxed(x0 - pad, b[1] - pad, x1 + pad, b[3] + pad)]
     });
     // the pen's lines on the target, and how much of each shows: it goes as the ink arrives
     let pen_half = text.draw.as_ref().map_or(0.0, |dr| (dr.width * text.size * s / 2.0).max(0.5));
@@ -358,7 +434,7 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
         if ink > 0.0 {
             let bounds = [g.x, g.y - g.size, g.x + g.size, g.y + g.size * 0.3];
             let one = Layout { glyphs: vec![*g], bounds, ..Layout::default() };
-            movers.push(Mover { one, to: IDENTITY, opacity: ink });
+            movers.push(Mover { one, to: IDENTITY, opacity: ink, tint: None });
         }
     }
     let mut d = device_bounds(&l, &m);
@@ -375,8 +451,7 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
         let at = device_bounds(&mv.one, &mv.to);
         d = [d[0].min(at[0]), d[1].min(at[1]), d[2].max(at[2]), d[3].max(at[3])];
     }
-    let reach = shadow.map_or(0.0, |(dx, dy, sigma)| dx.abs().max(dy.abs()) as f32 + 3.0 * sigma);
-    let grow = (stroke_px + outer_px + reach).ceil() + 2.0;
+    let grow = (stroke_px + outer_px + finish.reach()).ceil() + 2.0;
     d = [d[0] - grow, d[1] - grow, d[2] + grow, d[3] + grow];
     for (x0, y0, x1, y1) in backing.iter().filter_map(Path::bounds) {
         d = [d[0].min(x0), d[1].min(y0), d[2].max(x1), d[3].max(y1)];
@@ -393,12 +468,38 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
 
     let mut fill = Mask::new(r.w, r.h);
     draw(&l, &m, &mut fill, (r.x, r.y));
+    // units that take colours in turn: what each colour inks, to weigh the colours by
+    let turns = text.palette.as_ref().map(|pal| pal.colors.len().max(1));
+    let mut tints: Vec<Mask> = turns.map_or(vec![], |n| vec![Mask::new(r.w, r.h); n]);
+    if let Some(n) = turns {
+        let whole = laid(text, family);
+        let of = tints_of(text, &whole).unwrap_or_default();
+        let starts = starts(&text.text);
+        for (j, tint) in tints.iter_mut().enumerate() {
+            let mut part = (*l).clone();
+            part.underlines.clear();
+            part.underline_runs.clear();
+            part.glyphs.retain(|g| {
+                starts
+                    .partition_point(|s| *s <= g.cluster)
+                    .checked_sub(1)
+                    .and_then(|i| of.get(i))
+                    .is_some_and(|t| t % n == j)
+            });
+            if !part.glyphs.is_empty() {
+                draw(&part, &m, tint, (r.x, r.y));
+            }
+        }
+    }
     // a character that shows whole is inked with the rest, so their outlines run together; one
     // that shows in part is inked on its own and laid over
-    let mut faint: Vec<(Region, Coat, f32)> = vec![];
+    let mut faint: Vec<(Region, Coat, f32, Option<usize>)> = vec![];
     for mv in &movers {
         if mv.opacity >= 1.0 {
             draw(&mv.one, &mv.to, &mut fill, (r.x, r.y));
+            if let Some(tint) = mv.tint.and_then(|t| tints.get_mut(t)) {
+                draw(&mv.one, &mv.to, tint, (r.x, r.y));
+            }
             continue;
         }
         let at = device_bounds(&mv.one, &mv.to);
@@ -413,9 +514,9 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
         let sub = Region { x: ax, y: ay, w: (bx - ax) as usize, h: (by - ay) as usize };
         let mut own = Mask::new(sub.w, sub.h);
         draw(&mv.one, &mv.to, &mut own, (sub.x, sub.y));
-        faint.push((sub, Coat::of(own, stroke_px, outer_px, shadow), mv.opacity));
+        faint.push((sub, Coat::of(own, &finish), mv.opacity, mv.tint));
     }
-    let coat = Coat::of(fill, stroke_px, outer_px, shadow);
+    let coat = Coat::of(fill, &finish);
     // each box filled on its own and joined, so where line boxes meet they do not cancel out
     let behind = (!backing.is_empty()).then(|| {
         let mut all = Mask::new(r.w, r.h);
@@ -426,42 +527,71 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
         }
         all
     });
+    let edge = text
+        .background
+        .as_ref()
+        .and_then(|bg| bg.border.as_ref())
+        .zip(behind.as_ref())
+        .map(|(st, all)| (stroke(all, (st.width * s).max(1.0), StrokeKind::Inner), premultiply_srgb(st.color.0)));
 
     let fill_c = premultiply_srgb(text.color.0);
-    // with a gradient, the fill's colour follows the block's height
+    // a line's ground runs halfway to its neighbours
+    let whole = laid(text, family);
+    let between: Vec<f32> =
+        whole.lines.windows(2).map(|w| (w[0].baseline + w[0].descent + w[1].baseline - w[1].ascent) / 2.0).collect();
+    // the fill's colour where the text is flat: through several colours at an angle, or from the
+    // title's colour at the block's top to another at its bottom
+    let (ink_x0, ink_x1) =
+        whole.lines.iter().fold((f32::MAX, f32::MIN), |(a, z), ln| (a.min(ln.x), z.max(ln.x + ln.width)));
+    let (ink_x0, ink_x1) = if ink_x0 <= ink_x1 { (ink_x0, ink_x1) } else { (b[0], b[2]) };
+    let run = text.fill.as_ref().filter(|f| f.colors.len() >= 2).map(|f| {
+        let stops: Vec<[f32; 4]> = f.colors.iter().map(|c| premultiply_srgb(c.0)).collect();
+        let (sin, cos) = f.angle.to_radians().sin_cos();
+        // from the top of a line's em box to its bottom, where the ink is: a line's own box is
+        // taller, and the first and last colours would fall where there is none
+        let (rise, sink) = (text.size * 0.88, text.size * 0.12);
+        let boxes: Vec<[f32; 4]> = if f.lines {
+            whole.lines.iter().map(|ln| [ln.x, ln.baseline - rise, ln.x + ln.width, ln.baseline + sink]).collect()
+        } else {
+            let top = whole.lines.first().map_or(b[1], |ln| ln.baseline - rise);
+            let bottom = whole.lines.last().map_or(b[3], |ln| ln.baseline + sink);
+            vec![[ink_x0, top, ink_x1, bottom]]
+        };
+        let (bands, repeat, between) = (f.bands, f.repeat.max(0.1), between.clone());
+        move |tx: f32, ty: f32| -> [f32; 4] {
+            let k = if boxes.len() > 1 { between.partition_point(|edge| *edge <= ty).min(boxes.len() - 1) } else { 0 };
+            let Some(bx) = boxes.get(k) else { return stops[0] };
+            let (w, h) = ((bx[2] - bx[0]).max(1e-3), (bx[3] - bx[1]).max(1e-3));
+            let along = (tx - (bx[0] + bx[2]) / 2.0) * cos + (ty - (bx[1] + bx[3]) / 2.0) * sin;
+            let t = (along / (w * cos.abs() + h * sin.abs()).max(1e-3) + 0.5).clamp(0.0, 1.0);
+            let n = stops.len();
+            // once along the way from the first colour to the last; more than once, round and round
+            let (at, last) = if repeat == 1.0 {
+                (t * if bands { n as f32 } else { (n - 1) as f32 }, n - 1)
+            } else {
+                ((t * repeat).fract() * n as f32, n)
+            };
+            let i = (at.floor() as usize).min(n - 1);
+            if bands || i >= last {
+                return if bands { stops[i] } else { mix(stops[i], stops[(i + 1) % n], at - i as f32) };
+            }
+            mix(stops[i], stops[i + 1], at - i as f32)
+        }
+    });
     let fade = text.gradient.as_ref().map(|g| {
         let bottom = premultiply_srgb(g.0);
-        let det = m[0] * m[3] - m[1] * m[2];
         let (top_y, height) = (b[1], (b[3] - b[1]).max(1e-3));
-        move |x: f32, y: f32| -> [f32; 4] {
-            // the text-space height of a target pixel
-            let (px, py) = (x - m[4], y - m[5]);
-            let ty = if det.abs() > 1e-9 { (m[0] * py - m[1] * px) / det } else { top_y };
-            let t = ((ty - top_y) / height).clamp(0.0, 1.0);
-            std::array::from_fn(|i| fill_c[i] + (bottom[i] - fill_c[i]) * t)
-        }
+        move |ty: f32| -> [f32; 4] { mix(fill_c, bottom, ((ty - top_y) / height).clamp(0.0, 1.0)) }
     });
     // what is being said takes another colour: by where a target pixel is in the text
     let said = text.highlight.as_ref().and_then(|h| {
-        let whole = laid(text, family);
         let spans = said(text, &whole, h.unit, h.progress.sample(reelforge_time::Tick::ZERO));
         if spans.is_empty() {
             return None;
         }
-        // a line's ground runs halfway to its neighbours
-        let between: Vec<f32> = whole
-            .lines
-            .windows(2)
-            .map(|w| (w[0].baseline + w[0].descent + w[1].baseline - w[1].ascent) / 2.0)
-            .collect();
-        let det = m[0] * m[3] - m[1] * m[2];
+        let between = between.clone();
         let color = premultiply_srgb(h.color.0);
-        Some(move |x: f32, y: f32| -> ([f32; 4], f32) {
-            if det.abs() <= 1e-9 {
-                return (color, 0.0);
-            }
-            let (px, py) = (x - m[4], y - m[5]);
-            let (tx, ty) = ((m[3] * px - m[2] * py) / det, (m[0] * py - m[1] * px) / det);
+        Some(move |tx: f32, ty: f32| -> ([f32; 4], f32) {
             let line = between.partition_point(|edge| *edge <= ty);
             let edge = |d: f32| (d * s + 0.5).clamp(0.0, 1.0);
             let cover = spans
@@ -472,18 +602,33 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
             (color, cover)
         })
     });
+    let turn_c: Vec<[f32; 4]> =
+        text.palette.as_ref().map_or(vec![], |pal| pal.colors.iter().map(|c| premultiply_srgb(c.0)).collect());
+    let depth_c = text.depth.as_ref().map(|d| {
+        let near = premultiply_srgb(d.color.0);
+        (near, d.fade.as_ref().map_or(near, |f| premultiply_srgb(f.0)))
+    });
+    let bevel_c = text.bevel.as_ref().map(|bv| (premultiply_srgb(bv.light.0), premultiply_srgb(bv.dark.0)));
+    let shade_c: Vec<[f32; 4]> =
+        text.shadow.iter().chain(&text.shadows).map(|sh| premultiply_srgb(sh.color.0)).collect();
     let outer_c = text.outer.as_ref().map(|st| premultiply_srgb(st.color.0));
-    let shadow_c = text.shadow.as_ref().map(|sh| premultiply_srgb(sh.color.0));
     let stroke_c = text.stroke.as_ref().map(|st| premultiply_srgb(st.color.0));
     let back_c = text.background.as_ref().map(|bg| premultiply_srgb(bg.color.0));
     let over = |top: [f32; 4], cov: f32, under: [f32; 4]| -> [f32; 4] {
         let a = top[3] * cov;
         std::array::from_fn(|i| top[i] * cov + under[i] * (1.0 - a))
     };
-    // a coat's shadow, outlines and glyphs at its pixel `i`, target pixel `(x, y)`, laid over `px`
-    let ink = |coat: &Coat, i: usize, x: i32, y: i32, mut px: [f32; 4]| -> [f32; 4] {
-        if let (Some(mk), Some(c)) = (&coat.shade, shadow_c) {
-            px = over(c, mk.a[i].clamp(0.0, 1.0), px);
+    // a coat's shadows, depth, outlines and glyphs at its pixel `i`, target pixel `(x, y)`, laid
+    // over `px`; `own` is the colour a coat of one turn takes, `main` whether it is the whole
+    // text's coat, whose turns are weighed by `tints`
+    let ink = |coat: &Coat, i: usize, x: i32, y: i32, mut px: [f32; 4], own: Option<usize>, main: bool| -> [f32; 4] {
+        for (mk, c) in coat.shades.iter().zip(&shade_c).rev() {
+            px = over(*c, mk.a[i].clamp(0.0, 1.0), px);
+        }
+        if let (Some((mk, far)), Some((near, end))) = (&coat.depth, depth_c)
+            && mk.a[i] > 0.0
+        {
+            px = over(mix(near, end, far[i]), mk.a[i].clamp(0.0, 1.0), px);
         }
         if let (Some(mk), Some(c)) = (&coat.outer, outer_c) {
             px = over(c, mk.a[i].clamp(0.0, 1.0), px);
@@ -491,29 +636,56 @@ fn draw_uncached(layer: &PlannedLayer, text: &TextContent, family: &str, k: f32,
         if let (Some(mk), Some(c)) = (&coat.outline, stroke_c) {
             px = over(c, mk.a[i].clamp(0.0, 1.0), px);
         }
-        let mut c = match &fade {
-            Some(f) if coat.fill.a[i] > 0.0 => f(x as f32 + 0.5, y as f32 + 0.5),
+        let cover = coat.fill.a[i].clamp(0.0, 1.0);
+        if cover <= 0.0 {
+            return px;
+        }
+        let (tx, ty) = flat(x as f32 + 0.5, y as f32 + 0.5);
+        let mut c = match (&run, &fade) {
+            (Some(run), _) => run(tx, ty),
+            (None, Some(fade)) => fade(ty),
             _ => fill_c,
         };
-        if let Some(said) = &said
-            && coat.fill.a[i] > 0.0
-        {
-            let (color, cover) = said(x as f32 + 0.5, y as f32 + 0.5);
-            c = std::array::from_fn(|k| c[k] + (color[k] - c[k]) * cover);
+        // a colour in turn, over whatever else fills it
+        if let Some(turn) = own.and_then(|t| turn_c.get(t)) {
+            c = *turn;
+        } else if main && !tints.is_empty() {
+            let (mut sum, mut weight) = ([0.0f32; 4], 0.0f32);
+            for (tint, turn) in tints.iter().zip(&turn_c) {
+                let w = tint.a[i].clamp(0.0, 1.0);
+                weight += w;
+                for k in 0..4 {
+                    sum[k] += turn[k] * w;
+                }
+            }
+            if weight > 0.0 {
+                c = sum.map(|v| v / weight);
+            }
         }
-        over(c, coat.fill.a[i].clamp(0.0, 1.0), px)
+        if let Some(said) = &said {
+            let (color, cover) = said(tx, ty);
+            c = mix(c, color, cover);
+        }
+        if let (Some((light, dark)), Some((lit, shaded))) = (bevel_c, &coat.bevel) {
+            c = over(light, lit.a[i].clamp(0.0, 1.0), c);
+            c = over(dark, shaded.a[i].clamp(0.0, 1.0), c);
+        }
+        over(c, cover, px)
     };
     let mut image = Image::filled(r.w as u32, r.h as u32, [0.0; 4]);
     for (i, px) in image.pixels.iter_mut().enumerate() {
         if let (Some(mk), Some(c)) = (&behind, back_c) {
             *px = over(c, mk.a[i].clamp(0.0, 1.0), *px);
         }
-        *px = ink(&coat, i, r.x + (i % r.w) as i32, r.y + (i / r.w) as i32, *px);
+        if let Some((mk, c)) = &edge {
+            *px = over(*c, mk.a[i].clamp(0.0, 1.0), *px);
+        }
+        *px = ink(&coat, i, r.x + (i % r.w) as i32, r.y + (i / r.w) as i32, *px, None, true);
     }
-    for (sub, coat, opacity) in &faint {
+    for (sub, coat, opacity, tint) in &faint {
         for i in 0..sub.w * sub.h {
             let (x, y) = (sub.x + (i % sub.w) as i32, sub.y + (i / sub.w) as i32);
-            let top = ink(coat, i, x, y, [0.0; 4]);
+            let top = ink(coat, i, x, y, [0.0; 4], *tint, false);
             if top[3] > 0.0 {
                 let o = (y - r.y) as usize * r.w + (x - r.x) as usize;
                 image.pixels[o] = over(top, *opacity, image.pixels[o]);
@@ -624,28 +796,137 @@ fn said(text: &TextContent, l: &Layout, unit: TextUnit, progress: f32) -> Vec<(u
     out
 }
 
-/// One coat of ink as coverage: the glyphs, their outlines and their shadow.
+/// Colour `a` on its way to `b`: all `a` at 0, all `b` at 1.
+fn mix(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t)
+}
+
+/// What is done to a coat of ink besides filling it, in target pixels.
+struct Finish {
+    stroke_px: f32,
+    outer_px: f32,
+    /// Each shadow's offset and softness, the top one first.
+    shadows: Vec<(i32, i32, f32)>,
+    /// How far the glyphs are drawn out into a block.
+    depth: Option<(i32, i32)>,
+    /// The width of the line inked just inside a hollow glyph's edge.
+    hollow_px: Option<f32>,
+    /// Lit and shaded edges: the step towards the light, and how wide they are.
+    bevel: Option<(i32, i32, f32)>,
+}
+
+impl Finish {
+    /// How far beyond the glyphs and their outlines anything of it lands.
+    fn reach(&self) -> f32 {
+        let depth = self.depth.unwrap_or((0, 0));
+        self.shadows
+            .iter()
+            .map(|(dx, dy, sigma)| (dx.abs() + depth.0.abs()).max(dy.abs() + depth.1.abs()) as f32 + 3.0 * sigma)
+            .fold(depth.0.abs().max(depth.1.abs()) as f32, f32::max)
+    }
+}
+
+/// One coat of ink as coverage: the glyphs, their outlines, the block they are drawn out into and
+/// their shadows.
 struct Coat {
     fill: Mask,
     outline: Option<Mask>,
     outer: Option<Mask>,
-    shade: Option<Mask>,
+    /// The block, and for each of its pixels how far along it that pixel is, 0 to 1.
+    depth: Option<(Mask, Vec<f32>)>,
+    /// The shadows, the top one first.
+    shades: Vec<Mask>,
+    /// The lit and the shaded edges inside the glyphs.
+    bevel: Option<(Mask, Mask)>,
 }
 
 impl Coat {
-    /// The outlines (widths in target pixels) and the shadow (offset and softness) of `fill`.
-    fn of(fill: Mask, stroke_px: f32, outer_px: f32, shadow: Option<(i32, i32, f32)>) -> Coat {
+    /// What `finish` makes of the glyphs in `fill`.
+    fn of(fill: Mask, finish: &Finish) -> Coat {
+        // hollow glyphs are their own edges, and everything else is of those
+        let fill = match finish.hollow_px {
+            Some(w) => stroke(&fill, w, StrokeKind::Inner),
+            None => fill,
+        };
+        let (stroke_px, outer_px) = (finish.stroke_px, finish.outer_px);
         let outline = (stroke_px > 0.0).then(|| stroke(&fill, stroke_px, StrokeKind::Outer));
         let outer = (outer_px > 0.0).then(|| stroke(&fill, stroke_px + outer_px, StrokeKind::Outer));
-        let shade = shadow.map(|(dx, dy, sigma)| {
-            let mut shape = fill.clone();
-            for m in [&outline, &outer].into_iter().flatten() {
-                shape.max_with(m);
+        let mut shape = fill.clone();
+        for m in [&outline, &outer].into_iter().flatten() {
+            shape.max_with(m);
+        }
+        let depth = finish.depth.filter(|d| *d != (0, 0)).map(|(dx, dy)| {
+            let n = dx.abs().max(dy.abs());
+            let (w, h) = (shape.w as i32, shape.h as i32);
+            let mut block = Mask::new(shape.w, shape.h);
+            let mut far = vec![0.0f32; shape.w * shape.h];
+            for k in 1..=n {
+                let (ox, oy) = ((dx * k + n / 2 * dx.signum()) / n, (dy * k + n / 2 * dy.signum()) / n);
+                for y in oy.max(0)..(h + oy).min(h) {
+                    for x in ox.max(0)..(w + ox).min(w) {
+                        let v = shape.a[((y - oy) * w + x - ox) as usize];
+                        let i = (y * w + x) as usize;
+                        if v > block.a[i] {
+                            block.a[i] = v;
+                            far[i] = k as f32 / n as f32;
+                        }
+                    }
+                }
             }
-            blur(&offset(&shape, dx, dy), sigma)
+            (block, far)
         });
-        Coat { fill, outline, outer, shade }
+        if let Some((block, _)) = &depth {
+            shape.max_with(block);
+        }
+        let shades = finish.shadows.iter().map(|(dx, dy, sigma)| blur(&offset(&shape, *dx, *dy), *sigma)).collect();
+        let bevel = finish.bevel.map(|(dx, dy, reach)| {
+            // an edge is where the glyph is and, a step to one side, is not
+            let edge = |dx: i32, dy: i32| {
+                let beside = offset(&fill, -dx, -dy);
+                let mut m = Mask::new(fill.w, fill.h);
+                for (o, (a, b)) in m.a.iter_mut().zip(fill.a.iter().zip(&beside.a)) {
+                    *o = (a - b).max(0.0);
+                }
+                let mut soft = blur(&m, reach / 3.0);
+                for (o, a) in soft.a.iter_mut().zip(&fill.a) {
+                    *o = (*o * 1.6).min(1.0) * a;
+                }
+                soft
+            };
+            (edge(dx, dy), edge(-dx, -dy))
+        });
+        Coat { fill, outline, outer, depth, shades, bevel }
     }
+}
+
+/// The circle `text`'s lines are bent round, when they are: the middle of the block across, the
+/// height that keeps its place, and the radius there (negative when the lines hang down).
+fn bend(text: &TextContent, l: &Layout) -> Option<(f32, f32, f32)> {
+    let (x0, x1) = l.lines.iter().fold((f32::MAX, f32::MIN), |(a, z), ln| (a.min(ln.x), z.max(ln.x + ln.width)));
+    let turn = text.arc.to_radians();
+    if turn.abs() < 1e-4 || x1 - x0 <= 0.0 {
+        return None;
+    }
+    let b = l.bounds;
+    Some(((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0, (x1 - x0) / turn))
+}
+
+/// Which colour of the palette each character takes (white space left out), before the colours
+/// go round: the number of its character, word or line.
+fn tints_of(text: &TextContent, l: &Layout) -> Option<Vec<usize>> {
+    let pal = text.palette.as_ref()?;
+    Some(units(&text.text, l, &starts(&text.text), pal.unit))
+}
+
+/// A number from 0 to 1 that depends only on what it is given.
+fn chance(seed: u32, i: usize, salt: u32) -> f32 {
+    let mut x = seed.wrapping_mul(0x9E37_79B1) ^ (i as u32).wrapping_mul(0x85EB_CA6B) ^ salt.wrapping_mul(0xC2B2_AE35);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x2C1B_3C6D);
+    x ^= x >> 12;
+    x = x.wrapping_mul(0x297A_2D39);
+    x ^= x >> 15;
+    (x >> 8) as f32 / (1u32 << 24) as f32
 }
 
 /// Characters somewhere else than the layout puts them.
@@ -656,11 +937,14 @@ struct Mover {
     to: Xform,
     /// How much of them shows; above 0.
     opacity: f32,
+    /// The colour of the palette they take, when the text has one.
+    tint: Option<usize>,
 }
 
-/// Takes the characters that `text.chars` moves out of `l`: those on their way are returned
-/// (together where they go the same way, as the characters of a word do), those that do not show
-/// at all are dropped, and those at rest stay.
+/// Takes the characters that `text.chars` moves out of `l`, and those an arc or a scatter stands
+/// somewhere else: those on their way or out of line are returned (together where they go the
+/// same way, as the characters of a word do), those that do not show at all are dropped, and
+/// those at rest where the layout put them stay.
 fn moved(text: &TextContent, l: &mut Layout) -> Vec<Mover> {
     // characters are counted without white space
     let starts = starts(&text.text);
@@ -716,12 +1000,39 @@ fn moved(text: &TextContent, l: &mut Layout) -> Vec<Mover> {
             shown[i] *= pose.opacity.clamp(0.0, 1.0);
         }
     }
+    // where each stands when nothing moves it: set out of line by chance, then bent round the arc
+    let round = bend(text, l);
+    for i in 0..n {
+        let Some(bx) = boxes[i] else { continue };
+        let (cx, base) = ((bx[0] + bx[2]) / 2.0, bx[1] + sizes[i]);
+        let mut stands = IDENTITY;
+        if let Some(sc) = &text.scatter {
+            let by = |salt: u32| chance(sc.seed, i, salt) * 2.0 - 1.0;
+            let (sin, cos) = (sc.rotate * by(1)).to_radians().sin_cos();
+            let k = (1.0 + sc.scale * by(3)).max(0.05);
+            let (a, b, cy) = (k * cos, k * sin, base - sizes[i] * 0.36);
+            stands = [a, b, -b, a, cx - (a * cx - b * cy), cy + sc.shift * sizes[i] * by(2) - (b * cx + a * cy)];
+        }
+        if let Some((mx, yref, r)) = round {
+            let (sin, cos) = ((cx - mx) / r).sin_cos();
+            let rho = r - (base - yref);
+            let (px, py) = (mx + rho * sin, yref + r - rho * cos);
+            let on: Xform = [cos, sin, -sin, cos, px - (cos * cx - sin * base), py - (sin * cx + cos * base)];
+            stands = if stands == IDENTITY { on } else { compose(&on, &stands) };
+        }
+        if stands != IDENTITY {
+            to[i] = if to[i] == IDENTITY { stands } else { compose(&stands, &to[i]) };
+        }
+    }
+    let tints = tints_of(text, l);
+    let turns = text.palette.as_ref().map_or(1, |pal| pal.colors.len().max(1));
+    let tint = |i: usize| tints.as_ref().and_then(|t| t.get(i)).map(|t| t % turns);
     let rests = |i: usize| to[i] == IDENTITY && shown[i] >= 1.0;
     let mut out: Vec<Mover> = vec![];
     for g in &l.glyphs {
         let Some(i) = index(g).filter(|i| !rests(*i) && shown[*i] > 0.0) else { continue };
         let b = boxes[i].unwrap_or([g.x, g.y - g.size, g.x + g.size * 0.6, g.y + g.size * 0.3]);
-        match out.iter_mut().find(|mv| mv.to == to[i] && mv.opacity == shown[i]) {
+        match out.iter_mut().find(|mv| mv.to == to[i] && mv.opacity == shown[i] && mv.tint == tint(i)) {
             Some(mv) => {
                 mv.one.glyphs.push(*g);
                 let o = mv.one.bounds;
@@ -729,7 +1040,7 @@ fn moved(text: &TextContent, l: &mut Layout) -> Vec<Mover> {
             }
             None => {
                 let one = Layout { glyphs: vec![*g], bounds: b, ..Layout::default() };
-                out.push(Mover { one, to: to[i], opacity: shown[i] });
+                out.push(Mover { one, to: to[i], opacity: shown[i], tint: tint(i) });
             }
         }
     }

@@ -25,8 +25,15 @@ by dropping their `draft_content.json` (or `capcut.import`): video, photo, sound
 speed, volume, placement, mirroring, fades and transitions; files the draft names that are not at hand
 show as offline and relink when dropped in. Titles
 render with shaping, wrapping, outlines, shadows, gradients and boxes, Chinese included (a bundled
-Noto Sans SC subset covering GB 2312), and ten title templates (花字) apply a look in one step
-(`title.templates`, `"template"` on `clip.add` / `clip.set`). Between two keyframes a value travels along a curve: a named one
+Noto Sans SC subset covering GB 2312), and 67 title templates (花字) on ten shelves (basic, variety, gradient,
+metal and gloss, glow, 3D, hollow and stripes, playful, boxes, promo) apply a look in one step
+(`title.templates`, `"template"` on `clip.add` / `clip.set`). The looks are made of style parameters any title takes:
+a fill through up to eight colours at any angle, smooth or in stripes (`fill`); a colour per character, word or line
+(`palette`); up to four more shadows and glows (`shadows`); letters with depth (`depth`); hollow letters (`hollow`);
+lit and shaded edges (`bevel`); characters a little out of line (`scatter`); lines bent round an arc (`arc`); and
+behind the words a box, a highlighter's band or a tile per character (`backing`), with a border (`border`) or leaning
+sides (`skew`). In the editor they are toggles and fields under a title's text, with the templates below, shelf by
+shelf. Between two keyframes a value travels along a curve: a named one
 (linear, hold, in, out, inOut, overshoot, anticipate) or one drawn by hand as a cubic Bézier, with `clip.setEase` or by dragging
 the two handles of the graph in the inspector's Keyframes panel. A green (or any one-colour) screen is keyed out with `clip.setChromaKey`, and
 `clip.pickChromaKey` finds the backdrop's colour in the frame by itself; picture effects (`fx.list`) include

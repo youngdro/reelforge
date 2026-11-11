@@ -799,6 +799,145 @@ pub struct TextContent {
     /// fill comes in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draw: Option<TextDraw>,
+    /// With `text/8`: the fill is a gradient through several colours at an angle, in place of
+    /// `color` and `gradient`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<TextFill>,
+    /// With `text/8`: its units take colours in turn (the first character the first colour, the
+    /// next the second, and round again), over whatever else fills them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub palette: Option<TextPalette>,
+    /// With `text/8`: more shadows beneath `shadow`, the last one lowest: a glow is a shadow with
+    /// no offset, and two of them a neon tube's halo.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shadows: Vec<TextShadow>,
+    /// With `text/8`: the glyphs and their outlines are drawn out to one side as a solid block
+    /// (a letter with depth), beneath them and above the shadows, which the block casts too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<TextDepth>,
+    /// With `text/8`: only a line this wide (in ems) just inside each glyph's edge is inked, and
+    /// everything else (the fill's colours, outlines, depth, shadows) is of that line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hollow: Option<f32>,
+    /// With `text/8`: the glyphs' edges are lit from one side and shaded on the other, as if
+    /// they stood up from the page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bevel: Option<TextBevel>,
+    /// With `text/8`: each character is turned, moved and sized a little by chance, about its own
+    /// centre: the same way every time for the same `seed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scatter: Option<TextScatter>,
+    /// With `text/8`: the lines are bent round a circle: the block's width spans this many
+    /// degrees, arching up when positive and hanging down when negative. Each character is turned
+    /// to stand on the curve; boxes and underlines stay straight.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub arc: f32,
+}
+
+/// A text's fill through several colours (`text/8`). The way runs across the lines as they are
+/// inked: from side to side of the widest line, and from the top of the first line's em box
+/// (0.88 em above its baseline) to the bottom of the last one's (0.12 em below).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TextFill {
+    /// The colours, two to eight, evenly spaced along the way.
+    pub colors: Vec<Color>,
+    /// Which way the colours run, in degrees clockwise: 0 from left to right, 90 from top to
+    /// bottom.
+    #[serde(default = "ninety")]
+    pub angle: f32,
+    /// The colours run across each line on its own, not once across the whole block.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub lines: bool,
+    /// Bands with hard edges (stripes) in place of a smooth run from colour to colour.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bands: bool,
+    /// How many times the colours go round along the way; 1 unless told.
+    #[serde(default = "one_f32", skip_serializing_if = "is_one")]
+    pub repeat: f32,
+}
+
+fn ninety() -> f32 {
+    90.0
+}
+
+fn one_f32() -> f32 {
+    1.0
+}
+
+fn is_one(v: &f32) -> bool {
+    *v == 1.0
+}
+
+/// Colours a text's units take in turn (`text/8`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TextPalette {
+    /// The colours, one to eight.
+    pub colors: Vec<Color>,
+    /// What takes one colour: each character, word or line.
+    #[serde(default)]
+    pub unit: TextUnit,
+}
+
+/// A text drawn out to one side as a solid block (`text/8`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TextDepth {
+    /// The block's colour, next to the glyphs.
+    pub color: Color,
+    /// How far it reaches, `[right, down]` in ems, on the frame.
+    pub offset: [f32; 2],
+    /// The colour at its far end, when it changes along the way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fade: Option<Color>,
+}
+
+/// Lit and shaded edges inside a text's glyphs (`text/8`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TextBevel {
+    /// The colour of the lit edge.
+    pub light: Color,
+    /// The colour of the shaded edge.
+    pub dark: Color,
+    /// How wide the edges are, in ems.
+    pub size: f32,
+    /// Where the light is, in degrees clockwise from straight above: 315 is the top left.
+    pub angle: f32,
+}
+
+/// Characters set a little out of line by chance (`text/8`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TextScatter {
+    /// The most a character turns either way, in degrees.
+    #[serde(default)]
+    pub rotate: f32,
+    /// The most it moves up or down, in ems.
+    #[serde(default)]
+    pub shift: f32,
+    /// The most it grows or shrinks, as a share of its size.
+    #[serde(default)]
+    pub scale: f32,
+    /// Which arrangement: another number, another one.
+    #[serde(default)]
+    pub seed: u32,
+}
+
+/// What stands behind a text's lines (`text/8`).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum TextBacking {
+    /// A box behind the block, or behind each line.
+    #[default]
+    Box,
+    /// A band behind the lower half of each line, as a highlighter pen leaves.
+    Marker,
+    /// A tile behind each character: as wide as the character's place in the line (the space
+    /// `tracking` adds after it shared between its two sides) and as tall as the line, less a
+    /// hair on every side that keeps it apart from the next. `padding` does not count.
+    Tiles,
 }
 
 /// What of a text moves as one, or is said as one (`text/7`).
@@ -1118,6 +1257,14 @@ impl TextContent {
             number: None,
             highlight: None,
             draw: None,
+            fill: None,
+            palette: None,
+            shadows: vec![],
+            depth: None,
+            hollow: None,
+            bevel: None,
+            scatter: None,
+            arc: 0.0,
         }
     }
 }
@@ -1160,6 +1307,36 @@ pub struct TextBackground {
     /// With `text/3`: a box behind each line, hugging it, instead of one behind the block.
     #[serde(default, skip_serializing_if = "is_false")]
     pub lines: bool,
+    /// With `text/8`: what it is, when not a box.
+    #[serde(default, skip_serializing_if = "is_box")]
+    pub shape: TextBacking,
+    /// With `text/8`: a line drawn just inside its edge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border: Option<TextStroke>,
+    /// With `text/8`: its sides lean this many degrees (a parallelogram), to the right when
+    /// positive.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub skew: f32,
+}
+
+fn is_box(b: &TextBacking) -> bool {
+    *b == TextBacking::Box
+}
+
+impl TextBackground {
+    /// A plain box of this colour behind the block: a quarter of an em round the text, square
+    /// corners.
+    pub fn of(color: Color) -> TextBackground {
+        TextBackground {
+            color,
+            padding: quarter(),
+            radius: 0.0,
+            lines: false,
+            shape: TextBacking::Box,
+            border: None,
+            skew: 0.0,
+        }
+    }
 }
 
 fn is_zero(v: &f32) -> bool {
@@ -1216,6 +1393,22 @@ impl TextContent {
                 .chars
                 .iter()
                 .any(|m| m.unit != TextUnit::Char || matches!(m.curve, CharCurve::Elastic | CharCurve::Bounce))
+    }
+
+    /// Whether it uses anything beyond `text/7`.
+    pub fn needs_v8(&self) -> bool {
+        self.fill.is_some()
+            || self.palette.is_some()
+            || !self.shadows.is_empty()
+            || self.depth.is_some()
+            || self.hollow.is_some()
+            || self.bevel.is_some()
+            || self.scatter.is_some()
+            || self.arc != 0.0
+            || self
+                .background
+                .as_ref()
+                .is_some_and(|b| b.shape != TextBacking::Box || b.border.is_some() || b.skew != 0.0)
     }
 }
 
@@ -1836,6 +2029,9 @@ impl RenderSpec {
                 }
                 if t.needs_v7() {
                     out.insert("text/7".to_string());
+                }
+                if t.needs_v8() {
+                    out.insert("text/8".to_string());
                 }
                 if t.color_keys.is_some() {
                     out.insert("text.color/1".to_string());

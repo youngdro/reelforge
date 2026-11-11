@@ -28,6 +28,7 @@ pub mod shape;
 pub mod steady;
 pub mod timeline;
 pub mod timing;
+pub mod title;
 pub mod transition;
 pub mod voice;
 
@@ -42,6 +43,7 @@ pub use shape::{Counter, Fill, Shape, ShapeKind, ShapeShadow, Stroke};
 pub use steady::{Steadied, Steady};
 pub use timeline::{Timeline, TimelineInfo};
 pub use timing::{CurvePoint, CurvePreset, Inbetween, Timing};
+pub use title::{Backing, Bevel, Depth, Palette, PaletteUnit, Scatter, TitleFill};
 pub use transition::{Transition, TransitionKind};
 pub use voice::{Denoise, Voice, VoiceKind, VoicePart};
 
@@ -484,9 +486,10 @@ pub enum ClipContent {
         size: f32,
         /// Straight sRGB colour.
         color: [f32; 4],
-        /// Weight, outline, box, wrapping.
+        /// Weight, outline, box, wrapping, and everything else its letters wear (boxed: it is
+        /// several times the size of what the other kinds of clip hold).
         #[serde(default)]
-        style: TitleStyle,
+        style: Box<TitleStyle>,
     },
     /// A drawn shape: a box, ellipse, line, polygon, star, price tag or arrow (picture tracks).
     Shape {
@@ -561,6 +564,40 @@ pub struct TitleStyle {
     /// Another colour for what is being said (karaoke).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub karaoke: Option<Karaoke>,
+    /// The fill runs through several colours at an angle, in place of the colour and `gradient`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<TitleFill>,
+    /// Its characters, words or lines take colours in turn, over whatever else fills them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub palette: Option<Palette>,
+    /// More shadows beneath `shadow`, the last one lowest: one with no offset is a glow.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shadows: Vec<Shadow>,
+    /// The letters drawn out to one side as a solid block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<Depth>,
+    /// Only a line this wide (in ems) just inside each letter's edge is inked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hollow: Option<f32>,
+    /// Lit and shaded edges inside the letters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bevel: Option<Bevel>,
+    /// Each character a little out of line, by chance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scatter: Option<Scatter>,
+    /// The lines bend round a circle: the title's width spans this many degrees, arching up when
+    /// positive and hanging down when negative.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub arc: f32,
+    /// What `background` is the colour of: a box, a highlighter's band or a tile per character.
+    #[serde(default, skip_serializing_if = "Backing::is_box")]
+    pub backing: Backing,
+    /// A line just inside the box's (band's, tiles') edge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border: Option<Outline>,
+    /// The box's sides lean this many degrees, to the right when positive.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub skew: f32,
 }
 
 /// Part of a title in another colour as it is said: a voice goes through its characters at an
@@ -657,6 +694,17 @@ impl Default for TitleStyle {
             underline: false,
             counter: None,
             karaoke: None,
+            fill: None,
+            palette: None,
+            shadows: vec![],
+            depth: None,
+            hollow: None,
+            bevel: None,
+            scatter: None,
+            arc: 0.0,
+            backing: Backing::Box,
+            border: None,
+            skew: 0.0,
         }
     }
 }
@@ -665,7 +713,8 @@ impl TitleStyle {
     /// The furthest characters and lines can be moved together or apart, in ems.
     pub const SPACING: (f32, f32) = (-0.5, 4.0);
 
-    /// This title wearing `look` (a template's): its colours, outlines, box and weight, while how
+    /// This title wearing `look` (a template's): its colours, outlines, box, weight and everything
+    /// else its letters wear (fill, palette, shadows, depth, bevel, scatter, arc), while how
     /// its lines wrap and line up, its face, its spacing, slant and underline stay its own.
     pub fn wearing(&self, look: &TitleStyle) -> TitleStyle {
         TitleStyle {
@@ -1153,6 +1202,9 @@ impl Project {
                             return bad("letter and line spacing must be -0.5 to 4 em");
                         }
                         if let Some(why) = style.counter.as_ref().and_then(Counter::problem) {
+                            return bad(why);
+                        }
+                        if let Some(why) = style.problem() {
                             return bad(why);
                         }
                         if let Some(k) = &style.karaoke

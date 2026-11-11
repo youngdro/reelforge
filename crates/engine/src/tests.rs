@@ -169,7 +169,7 @@ fn titles_get_the_subtitle_look_and_can_be_restyled() {
         ClipContent::Text { style, .. } => style.clone(),
         _ => unreachable!(),
     };
-    assert_eq!(style(&s), reelforge_model::TitleStyle::subtitle());
+    assert_eq!(*style(&s), reelforge_model::TitleStyle::subtitle());
 
     let spec = s.execute("render.compile", &json!({})).unwrap();
     let content = &spec["layers"][0]["content"];
@@ -485,6 +485,112 @@ fn title_templates_restyle_a_title_in_one_step() {
     assert!((content["shadow"]["offset"][1].as_f64().unwrap() - 0.1).abs() < 1e-6);
     assert_eq!(content["background"]["radius"].as_f64(), Some(0.5));
     assert!(s.execute("clip.set", &json!({"clip": id, "template": "nope"})).unwrap_err().to_string().contains("candy"));
+}
+
+#[test]
+fn what_a_titles_letters_wear_is_set_changed_and_taken_off_by_parameters() {
+    use reelforge_model::{Backing, PaletteUnit, TitleStyle};
+    let mut s = Session::default();
+    let text = s.project().tracks.iter().find(|t| t.kind == TrackKind::Text).unwrap().id.clone();
+    let c = s
+        .execute(
+            "clip.add",
+            &json!({
+                "track": text, "text": "限时特惠", "size": 100,
+                "fill": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                "palette": {"colors": [[1, 1, 1], [1, 0.8, 0]], "unit": "word"},
+                "shadows": [{"color": [1, 0, 0.5, 0.8], "blur": 0.3}],
+                "depth": {"color": [0.5, 0, 0], "offset": [0.1, 0.1]},
+                "bevel": {"size": 0.04}, "scatter": {"rotate": 8}, "arc": 60,
+                "background": [0, 0, 0, 1], "backing": "tiles", "border": {"color": [1, 1, 1], "width": 0.03},
+                "skew": 10,
+            }),
+        )
+        .unwrap();
+    let id = c["clip"].as_str().unwrap().to_string();
+    let style = |s: &Session| match &s.project().clip(&id).unwrap().1.content {
+        ClipContent::Text { style, .. } => style.clone(),
+        _ => unreachable!(),
+    };
+    let st = style(&s);
+    let fill = st.fill.clone().unwrap();
+    assert_eq!((fill.colors.len(), fill.angle, fill.bands, fill.repeat), (3, 90.0, false, 1.0));
+    assert_eq!(st.palette.as_ref().map(|p| (p.colors.len(), p.unit)), Some((2, PaletteUnit::Word)));
+    assert_eq!(st.shadows.iter().map(|sh| (sh.offset, sh.blur)).collect::<Vec<_>>(), [([0.0, 0.0], 0.3)]);
+    assert_eq!(st.depth.as_ref().map(|d| (d.offset, d.fade)), Some(([0.1, 0.1], None)));
+    assert_eq!(st.bevel.as_ref().map(|b| (b.size, b.angle)), Some((0.04, 315.0)));
+    assert_eq!(st.scatter.as_ref().map(|sc| (sc.rotate, sc.shift, sc.seed)), Some((8.0, 0.0, 0)));
+    assert_eq!((st.arc, st.backing, st.skew), (60.0, Backing::Tiles, 10.0));
+    assert_eq!(st.border.as_ref().map(|b| b.width), Some(0.03));
+
+    // a part said again changes that part and keeps the rest
+    s.execute("clip.set", &json!({"clip": id, "fill": {"angle": 0, "bands": true}, "depth": {"fade": [0, 0, 0]}}))
+        .unwrap();
+    let st = style(&s);
+    let fill = st.fill.clone().unwrap();
+    assert_eq!((fill.colors.len(), fill.angle, fill.bands), (3, 0.0, true));
+    let depth = st.depth.clone().unwrap();
+    assert_eq!((depth.color, depth.offset, depth.fade), ([0.5, 0.0, 0.0, 1.0], [0.1, 0.1], Some([0.0, 0.0, 0.0, 1.0])));
+
+    // it reaches the renderer as text/8: lengths in ems, the border in pixels, and room for tiles
+    let spec = s.execute("render.compile", &json!({})).unwrap();
+    let content = &spec["layers"][0]["content"];
+    assert_eq!(content["fill"]["colors"].as_array().map(Vec::len), Some(3));
+    assert_eq!(content["fill"]["bands"], json!(true));
+    assert_eq!(content["palette"]["unit"], json!("word"));
+    assert_eq!(content["background"]["shape"], json!("tiles"));
+    assert!((content["background"]["border"]["width"].as_f64().unwrap() - 3.0).abs() < 1e-4);
+    assert!((content["tracking"].as_f64().unwrap() - f64::from(Backing::TILE_ROOM)).abs() < 1e-6);
+    assert!((content["arc"].as_f64().unwrap() - 60.0).abs() < 1e-6);
+    assert!(content.get("hollow").is_none());
+
+    // one fill or the other: a gradient takes the fill away, and a fill the gradient
+    s.execute("clip.set", &json!({"clip": id, "gradient": [1, 0, 0]})).unwrap();
+    assert!(style(&s).fill.is_none() && style(&s).gradient.is_some());
+    s.execute("clip.set", &json!({"clip": id, "fill": {"colors": [[1, 1, 0], [1, 0, 0]]}, "hollow": 0.05})).unwrap();
+    assert!(style(&s).fill.is_some() && style(&s).gradient.is_none() && style(&s).hollow == Some(0.05));
+
+    // null takes each away
+    s.execute(
+        "clip.set",
+        &json!({
+            "clip": id, "fill": null, "palette": null, "shadows": null, "depth": null, "hollow": null,
+            "bevel": null, "scatter": null, "arc": null, "border": null, "skew": null, "backing": "box",
+            "background": null,
+        }),
+    )
+    .unwrap();
+    assert_eq!(*style(&s), TitleStyle::subtitle(), "a new title's own style is all that is left");
+
+    // what cannot be drawn is refused, and nothing changes
+    for (bad, why) in [
+        (json!({"fill": [[1, 0, 0]]}), "two to eight"),
+        (json!({"fill": {"angle": 30}}), "colors"),
+        (json!({"palette": {"colors": [[1, 0, 0]], "unit": "page"}}), "char, word or line"),
+        (json!({"backing": "cloud"}), "box, marker or tiles"),
+        (json!({"hollow": 0.9}), "0.5 em"),
+        (json!({"arc": 500}), "360"),
+        (json!({"shadows": [{}, {}, {}, {}, {}]}), "four"),
+        (json!({"depth": {"offset": [0, 0]}}), "somewhere"),
+        (json!({"scatter": {"rotate": 300}}), "180"),
+        (json!({"skew": 80}), "60"),
+    ] {
+        let mut params = bad.clone();
+        params["clip"] = json!(id);
+        let err = s.execute("clip.set", &params).unwrap_err().to_string();
+        assert!(err.contains(why), "{bad}: {err}");
+    }
+    assert_eq!(*style(&s), TitleStyle::subtitle(), "a new title's own style is all that is left");
+
+    // every template can be worn and drawn, and says which shelf it is on
+    let list = s.execute("title.templates", &json!({})).unwrap();
+    let all = list["templates"].as_array().unwrap();
+    assert!(all.len() >= 60);
+    for t in all {
+        assert!(t["group"].is_string() && t["nameZh"].is_string());
+        s.execute("clip.set", &json!({"clip": id, "template": t["id"]})).unwrap();
+        s.execute("render.compile", &json!({})).unwrap_or_else(|e| panic!("{}: {e}", t["id"]));
+    }
 }
 
 #[test]

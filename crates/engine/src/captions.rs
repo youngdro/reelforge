@@ -172,7 +172,7 @@ pub(crate) fn place(
                 text: c.text.clone(),
                 size,
                 color: look.color,
-                style: TitleStyle { wrap: 0.86, ..look.style.clone() },
+                style: Box::new(TitleStyle { wrap: 0.86, ..look.style.clone() }),
             },
             transform: ClipTransform { y, ..ClipTransform::default() },
             opacity: 1.0,

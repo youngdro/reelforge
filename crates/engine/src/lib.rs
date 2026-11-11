@@ -19,6 +19,7 @@ mod compound;
 mod cut;
 mod decor;
 mod layout;
+mod lettering;
 pub mod listen;
 mod outline;
 mod params;
@@ -51,7 +52,7 @@ pub use remix::{TimelineTemplate, is_empty_slot, slot_colour, slot_states, timel
 pub use schema::input_schema;
 pub use shared::{Change, SharedSession};
 pub use storyboard::{Field, Lang, Said, Scene, Storyboard, field_label, scene_label, storyboards};
-pub use templates::{TitleTemplate, title_template, title_templates};
+pub use templates::{TitleGroup, TitleTemplate, title_template, title_templates};
 pub use voiceover::{Spoken, VOICEOVER_TRACK, spoken_lines};
 
 /// How many undo steps a session keeps.

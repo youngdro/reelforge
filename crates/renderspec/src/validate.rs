@@ -189,6 +189,85 @@ fn layers_ok(spec: &RenderSpec, at: &str, layers: &[crate::Layer]) -> Result<(),
                         return Err(bad(format!("{path}.content.shadow"), "offset and blur must be within 4 ems"));
                     }
                 }
+                if let Some(f) = &text.fill {
+                    if !(2..=8).contains(&f.colors.len()) {
+                        return Err(bad(format!("{path}.content.fill.colors"), "must be two to eight colours"));
+                    }
+                    for (i, c) in f.colors.iter().enumerate() {
+                        color_ok(&format!("{path}.content.fill.colors[{i}]"), c.0)?;
+                    }
+                    if !(f.angle.is_finite() && (0.1..=32.0).contains(&f.repeat)) {
+                        return Err(bad(format!("{path}.content.fill"), "angle must be finite and repeat 0.1 to 32"));
+                    }
+                }
+                if let Some(pal) = &text.palette {
+                    if !(1..=8).contains(&pal.colors.len()) {
+                        return Err(bad(format!("{path}.content.palette.colors"), "must be one to eight colours"));
+                    }
+                    for (i, c) in pal.colors.iter().enumerate() {
+                        color_ok(&format!("{path}.content.palette.colors[{i}]"), c.0)?;
+                    }
+                }
+                if text.shadows.len() > 4 {
+                    return Err(bad(format!("{path}.content.shadows"), "must be four at most"));
+                }
+                for (i, sh) in text.shadows.iter().enumerate() {
+                    color_ok(&format!("{path}.content.shadows[{i}].color"), sh.color.0)?;
+                    if !(sh.offset.iter().all(|o| o.abs() <= 4.0) && (0.0..=4.0).contains(&sh.blur)) {
+                        return Err(bad(
+                            format!("{path}.content.shadows[{i}]"),
+                            "offset and blur must be within 4 ems",
+                        ));
+                    }
+                }
+                if let Some(d) = &text.depth {
+                    color_ok(&format!("{path}.content.depth.color"), d.color.0)?;
+                    if let Some(f) = &d.fade {
+                        color_ok(&format!("{path}.content.depth.fade"), f.0)?;
+                    }
+                    if !d.offset.iter().all(|o| o.abs() <= 1.0) {
+                        return Err(bad(format!("{path}.content.depth.offset"), "must be within 1 em"));
+                    }
+                }
+                if let Some(h) = text.hollow
+                    && !(h > 0.0 && h <= 0.5)
+                {
+                    return Err(bad(format!("{path}.content.hollow"), "must be above 0 and at most 0.5 ems"));
+                }
+                if let Some(bv) = &text.bevel {
+                    color_ok(&format!("{path}.content.bevel.light"), bv.light.0)?;
+                    color_ok(&format!("{path}.content.bevel.dark"), bv.dark.0)?;
+                    if !(bv.size > 0.0 && bv.size <= 0.5 && bv.angle.is_finite()) {
+                        return Err(bad(format!("{path}.content.bevel"), "size must be above 0 and at most 0.5 ems"));
+                    }
+                }
+                if let Some(sc) = &text.scatter
+                    && !((0.0..=180.0).contains(&sc.rotate)
+                        && (0.0..=2.0).contains(&sc.shift)
+                        && (0.0..=0.9).contains(&sc.scale))
+                {
+                    return Err(bad(
+                        format!("{path}.content.scatter"),
+                        "rotate must be 0 to 180 degrees, shift 0 to 2 ems and scale 0 to 0.9",
+                    ));
+                }
+                if !(text.arc.is_finite() && text.arc.abs() <= 360.0) {
+                    return Err(bad(format!("{path}.content.arc"), "must be within 360 degrees"));
+                }
+                if let Some(bg) = &text.background {
+                    if let Some(st) = &bg.border {
+                        color_ok(&format!("{path}.content.background.border.color"), st.color.0)?;
+                        if !(st.width >= 0.0 && st.width <= text.size) {
+                            return Err(bad(
+                                format!("{path}.content.background.border.width"),
+                                "must be 0 to the text size",
+                            ));
+                        }
+                    }
+                    if !(bg.skew.is_finite() && bg.skew.abs() <= 60.0) {
+                        return Err(bad(format!("{path}.content.background.skew"), "must be within 60 degrees"));
+                    }
+                }
                 if let Some(font) = &text.font {
                     asset_of_kind(spec, &format!("{path}.content.font"), font, &[AssetKind::Font])?;
                 }
@@ -621,8 +700,12 @@ mod tests {
         text.weight = 700;
         text.width = Some(900.0);
         text.stroke = Some(TextStroke { color: Color([0.0, 0.0, 0.0, 1.0]), width: 6.0 });
-        text.background =
-            Some(TextBackground { color: Color([0.0, 0.0, 0.0, 0.5]), padding: 0.25, radius: 0.0, lines: false });
+        text.background = Some(TextBackground {
+            padding: 0.25,
+            radius: 0.0,
+            lines: false,
+            ..TextBackground::of(Color([0.0, 0.0, 0.0, 0.5]))
+        });
         s.layers[0].content = LayerContent::Text(Box::new(text.clone()));
         assert_eq!(RenderSpec::from_json(&s.to_json()).unwrap(), s);
         // the optional styling has defaults, so a minimal text layer still reads

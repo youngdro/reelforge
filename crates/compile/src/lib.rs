@@ -11,15 +11,16 @@
 use std::collections::BTreeMap;
 
 use reelforge_model::{
-    Adjust, BlendMode, Clip, ClipContent, ClipTransform, Codec, Fill, FxChannel, Inbetween, Mask, MaskKind, MediaKind,
-    Project, Prop, ShapeKind, Timing, TitleAlign, Track, TrackKind, TransitionKind, export::Format,
+    Adjust, Backing, BlendMode, Clip, ClipContent, ClipTransform, Codec, Fill, FxChannel, Inbetween, Mask, MaskKind,
+    MediaKind, PaletteUnit, Project, Prop, ShapeKind, Timing, TitleAlign, Track, TrackKind, TransitionKind,
+    export::Format,
 };
 use reelforge_renderspec::{
     Animated, Asset, AssetKind, AudioClip, AudioCodec, AudioEncoding, Between, Blend, Color, Comp, Crop, CropKeys,
     Ease, Effect, Fit, Key, Layer, LayerContent, MaskShape, MotionBlur, NumberText, Output, OutputFormat, Paint, Probe,
     RenderSpec, ShapeContent, ShapeKind as SpecShape, ShapeMask, ShapeMaskKeys, ShapeShadow, ShapeStroke, SpeedKey,
-    TextAlign, TextBackground, TextContent, TextShadow, TextStroke, TimeMap, Transform, Trim, Turn, VideoCodec,
-    VideoEncoding, effects, validate,
+    TextAlign, TextBackground, TextBacking, TextBevel, TextContent, TextDepth, TextFill, TextPalette, TextScatter,
+    TextShadow, TextStroke, TextUnit, TimeMap, Transform, Trim, Turn, VideoCodec, VideoEncoding, effects, validate,
 };
 use reelforge_time::Tick;
 use thiserror::Error;
@@ -347,11 +348,60 @@ fn lower_tracks(
                             .filter(|o| o.width > 0.0)
                             .map(|o| TextStroke { color: Color(o.color), width: o.width * size }),
                         background: style.background.map(|c| TextBackground {
-                            color: Color(c),
-                            padding: 0.25,
                             radius: style.radius,
                             lines: style.line_boxes,
+                            shape: match style.backing {
+                                Backing::Box => TextBacking::Box,
+                                Backing::Marker => TextBacking::Marker,
+                                Backing::Tiles => TextBacking::Tiles,
+                            },
+                            border: style
+                                .border
+                                .as_ref()
+                                .filter(|o| o.width > 0.0)
+                                .map(|o| TextStroke { color: Color(o.color), width: o.width * size }),
+                            skew: style.skew,
+                            ..TextBackground::of(Color(c))
                         }),
+                        fill: style.fill.as_ref().map(|f| TextFill {
+                            colors: f.colors.iter().copied().map(Color).collect(),
+                            angle: f.angle,
+                            lines: f.lines,
+                            bands: f.bands,
+                            repeat: f.repeat,
+                        }),
+                        palette: style.palette.as_ref().map(|p| TextPalette {
+                            colors: p.colors.iter().copied().map(Color).collect(),
+                            unit: match p.unit {
+                                PaletteUnit::Char => TextUnit::Char,
+                                PaletteUnit::Word => TextUnit::Word,
+                                PaletteUnit::Line => TextUnit::Line,
+                            },
+                        }),
+                        shadows: style
+                            .shadows
+                            .iter()
+                            .map(|sh| TextShadow { color: Color(sh.color), offset: sh.offset, blur: sh.blur })
+                            .collect(),
+                        depth: style.depth.as_ref().map(|d| TextDepth {
+                            color: Color(d.color),
+                            offset: d.offset,
+                            fade: d.fade.map(Color),
+                        }),
+                        hollow: style.hollow,
+                        bevel: style.bevel.as_ref().map(|b| TextBevel {
+                            light: Color(b.light),
+                            dark: Color(b.dark),
+                            size: b.size,
+                            angle: b.angle,
+                        }),
+                        scatter: style.scatter.as_ref().map(|sc| TextScatter {
+                            rotate: sc.rotate,
+                            shift: sc.shift,
+                            scale: sc.scale,
+                            seed: sc.seed,
+                        }),
+                        arc: style.arc,
                         gradient: style.gradient.map(Color),
                         outer: style
                             .outer
@@ -368,7 +418,13 @@ fn lower_tracks(
                         draw: motion::written(clip, &shape),
                         highlight: motion::said(clip, &shape),
                         font: style.font.as_ref().map(|f| asset_for(f)).transpose()?,
-                        tracking: style.tracking,
+                        // tiles need room between the characters
+                        tracking: style.tracking
+                            + if style.background.is_some() && style.backing == Backing::Tiles {
+                                Backing::TILE_ROOM
+                            } else {
+                                0.0
+                            },
                         leading: style.leading,
                         italic: style.italic,
                         underline: style.underline,
@@ -1010,7 +1066,12 @@ mod tests {
             "c21",
             Tick::ZERO,
             Tick::SECOND,
-            ClipContent::Text { text: "Hi".into(), size: 80.0, color: [1.0; 4], style: TitleStyle::subtitle() },
+            ClipContent::Text {
+                text: "Hi".into(),
+                size: 80.0,
+                color: [1.0; 4],
+                style: Box::new(TitleStyle::subtitle()),
+            },
         ));
         let spec = compile(&p, &CompileOptions::default()).unwrap();
         assert_eq!(spec.layers.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(), ["c20", "c21"]);
@@ -1129,7 +1190,7 @@ mod tests {
             text: "Hi".into(),
             size: 80.0,
             color: [1.0, 0.5, 0.0, 1.0],
-            style: TitleStyle::subtitle(),
+            style: Box::new(TitleStyle::subtitle()),
         };
         let mut c = clip("c40", Tick::ZERO, Tick::SECOND, text);
         p.tracks[1].clips.push(c.clone());
@@ -1425,7 +1486,12 @@ mod tests {
             "c12",
             Tick::ZERO,
             Tick::SECOND * 4,
-            ClipContent::Text { text: "Hi".into(), size: 80.0, color: [1.0; 4], style: TitleStyle::subtitle() },
+            ClipContent::Text {
+                text: "Hi".into(),
+                size: 80.0,
+                color: [1.0; 4],
+                style: Box::new(TitleStyle::subtitle()),
+            },
         ));
         p.check().unwrap();
         let spec = compile(&p, &CompileOptions::default()).unwrap();

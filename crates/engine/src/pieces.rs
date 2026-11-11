@@ -549,7 +549,7 @@ impl Part {
     /// A heavy title on one line.
     fn text(text: impl Into<String>, size: f32, color: [f32; 4]) -> Part {
         let style = TitleStyle { weight: 900, wrap: 0.0, ..TitleStyle::default() };
-        Part::new(TrackKind::Text, ClipContent::Text { text: text.into(), size, color, style })
+        Part::new(TrackKind::Text, ClipContent::Text { text: text.into(), size, color, style: Box::new(style) })
     }
 
     fn at(mut self, x: f32, y: f32) -> Part {
