@@ -4718,3 +4718,40 @@ fn a_script_s_masks_and_animations_are_the_clips_own() {
         .unwrap_err();
     assert!(e.to_string().starts_with("script: box: "), "{e}");
 }
+
+#[test]
+fn a_colour_is_keyed_where_there_is_one_and_a_script_tweens_it() {
+    let mut s = Session::default();
+    let src = r##"export function build({ scene, timeline }) {
+        const card = scene.rect({ name: "card", fill: "#0000ff" });
+        const word = scene.text("hi", { name: "word" });
+        timeline({ defaults: { duration: 1, ease: "none" } }).to(card, { fill: "#ff0000" }).to(word, { color: "#000000" }, 0);
+    }"##;
+    let out = s.execute("script.add", &json!({"source": src})).unwrap();
+    let id = |i: usize| out["clips"][i]["clip"].as_str().unwrap().to_string();
+    let proj = s.project();
+    let card = proj.clip(&id(0)).unwrap().1;
+    let ends = |c: &reelforge_model::Clip, p: Prop| c.keys[&p].iter().map(|k| k.v).collect::<Vec<_>>();
+    assert_eq!((ends(card, Prop::ColorR), ends(card, Prop::ColorB)), (vec![0.0, 1.0], vec![1.0, 0.0]));
+    assert_eq!(ends(proj.clip(&id(1)).unwrap().1, Prop::ColorG), [1.0, 0.0]);
+    let spec = reelforge_compile::compile(&proj, &reelforge_compile::CompileOptions { encode: false }).unwrap();
+    let features = spec.required_features();
+    assert!(features.contains("shape.color/1") && features.contains("text.color/1"));
+
+    // by hand too: a key on a part of the colour, where the clip has a colour
+    let out = s.execute("clip.setKey", &json!({"clip": id(0), "prop": "colorG", "at": {"seconds": 0.5}, "value": 0.5}));
+    assert_eq!(out.unwrap()["keys"], json!(3));
+    assert!(s.execute("clip.setKey", &json!({"clip": id(0), "prop": "colorG", "at": 0, "value": 1.5})).is_err());
+    s.execute("track.add", &json!({"kind": "video"})).ok();
+    let line = s
+        .execute("clip.add", &json!({"track": out_track(&s), "shape": {"kind": "line"}, "duration": {"seconds": 1}}))
+        .unwrap();
+    let e =
+        s.execute("clip.setKey", &json!({"clip": line["clip"], "prop": "colorR", "at": 0, "value": 1})).unwrap_err();
+    assert_eq!(e.to_string(), "invalid parameters: this clip has no `colorR` to key");
+}
+
+/// The first video track of the session's project.
+fn out_track(s: &Session) -> String {
+    s.project().tracks.iter().find(|t| t.kind == reelforge_model::TrackKind::Video).unwrap().id.clone()
+}

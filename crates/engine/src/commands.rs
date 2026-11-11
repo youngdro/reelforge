@@ -3159,6 +3159,9 @@ fn clip_set_key(s: &mut Session, v: &Value) -> CmdResult {
                 matches!(&clip.content, ClipContent::Shape { shape } if shape.stroke.is_some())
             } else if prop == Prop::Count {
                 matches!(&clip.content, ClipContent::Text { style, .. } if style.counter.is_some())
+            } else if Prop::COLOR.contains(&prop) {
+                // a title's colour, or the colour that fills a shape
+                clip.own_color().is_some()
             } else {
                 proj.tracks[ti].kind != TrackKind::Audio
             };

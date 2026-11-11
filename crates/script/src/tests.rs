@@ -334,7 +334,6 @@ fn a_node_is_stretched_turned_in_space_and_carried_with_gsap_s_names() {
         (r#"scene.group({ opacity: 0.5 });"#, "a group has no opacity"),
         (r#"const g = scene.group(); timeline().to(g, { opacity: 1 });"#, "has no `opacity` to tween"),
         (r#"const a = scene.rect(); timeline().to(a, { skewX: 10 });"#, "`skewX` cannot be tweened: nothing skews yet"),
-        (r#"const a = scene.rect(); timeline().to(a, { fill: "red" });"#, "cross-fade two nodes"),
     ] {
         let e = err(&body(src));
         assert!(e.contains(said), "{src}: {e}");
@@ -409,6 +408,40 @@ fn a_node_is_masked_and_takes_the_editor_s_own_animations() {
         ("scene.rect({ mask: { shape: 'circle', blur: 1 } });", "mask has no `blur`"),
         ("scene.rect({ animate: { middle: 'pop' } });", "animate has no `middle`"),
         ("const a = scene.rect(); timeline().to(a, { maskWidth: 2 });", "has no `maskWidth` to tween"),
+    ] {
+        let e = err(&body(src));
+        assert!(e.contains(said), "{src}: {e}");
+    }
+}
+
+#[test]
+fn a_colour_is_tweened_as_its_four_parts() {
+    let b = go(&body(
+        r##"const card = scene.rect({ fill: "#0000ff" });
+           const grad = scene.rect({ fill: { type: "linear", from: "#ff0000", to: "#ffff00" } });
+           const word = scene.text("hi");
+           timeline({ defaults: { duration: 1, ease: "none" } })
+             .to(card, { fill: "rgba(255, 0, 0, 0.5)" })
+             .to(grad, { fill: "#00ff00" }, 0)
+             .fromTo(word, { color: "black" }, { color: [1, 1, 1, 0] }, 0);"##,
+    ))
+    .unwrap();
+    let ends = |i: usize| {
+        ["colorR", "colorG", "colorB", "colorA"].map(|p| tv(keys(&b, i, p)).iter().map(|k| k.1).collect::<Vec<_>>())
+    };
+    assert_eq!(ends(0), [vec![0.0, 1.0], vec![0.0, 0.0], vec![1.0, 0.0], vec![1.0, 0.5]]);
+    // of a gradient, the colour it starts from
+    assert_eq!(ends(1), [vec![1.0, 0.0], vec![0.0, 1.0], vec![0.0, 0.0], vec![1.0, 1.0]]);
+    assert_eq!(ends(2), [vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0], vec![1.0, 0.0]]);
+    for (src, said) in [
+        ("const a = scene.rect(); timeline().to(a, { fill: 'red' });", "give a shape its `fill` when making it"),
+        ("const a = scene.line(); timeline().to(a, { fill: 'red' });", "this node has no fill to tween"),
+        ("const a = scene.rect({ fill: 'red' }); timeline().to(a, { color: 'red' });", "only a title has a `color`"),
+        ("const a = scene.rect({ fill: 'red' }); timeline().to(a, { fill: 'reddish' });", "is not a colour"),
+        (
+            "const a = scene.rect({ fill: 'red' }); timeline().to(a, { backgroundColor: 'red' });",
+            "tween `fill` on a shape",
+        ),
     ] {
         let e = err(&body(src));
         assert!(e.contains(said), "{src}: {e}");

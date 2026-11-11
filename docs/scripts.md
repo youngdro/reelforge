@@ -107,7 +107,10 @@ script.
 - A value is a number, or `"+=n"` / `"-=n"` from where the property is.
 - **Properties**: `x`, `y`, `scale`, `rotation`, `opacity`, `scaleX`, `scaleY`, `rotationX`,
   `rotationY` on every node; `maskX`, `maskY`, `maskWidth`, `maskHeight`, `maskRotation`,
-  `maskFeather` on a node with a `mask`; the colour adjustments
+  `maskFeather` on a node with a `mask`; `fill` on a shape made with a fill and `color` on a title
+  (a colour as anywhere else; of a gradient, the colour it starts from; each of red, green, blue
+  and alpha goes its own straight way, so fade with `opacity` rather than to a transparent black);
+  the colour adjustments
   `exposure`, `contrast`, `saturation`, `temperature`, `tint`, `highlights`, `shadows`, `fade`,
   `vignette`; `drawStart` and `drawEnd` on a shape with a stroke (0 to 1 round its outline: from 0
   to 1, `drawEnd` draws it on); `count` on a title with a counter; `cropLeft`, `cropTop`,
@@ -167,7 +170,7 @@ what to write meanwhile (a script that uses one is refused, and told so):
 | `skewX`, `skewY` | nothing skews | |
 | `width`, `height` | a shape's size is not keyed | `scaleX`, `scaleY` with a `transformOrigin` |
 | `borderRadius` | a corner is not keyed | |
-| `fill`, `color`, `backgroundColor`, gradients | colours are not keyed | cross-fade two nodes |
+| `stroke`, a shadow's colour, a gradient's second colour, a title's box | only a fill's colour and a title's are keyed | cross-fade two nodes |
 | `filter: blur()` and other filters | not keyed | the colour adjustments are; `motionBlur` |
 | `z`, `rotationX/Y` with depth sorting | nodes are drawn in the order made | order them yourself |
 | `SplitText` (characters, words, lines as targets) | a title is one node | `animate` with the editor's character, word and line animations; or one node a word |
