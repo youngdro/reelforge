@@ -115,6 +115,8 @@ static ICONS: &[u8] = include_bytes!("../fonts/phosphor-icons.ttf");
 /// Kana and the JIS level-1 kanji, for the Japanese interface (SIL OFL, see
 /// `fonts/NOTO-SANS-JP-LICENSE`).
 static NOTO_SANS_JP: &[u8] = include_bytes!("../fonts/NotoSansJP-Regular.subset.otf");
+/// The Mac's key symbols (⌘, ⌥), which no other face here has: DejaVu Sans, cut down to them.
+static KEYS: &[u8] = include_bytes!("../fonts/DejaVuSans-keys.ttf");
 
 /// Gives `ctx` the palette, spacing and faces. Call once.
 pub(crate) fn install(ctx: &egui::Context, japanese: bool) {
@@ -124,7 +126,7 @@ pub(crate) fn install(ctx: &egui::Context, japanese: bool) {
 }
 
 /// egui's own faces have no CJK or icons: after them come the face titles are drawn with (Noto
-/// Sans SC), a Japanese face and the icon subset. For the Japanese interface the Japanese face
+/// Sans SC), a Japanese face, the icon subset and the Mac's key symbols. For the Japanese interface the Japanese face
 /// goes first, so kanji take their Japanese shapes.
 pub(crate) fn set_fonts(ctx: &egui::Context, japanese: bool) {
     let mut defs = egui::FontDefinitions::default();
@@ -132,6 +134,7 @@ pub(crate) fn set_fonts(ctx: &egui::Context, japanese: bool) {
         ("Noto Sans SC", reelforge_render::text::NOTO_SANS_SC_REGULAR),
         ("Noto Sans JP", NOTO_SANS_JP),
         ("Phosphor", ICONS),
+        ("DejaVu Sans keys", KEYS),
     ] {
         defs.font_data.insert(name.into(), std::sync::Arc::new(egui::FontData::from_static(bytes)));
     }
@@ -140,6 +143,7 @@ pub(crate) fn set_fonts(ctx: &egui::Context, japanese: bool) {
         let list = defs.families.entry(family).or_default();
         list.extend(cjk.iter().map(|n| n.to_string()));
         list.push("Phosphor".into());
+        list.push("DejaVu Sans keys".into());
     }
     ctx.set_fonts(defs);
 }

@@ -125,10 +125,11 @@ impl Lang {
     }
 }
 
-/// A key combination as written on this system: on a Mac, Ctrl (egui's command key) is ⌘.
+/// A key combination as written on this system: on a Mac, Ctrl (egui's command key) is ⌘, Shift
+/// ⇧ and Alt ⌥ (the fonts have each).
 pub fn keys(ctx: &eframe::egui::Context, combo: &str) -> String {
     if ctx.os() == eframe::egui::os::OperatingSystem::Mac {
-        combo.replace("Ctrl+", "⌘").replace("Shift+", "⇧")
+        combo.replace("Ctrl+", "⌘").replace("Shift+", "⇧").replace("Alt+", "⌥")
     } else {
         combo.to_string()
     }
