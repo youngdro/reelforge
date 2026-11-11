@@ -4634,3 +4634,60 @@ fn a_new_canvas_shape_keeps_covering_pictures_covering() {
     s.execute("edit.undo", &json!({})).unwrap();
     assert_eq!(s.project().canvas.width, 1280);
 }
+
+#[test]
+fn a_script_s_nodes_carry_one_another_turn_about_an_origin_and_travel_paths() {
+    let mut s = Session::default();
+    let src = r#"export function build({ scene, timeline, canvas }) {
+        const card = scene.group({ name: "card", x: 192, rotationY: 30, perspective: canvas.height });
+        const bar = scene.rect({ name: "bar", parent: card, y: 108, width: 384, height: 54, transformOrigin: "left top" });
+        const dot = scene.circle({ name: "dot", radius: 10, x: -192 });
+        timeline()
+          .from(bar, { scaleX: 0, x: "-=192", duration: 1, ease: "none" })
+          .to(dot, { motionPath: { path: [[0, 108], [192, 0]], autoRotate: true }, duration: 1, ease: "none" }, 0.5);
+    }"#;
+    let out = s.execute("script.add", &json!({"source": src})).unwrap();
+    assert_eq!(s.history().len(), 1);
+    let id = |i: usize| out["clips"][i]["clip"].as_str().unwrap().to_string();
+    let proj = s.project();
+    let (w, h) = (proj.canvas.width as f32, proj.canvas.height as f32);
+    let near = |a: f32, b: f32| (a - b).abs() < 1e-4;
+    let card = proj.clip(&id(0)).unwrap().1;
+    assert_eq!(out["clips"][0]["kind"], json!("group"));
+    assert!(
+        near(card.base(Prop::Opacity), 0.0)
+            && near(card.base(Prop::RotationY), 30.0)
+            && near(card.base(Prop::X), 192.0 / w)
+    );
+    assert!(near(card.transform.distance, 1.0));
+    // carried by the card, and turned about its own top left corner, which is where x and y now point
+    let bar = proj.clip(&id(1)).unwrap().1;
+    assert_eq!(bar.parent.as_deref(), Some(id(0).as_str()));
+    assert_eq!(bar.transform.anchor, [0.0, 0.0]);
+    assert!(near(bar.base(Prop::Y), (108.0 - 27.0) / h), "{}", bar.base(Prop::Y));
+    let xs: Vec<f32> = bar.keys[&Prop::X].iter().map(|k| k.v * w).collect();
+    assert!(near(xs[0], -192.0 - 192.0) && near(xs[1], -192.0), "{xs:?}");
+    assert_eq!(bar.keys[&Prop::ScaleX].iter().map(|k| k.v).collect::<Vec<_>>(), [0.0, 1.0]);
+    // from where it is through the points, setting off half a second in
+    let dot = proj.clip(&id(2)).unwrap().1;
+    let path = dot.path.as_ref().unwrap();
+    assert_eq!(path.points.len(), 3);
+    assert!(
+        near(path.points[0][0], -192.0 / w) && near(path.points[1][1], 108.0 / h) && near(path.points[2][0], 192.0 / w)
+    );
+    assert_eq!(
+        (path.start, path.duration, path.orient, path.ease),
+        (Tick::from_seconds(0.5), Tick::from_seconds(1.0), true, reelforge_model::Ease::Linear)
+    );
+    assert!(reelforge_compile::compile(&proj, &reelforge_compile::CompileOptions { encode: false }).is_ok());
+
+    // built again where it is, the same; undone, gone in one step
+    let group = out["group"].as_str().unwrap();
+    let again = s.execute("script.setParams", &json!({"group": group})).unwrap();
+    let proj = s.project();
+    let bar = proj.clip(again["clips"][1]["clip"].as_str().unwrap()).unwrap().1;
+    assert_eq!(bar.parent.as_deref(), again["clips"][0]["clip"].as_str());
+    s.execute("edit.undo", &json!({})).unwrap();
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert!(s.project().scripts.is_empty());
+}

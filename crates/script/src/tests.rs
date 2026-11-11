@@ -248,10 +248,10 @@ fn what_is_wrong_with_a_script_is_said() {
     assert_eq!(err(&body("")), "the script made nothing: call scene.rect, scene.text, … in build");
     assert_eq!(
         err(&body("scene.rect({ widht: 3 });")),
-        "scene.rect: no option `widht`; it takes x, y, scale, rotation, opacity, name, width, height, radius, points, inner, fill, stroke, shadow, trim"
+        "scene.rect: no option `widht`; it takes x, y, scale, rotation, opacity, scaleX, scaleY, rotationX, rotationY, perspective, motionBlur, transformOrigin, origin, parent, name, width, height, radius, points, inner, fill, stroke, shadow, trim"
     );
-    let e = err(&body("const a = scene.rect({ name: 'card' }); timeline().to(a, { skewX: 3 });"));
-    assert!(e.starts_with("to: card has no `skewX` to tween; it has x, y, scale, rotation, opacity"), "{e}");
+    let e = err(&body("const a = scene.rect({ name: 'card' }); timeline().to(a, { wobble: 3 });"));
+    assert!(e.starts_with("to: card has no `wobble` to tween; it has x, y, scale, rotation, opacity"), "{e}");
     let e = err(&body("const a = scene.rect(); timeline().to(a, { x: 3, ease: 'wobble.out' });"));
     assert!(e.starts_with("ease \"wobble.out\" is not known; use one of: none, linear, power1–4"), "{e}");
     let e = err(&body("const a = scene.rect(); timeline().to(a, { x: 3 }, 'later');"));
@@ -298,4 +298,89 @@ fn a_script_is_given_nothing_of_the_machine_and_cannot_run_away() {
 fn console_log_comes_back() {
     let b = go(&body("scene.rect(); console.log('made', { n: 1 });")).unwrap();
     assert_eq!(b.log, ["made {\"n\":1}"]);
+}
+
+#[test]
+fn a_node_is_stretched_turned_in_space_and_carried_with_gsap_s_names() {
+    let b = go(&body(
+        r#"const card = scene.group({ name: "card", perspective: 4000, rotate: 10 });
+           const bar = scene.rect({ parent: card, width: 400, height: 20, transformOrigin: "left center",
+             scaleX: 0.5, motionBlur: true });
+           const top = scene.text("hi", { parent: bar, origin: [0.5, 1] });
+           timeline().to(card, { rotateY: 180, duration: 1, ease: "none" })
+             .to(bar, { scaleX: 1, scaleY: -1, autoAlpha: 0.5, duration: 1 }, 0);"#,
+    ))
+    .unwrap();
+    let [card, bar, top] = &b.nodes[..] else { panic!("three nodes") };
+    assert_eq!(
+        (card.kind.as_str(), card.add["opacity"].clone(), card.add["rotation"].clone()),
+        ("group", json!(0), json!(10))
+    );
+    // the eye's distance in canvas heights
+    assert_eq!(card.add["perspective"].as_f64(), Some(2.0));
+    assert_eq!(tv(keys(&b, 0, "rotationY")), [(0.0, 0.0), (1.0, 180.0)]);
+    assert_eq!((bar.parent, bar.origin, bar.add["scaleX"].clone()), (Some(0), Some([0.0, 0.5]), json!(0.5)));
+    assert_eq!(bar.add["motionBlur"], json!(true));
+    assert!(bar.add.get("scaleY").is_none());
+    assert_eq!(tv(keys(&b, 1, "scaleX")), [(0.0, 0.5), (1.0, 1.0)]);
+    assert_eq!(tv(keys(&b, 1, "scaleY")), [(0.0, 1.0), (1.0, -1.0)]);
+    assert_eq!(tv(keys(&b, 1, "opacity")), [(0.0, 1.0), (1.0, 0.5)]);
+    assert_eq!((top.parent, top.origin), (Some(1), Some([0.5, 1.0])));
+
+    for (src, said) in [
+        (r#"scene.rect({ transformOrigin: "left left" });"#, "`transformOrigin` is"),
+        (r#"scene.rect({ rotate: 1, rotation: 2 });"#, "are the same property"),
+        (r#"scene.rect({ parent: 3 });"#, "`parent` is a node"),
+        (r#"scene.group({ opacity: 0.5 });"#, "a group has no opacity"),
+        (r#"const g = scene.group(); timeline().to(g, { opacity: 1 });"#, "has no `opacity` to tween"),
+        (r#"const a = scene.rect(); timeline().to(a, { skewX: 10 });"#, "`skewX` cannot be tweened: nothing skews yet"),
+        (r#"const a = scene.rect(); timeline().to(a, { fill: "red" });"#, "cross-fade two nodes"),
+    ] {
+        let e = err(&body(src));
+        assert!(e.contains(said), "{src}: {e}");
+    }
+}
+
+#[test]
+fn a_node_travels_a_path_from_where_it_is() {
+    let b = go(&body(
+        r#"const a = scene.circle({ radius: 20, x: -500, y: 1000 });
+           const c = scene.circle({ radius: 20 });
+           timeline()
+             .to(a, { motionPath: { path: [{ x: 0, y: 0 }, [500, -1000]], autoRotate: true }, rotation: 90,
+               duration: 2, ease: "power2.out" }, 0.5)
+             .to(c, { motionPath: { path: [[0, 500], [250, 0]], fromCurrent: false, closed: true }, duration: 1, ease: "none" });"#,
+    ))
+    .unwrap();
+    let path = b.nodes[0].path.as_ref().unwrap();
+    assert_eq!(path.points, [[-0.5, 0.5], [0.0, 0.0], [0.5, -0.5]]);
+    assert_eq!((path.start, path.duration, path.orient, path.closed), (0.5, 2.0, true, false));
+    assert_eq!(path.ease, json!([1.0 / 3.0, 1, 2.0 / 3.0, 1]));
+    // what is not where it is goes on being keyed
+    assert_eq!(tv(keys(&b, 0, "rotation")), [(0.5, 0.0), (2.5, 90.0)]);
+    assert!(keys(&b, 0, "x").is_empty());
+    let path = b.nodes[1].path.as_ref().unwrap();
+    assert_eq!(
+        (path.points.clone(), path.start, path.closed, path.ease.clone()),
+        (vec![[0.0, 0.25], [0.25, 0.0]], 2.5, true, json!("linear"))
+    );
+    assert_eq!(b.duration, 3.5);
+
+    let one = r#"const a = scene.rect(); const tl = timeline();"#;
+    for (src, said) in [
+        (
+            "tl.to(a, { motionPath: [[0, 0]], duration: 1 }).to(a, { motionPath: [[1, 1]], duration: 1 });",
+            "already travels a path",
+        ),
+        ("tl.to(a, { motionPath: [[9, 9]], x: 5 });", "leave `x` and `y` out"),
+        ("tl.to(a, { motionPath: [[9, 9]] }).to(a, { y: 5 });", "do not tween its `y` as well"),
+        ("tl.to(a, { motionPath: [[9, 9]], ease: 'bounce.out' });", "a path's ease must be one a curve can say"),
+        ("tl.to(a, { motionPath: [[9, 9]], repeat: 1 });", "a path is travelled once"),
+        ("tl.from(a, { motionPath: [[9, 9]] });", "travelled with `to`"),
+        ("tl.to(a, { motionPath: { path: [[9, 9]], curviness: 2 } });", "motionPath has no `curviness`"),
+        ("tl.to(a, { motionPath: 'M0,0' });", "`motionPath` is a list of points"),
+    ] {
+        let e = err(&body(&format!("{one}\n{src}")));
+        assert!(e.contains(said), "{src}: {e}");
+    }
 }

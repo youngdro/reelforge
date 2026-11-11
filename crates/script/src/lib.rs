@@ -81,7 +81,7 @@ pub struct KeyOut {
 pub struct Node {
     /// Its name: the script's, or its kind and number.
     pub name: String,
-    /// `shape`, `text`, `media` or `sticker`.
+    /// `shape`, `text`, `media`, `sticker`, or `group` (a shape nobody sees, which carries others).
     pub kind: String,
     /// What `clip.add` takes to make it, but for the track and the times.
     pub add: Map<String, Value>,
@@ -90,6 +90,35 @@ pub struct Node {
     pub counter: Option<Value>,
     /// Its keyframes by property name.
     pub keys: BTreeMap<String, Vec<KeyOut>>,
+    /// The point it is placed, scaled and turned about, as shares of its own box from the top
+    /// left, where the script moved it from the middle. The box stays where it lies, as CSS's
+    /// `transform-origin` leaves it: `x` and `y` still say where its middle is at rest.
+    #[serde(default)]
+    pub origin: Option<[f64; 2]>,
+    /// The node that carries it, by its place in the list: its `x` and `y` are then counted
+    /// from that node's origin, along that node's axes.
+    #[serde(default)]
+    pub parent: Option<usize>,
+    /// The path it travels.
+    #[serde(default)]
+    pub path: Option<PathOut>,
+}
+
+/// A path a node travels: through its points at an even pace, eased as a whole.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PathOut {
+    /// The points, as shares of the canvas from its centre.
+    pub points: Vec<[f64; 2]>,
+    /// Goes on from the last point round to the first.
+    pub closed: bool,
+    /// Turns the node to face the way it goes.
+    pub orient: bool,
+    /// When it sets off, in seconds from the script's start.
+    pub start: f64,
+    /// How long the journey takes, in seconds.
+    pub duration: f64,
+    /// `"linear"`, `"hold"`, or a cubic Bézier `[x1, y1, x2, y2]`.
+    pub ease: Value,
 }
 
 /// What a script built.

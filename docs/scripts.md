@@ -36,7 +36,8 @@ reelforge-cli call script.setParams -p my.reel.json '{"group": "g7", "params": {
 
 Over MCP the same commands are the tools `script_check`, `script_add`, `script_setParams`…
 
-The whole of a longer one is in [examples/price-card.js](examples/price-card.js).
+The whole of a longer one is in [examples/price-card.js](examples/price-card.js). [examples/flip-card.js](examples/flip-card.js)
+turns a card in space with what it carries, grows a bar from its left end and sends a star along a path.
 
 ## Units
 
@@ -51,7 +52,22 @@ The whole of a longer one is in [examples/price-card.js](examples/price-card.js)
 ## `scene`: nodes
 
 Every node takes `x`, `y`, `scale`, `rotation`, `opacity` and a `name` (which error messages and
-replies use). Later nodes lie over earlier ones.
+replies use). Later nodes lie over earlier ones. Every node also takes:
+
+- `scaleX`, `scaleY`: width and height apart, on top of `scale` (negative mirrors);
+- `rotationX`, `rotationY`: turned in space, in degrees (`rotationY` swings it like a door,
+  `rotationX` tips it like a lid; past 90 it shows its back), seen from `perspective` pixels away
+  (two canvas heights unless told; nearer is stronger);
+- `transformOrigin` (or `origin`): the point it is scaled and turned about, `"left center"`,
+  `"50% 100%"`, or `[across, down]` as shares of its own box. As in CSS the node does not move:
+  `x` and `y` go on saying where its middle rests;
+- `parent`: a node that carries it. Its `x` and `y` are then counted from the parent's origin along
+  the parent's axes, so moving, scaling or turning the parent (in space too) takes it along as one
+  object. Opacity is not passed on. Up to 8 deep;
+- `motionBlur`: `true`, or the share of a frame the shutter is open, smears it along its own
+  movement.
+
+GSAP's names `rotate`, `rotateX`, `rotateY`, `autoAlpha` and `alpha` are understood.
 
 | Call | Options besides those |
 | --- | --- |
@@ -61,6 +77,7 @@ replies use). Later nodes lie over earlier ones.
 | `scene.text(words, opts)` | `size` (pixels), `color`, `weight`, `align`, `wrap`, `outline: {color, width}`, `outer`, `shadow`, `background`, `radius`, `gradient`, `font` (a media id), `tracking`, `leading`, `italic`, `underline`, `template`, and `counter: {from, to, duration?, ease?, decimals?, group?, clock?}`, which writes a running number where the words say `{n}`. Widths of outlines and shadows are in ems, as `clip.set` takes them |
 | `scene.image(mediaId, opts)`, `scene.video(mediaId, opts)` | `sourceIn` (seconds into a video) |
 | `scene.sticker(id, opts)` | (see `sticker.library`) |
+| `scene.group(opts)` | Nothing to see: a node to be the `parent` of others, so they move, grow and turn as one. `width`, `height` matter only to its `transformOrigin`. It has no opacity; fade what it carries |
 
 `scene.setDuration(seconds)` says how long the piece is. Without it, it lasts until its last tween
 ends; `script.add`'s own `duration` overrides both.
@@ -78,11 +95,17 @@ script.
   `delay`, `stagger` (seconds, or `{each | amount, from: "start" | "end" | "center" | "edges"}`),
   `repeat` (a whole number of extra times), `yoyo`, `repeatDelay`.
 - A value is a number, or `"+=n"` / `"-=n"` from where the property is.
-- **Properties**: `x`, `y`, `scale`, `rotation`, `opacity` on every node; the colour adjustments
+- **Properties**: `x`, `y`, `scale`, `rotation`, `opacity`, `scaleX`, `scaleY`, `rotationX`,
+  `rotationY` on every node; the colour adjustments
   `exposure`, `contrast`, `saturation`, `temperature`, `tint`, `highlights`, `shadows`, `fade`,
   `vignette`; `drawStart` and `drawEnd` on a shape with a stroke (0 to 1 round its outline: from 0
   to 1, `drawEnd` draws it on); `count` on a title with a counter; `cropLeft`, `cropTop`,
   `cropRight`, `cropBottom` on a picture. A property a node has not is refused, with those it has.
+- **Paths**: `tl.to(node, { motionPath: [{x, y}, …], duration, ease })` sends a node through those
+  points on a smooth curve at an even pace, from where it is (`{path, fromCurrent: false}` starts
+  at the first point instead), `autoRotate: true` turning it to face the way it goes and
+  `closed: true` bringing it round to where it set off. A node travels one path, once; its ease is
+  one a curve can say; `x` and `y` are not tweened on a node that has a path, everything else is.
 - **Positions**: seconds (`1.5`), `"+=0.2"` and `"-=0.2"` from the timeline's end, `"<"` and `">"`
   for the start and end of the tween before (`"<0.1"`, `">-0.1"`), a label (`"intro"`,
   `"intro+=0.3"`). With none, a tween follows the last.
@@ -125,8 +148,22 @@ clips.
 
 ## Not yet
 
-A script can only tween what the editor can key. GSAP properties with nothing behind them yet:
-`scaleX` / `scaleY` and skew, `transformOrigin`, 3D turns, motion along a path, colours and
-gradients, a shape's size and corners, blur and other filters, splitting a title into characters or
-words, and moving a group as one. Nodes by the hundred (particles, charts) want a mode that draws
-frames rather than clips, which is planned as `script/1`.
+A script can only tween what the editor can key. What GSAP can say and a script cannot yet, with
+what to write meanwhile (a script that uses one is refused, and told so):
+
+| GSAP | State | Meanwhile |
+| --- | --- | --- |
+| `skewX`, `skewY` | nothing skews | |
+| `width`, `height` | a shape's size is not keyed | `scaleX`, `scaleY` with a `transformOrigin` |
+| `borderRadius` | a corner is not keyed | |
+| `fill`, `color`, `backgroundColor`, gradients | colours are not keyed | cross-fade two nodes |
+| `filter: blur()` and other filters | not keyed | the colour adjustments are; `motionBlur` |
+| `z`, `rotationX/Y` with depth sorting | nodes are drawn in the order made | order them yourself |
+| `SplitText` (characters, words, lines as targets) | a title is one node | one node a word; the editor's own text animations |
+| `clip-path`, masks | the editor keys masks; scripts do not reach them yet | |
+| `motionPath` with control points, `start` / `end`, several paths | a path passes through its points, once | |
+| group opacity | a parent passes on place, size and turn only | fade the children |
+| `repeat: -1` | a piece has a length | repeat as often as it is long |
+
+Nodes by the hundred (particles, charts) want a mode that draws frames rather than clips, which is
+planned as `script/1`.
