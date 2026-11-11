@@ -187,24 +187,30 @@ enum Tab {
     Templates,
 }
 
+/// Which of the media tab's files are shown. Sound is not among them: imported sound is in the
+/// audio tab, with the library's.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 enum Filter {
     #[default]
     All,
     Video,
     Image,
-    Audio,
 }
 
 impl Filter {
     fn admits(self, kind: MediaKind) -> bool {
         match self {
-            Filter::All => !matches!(kind, MediaKind::Lut | MediaKind::Font),
+            Filter::All => !matches!(kind, MediaKind::Lut | MediaKind::Font | MediaKind::Audio),
             Filter::Video => kind.moves(),
             Filter::Image => kind == MediaKind::Image,
-            Filter::Audio => kind == MediaKind::Audio,
         }
     }
+}
+
+/// Whether `m` is a sound file brought in (not one of the library's, which the audio tab lists
+/// as the library).
+fn imported_sound(m: &Media) -> bool {
+    m.kind == MediaKind::Audio && !m.uri.starts_with(reelforge_media::library::SCHEME)
 }
 
 /// The panel's state.
@@ -334,7 +340,7 @@ impl AssetPanel {
         // what the chosen tab holds
         let body = |panel: &mut AssetPanel, ui: &mut egui::Ui, action: &mut Option<Action>| match panel.tab {
             Tab::Media => panel.media_tab(ui, p, media, s, playing, action),
-            Tab::Audio => panel.audio_tab(ui, s, action),
+            Tab::Audio => panel.audio_tab(ui, p, media, s, action),
             Tab::Text => text_tab(ui, s, looks, action),
             Tab::Stickers => panel.stickers_tab(ui, s, action),
             Tab::Effects => effects_tab(ui, &mut panel.query, s, action),
@@ -368,6 +374,19 @@ impl AssetPanel {
     pub(crate) fn show_templates(&mut self) {
         self.tab = Tab::Templates;
         self.query.clear();
+    }
+
+    /// Shows the tab that holds media of this kind: a file just imported is seen where it went.
+    pub(crate) fn reveal(&mut self, kind: MediaKind) {
+        let tab = match kind {
+            MediaKind::Audio => Tab::Audio,
+            MediaKind::Video | MediaKind::Image | MediaKind::Lottie => Tab::Media,
+            _ => return,
+        };
+        if self.tab != tab {
+            self.tab = tab;
+            self.query.clear();
+        }
     }
 
     /// Shows the storyboards: one was just used, and its copy is to be typed over there.
@@ -464,8 +483,7 @@ impl AssetPanel {
             self.pictures.retain(|_, t| t.is_some());
         }
         // in the order they were imported (ids are minted in order: m2 before m10)
-        let mut all: Vec<&Media> =
-            p.media.values().filter(|m| !matches!(m.kind, MediaKind::Lut | MediaKind::Font)).collect();
+        let mut all: Vec<&Media> = p.media.values().filter(|m| Filter::All.admits(m.kind)).collect();
         all.sort_by_key(|m| (m.id.trim_start_matches(|c: char| !c.is_ascii_digit()).parse::<u64>().ok(), &m.id));
         if all.is_empty() {
             // nothing yet: the whole tab asks for files
@@ -482,12 +500,7 @@ impl AssetPanel {
             });
         });
         ui.add_space(2.0);
-        let filters = [
-            (Filter::All, s.filter_all),
-            (Filter::Video, s.filter_video),
-            (Filter::Image, s.filter_image),
-            (Filter::Audio, s.filter_audio),
-        ];
+        let filters = [(Filter::All, s.filter_all), (Filter::Video, s.filter_video), (Filter::Image, s.filter_image)];
         let at = filters.iter().position(|(f, _)| *f == self.filter).unwrap_or(0);
         if let Some(i) = theme::segmented(ui, &filters.map(|(_, word)| word), at) {
             self.filter = filters[i].0;
@@ -791,6 +804,22 @@ impl AssetPanel {
             }
             ui.label(egui::RichText::new(s.media_card_tip).small().color(color::WEAK));
         });
+        if let Some(a) = self.media_menu(&r, m, used, s, folders) {
+            action = Some(a);
+        }
+        action
+    }
+
+    /// What can be done to a file of the media, on a right click on its card or row.
+    fn media_menu(
+        &mut self,
+        r: &egui::Response,
+        m: &Media,
+        used: usize,
+        s: &Strings,
+        folders: &[&str],
+    ) -> Option<Action> {
+        let mut action = None;
         r.context_menu(|ui| {
             if ui.button(format!("{}  {}", icon::ADD, s.add_to_timeline)).clicked() {
                 action = Some(Action::Add(Item::Media(m.id.clone())));
@@ -834,6 +863,42 @@ impl AssetPanel {
         action
     }
 
+    /// A sound file brought in, as a row like the library's: a click adds it at the playhead, a
+    /// drag takes it to the timeline, a right click renames, files or removes it.
+    fn sound_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        m: &Media,
+        used: usize,
+        s: &Strings,
+        folders: &[&str],
+    ) -> Option<Action> {
+        let off = offline(m, &self.missing);
+        let length = m.duration.map_or(String::new(), short_time);
+        let item = Item::Media(m.id.clone());
+        let (mut action, r) = row(ui, icon::MUSIC, &m.name, &length, used > 0, off, item);
+        let r = r.on_hover_ui(|ui| {
+            let mut facts = vec![];
+            if used > 0 {
+                facts.push(fill(s.media_used_n, &[&used]));
+            }
+            if let Some(f) = &m.folder {
+                facts.push(f.clone());
+            }
+            if !facts.is_empty() {
+                ui.label(egui::RichText::new(facts.join(" · ")).color(color::WEAK));
+            }
+            if off {
+                ui.label(egui::RichText::new(s.media_offline_tip).color(color::WARN));
+            }
+            ui.label(egui::RichText::new(s.item_tip).small().color(color::WEAK));
+        });
+        if let Some(a) = self.media_menu(&r, m, used, s, folders) {
+            action = Some(a);
+        }
+        action
+    }
+
     /// Makes pictures for up to the frame's budget; true when more are waiting.
     fn make_pictures(&mut self, ctx: &egui::Context, footage: &Footage, wanted: &[&Media]) -> bool {
         let begun = Instant::now();
@@ -862,16 +927,64 @@ impl AssetPanel {
         false
     }
 
-    fn audio_tab(&mut self, ui: &mut egui::Ui, s: &Strings, action: &mut Option<Action>) {
+    /// All there is to hear: the sound files brought in, then the library's effects and music.
+    fn audio_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        p: &Project,
+        footage: &Footage,
+        s: &Strings,
+        action: &mut Option<Action>,
+    ) {
         if self.sound_lengths.is_empty() {
             self.sound_lengths = SOUNDS.iter().map(|snd| (snd.id, sound_length(snd.id))).collect();
         }
-        search_box(ui, &mut self.query, s);
+        if footage.generation() != self.seen {
+            self.seen = footage.generation();
+            self.missing.clear();
+            self.pictures.retain(|_, t| t.is_some());
+        }
+        // what to find, and beside it the way to bring more in
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if theme::primary(ui, icon::IMPORT, s.import, true).on_hover_text(s.import_tip).clicked() {
+                    *action = Some(Action::Import);
+                }
+                search_field(ui, &mut self.query, s);
+            });
+        });
+        ui.add_space(6.0);
+        self.naming_row(ui, s, action);
         let query = self.query.clone();
+        let mut mine: Vec<&Media> = p.media.values().filter(|m| imported_sound(m)).collect();
+        mine.sort_by_key(|m| (m.id.trim_start_matches(|c: char| !c.is_ascii_digit()).parse::<u64>().ok(), &m.id));
+        let found_mine: Vec<&Media> = mine.iter().copied().filter(|m| finds(&query, &m.name)).collect();
+        let mut folders: Vec<&str> = p.media.values().filter_map(|m| m.folder.as_deref()).collect();
+        folders.sort();
+        folders.dedup();
+        // the library's sounds that are on the timeline already
+        let used: HashSet<&str> = p
+            .media
+            .values()
+            .filter(|m| reelforge_engine::media_uses(p, &m.id) > 0)
+            .filter_map(|m| m.uri.strip_prefix(reelforge_media::library::SCHEME))
+            .collect();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            if !SOUNDS.iter().zip(s.sound_names).any(|(_, name)| finds(&query, name)) {
+            let library = SOUNDS.iter().zip(s.sound_names).any(|(_, name)| finds(&query, name));
+            if found_mine.is_empty() && !library {
                 nothing_matches(ui, s);
                 return;
+            }
+            if !found_mine.is_empty() {
+                ui.label(egui::RichText::new(s.sound_mine).small().strong().color(color::WEAK));
+                ui.add_space(2.0);
+                for m in found_mine {
+                    let n = reelforge_engine::media_uses(p, &m.id);
+                    if let Some(a) = self.sound_row(ui, m, n, s, &folders) {
+                        *action = Some(a);
+                    }
+                }
+                ui.add_space(10.0);
             }
             for (title, cat) in [(s.sound_effects, Category::Effect), (s.sound_music, Category::Music)] {
                 let found: Vec<_> = SOUNDS
@@ -893,8 +1006,10 @@ impl AssetPanel {
                     } else {
                         short_time(length)
                     };
-                    if let Some(a) = row(ui, glyph, name, &shown, item, s) {
-                        *action = Some(a);
+                    let (a, r) = row(ui, glyph, name, &shown, used.contains(snd.id), false, item);
+                    r.on_hover_text(s.item_tip);
+                    if a.is_some() {
+                        *action = a;
                     }
                 }
                 ui.add_space(10.0);
@@ -1310,45 +1425,68 @@ fn empty(ui: &mut egui::Ui, s: &Strings, action: &mut Option<Action>) {
     }
 }
 
-/// A row of the sound list: click adds at the playhead, drag goes to the timeline.
-fn row(ui: &mut egui::Ui, glyph: &str, name: &str, length: &str, item: Item, s: &Strings) -> Option<Action> {
+/// A row of the sound list: click adds at the playhead, drag goes to the timeline. `used` marks one
+/// on the timeline already, `off` one whose file cannot be read.
+fn row(
+    ui: &mut egui::Ui,
+    glyph: &str,
+    name: &str,
+    length: &str,
+    used: bool,
+    off: bool,
+    item: Item,
+) -> (Option<Action>, egui::Response) {
     let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click_and_drag());
     if r.drag_started() {
         egui::DragAndDrop::set_payload(ui.ctx(), item.clone());
     }
-    let painter = ui.painter();
+    let painter = ui.painter_at(rect);
     if r.hovered() {
         painter.rect_filled(rect, 6.0, color::HOVER);
     }
     let tile = Rect::from_min_size(rect.left_top() + vec2(4.0, 4.0), vec2(24.0, 24.0));
     painter.rect_filled(tile, 5.0, color::AUDIO.gamma_multiply(0.45));
     painter.text(tile.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(13.0), color::TEXT);
-    painter.text(
-        rect.left_center() + vec2(38.0, 0.0),
-        Align2::LEFT_CENTER,
-        name,
-        FontId::proportional(13.0),
-        color::TEXT,
-    );
-    if r.hovered() {
-        painter.text(
-            rect.right_center() - vec2(10.0, 0.0),
-            Align2::RIGHT_CENTER,
-            icon::ADD,
-            FontId::proportional(14.0),
-            color::ACCENT,
-        );
+    // at the right, the length (or, under the pointer, the way to add it), and before it the marks
+    let right = rect.right_center() - vec2(10.0, 0.0);
+    let end = if r.hovered() {
+        painter.text(right, Align2::RIGHT_CENTER, icon::ADD, FontId::proportional(14.0), color::ACCENT)
     } else {
-        painter.text(
-            rect.right_center() - vec2(10.0, 0.0),
-            Align2::RIGHT_CENTER,
-            length,
-            FontId::monospace(10.5),
-            color::WEAK,
-        );
+        painter.text(right, Align2::RIGHT_CENTER, length, FontId::monospace(10.5), color::WEAK)
+    };
+    let mut marks = end.left() - 8.0;
+    if off {
+        marks = painter
+            .text(
+                pos2(marks, rect.center().y),
+                Align2::RIGHT_CENTER,
+                icon::WARNING,
+                FontId::proportional(12.0),
+                color::WARN,
+            )
+            .left()
+            - 6.0;
+    } else if used {
+        marks = painter
+            .text(
+                pos2(marks, rect.center().y),
+                Align2::RIGHT_CENTER,
+                icon::DONE,
+                FontId::proportional(12.0),
+                color::ACCENT,
+            )
+            .left()
+            - 6.0;
     }
-    let r = r.on_hover_text(s.item_tip);
-    r.clicked().then_some(Action::Add(item))
+    // the name, cut to what is left
+    let mut job = egui::text::LayoutJob::single_section(
+        name.to_string(),
+        egui::TextFormat::simple(FontId::proportional(13.0), if off { color::WARN } else { color::TEXT }),
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width((marks - rect.left() - 38.0).max(10.0));
+    let galley = ui.fonts_mut(|f| f.layout_job(job));
+    painter.galley(pos2(rect.left() + 38.0, rect.center().y - galley.size().y / 2.0), galley, color::TEXT);
+    (r.clicked().then_some(Action::Add(item)), r)
 }
 
 /// Titles: a plain one and the templates (花字), as pictures.
