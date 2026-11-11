@@ -1449,3 +1449,67 @@ fn the_agents_window_starts_sharing_and_an_agent_reaches_the_project() {
     let id = added["clip"].as_str().unwrap().to_string();
     until("the editor has the agent's clip", || app.session().project().clip(&id).is_some());
 }
+
+#[test]
+fn the_palette_stays_over_its_shade_and_the_shade_lets_the_editor_show() {
+    use eframe::egui;
+    let app = EditorApp::new(Session::default());
+    let ctx = egui::Context::default();
+    crate::theme::install(&ctx, false);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+    let mut palette = crate::palette::Palette::default();
+    let frame = |palette: &mut crate::palette::Palette, events: Vec<egui::Event>| {
+        let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            palette.show(ui.ctx(), app.s(), app.palette_entries());
+        });
+        out.textures_delta.clear();
+        out.shapes
+    };
+    let click = |at: egui::Pos2| {
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        vec![egui::Event::PointerMoved(at), press(true), press(false)]
+    };
+    let middle = egui::pos2(600.0, 200.0);
+    // opened, closed by a click beside it (which brings the shade's layer to the top), opened again
+    for round in 0..2 {
+        palette.toggle();
+        for _ in 0..20 {
+            frame(&mut palette, vec![]);
+        }
+        let top = ctx.layer_id_at(middle).expect("something is there");
+        assert_eq!(top.id, egui::Id::unique("palette"), "round {round}: {top:?}");
+        let shade = frame(&mut palette, vec![])
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Rect(r) if r.rect == screen => Some(r.fill),
+                _ => None,
+            })
+            .expect("a shade");
+        assert!(shade.a() <= 100, "{shade:?}");
+        frame(&mut palette, click(egui::pos2(20.0, 780.0)));
+        for _ in 0..20 {
+            frame(&mut palette, vec![]);
+        }
+        assert!(!palette.open);
+    }
+}
+
+#[test]
+fn the_keys_of_a_mac_are_drawn_with_their_symbols() {
+    use eframe::egui;
+    let ctx = egui::Context::default();
+    crate::theme::install(&ctx, false);
+    ctx.set_os(egui::os::OperatingSystem::Mac);
+    ctx.run_ui(Default::default(), |_| {}).textures_delta.clear();
+    let written = crate::i18n::keys(&ctx, "Ctrl+Shift+Z Alt+D");
+    assert_eq!(written, "⌘⇧Z ⌥D");
+    for font in [egui::FontId::proportional(13.0), egui::FontId::monospace(13.0)] {
+        assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, &written)), "{font:?}");
+    }
+}
