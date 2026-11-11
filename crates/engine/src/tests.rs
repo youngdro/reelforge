@@ -4755,3 +4755,55 @@ fn a_colour_is_keyed_where_there_is_one_and_a_script_tweens_it() {
 fn out_track(s: &Session) -> String {
     s.project().tracks.iter().find(|t| t.kind == reelforge_model::TrackKind::Video).unwrap().id.clone()
 }
+
+#[test]
+fn a_script_is_kept_as_a_preset_and_built_again_with_other_values() {
+    let mut s = Session::default();
+    let out = s.execute("script.add", &json!({"source": CARD, "params": {"price": 99}, "name": "Price card"})).unwrap();
+    let group = out["group"].as_str().unwrap().to_string();
+    let saved = s.execute("preset.save", &json!({"group": group})).unwrap();
+    let id = saved["preset"].as_str().unwrap().to_string();
+    assert!(id.starts_with('p'));
+    assert_eq!((saved["name"].as_str(), &saved["params"]["price"]), (Some("Price card"), &json!(99)));
+    assert_eq!(saved["declared"]["price"]["label"], json!("Price"));
+    // from source, unnamed: called by its place; a value it does not declare is refused
+    let other = s.execute("preset.save", &json!({"source": CARD, "params": {"tags": ["x"]}})).unwrap();
+    assert_eq!(other["name"], json!("Preset 2"));
+    assert!(s.execute("preset.save", &json!({"source": CARD, "params": {"nope": 1}})).is_err());
+    assert!(s.execute("preset.save", &json!({"source": "export function build( {"})).is_err());
+    assert!(s.execute("preset.save", &json!({"group": group, "source": CARD})).is_err());
+    let listed = s.execute("preset.list", &json!({})).unwrap();
+    assert_eq!(listed["presets"].as_array().unwrap().len(), 2);
+    assert!(listed["presets"][0].get("source").is_none());
+    assert_eq!(s.execute("preset.get", &json!({"preset": "Price card"})).unwrap()["source"], json!(CARD));
+
+    // applied, it is a script of its own with its saved values under those given
+    let steps = s.history().len();
+    let built =
+        s.execute("preset.apply", &json!({"preset": id, "start": {"seconds": 5}, "params": {"tags": ["z"]}})).unwrap();
+    assert_eq!(s.history().len(), steps + 1);
+    let g2 = built["group"].as_str().unwrap();
+    assert_ne!(g2, group);
+    let p = s.project();
+    assert_eq!(p.scripts[g2].params["price"], json!(99));
+    assert_eq!(p.scripts[g2].params["tags"], json!(["z"]));
+    assert_eq!(p.scripts[g2].name, "Price card");
+    let first = built["clips"][0]["clip"].as_str().unwrap();
+    assert_eq!(p.clip(first).unwrap().1.start, Tick::from_seconds(5.0));
+    // null takes the script's own default
+    let plain = s.execute("preset.apply", &json!({"preset": id, "params": {"price": null}})).unwrap();
+    assert!(!s.project().scripts[plain["group"].as_str().unwrap()].params.contains_key("price"));
+
+    // renamed and removed; what it built stays
+    s.execute("preset.set", &json!({"preset": id, "name": "Card"})).unwrap();
+    assert_eq!(s.project().presets[0].script.name, "Card");
+    assert!(s.execute("preset.set", &json!({"preset": id, "name": " "})).is_err());
+    s.execute("preset.remove", &json!({"preset": "Card"})).unwrap();
+    assert_eq!(s.project().presets.len(), 1);
+    assert!(s.project().scripts.contains_key(g2));
+    assert!(s.execute("preset.apply", &json!({"preset": id})).is_err());
+    // it is kept with the project
+    let text = serde_json::to_string(&*s.project()).unwrap();
+    let back: reelforge_model::Project = serde_json::from_str(&text).unwrap();
+    assert_eq!(back.presets, s.project().presets);
+}
