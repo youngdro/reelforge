@@ -1513,3 +1513,17 @@ fn the_keys_of_a_mac_are_drawn_with_their_symbols() {
         assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, &written)), "{font:?}");
     }
 }
+
+#[test]
+fn a_script_s_colour_parameter_is_read_for_the_picker_where_it_can_be() {
+    use crate::script_rgb;
+    assert_eq!(script_rgb(&json!("#ff3b5c")), Some([255, 59, 92]));
+    assert_eq!(script_rgb(&json!("#F00")), Some([255, 0, 0]));
+    assert_eq!(script_rgb(&json!("#11223344")), Some([17, 34, 51]));
+    assert_eq!(script_rgb(&json!([1.0, 0.5, 0.0, 1.0])), Some([255, 128, 0]));
+    // a name or a function is left to be typed
+    assert_eq!(
+        (script_rgb(&json!("gold")), script_rgb(&json!("rgb(1, 2, 3)")), script_rgb(&json!("#12"))),
+        (None, None, None)
+    );
+}
