@@ -55,6 +55,8 @@ Every node takes `x`, `y`, `scale`, `rotation`, `opacity` and a `name` (which er
 replies use). Later nodes lie over earlier ones. Every node also takes:
 
 - `scaleX`, `scaleY`: width and height apart, on top of `scale` (negative mirrors);
+- `skewX`, `skewY`: leaning, in degrees within ±89, as CSS `skew` (`skewX: 20` slants the top
+  edge left and the bottom right, about the node's `transformOrigin`);
 - `rotationX`, `rotationY`: turned in space, in degrees (`rotationY` swings it like a door,
   `rotationX` tips it like a lid; past 90 it shows its back), seen from `perspective` pixels away
   (two canvas heights unless told; nearer is stronger);
@@ -106,14 +108,16 @@ script.
   `repeat` (a whole number of extra times), `yoyo`, `repeatDelay`.
 - A value is a number, or `"+=n"` / `"-=n"` from where the property is.
 - **Properties**: `x`, `y`, `scale`, `rotation`, `opacity`, `scaleX`, `scaleY`, `rotationX`,
-  `rotationY` on every node; `maskX`, `maskY`, `maskWidth`, `maskHeight`, `maskRotation`,
+  `rotationY`, `skewX`, `skewY` on every node; `maskX`, `maskY`, `maskWidth`, `maskHeight`, `maskRotation`,
   `maskFeather` on a node with a `mask`; `fill` on a shape made with a fill and `color` on a title
   (a colour as anywhere else; of a gradient, the colour it starts from; each of red, green, blue
   and alpha goes its own straight way, so fade with `opacity` rather than to a transparent black);
   the colour adjustments
   `exposure`, `contrast`, `saturation`, `temperature`, `tint`, `highlights`, `shadows`, `fade`,
-  `vignette`; `drawStart` and `drawEnd` on a shape with a stroke (0 to 1 round its outline: from 0
-  to 1, `drawEnd` draws it on); `count` on a title with a counter; `cropLeft`, `cropTop`,
+  `vignette`; `width` and `height` on a shape (pixels; a line has only `width`, its length), and
+  `radius` (`borderRadius`) on a rectangle, a tag or an arrow; on a shape made with a `stroke`,
+  `stroke` (`borderColor`, its colour), `strokeWidth` (`borderWidth`, pixels) and `drawStart` and
+  `drawEnd` (0 to 1 round its outline: from 0 to 1, `drawEnd` draws it on); `count` on a title with a counter; `cropLeft`, `cropTop`,
   `cropRight`, `cropBottom` on a picture. A property a node has not is refused, with those it has.
 - **Paths**: `tl.to(node, { motionPath: [{x, y}, …], duration, ease })` sends a node through those
   points on a smooth curve at an even pace, from where it is (`{path, fromCurrent: false}` starts
@@ -160,6 +164,23 @@ Building a group again replaces its clips, so changes made to them by hand are l
 to keep them. A script whose clips are all deleted is forgotten. Copies of its clips are ordinary
 clips.
 
+## Presets
+
+A script with the values it was given can be kept to use again. In the editor, **Save as Preset**
+under a script's parameters keeps it in **My Presets** (the Stickers tab, under Promo), which every
+project on that computer or browser shows; click one to add it at the playhead, or drag it onto the
+timeline. Agents keep presets with the project:
+
+| Command | |
+| --- | --- |
+| `preset.save {group}` or `preset.save {source, params?, name?, seed?, duration?}` | Keeps the script that built a group, with its values, or the script given. |
+| `preset.list`, `preset.get {preset}` | The project's presets; one whole, with its source. `preset` is an id (`p12`) or a name. |
+| `preset.apply {preset, start?, params?, duration?, seed?}` | Builds it as `script.add` would; `params` go over the saved values, `null` takes the default. |
+| `preset.set {preset, name}`, `preset.remove {preset}` | Renames or forgets one; what it built stays. |
+
+Only the values given are kept: a parameter left at its default follows the script, so a colour
+the script takes from elsewhere is not frozen at the one of the day it was saved.
+
 ## Not yet
 
 A script can only tween what the editor can key. What GSAP can say and a script cannot yet, with
@@ -167,10 +188,8 @@ what to write meanwhile (a script that uses one is refused, and told so):
 
 | GSAP | State | Meanwhile |
 | --- | --- | --- |
-| `skewX`, `skewY` | nothing skews | |
-| `width`, `height` | a shape's size is not keyed | `scaleX`, `scaleY` with a `transformOrigin` |
-| `borderRadius` | a corner is not keyed | |
-| `stroke`, a shadow's colour, a gradient's second colour, a title's box | only a fill's colour and a title's are keyed | cross-fade two nodes |
+| `width`, `height` of a title or a picture | only a shape's box is keyed | `scaleX`, `scaleY` with a `transformOrigin` |
+| a shadow's colour, a gradient's second colour, a title's box | a fill's, a title's and an outline's colour are keyed | cross-fade two nodes |
 | `filter: blur()` and other filters | not keyed | the colour adjustments are; `motionBlur` |
 | `z`, `rotationX/Y` with depth sorting | nodes are drawn in the order made | order them yourself |
 | `SplitText` (characters, words, lines as targets) | a title is one node | `animate` with the editor's character, word and line animations; or one node a word |

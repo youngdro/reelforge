@@ -1527,3 +1527,98 @@ fn a_script_s_colour_parameter_is_read_for_the_picker_where_it_can_be() {
         (None, None, None)
     );
 }
+
+#[test]
+fn sound_brought_in_is_with_the_library_sounds_and_not_among_the_pictures() {
+    use crate::i18n::Lang;
+    use eframe::egui;
+    fn texts(shapes: &[egui::epaint::ClippedShape]) -> String {
+        fn walk(shape: &egui::Shape, out: &mut String) {
+            match shape {
+                egui::Shape::Text(t) => {
+                    out.push_str(&t.galley.job.text);
+                    out.push('\n');
+                }
+                egui::Shape::Vec(all) => all.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut out = String::new();
+        shapes.iter().for_each(|c| walk(&c.shape, &mut out));
+        out
+    }
+    let mut app = EditorApp::demo().with_lang(Lang::En);
+    let ctx = egui::Context::default();
+    crate::theme::install(&ctx, false);
+    let panel = |app: &mut EditorApp| {
+        let mut shown = String::new();
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(380.0, 800.0))),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                let (p, media) = (app.project(), app.media.clone());
+                let _ = app.assets.show(ui, &p, &media, Lang::En, &[], false, Tick::ZERO, &[]);
+            });
+            out.textures_delta.clear();
+            shown = texts(&out.shapes);
+        }
+        shown
+    };
+    // a sound file imported (not placed) is shown where it went: in the audio tab, above the library
+    app.import_bytes("Voice over take 2.wav", tone_wav(48_000, 0.5), false);
+    let audio = panel(&mut app);
+    let (mine, effects) = (audio.find("IMPORTED"), audio.find("EFFECTS"));
+    assert!(mine.is_some() && mine < effects, "{audio}");
+    assert!(audio.contains("Voice over take 2"), "{audio}");
+    // the media tab has pictures and video only, and no filter for sound; a picture imported is
+    // shown there
+    let png = {
+        let mut out = Vec::new();
+        let img = image::RgbaImage::from_pixel(8, 4, image::Rgba([0, 200, 0, 255]));
+        img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+        out
+    };
+    app.import_bytes("Green.png", png, false);
+    let media = panel(&mut app);
+    assert!(media.contains("Green.png"), "{media}");
+    assert!(!media.contains("Voice over take 2") && media.contains("Pictures"), "{media}");
+    assert_eq!(media.matches("Audio").count(), 1, "only the audio tab's own name: {media}");
+}
+
+#[test]
+fn a_saved_preset_is_offered_in_other_projects_and_builds_its_script() {
+    let source = "export const params = { size: { type: \"number\", default: 100 } };\n\
+                  export function build({ params, scene, timeline }) {\n\
+                    const dot = scene.circle({ name: \"dot\", radius: params.size, fill: \"#f00\" });\n\
+                    timeline().from(dot, { scale: 0, duration: 0.5 });\n\
+                  }";
+    let mut app = EditorApp::new(Session::default());
+    let out = app.execute("script.add", json!({"source": source, "params": {"size": 40}, "name": "Pop"})).unwrap();
+    app.save_preset(json!({"group": out["group"]}));
+    app.save_preset(json!({"group": out["group"]}));
+    // twice in the project, once in the person's own list
+    assert_eq!(app.project().presets.len(), 2);
+    assert_eq!(app.presets.len(), 1);
+    assert_eq!(app.presets_shown().len(), 1);
+    assert!(app.presets_unsaved);
+
+    // another project: the person's preset is there, and builds the script with its values
+    let mut other = EditorApp::new(Session::default());
+    other.presets = app.presets.clone();
+    let shown = other.presets_shown();
+    assert_eq!(shown[0].name, "Pop");
+    other.add_item(&crate::assets::Item::Preset(Box::new(shown[0].clone())), Tick::from_seconds(3.0), None);
+    let p = other.project();
+    let (group, script) = p.scripts.iter().next().unwrap();
+    assert_eq!(script.params["size"], json!(40));
+    let clip = p.tracks.iter().flat_map(|t| &t.clips).find(|c| c.group.as_deref() == Some(group)).unwrap();
+    assert_eq!(clip.start, Tick::from_seconds(3.0));
+    assert_eq!(other.selected.as_deref(), Some(clip.id.as_str()));
+
+    // forgotten, it is gone from both lists
+    app.forget_preset(&shown[0]);
+    assert!(app.presets.is_empty() && app.project().presets.is_empty());
+    assert!(app.presets_shown().is_empty());
+}

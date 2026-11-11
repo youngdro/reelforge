@@ -290,7 +290,9 @@ fn lower_tracks(
                     },
                     ClipContent::Solid { color } => LayerContent::Solid { color: Color(*color) },
                     ClipContent::Shape { shape: sh } => {
-                        let stroked = sh.stroke.as_ref().is_some_and(|s| s.width > 0.0);
+                        // an outline as thin as nothing is none, unless it widens
+                        let stroked =
+                            sh.stroke.as_ref().is_some_and(|s| s.width > 0.0 || clip.keyed(Prop::StrokeWidth));
                         let (trim, fill_opacity) = motion::draw(clip, &shape, step, stroked);
                         LayerContent::Shape(Box::new(ShapeContent {
                             kind: match sh.kind {
@@ -316,7 +318,7 @@ fn lower_tracks(
                             stroke: sh
                                 .stroke
                                 .as_ref()
-                                .filter(|s| s.width > 0.0)
+                                .filter(|_| stroked)
                                 .map(|s| ShapeStroke { color: Color(s.color), width: s.width }),
                             shadow: sh.shadow.as_ref().map(|s| ShapeShadow {
                                 color: Color(s.color),
@@ -326,6 +328,7 @@ fn lower_tracks(
                             trim: trim.map(|[start, end]| Trim { start, end }),
                             fill_opacity,
                             fill_color: motion::color(clip, &shape, step).filter(|_| sh.fill.is_some()),
+                            keys: motion::shape_keys(clip, &shape, step, stroked),
                         }))
                     }
                     // its timeline's picture, from where the clip starts in it
@@ -871,6 +874,7 @@ fn carriers(tracks: &[Track]) -> BTreeMap<&str, &str> {
 /// Where a clip's layer is and how it is turned, over its layer.
 fn placement(clip: &Clip, shape: &Shape, step: Tick) -> Transform {
     let stretch = motion::lower_pair(clip, [Prop::ScaleX, Prop::ScaleY], shape, step);
+    let skew = motion::lower_pair(clip, [Prop::SkewX, Prop::SkewY], shape, step);
     let [x, y] = [Prop::RotationX, Prop::RotationY].map(|p| motion::lower(clip, p, shape, step));
     let flat = Animated::Constant(0.0);
     let (near, far) = ClipTransform::DISTANCES;
@@ -881,6 +885,7 @@ fn placement(clip: &Clip, shape: &Shape, step: Tick) -> Transform {
         stretch: (stretch != Animated::Constant([1.0, 1.0])).then_some(stretch),
         anchor: (clip.transform.anchor != [0.5, 0.5]).then_some(clip.transform.anchor),
         turn: (x != flat || y != flat).then(|| Turn { x, y, distance: clip.transform.distance.clamp(near, far) }),
+        skew: (skew != Animated::Constant([0.0, 0.0])).then_some(skew),
     }
 }
 
@@ -969,6 +974,7 @@ fn light_leak(clip: &str, at: Tick, half: Tick, canvas: [f32; 2]) -> Vec<Layer> 
                     trim: None,
                     fill_opacity: None,
                     fill_color: None,
+                    keys: None,
                 })),
                 transform: Transform {
                     position: Animated::Keys(vec![

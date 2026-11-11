@@ -368,6 +368,16 @@ fn layers_ok(spec: &RenderSpec, at: &str, layers: &[crate::Layer]) -> Result<(),
         if let Some(stretch) = &layer.transform.stretch {
             keys_ok(&format!("{path}.transform.stretch"), stretch, layer.dur)?;
         }
+        if let Some(skew) = &layer.transform.skew {
+            keys_ok(&format!("{path}.transform.skew"), skew, layer.dur)?;
+            let values: Vec<[f32; 2]> = match skew {
+                Animated::Constant(v) => vec![*v],
+                Animated::Keys(keys) => keys.iter().map(|k| k.v).collect(),
+            };
+            if !values.iter().flatten().all(|v| v.is_finite() && v.abs() <= 89.0) {
+                return Err(bad(format!("{path}.transform.skew"), "must be within ±89 degrees"));
+            }
+        }
         if layer.transform.anchor.is_some_and(|a| !a.iter().all(|v| v.is_finite())) {
             return Err(bad(format!("{path}.transform.anchor"), "needs numbers"));
         }
@@ -477,6 +487,19 @@ fn shape_ok(path: &str, sh: &crate::ShapeContent, dur: Tick) -> Result<(), Valid
     }
     if let Some(c) = &sh.fill_color {
         color_keys_ok(&format!("{path}.fill_color"), c, dur)?;
+    }
+    if let Some(k) = &sh.keys {
+        if let Some(size) = &k.size {
+            keys_ok(&format!("{path}.keys.size"), size, dur)?;
+        }
+        for (name, part) in [("radius", &k.radius), ("stroke_width", &k.stroke_width)] {
+            if let Some(part) = part {
+                keys_ok(&format!("{path}.keys.{name}"), part, dur)?;
+            }
+        }
+        if let Some(c) = &k.stroke_color {
+            color_keys_ok(&format!("{path}.keys.stroke_color"), c, dur)?;
+        }
     }
     Ok(())
 }

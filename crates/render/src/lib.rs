@@ -85,6 +85,7 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "shadow.drop@1",
     "shape/1",
     "shape.color/1",
+    "shape.keys/1",
     "text/1",
     "text/2",
     "text/3",
@@ -99,6 +100,7 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "time.reverse/1",
     "transform.3d/1",
     "transform.anchor/1",
+    "transform.skew/1",
     "transform.stretch/1",
 ];
 

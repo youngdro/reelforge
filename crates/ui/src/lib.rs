@@ -202,6 +202,11 @@ pub struct EditorApp {
     preview_only: bool,
     /// The preview quality was switched and is not written to storage yet.
     quality_unsaved: bool,
+    /// The person's motion presets, kept between runs and shown in every project beside the
+    /// project's own (`preset.save`).
+    presets: Vec<reelforge_model::Script>,
+    /// The presets changed and are not written to storage yet.
+    presets_unsaved: bool,
     /// Where the visible layers land in the preview's frame, bottom first.
     outlines: Vec<(String, reelforge_render::Outline)>,
     /// A drag on the preview in progress.
@@ -589,6 +594,8 @@ impl EditorApp {
             editing: None,
             preview_only: false,
             quality_unsaved: false,
+            presets: Vec::new(),
+            presets_unsaved: false,
             outlines: Vec::new(),
             gesture: None,
             cropping: None,
@@ -678,6 +685,9 @@ impl EditorApp {
             self.lang_chosen = true;
         }
         self.full_quality = cc.storage.and_then(|s| s.get_string(QUALITY_KEY)).as_deref() == Some("full");
+        if let Some(kept) = cc.storage.and_then(|s| s.get_string(PRESETS_KEY)) {
+            self.presets = serde_json::from_str(&kept).unwrap_or_default();
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(dir) = cc.storage.and_then(|s| s.get_string(EXPORT_DIR_KEY)).map(std::path::PathBuf::from)
             && dir.is_dir()
@@ -1340,6 +1350,8 @@ impl EditorApp {
             }
         } else {
             self.status = fill(self.s().added_to_media, &[&m.name]);
+            // seen where it went: a sound file in the audio tab, a picture or a video in media
+            self.assets.reveal(m.kind);
         }
         // an animation that uses what is not drawn says so, rather than looking wrong in silence
         let missing: Vec<&str> = imported["unsupported"]
@@ -1531,6 +1543,49 @@ impl EditorApp {
         }
     }
 
+    /// The motion presets to offer: the person's own, then those of the project not among them.
+    pub(crate) fn presets_shown(&self) -> Vec<reelforge_model::Script> {
+        let mut all = self.presets.clone();
+        for p in &self.project().presets {
+            if !all.iter().any(|q| same_preset(q, &p.script)) {
+                all.push(p.script.clone());
+            }
+        }
+        all
+    }
+
+    /// `preset.save`: the preset is kept with the project, and in the person's own list for every
+    /// other one.
+    pub(crate) fn save_preset(&mut self, params: Value) {
+        if let Ok(out) = self.execute("preset.save", params)
+            && let Some(preset) = self.project().presets.iter().find(|p| out["preset"] == p.id.as_str())
+        {
+            let script = preset.script.clone();
+            self.keep_preset(script);
+            self.status = self.s().preset_saved.to_string();
+        }
+    }
+
+    /// Keeps `script` in the person's own presets, once.
+    fn keep_preset(&mut self, script: reelforge_model::Script) {
+        if !self.presets.iter().any(|q| same_preset(q, &script)) {
+            self.presets.push(script);
+            self.presets_unsaved = true;
+        }
+    }
+
+    /// Forgets a preset: from the person's own and from the project's.
+    pub(crate) fn forget_preset(&mut self, script: &reelforge_model::Script) {
+        let before = self.presets.len();
+        self.presets.retain(|q| !same_preset(q, script));
+        self.presets_unsaved |= self.presets.len() != before;
+        let ids: Vec<String> =
+            self.project().presets.iter().filter(|p| same_preset(&p.script, script)).map(|p| p.id.clone()).collect();
+        for id in ids {
+            let _ = self.execute("preset.remove", json!({"preset": id}));
+        }
+    }
+
     /// Puts something from the asset panel at `at` (on `track`, when it was dropped on one).
     fn add_item(&mut self, item: &assets::Item, at: Tick, track: Option<String>) {
         let s = self.s();
@@ -1578,6 +1633,19 @@ impl EditorApp {
                 if let Ok(v) = self.execute("promo.add", json!({"kind": kind, "start": at, "compound": many})) {
                     let clip = if many { &v["clip"] } else { &v["clips"][0]["clip"] };
                     self.selected = clip.as_str().map(str::to_string);
+                }
+            }
+            assets::Item::Preset(script) => {
+                // a script of its own, from the values it was saved with
+                let mut params = json!({
+                    "source": script.source, "params": script.params, "name": script.name,
+                    "seed": script.seed, "start": at,
+                });
+                if let Some(d) = script.duration {
+                    params["duration"] = json!(d);
+                }
+                if let Ok(v) = self.execute("script.add", params) {
+                    self.selected = v["clips"][0]["clip"].as_str().map(str::to_string);
                 }
             }
             assets::Item::Decor(id) => {
@@ -3681,6 +3749,9 @@ impl EditorApp {
                         if ui.button(s.script_detach).on_hover_text(s.script_detach_tip).clicked() {
                             actions.push(("script.detach", json!({"group": script.group})));
                         }
+                        if ui.button(s.preset_save).on_hover_text(s.preset_save_tip).clicked() {
+                            actions.push(("preset.save", json!({"group": script.group})));
+                        }
                     });
                     ui.label(egui::RichText::new(s.script_tip).small().color(theme::color::WEAK));
                     if !told.is_empty() {
@@ -4892,6 +4963,8 @@ impl EditorApp {
                 self.status = self.s().steady_watching.to_string();
                 self.later = Some((2, cmd, params));
                 ui.ctx().request_repaint();
+            } else if cmd == "preset.save" {
+                self.save_preset(params);
             } else if cmd == "script.setParams" {
                 // the group's clips are made again: the one of the same node stays selected
                 let group = params["group"].as_str().unwrap_or_default().to_string();
@@ -5539,6 +5612,13 @@ fn is_subrip(name: &str) -> bool {
 const LANG_KEY: &str = "reelforge.lang";
 /// Where the preview quality is kept between runs (`full` or `smooth`).
 const QUALITY_KEY: &str = "reelforge.preview";
+/// Whether two presets are the same script with the same name and values.
+fn same_preset(a: &reelforge_model::Script, b: &reelforge_model::Script) -> bool {
+    a.name == b.name && a.source == b.source && a.params == b.params
+}
+
+/// Where the person's motion presets are kept between runs, as JSON.
+const PRESETS_KEY: &str = "reelforge.presets";
 /// Where the folder the person last exported to is kept between runs.
 #[cfg(not(target_arch = "wasm32"))]
 const EXPORT_DIR_KEY: &str = "reelforge.export_dir";
@@ -5591,6 +5671,7 @@ impl eframe::App for EditorApp {
             storage.set_string(LANG_KEY, self.lang.code().to_string());
         }
         storage.set_string(QUALITY_KEY, if self.full_quality { "full" } else { "smooth" }.to_string());
+        storage.set_string(PRESETS_KEY, serde_json::to_string(&self.presets).unwrap_or_default());
         #[cfg(not(target_arch = "wasm32"))]
         storage.set_string(EXPORT_DIR_KEY, self.export_dir.display().to_string());
         if self.recovery {
@@ -5604,7 +5685,10 @@ impl eframe::App for EditorApp {
         let export_dir_unsaved = std::mem::take(&mut self.export_dir_unsaved);
         #[cfg(target_arch = "wasm32")]
         let export_dir_unsaved = false;
-        if (std::mem::take(&mut self.lang_unsaved) | std::mem::take(&mut self.quality_unsaved) | export_dir_unsaved)
+        if (std::mem::take(&mut self.lang_unsaved)
+            | std::mem::take(&mut self.quality_unsaved)
+            | std::mem::take(&mut self.presets_unsaved)
+            | export_dir_unsaved)
             && let Some(storage) = frame.storage_mut()
         {
             self.save(storage);
@@ -5773,6 +5857,7 @@ impl eframe::App for EditorApp {
                 egui::Margin { left: gap, right: gap / 2, top: 0, bottom: gap / 2 }
             }))
             .show_collapsible(ui, &mut media_on.clone(), |ui| {
+                self.assets.presets = self.presets_shown();
                 self.assets.show(ui, &p, &media, lang, &looks, playing, self.playhead, &selection)
             })
             .and_then(|r| r.inner);
@@ -5871,6 +5956,7 @@ impl eframe::App for EditorApp {
             Some(assets::Action::Storyboard(id)) => self.use_storyboard(id),
             Some(assets::Action::Copy(name, words)) => self.fill_copy(&name, &words),
             Some(assets::Action::Fill) => self.pick_fill(&ctx),
+            Some(assets::Action::ForgetPreset(script)) => self.forget_preset(&script),
             None => {}
         }
         if let Some((item, at, track)) = out.dropped {

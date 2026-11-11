@@ -4861,3 +4861,131 @@ fn a_colour_is_keyed_where_there_is_one_and_a_script_tweens_it() {
 fn out_track(s: &Session) -> String {
     s.project().tracks.iter().find(|t| t.kind == reelforge_model::TrackKind::Video).unwrap().id.clone()
 }
+
+#[test]
+fn a_script_is_kept_as_a_preset_and_built_again_with_other_values() {
+    let mut s = Session::default();
+    let out = s.execute("script.add", &json!({"source": CARD, "params": {"price": 99}, "name": "Price card"})).unwrap();
+    let group = out["group"].as_str().unwrap().to_string();
+    let saved = s.execute("preset.save", &json!({"group": group})).unwrap();
+    let id = saved["preset"].as_str().unwrap().to_string();
+    assert!(id.starts_with('p'));
+    assert_eq!((saved["name"].as_str(), &saved["params"]["price"]), (Some("Price card"), &json!(99)));
+    assert_eq!(saved["declared"]["price"]["label"], json!("Price"));
+    // from source, unnamed: called by its place; a value it does not declare is refused
+    let other = s.execute("preset.save", &json!({"source": CARD, "params": {"tags": ["x"]}})).unwrap();
+    assert_eq!(other["name"], json!("Preset 2"));
+    assert!(s.execute("preset.save", &json!({"source": CARD, "params": {"nope": 1}})).is_err());
+    assert!(s.execute("preset.save", &json!({"source": "export function build( {"})).is_err());
+    assert!(s.execute("preset.save", &json!({"group": group, "source": CARD})).is_err());
+    let listed = s.execute("preset.list", &json!({})).unwrap();
+    assert_eq!(listed["presets"].as_array().unwrap().len(), 2);
+    assert!(listed["presets"][0].get("source").is_none());
+    assert_eq!(s.execute("preset.get", &json!({"preset": "Price card"})).unwrap()["source"], json!(CARD));
+
+    // applied, it is a script of its own with its saved values under those given
+    let steps = s.history().len();
+    let built =
+        s.execute("preset.apply", &json!({"preset": id, "start": {"seconds": 5}, "params": {"tags": ["z"]}})).unwrap();
+    assert_eq!(s.history().len(), steps + 1);
+    let g2 = built["group"].as_str().unwrap();
+    assert_ne!(g2, group);
+    let p = s.project();
+    assert_eq!(p.scripts[g2].params["price"], json!(99));
+    assert_eq!(p.scripts[g2].params["tags"], json!(["z"]));
+    assert_eq!(p.scripts[g2].name, "Price card");
+    let first = built["clips"][0]["clip"].as_str().unwrap();
+    assert_eq!(p.clip(first).unwrap().1.start, Tick::from_seconds(5.0));
+    // null takes the script's own default
+    let plain = s.execute("preset.apply", &json!({"preset": id, "params": {"price": null}})).unwrap();
+    assert!(!s.project().scripts[plain["group"].as_str().unwrap()].params.contains_key("price"));
+
+    // renamed and removed; what it built stays
+    s.execute("preset.set", &json!({"preset": id, "name": "Card"})).unwrap();
+    assert_eq!(s.project().presets[0].script.name, "Card");
+    assert!(s.execute("preset.set", &json!({"preset": id, "name": " "})).is_err());
+    s.execute("preset.remove", &json!({"preset": "Card"})).unwrap();
+    assert_eq!(s.project().presets.len(), 1);
+    assert!(s.project().scripts.contains_key(g2));
+    assert!(s.execute("preset.apply", &json!({"preset": id})).is_err());
+    // it is kept with the project
+    let text = serde_json::to_string(&*s.project()).unwrap();
+    let back: reelforge_model::Project = serde_json::from_str(&text).unwrap();
+    assert_eq!(back.presets, s.project().presets);
+}
+
+#[test]
+fn a_shape_s_box_corner_and_outline_are_keyed_and_a_script_tweens_them() {
+    let mut s = Session::default();
+    let src = r##"export function build({ scene, timeline }) {
+        const bar = scene.rect({ name: "bar", width: 100, height: 40, fill: "#fff", stroke: { color: "#000", width: 2 } });
+        const dot = scene.circle({ name: "dot", width: 50 });
+        timeline({ defaults: { duration: 1, ease: "none" } })
+          .to(bar, { width: 600, borderRadius: 20, stroke: "#ff0000", strokeWidth: 8 })
+          .from(dot, { height: 0 }, 0);
+    }"##;
+    let out = s.execute("script.add", &json!({"source": src})).unwrap();
+    let id = |i: usize| out["clips"][i]["clip"].as_str().unwrap().to_string();
+    let proj = s.project();
+    let ends = |c: &reelforge_model::Clip, p: Prop| c.keys[&p].iter().map(|k| k.v).collect::<Vec<_>>();
+    let bar = proj.clip(&id(0)).unwrap().1;
+    assert_eq!(ends(bar, Prop::Width), [100.0, 600.0]);
+    assert_eq!(ends(bar, Prop::Radius), [0.0, 20.0]);
+    assert_eq!(ends(bar, Prop::StrokeWidth), [2.0, 8.0]);
+    assert_eq!((ends(bar, Prop::StrokeR), ends(bar, Prop::StrokeA)), (vec![0.0, 1.0], vec![1.0, 1.0]));
+    assert!(!bar.keys.contains_key(&Prop::Height));
+    assert_eq!(ends(proj.clip(&id(1)).unwrap().1, Prop::Height), [0.0, 50.0]);
+    let spec = reelforge_compile::compile(&proj, &reelforge_compile::CompileOptions { encode: false }).unwrap();
+    assert!(spec.required_features().contains("shape.keys/1"));
+    reelforge_renderspec::validate(&spec).unwrap();
+    let shape = |i: usize| {
+        let layer = spec.layers.iter().find(|l| l.id == id(i)).unwrap();
+        let reelforge_renderspec::LayerContent::Shape(sh) = &layer.content else { panic!() };
+        sh.clone()
+    };
+    let half = shape(0).at(Tick::from_seconds(0.5));
+    assert_eq!((half.size, half.radius), ([350.0, 40.0], 10.0));
+    let stroke = half.stroke.unwrap();
+    assert_eq!((stroke.width, stroke.color.0[0]), (5.0, 0.5));
+    // a shape without an outline keys none of it
+    assert!(shape(1).keys.as_ref().is_some_and(|k| k.stroke_color.is_none() && k.size.is_some()));
+
+    // by hand too, where the shape has the part; a script asking for what a node lacks is told
+    let e = s.execute("clip.setKey", &json!({"clip": id(1), "prop": "strokeWidth", "at": 0, "value": 3})).unwrap_err();
+    assert_eq!(e.to_string(), "invalid parameters: this clip has no `strokeWidth` to key");
+    s.execute("clip.setKey", &json!({"clip": id(1), "prop": "radius", "at": 0, "value": 3})).unwrap();
+    let e = s
+        .execute(
+            "script.check",
+            &json!({"source": "export function build({ scene, timeline }) { timeline().to(scene.circle({}), { stroke: \"red\" }); }"}),
+        )
+        .unwrap_err();
+    assert!(e.to_string().contains("only a shape made with a `stroke`"), "{e}");
+}
+
+#[test]
+fn a_clip_leans_and_a_script_skews_it() {
+    let mut s = Session::default();
+    let src = r##"export function build({ scene, timeline }) {
+        const card = scene.rect({ name: "card", skewY: 5 });
+        timeline({ defaults: { duration: 1, ease: "none" } }).to(card, { skewX: -20 });
+    }"##;
+    let out = s.execute("script.add", &json!({"source": src})).unwrap();
+    let id = out["clips"][0]["clip"].as_str().unwrap().to_string();
+    let proj = s.project();
+    let card = proj.clip(&id).unwrap().1;
+    assert_eq!(card.transform.skew, [0.0, 5.0]);
+    assert_eq!(card.keys[&Prop::SkewX].iter().map(|k| k.v).collect::<Vec<_>>(), [0.0, -20.0]);
+    let spec = reelforge_compile::compile(&proj, &reelforge_compile::CompileOptions { encode: false }).unwrap();
+    assert!(spec.required_features().contains("transform.skew/1"));
+    reelforge_renderspec::validate(&spec).unwrap();
+    let layer = spec.layers.iter().find(|l| l.id == id).unwrap();
+    assert_eq!(layer.transform.skew.as_ref().unwrap().sample(Tick::from_seconds(0.5)), [-10.0, 5.0]);
+
+    // by hand: set, keyed and refused past the edge; the outline says it
+    s.execute("clip.set", &json!({"clip": id, "skewY": -12})).unwrap();
+    assert_eq!(s.project().clip(&id).unwrap().1.transform.skew[1], -12.0);
+    assert!(s.execute("clip.set", &json!({"clip": id, "skewY": 95})).is_err());
+    assert!(s.execute("clip.setKey", &json!({"clip": id, "prop": "skewY", "at": 0, "value": 120})).is_err());
+    s.execute("clip.setKey", &json!({"clip": id, "prop": "skewY", "at": 0, "value": 30})).unwrap();
+}

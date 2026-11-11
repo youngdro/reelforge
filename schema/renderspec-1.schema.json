@@ -1334,6 +1334,17 @@
               "format": "float",
               "type": "number"
             },
+            "keys": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ShapeKeys"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Its box, corner and outline over time (feature `shape.keys/1`), each in place of the\nconstant value beside it where given."
+            },
             "kind": {
               "$ref": "#/$defs/ShapeKind",
               "description": "Which shape."
@@ -1705,6 +1716,57 @@
             "integer",
             "null"
           ]
+        }
+      },
+      "type": "object"
+    },
+    "ShapeKeys": {
+      "additionalProperties": false,
+      "description": "The values of a shape that move (feature `shape.keys/1`).",
+      "properties": {
+        "radius": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Animated"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Corner radius, in place of `radius`."
+        },
+        "size": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Animated2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Width and height of its box, in place of `size`."
+        },
+        "stroke_color": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ColorKeys"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The outline's colour, in place of `stroke.color`."
+        },
+        "stroke_width": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Animated"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The outline's width, in place of `stroke.width`."
         }
       },
       "type": "object"
@@ -2337,6 +2399,17 @@
           "$ref": "#/$defs/Animated",
           "default": 1.0,
           "description": "Uniform scale; 1 is the fitted size."
+        },
+        "skew": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Animated2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Degrees the layer leans about its anchor, `[across, down]`, as CSS `skew(x, y)`: after it\nis scaled and stretched, before it is turned (feature `transform.skew/1`). Within ±89."
         },
         "stretch": {
           "anyOf": [

@@ -396,6 +396,7 @@ mod tests {
             trim: None,
             fill_opacity: None,
             fill_color: None,
+            keys: None,
         }
     }
 
@@ -453,6 +454,7 @@ mod tests {
             flip: [false; 2],
             shape: None,
             stretch: [1.0, 1.0],
+            skew: [0.0, 0.0],
             anchor: [0.5, 0.5],
             turn: None,
             carried: vec![],

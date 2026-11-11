@@ -248,7 +248,7 @@ fn what_is_wrong_with_a_script_is_said() {
     assert_eq!(err(&body("")), "the script made nothing: call scene.rect, scene.text, … in build");
     assert_eq!(
         err(&body("scene.rect({ widht: 3 });")),
-        "scene.rect: no option `widht`; it takes x, y, scale, rotation, opacity, scaleX, scaleY, rotationX, rotationY, perspective, motionBlur, transformOrigin, origin, parent, mask, animate, name, width, height, radius, points, inner, fill, stroke, shadow, trim"
+        "scene.rect: no option `widht`; it takes x, y, scale, rotation, opacity, scaleX, scaleY, rotationX, rotationY, skewX, skewY, perspective, motionBlur, transformOrigin, origin, parent, mask, animate, name, width, height, radius, points, inner, fill, stroke, shadow, trim"
     );
     let e = err(&body("const a = scene.rect({ name: 'card' }); timeline().to(a, { wobble: 3 });"));
     assert!(e.starts_with("to: card has no `wobble` to tween; it has x, y, scale, rotation, opacity"), "{e}");
@@ -333,7 +333,8 @@ fn a_node_is_stretched_turned_in_space_and_carried_with_gsap_s_names() {
         (r#"scene.rect({ parent: 3 });"#, "`parent` is a node"),
         (r#"scene.group({ opacity: 0.5 });"#, "a group has no opacity"),
         (r#"const g = scene.group(); timeline().to(g, { opacity: 1 });"#, "has no `opacity` to tween"),
-        (r#"const a = scene.rect(); timeline().to(a, { skewX: 10 });"#, "`skewX` cannot be tweened: nothing skews yet"),
+        (r#"const a = scene.rect(); timeline().to(a, { skew: 10 });"#, "write `skewX` and `skewY`"),
+        (r#"scene.rect({ skewX: 90 });"#, "within ±89"),
     ] {
         let e = err(&body(src));
         assert!(e.contains(said), "{src}: {e}");

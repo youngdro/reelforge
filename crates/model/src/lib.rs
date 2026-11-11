@@ -95,6 +95,21 @@ pub struct Project {
     /// with other parameters.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub scripts: BTreeMap<String, Script>,
+    /// Motion scripts kept to use again (`preset.save`), each with the parameter values it was
+    /// saved with.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub presets: Vec<Preset>,
+}
+
+/// A motion script kept to use again: its source and the values it was saved with
+/// (`preset.apply` builds it as `script.add` would).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Preset {
+    /// Id (`p…`).
+    pub id: String,
+    /// The script, with its name and values.
+    #[serde(flatten)]
+    pub script: Script,
 }
 
 /// A motion script that built a group of clips: JavaScript that makes nodes and tweens them, run
@@ -784,6 +799,9 @@ pub struct ClipTransform {
     /// Degrees about the vertical axis through its anchor: positive swings its right edge away.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub rotation_y: f32,
+    /// Degrees it leans, `[across, down]`, about its anchor (as CSS `skewX` and `skewY`).
+    #[serde(default, skip_serializing_if = "is_flat")]
+    pub skew: [f32; 2],
     /// The point of the picture (as it shows) that the placement places and that it is scaled
     /// and turned about, as fractions of its width and height from its top left: its middle
     /// unless told.
@@ -816,8 +834,13 @@ impl ClipTransform {
             || self.scale_y != 1.0
             || self.rotation_x != 0.0
             || self.rotation_y != 0.0
+            || self.skew != [0.0, 0.0]
             || self.anchor != [0.5, 0.5]
     }
+}
+
+fn is_flat(v: &[f32; 2]) -> bool {
+    *v == [0.0, 0.0]
 }
 
 fn is_one(v: &f32) -> bool {
@@ -851,6 +874,7 @@ impl Default for ClipTransform {
             scale_y: 1.0,
             rotation_x: 0.0,
             rotation_y: 0.0,
+            skew: [0.0, 0.0],
             anchor: [0.5, 0.5],
             distance: ClipTransform::DISTANCE,
             motion_blur: 0.0,
@@ -927,6 +951,7 @@ impl Project {
             markers: Vec::new(),
             cover: None,
             scripts: BTreeMap::new(),
+            presets: Vec::new(),
             brand: Brand::default(),
             copy: Vec::new(),
             copy_lines: Vec::new(),

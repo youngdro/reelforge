@@ -791,6 +791,7 @@ fn layers_stretched_anchored_turned_in_space_and_carried_match_the_cpu() {
         stretch: Some(Animated::Constant([1.0, 0.8])),
         anchor: Some([0.0, 0.5]),
         turn: Some(Turn::held(20.0, 48.0)),
+        skew: None,
     };
     p.crop = Some(Crop { left: 0.1, top: 0.0, right: 0.0, bottom: 0.1 });
     p.flip_x = true;
@@ -815,6 +816,15 @@ fn layers_stretched_anchored_turned_in_space_and_carried_match_the_cpu() {
     same(&s, Tick::ZERO, 0.5, &media, Quality::Final);
     // turned past edge on: its back, mirrored
     s.layers[i].transform.turn = Some(Turn::held(0.0, 140.0));
+    same(&s, Tick::ZERO, 1.0, &media, Quality::Final);
+    // leaning: the picture flat, the title and the square it carries each their own way
+    s.layers[i].transform.turn = None;
+    s.layers[i].transform.skew = Some(Animated::Constant([25.0, -10.0]));
+    let title = s.layers.iter_mut().find(|l| l.id == "t").expect("the title");
+    title.transform.skew = Some(Animated::Constant([-30.0, 0.0]));
+    let square = s.layers.iter_mut().find(|l| l.id == "sq").expect("the square");
+    square.transform.skew = Some(Animated::Constant([0.0, 40.0]));
+    reelforge_renderspec::validate(&s).expect("valid");
     same(&s, Tick::ZERO, 1.0, &media, Quality::Final);
 }
 

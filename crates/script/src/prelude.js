@@ -147,17 +147,20 @@
 
   // ---- nodes ---------------------------------------------------------------------------
   const PLACE = ["x", "y", "scale", "rotation", "opacity"];
-  // width and height apart, and turned in space about the horizontal and the vertical axis
-  const SPACE = ["scaleX", "scaleY", "rotationX", "rotationY"];
+  // width and height apart, turned in space about the horizontal and the vertical axis, leaning
+  const SPACE = ["scaleX", "scaleY", "rotationX", "rotationY", "skewX", "skewY"];
   // a colour's parts, as the editor keys them
   const RGBA = ["colorR", "colorG", "colorB", "colorA"];
-  const tinted = (n, c, name) => { RGBA.forEach((part, i) => { n.base[part] = c[i]; }); n.props = n.props.concat([name]); };
+  const OUTLINE = ["strokeR", "strokeG", "strokeB", "strokeA"];
+  // the parts of a colour a node's `name` tweens, by name
+  const PARTS = { fill: RGBA, color: RGBA, stroke: OUTLINE };
+  const tinted = (n, c, name) => { PARTS[name].forEach((part, i) => { n.base[part] = c[i]; }); n.props = n.props.concat([name]); };
   const MORE = ["perspective", "motionBlur", "transformOrigin", "origin", "parent", "mask", "animate"];
   // a mask's own numbers, as the editor keys them
   const MASK = { x: "maskX", y: "maskY", width: "maskWidth", height: "maskHeight", rotation: "maskRotation", feather: "maskFeather" };
   // GSAP's other names for what a node has
   const ALIAS = { rotate: "rotation", rotateZ: "rotation", rotationZ: "rotation", rotateX: "rotationX", rotateY: "rotationY",
-    autoAlpha: "opacity", alpha: "opacity" };
+    autoAlpha: "opacity", alpha: "opacity", borderRadius: "radius", borderColor: "stroke", borderWidth: "strokeWidth" };
   function named(o, what) {
     let out = o;
     for (const k of Object.keys(o)) {
@@ -196,7 +199,7 @@
   const SHAPE_OPTS = ["width", "height", "radius", "points", "inner", "fill", "stroke", "shadow", "trim"];
   const TEXT_OPTS = ["size", "color", "weight", "align", "wrap", "outline", "background", "radius", "gradient", "outer",
     "shadow", "lineBoxes", "font", "tracking", "leading", "italic", "underline", "template", "counter"];
-  const BASE = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, scaleX: 1, scaleY: 1, rotationX: 0, rotationY: 0, drawStart: 0, drawEnd: 1,
+  const BASE = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, scaleX: 1, scaleY: 1, rotationX: 0, rotationY: 0, skewX: 0, skewY: 0, drawStart: 0, drawEnd: 1,
     exposure: 0, contrast: 0, saturation: 0, temperature: 0, tint: 0, highlights: 0, shadows: 0, fade: 0, vignette: 0,
     cropLeft: 0, cropTop: 0, cropRight: 0, cropBottom: 0,
     maskX: 0.5, maskY: 0.5, maskWidth: 1, maskHeight: 1, maskRotation: 0, maskFeather: 0 };
@@ -222,6 +225,7 @@
     }
     if (n.base.opacity < 0 || n.base.opacity > 1) fail(`${label}: \`opacity\` is from 0 to 1`);
     if (!(n.base.scale >= 0)) fail(`${label}: \`scale\` must not be negative`);
+    if (Math.abs(n.base.skewX) > 89 || Math.abs(n.base.skewY) > 89) fail(`${label}: \`skewX\` and \`skewY\` are degrees within ±89`);
     if (opts.perspective !== undefined) {
       // the eye's distance, in pixels as CSS says it; the editor counts it in canvas heights
       if (!isNum(opts.perspective) || opts.perspective <= 0) fail(`${label}: \`perspective\` is the eye's distance in pixels, above 0`);
@@ -302,7 +306,15 @@
       }
       if (kind === "line" && o.fill === undefined) s.fill = null;
       n.add = { shape: s };
-      if (s.stroke) n.props = n.props.concat(["drawStart", "drawEnd"]);
+      // its box and corner move; and its outline, where it has one
+      Object.assign(n.base, { width: w, height: h, radius: isNum(s.radius) ? s.radius : 0 });
+      n.props = n.props.concat(kind === "line" ? ["width"] : ["width", "height"]);
+      if (["rectangle", "tag", "arrow"].includes(kind)) n.props = n.props.concat(["radius"]);
+      if (s.stroke) {
+        n.props = n.props.concat(["drawStart", "drawEnd", "strokeWidth"]);
+        n.base.strokeWidth = isNum(s.stroke.width) ? s.stroke.width : 0;
+        tinted(n, s.stroke.color || [1, 1, 1, 1], "stroke");
+      }
       // its fill's colour moves (a gradient's, the colour it starts from)
       if (kind !== "line" && s.fill) tinted(n, Array.isArray(s.fill) ? s.fill : s.fill.from, "fill");
       return n;
@@ -393,12 +405,13 @@
   const SPECIAL = ["duration", "ease", "delay", "stagger", "repeat", "yoyo", "repeatDelay", "motionPath"];
   // GSAP properties with nothing behind them yet, and what to do meanwhile
   const NOT_YET = {
-    skewX: "nothing skews yet", skewY: "nothing skews yet", skew: "nothing skews yet",
-    width: "a size is not tweened yet; tween scaleX", height: "a size is not tweened yet; tween scaleY",
+    skew: "write `skewX` and `skewY`",
+    width: "only a shape has a width to tween; tween scaleX", height: "only a shape (not a line) has a height to tween; tween scaleY",
     fill: "this node has no fill to tween (give a shape its `fill` when making it; a title's colour is `color`)",
     color: "only a title has a `color` to tween (a shape's is `fill`)",
-    backgroundColor: "tween `fill` on a shape, or `color` on a title", stroke: "an outline's colour is not tweened yet",
-    radius: "a corner is not tweened yet", borderRadius: "a corner is not tweened yet",
+    backgroundColor: "tween `fill` on a shape, or `color` on a title", stroke: "only a shape made with a `stroke` has an outline colour to tween",
+    strokeWidth: "only a shape made with a `stroke` has an outline to widen",
+    radius: "only a rectangle, a tag or an arrow has corners to round",
     blur: "a blur is not tweened yet", filter: "filters are not tweened yet; exposure, contrast, saturation and the other adjustments are",
     z: "there is no depth yet; rotationX and rotationY turn a node in space", xPercent: "write pixels", yPercent: "write pixels",
     transformOrigin: "it does not move; give it to the node when making it", fontSize: "tween scale", text: "tween a counter's `count`, or make two titles",
@@ -498,12 +511,12 @@
       } else if (!names.size) fail(`${what}: it changes nothing; name a property, such as opacity or x`);
       for (const k of names) {
         if (NOT_YET[k] !== undefined && !n.props.includes(k)) fail(`${what}: \`${k}\` cannot be tweened: ${NOT_YET[k]}`);
-        if ((k === "fill" || k === "color") && n.props.includes(k)) {
+        if (PARTS[k] && n.props.includes(k)) {
           // a colour is four numbers, each tweened
           const a = from && from[k] !== undefined ? colour(from[k], `${what} ${k}`) : null;
           const b = to && to[k] !== undefined ? colour(to[k], `${what} ${k}`) : null;
           if (state.tweens.length + 4 > LIMIT.tweens) fail(`a script makes at most ${LIMIT.tweens} tweens`);
-          RGBA.forEach((part, i) => state.tweens.push({ node: n, prop: part, t0: this.offset + t0, dur, ease: e, repeat, gap,
+          PARTS[k].forEach((part, i) => state.tweens.push({ node: n, prop: part, t0: this.offset + t0, dur, ease: e, repeat, gap,
             yoyo: !!vars.yoyo, from: a ? a[i] : undefined, to: b ? b[i] : undefined, what, order: state.tweens.length }));
           continue;
         }

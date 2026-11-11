@@ -262,7 +262,7 @@ fn colors(doc: &str) -> Value {
 fn prop_schema() -> (&'static str, Value) {
     (
         "prop",
-        json!({"enum": reelforge_model::Prop::ALL.map(reelforge_model::Prop::name).to_vec(), "description": "The property that moves: placement, opacity and volume; the crop's edges; the mask's centre, size, turn and soft edge; the colour adjustments; `colorR`, `colorG`, `colorB`, `colorA` (each 0 to 1), the colour of a title's words or of a shape's fill (of a gradient, the colour it starts from)."}),
+        json!({"enum": reelforge_model::Prop::ALL.map(reelforge_model::Prop::name).to_vec(), "description": "The property that moves: placement, opacity and volume; the crop's edges; the mask's centre, size, turn and soft edge; the colour adjustments; `colorR`, `colorG`, `colorB`, `colorA` (each 0 to 1), the colour of a title's words or of a shape's fill (of a gradient, the colour it starts from); `width`, `height`, `radius` and `strokeWidth` (canvas pixels), a shape's box, corner and outline; `strokeR`, `strokeG`, `strokeB`, `strokeA`, its outline's colour; `skewX`, `skewY` (degrees within ±89), how it leans."}),
     )
 }
 
@@ -418,7 +418,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
         "commands.list" | "project.inspect" | "project.outline" | "project.new" | "edit.undo" | "edit.redo"
         | "title.templates" | "sound.library" | "timeline.list" | "fx.list" | "sticker.library" | "voice.list"
         | "template.list" | "template.slots" | "promo.list" | "brand.get" | "decor.list" | "layout.list"
-        | "script.list" | "beat.list" => object(vec![], &[]),
+        | "script.list" | "beat.list" | "preset.list" => object(vec![], &[]),
         "beat.apply" | "beat.cut" => {
             let moves: Vec<&str> = crate::beat::MOVES.iter().map(|m| m.id).collect();
             let cut = id == "beat.cut";
@@ -750,9 +750,19 @@ pub fn input_schema(id: &str) -> Option<Value> {
         "clip.add" => {
             // a stretch, a turn in space, an anchor and motion blur, as clip.set says them
             let set = input_schema("clip.set").expect("clip.set has a schema");
-            let placed =
-                ["scaleX", "scaleY", "rotationX", "rotationY", "perspective", "motionBlur", "anchorX", "anchorY"]
-                    .map(|k| (k, set["properties"][k].clone()));
+            let placed = [
+                "scaleX",
+                "scaleY",
+                "rotationX",
+                "rotationY",
+                "skewX",
+                "skewY",
+                "perspective",
+                "motionBlur",
+                "anchorX",
+                "anchorY",
+            ]
+            .map(|k| (k, set["properties"][k].clone()));
             let mut props = vec![
                 ("track", ident("Track id, such as t1 (project.inspect lists them).")),
                 ("start", time("Timeline start; the end of the track by default.")),
@@ -1106,6 +1116,14 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ("scaleX", num("Width alone, on top of the scale: 1 as it is, negative mirrored.")),
                 ("scaleY", num("Height alone, on top of the scale.")),
                 (
+                    "skewX",
+                    json!({"type": "number", "minimum": -89, "maximum": 89, "description": "Leaning across about its anchor, degrees, as CSS skewX: positive slants its top edge left."}),
+                ),
+                (
+                    "skewY",
+                    json!({"type": "number", "minimum": -89, "maximum": 89, "description": "Leaning down about its anchor, degrees, as CSS skewY: positive drops its right edge."}),
+                ),
+                (
                     "rotationX",
                     num(
                         "Turned in space about the horizontal axis through its anchor, degrees: positive tips the top edge away.",
@@ -1311,6 +1329,49 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ("name", json!({"type": "string", "description": "What to call it."})),
             ],
             &["group", "source"],
+        ),
+        "preset.save" => object(
+            vec![
+                ("group", ident("Keep the script that built this group, such as g7 (script.list), with its values.")),
+                ("source", json!({"type": "string", "description": "Or keep this script source (see script.add)."})),
+                (
+                    "params",
+                    json!({"type": "object", "description": "With `source`: the values to keep, by name; the rest stay the script's defaults."}),
+                ),
+                ("name", json!({"type": "string", "description": "What to call the preset."})),
+                (
+                    "seed",
+                    json!({"type": "integer", "minimum": 0, "description": "With `source`: what its Math.random starts from."}),
+                ),
+                ("duration", time("With `source`: how long it is.")),
+            ],
+            &[],
+        ),
+        "preset.get" | "preset.remove" => {
+            object(vec![("preset", ident("The preset's id, such as p12, or its name (preset.list)."))], &["preset"])
+        }
+        "preset.set" => object(
+            vec![
+                ("preset", ident("The preset's id, such as p12, or its name (preset.list).")),
+                ("name", json!({"type": "string", "description": "Its new name."})),
+            ],
+            &["preset", "name"],
+        ),
+        "preset.apply" => object(
+            vec![
+                ("preset", ident("The preset's id, such as p12, or its name (preset.list).")),
+                ("start", time("Where it starts on the timeline; 0 by default.")),
+                (
+                    "params",
+                    json!({"type": "object", "description": "Values over those it was saved with, by name; null takes the script's default."}),
+                ),
+                ("duration", time("How long the piece is.")),
+                (
+                    "seed",
+                    json!({"type": "integer", "minimum": 0, "description": "What the script's Math.random starts from."}),
+                ),
+            ],
+            &["preset"],
         ),
         "promo.add" | "promo.set" => {
             let mut props = vec![

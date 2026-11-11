@@ -357,7 +357,7 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.add",
         label: "Add Clip",
-        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "scaleX"?, "scaleY"?, "rotationX"?, "rotationY"?, "perspective"?, "motionBlur"?, "anchorX"?, "anchorY"?, "name"?: string, "adjustment"?: bool, "timeline"?: id, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "shape"?: {"kind"?, "size"?: [w, h], "radius"?, "points"?, "inner"?, "fill"?, "stroke"?, "shadow"?, "trim"?}, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "karaoke"?: {"color"?: [r,g,b,a], "mode"?: "sweep"|"word"|"line", "start"?: time, "duration"?: time | null} | null, "fill"?: {"colors": [color, ...], "angle"?: deg, "lines"?: bool, "bands"?: bool, "repeat"?: number} | [color, ...] | null, "palette"?: {"colors": [color, ...], "unit"?: "char"|"word"|"line"} | [color, ...] | null, "shadows"?: [{"color", "offset", "blur"}] | null, "depth"?: {"color"?, "offset"?: [x, y] em, "fade"?: color | null} | null, "hollow"?: em | null, "bevel"?: {"light"?, "dark"?, "size"?: em, "angle"?: deg} | null, "scatter"?: {"rotate"?: deg, "shift"?: em, "scale"?, "seed"?} | null, "arc"?: deg, "backing"?: "box"|"marker"|"tiles", "border"?: {"color"?, "width"?: em} | null, "skew"?: deg, "template"?: id}"#,
+        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "scaleX"?, "scaleY"?, "rotationX"?, "rotationY"?, "skewX"?, "skewY"?, "perspective"?, "motionBlur"?, "anchorX"?, "anchorY"?, "name"?: string, "adjustment"?: bool, "timeline"?: id, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "shape"?: {"kind"?, "size"?: [w, h], "radius"?, "points"?, "inner"?, "fill"?, "stroke"?, "shadow"?, "trim"?}, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "karaoke"?: {"color"?: [r,g,b,a], "mode"?: "sweep"|"word"|"line", "start"?: time, "duration"?: time | null} | null, "fill"?: {"colors": [color, ...], "angle"?: deg, "lines"?: bool, "bands"?: bool, "repeat"?: number} | [color, ...] | null, "palette"?: {"colors": [color, ...], "unit"?: "char"|"word"|"line"} | [color, ...] | null, "shadows"?: [{"color", "offset", "blur"}] | null, "depth"?: {"color"?, "offset"?: [x, y] em, "fade"?: color | null} | null, "hollow"?: em | null, "bevel"?: {"light"?, "dark"?, "size"?: em, "angle"?: deg} | null, "scatter"?: {"rotate"?: deg, "shift"?: em, "scale"?, "seed"?} | null, "arc"?: deg, "backing"?: "box"|"marker"|"tiles", "border"?: {"color"?, "width"?: em} | null, "skew"?: deg, "template"?: id}"#,
         doc: "Places media, a library sticker, text, a drawn shape (`shape`, on a video track: see clip.setShape), a colour or an adjustment clip on a track; starts at the track's end unless `start` is given. Titles default to bold white with a black outline, wrapping at 90 % of the canvas. A sticker (sticker.library) is an image a third of the frame wide; `name` is what the project's media calls it (its English name by default). An adjustment clip shows nothing: its effects (`fx`) and colour work on the tracks below it while it lasts. `timeline` places another timeline of the project as a compound clip on a video track, from `sourceIn`.",
         edits: true,
         enabled: always,
@@ -582,8 +582,8 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.set",
         label: "Clip Properties",
-        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "scaleX"?, "scaleY"?, "rotationX"?, "rotationY"?, "perspective"?, "anchorX"?, "anchorY"?, "keep"?: bool, "motionBlur"?: bool | number, "at"?: time, "fadeIn"?: time, "fadeOut"?: time, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "karaoke"?: {"color"?: [r,g,b,a], "mode"?: "sweep"|"word"|"line", "start"?: time, "duration"?: time | null} | null, "fill"?: {"colors": [color, ...], "angle"?: deg, "lines"?: bool, "bands"?: bool, "repeat"?: number} | [color, ...] | null, "palette"?: {"colors": [color, ...], "unit"?: "char"|"word"|"line"} | [color, ...] | null, "shadows"?: [{"color", "offset", "blur"}] | null, "depth"?: {"color"?, "offset"?: [x, y] em, "fade"?: color | null} | null, "hollow"?: em | null, "bevel"?: {"light"?, "dark"?, "size"?: em, "angle"?: deg} | null, "scatter"?: {"rotate"?: deg, "shift"?: em, "scale"?, "seed"?} | null, "arc"?: deg, "backing"?: "box"|"marker"|"tiles", "border"?: {"color"?, "width"?: em} | null, "skew"?: deg, "template"?: id}"#,
-        doc: "Sets a clip's placement, opacity, volume, sound fades or title. A property with keyframes is set at `at` (a timeline time), adding or changing the keyframe there. Beyond moving, scaling and turning it in the plane, a clip can be stretched (`scaleX`, `scaleY`: width and height apart, on top of `scale`; negative mirrors) and turned in space (`rotationX` tips its top edge away, `rotationY` swings its right edge away, in degrees; past 90 it shows its back), seen in perspective from `perspective` canvas heights away (2 unless told; nearer is stronger). It is placed, scaled and turned about its anchor: `anchorX` and `anchorY` are shares of its picture from the top left (0.5, 0.5 is its middle; 0, 0.5 the middle of its left edge, to swing it like a door; 0.5, 1 the middle of its bottom edge, to grow it from its base). Giving it another anchor leaves the picture where it lies and changes `x` and `y` to match, unless `keep` is false. `motionBlur` smears the clip along its own movement, as a camera's open shutter does: true turns it on (the shutter open for half of each frame's time, a film camera's), a number says for how much of it (0.5 by default, up to 2; more is a longer smear), false or 0 turns it off. It blurs only while the clip moves, grows or turns (its keyframes, animations, transitions, path, and whatever carries it), and leaves it sharp at rest.",
+        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "scaleX"?, "scaleY"?, "rotationX"?, "rotationY"?, "skewX"?, "skewY"?, "perspective"?, "anchorX"?, "anchorY"?, "keep"?: bool, "motionBlur"?: bool | number, "at"?: time, "fadeIn"?: time, "fadeOut"?: time, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "karaoke"?: {"color"?: [r,g,b,a], "mode"?: "sweep"|"word"|"line", "start"?: time, "duration"?: time | null} | null, "fill"?: {"colors": [color, ...], "angle"?: deg, "lines"?: bool, "bands"?: bool, "repeat"?: number} | [color, ...] | null, "palette"?: {"colors": [color, ...], "unit"?: "char"|"word"|"line"} | [color, ...] | null, "shadows"?: [{"color", "offset", "blur"}] | null, "depth"?: {"color"?, "offset"?: [x, y] em, "fade"?: color | null} | null, "hollow"?: em | null, "bevel"?: {"light"?, "dark"?, "size"?: em, "angle"?: deg} | null, "scatter"?: {"rotate"?: deg, "shift"?: em, "scale"?, "seed"?} | null, "arc"?: deg, "backing"?: "box"|"marker"|"tiles", "border"?: {"color"?, "width"?: em} | null, "skew"?: deg, "template"?: id}"#,
+        doc: "Sets a clip's placement, opacity, volume, sound fades or title. A property with keyframes is set at `at` (a timeline time), adding or changing the keyframe there. Beyond moving, scaling and turning it in the plane, a clip can be stretched (`scaleX`, `scaleY`: width and height apart, on top of `scale`; negative mirrors) and turned in space (`rotationX` tips its top edge away, `rotationY` swings its right edge away, in degrees; past 90 it shows its back), leaned (`skewX` slants it across, `skewY` down, in degrees within ±89, as CSS `skew`), seen in perspective from `perspective` canvas heights away (2 unless told; nearer is stronger). It is placed, scaled and turned about its anchor: `anchorX` and `anchorY` are shares of its picture from the top left (0.5, 0.5 is its middle; 0, 0.5 the middle of its left edge, to swing it like a door; 0.5, 1 the middle of its bottom edge, to grow it from its base). Giving it another anchor leaves the picture where it lies and changes `x` and `y` to match, unless `keep` is false. `motionBlur` smears the clip along its own movement, as a camera's open shutter does: true turns it on (the shutter open for half of each frame's time, a film camera's), a number says for how much of it (0.5 by default, up to 2; more is a longer smear), false or 0 turns it off. It blurs only while the clip moves, grows or turns (its keyframes, animations, transitions, path, and whatever carries it), and leaves it sharp at rest.",
         edits: true,
         enabled: always,
         run: clip_set,
@@ -965,6 +965,60 @@ static REGISTRY: &[CommandSpec] = &[
         edits: true,
         enabled: always,
         run: crate::script::script_detach,
+    },
+    CommandSpec {
+        id: "preset.save",
+        label: "Save As Preset",
+        params: r#"{"group"?: id, "source"?: string, "params"?: {name: value}, "name"?: string, "seed"?: integer, "duration"?: time}"#,
+        doc: "Keeps a motion script to use again as a preset of the project: the script that built `group`, with its parameter values, or the script `source` with `params`. A value not given stays the script's default, so a colour left to the script follows whatever it reads then. `name` is what it is called (the script's own name, else \"Preset n\"). Returns the preset as preset.list shows it.",
+        edits: true,
+        enabled: always,
+        run: crate::script::preset_save,
+    },
+    CommandSpec {
+        id: "preset.list",
+        label: "Presets",
+        params: "{}",
+        doc: "The project's motion presets: each one's id, name, saved parameter values and declared parameters.",
+        edits: false,
+        enabled: always,
+        run: crate::script::preset_list,
+    },
+    CommandSpec {
+        id: "preset.get",
+        label: "Preset",
+        params: r#"{"preset": id|name}"#,
+        doc: "One motion preset whole, with its source.",
+        edits: false,
+        enabled: always,
+        run: crate::script::preset_get,
+    },
+    CommandSpec {
+        id: "preset.apply",
+        label: "Apply Preset",
+        params: r#"{"preset": id|name, "start"?: time, "params"?: {name: value|null}, "duration"?: time, "seed"?: integer}"#,
+        doc: "Builds a motion preset from `start` (0) as script.add would, in one undo step: the values in `params` go over those it was saved with (null takes the script's default). The group it builds is a script's like any other (script.setParams changes it).",
+        edits: true,
+        enabled: always,
+        run: crate::script::preset_apply,
+    },
+    CommandSpec {
+        id: "preset.set",
+        label: "Rename Preset",
+        params: r#"{"preset": id|name, "name": string}"#,
+        doc: "Calls a motion preset `name`.",
+        edits: true,
+        enabled: always,
+        run: crate::script::preset_set,
+    },
+    CommandSpec {
+        id: "preset.remove",
+        label: "Remove Preset",
+        params: r#"{"preset": id|name}"#,
+        doc: "Forgets a motion preset. What it built stays.",
+        edits: true,
+        enabled: always,
+        run: crate::script::preset_remove,
     },
     CommandSpec {
         id: "promo.get",
@@ -1836,8 +1890,8 @@ const STILL_LENGTH: Tick = Tick(5 * reelforge_time::TICKS_PER_SECOND);
 
 /// What clip.add takes that clip.set sets once the clip is there: a stretch, a turn in space, an
 /// anchor, motion blur. One undo step with the add.
-const ADD_THEN_SET: [&str; 8] =
-    ["scaleX", "scaleY", "rotationX", "rotationY", "perspective", "motionBlur", "anchorX", "anchorY"];
+const ADD_THEN_SET: [&str; 10] =
+    ["scaleX", "scaleY", "rotationX", "rotationY", "skewX", "skewY", "perspective", "motionBlur", "anchorX", "anchorY"];
 
 fn clip_add_placed(s: &mut Session, v: &Value) -> CmdResult {
     let later: serde_json::Map<String, Value> = ADD_THEN_SET
@@ -2748,6 +2802,9 @@ fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
     if values.iter().any(|&(p, v)| Prop::SPACE.contains(&p) && !(v.is_finite() && v.abs() <= 36000.0)) {
         return Err(EngineError::Params("`scaleX`, `scaleY`, `rotationX` and `rotationY` must be numbers".into()));
     }
+    if values.iter().any(|&(p, v)| Prop::SKEW.contains(&p) && !(v.is_finite() && v.abs() <= 89.0)) {
+        return Err(EngineError::Params("`skewX` and `skewY` are degrees within ±89".into()));
+    }
     let anchor = [f("anchorX")?, f("anchorY")?];
     if anchor.iter().flatten().any(|a| !(-4.0..=5.0).contains(a)) {
         return Err(EngineError::Params(
@@ -3184,6 +3241,11 @@ fn clip_set_key(s: &mut Session, v: &Value) -> CmdResult {
             } else if Prop::COLOR.contains(&prop) {
                 // a title's colour, or the colour that fills a shape
                 clip.own_color().is_some()
+            } else if Prop::STROKE.contains(&prop) || prop == Prop::StrokeWidth {
+                // an outline there is
+                matches!(&clip.content, ClipContent::Shape { shape } if shape.stroke.is_some())
+            } else if Prop::SHAPE.contains(&prop) {
+                matches!(&clip.content, ClipContent::Shape { .. })
             } else {
                 proj.tracks[ti].kind != TrackKind::Audio
             };

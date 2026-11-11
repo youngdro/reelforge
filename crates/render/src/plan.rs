@@ -53,6 +53,8 @@ pub struct PlannedLayer {
     pub shape: Option<ShapeMask>,
     /// Width and height scaled apart, on top of the scale.
     pub stretch: [f32; 2],
+    /// How it leans, `[across, down]`, radians.
+    pub skew: [f32; 2],
     /// The point of the picture that sits at `center`, as fractions of what shows of it.
     pub anchor: [f32; 2],
     /// Turned in space.
@@ -78,6 +80,8 @@ pub struct Placement {
     pub rotation: f32,
     /// Width and height scaled apart.
     pub stretch: [f32; 2],
+    /// How it leans, radians.
+    pub skew: [f32; 2],
     /// Turned in space.
     pub turn: Option<Turned>,
     /// The layers that carry it, nearest first.
@@ -107,6 +111,8 @@ pub struct Carrier {
     pub scale: f32,
     /// Its width and height scaled apart.
     pub stretch: [f32; 2],
+    /// How it leans, radians.
+    pub skew: [f32; 2],
     /// Its clockwise rotation, radians.
     pub rotation: f32,
     /// Its turn in space.
@@ -209,7 +215,7 @@ fn after(a: &Space, b: &Space) -> Space {
 
 /// Moved to `center`, turned in the plane and in space, scaled by `sx` and `sy`: what a layer's
 /// own transform does to points counted from its anchor.
-fn placed(center: [f32; 2], rotation: f32, turn: Option<Turned>, sx: f32, sy: f32) -> Space {
+fn placed(center: [f32; 2], rotation: f32, turn: Option<Turned>, sx: f32, sy: f32, skew: [f32; 2]) -> Space {
     let (sin, cos) = rotation.sin_cos();
     let mut m: Space = [[cos, -sin, 0.0, center[0]], [sin, cos, 0.0, center[1]], [0.0, 0.0, 1.0, 0.0]];
     if let Some(t) = turn {
@@ -217,6 +223,11 @@ fn placed(center: [f32; 2], rotation: f32, turn: Option<Turned>, sx: f32, sy: f3
         let ((sy_, cy_), (sx_, cx_)) = (t.y.sin_cos(), t.x.sin_cos());
         m = after(&m, &[[cy_, 0.0, sy_, 0.0], [0.0, 1.0, 0.0, 0.0], [-sy_, 0.0, cy_, 0.0]]);
         m = after(&m, &[[1.0, 0.0, 0.0, 0.0], [0.0, cx_, -sx_, 0.0], [0.0, sx_, cx_, 0.0]]);
+    }
+    if skew != [0.0, 0.0] {
+        // leaning as CSS does: x moves with y, y with x
+        let (kx, ky) = (skew[0].tan(), skew[1].tan());
+        m = after(&m, &[[1.0, kx, 0.0, 0.0], [ky, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]);
     }
     after(&m, &[[sx, 0.0, 0.0, 0.0], [0.0, sy, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]])
 }
@@ -290,17 +301,24 @@ impl PlannedLayer {
     /// Whether the layer is only moved, scaled evenly and turned in the plane about its middle,
     /// by itself: what every layer was before `transform.stretch/1` and the rest.
     pub fn plain(&self) -> bool {
-        self.stretch == [1.0, 1.0] && self.anchor == [0.5, 0.5] && self.turn.is_none() && self.carried.is_empty()
+        self.stretch == [1.0, 1.0]
+            && self.skew == [0.0, 0.0]
+            && self.anchor == [0.5, 0.5]
+            && self.turn.is_none()
+            && self.carried.is_empty()
     }
 
     /// The map to target pixels from points counted in target pixels from the layer's anchor,
     /// before it is stretched, turned or carried: its own `scale` is not in it.
     pub fn place(&self) -> Map {
-        let own = placed(self.center, self.rotation, self.turn, self.stretch[0], self.stretch[1]);
+        let own = placed(self.center, self.rotation, self.turn, self.stretch[0], self.stretch[1], self.skew);
         // what carries it, nearest first: each takes the frame's middle to its own anchor
         let middle: Space = [[1.0, 0.0, 0.0, -self.frame[0] / 2.0], [0.0, 1.0, 0.0, -self.frame[1] / 2.0], SPACE[2]];
         let carry = |c: &Carrier| {
-            after(&placed(c.center, c.rotation, c.turn, c.scale * c.stretch[0], c.scale * c.stretch[1]), &middle)
+            after(
+                &placed(c.center, c.rotation, c.turn, c.scale * c.stretch[0], c.scale * c.stretch[1], c.skew),
+                &middle,
+            )
         };
         // the outermost one turned in space is where the eye looks from: what it carries is one
         // object in space with it, and what carries it moves the picture the eye saw
@@ -342,6 +360,7 @@ impl PlannedLayer {
             flip: self.flip,
             shape: self.shape,
             stretch: p.stretch,
+            skew: p.skew,
             anchor: self.anchor,
             turn: p.turn,
             carried: p.carried.clone(),
@@ -484,7 +503,8 @@ fn plan_layers(
                 (PlannedSource::Text(text), Fit::Contain)
             }
             LayerContent::Shape(shape) => {
-                let mut shape = shape.clone();
+                // its box, corner and outline are values of this instant
+                let mut shape = Box::new(shape.at(local));
                 if let Some(t) = &shape.trim {
                     let (a, b) = (t.start.sample(local).clamp(0.0, 1.0), t.end.sample(local).clamp(0.0, 1.0));
                     shape.trim = Some(Trim { start: Animated::Constant(a), end: Animated::Constant(b) });
@@ -536,6 +556,7 @@ fn plan_layers(
                     center: [frame[0] * (0.5 + pos[0]), frame[1] * (0.5 + pos[1])],
                     scale: tr.scale.sample(at),
                     stretch: tr.stretch.as_ref().map_or([1.0, 1.0], |s| s.sample(at)),
+                    skew: skew_of(tr, at),
                     rotation: tr.rotation.sample(at).to_radians(),
                     turn: tr.turn.as_ref().map(|turn| turned(turn, at, frame)),
                 });
@@ -546,6 +567,7 @@ fn plan_layers(
                 scale: layer.transform.scale.sample(local),
                 rotation: layer.transform.rotation.sample(local).to_radians(),
                 stretch: layer.transform.stretch.as_ref().map_or([1.0, 1.0], |s| s.sample(local)),
+                skew: skew_of(&layer.transform, local),
                 // lying flat at this instant, it is drawn as a layer that is never turned
                 turn: layer
                     .transform
@@ -582,6 +604,7 @@ fn plan_layers(
             },
             shape: layer.shape_mask.map(|m| layer.shape_mask_keys.as_ref().map_or(m, |k| k.sample(m, local))),
             stretch: now.stretch,
+            skew: now.skew,
             anchor: layer.transform.anchor.unwrap_or([0.5, 0.5]),
             turn: now.turn,
             carried: now.carried,
@@ -648,6 +671,11 @@ fn smear(layer: &PlannedLayer, shutter: f32, frame: Tick, at: impl Fn(Tick) -> P
     (0..n as i64).map(|j| at(Tick(open * (2 * j + 1 - n as i64) / (2 * n as i64)))).collect()
 }
 
+/// How a layer leans at `t` from its start, radians, within ±89 degrees.
+fn skew_of(tr: &reelforge_renderspec::Transform, t: Tick) -> [f32; 2] {
+    tr.skew.as_ref().map_or([0.0, 0.0], |k| k.sample(t).map(|d| d.clamp(-89.0, 89.0).to_radians()))
+}
+
 /// A turn in space at `t` from its layer's start, on a frame of `frame` target pixels.
 fn turned(turn: &reelforge_renderspec::Turn, t: Tick, frame: [f32; 2]) -> Turned {
     Turned {
@@ -678,6 +706,7 @@ mod tests {
             flip: [false; 2],
             shape: None,
             stretch: [1.0, 1.0],
+            skew: [0.0, 0.0],
             anchor: [0.5, 0.5],
             turn: None,
             carried: vec![],
@@ -732,6 +761,20 @@ mod tests {
                 b: Animated::Constant(0.0),
                 a: Animated::Keys(vec![key(0.0, 0.0), key(1.0, 2.0)]),
             }),
+            keys: Some(reelforge_renderspec::ShapeKeys {
+                size: Some(Animated::Keys(vec![
+                    Key { t: Tick::ZERO, v: [10.0, 10.0], ease: Default::default() },
+                    Key { t: Tick::from_seconds(1.0), v: [50.0, 10.0], ease: Default::default() },
+                ])),
+                radius: Some(Animated::Keys(vec![key(0.0, 0.0), key(1.0, -8.0)])),
+                stroke_width: Some(Animated::Keys(vec![key(0.0, 2.0), key(1.0, 6.0)])),
+                stroke_color: Some(reelforge_renderspec::ColorKeys {
+                    r: Animated::Constant(0.0),
+                    g: Animated::Keys(vec![key(0.0, 0.0), key(1.0, 1.0)]),
+                    b: Animated::Constant(0.0),
+                    a: Animated::Constant(1.0),
+                }),
+            }),
         }));
         spec.layers.push(shape);
         let plan = plan_frame(&spec, Tick::from_seconds(0.25), 1.0);
@@ -743,10 +786,37 @@ mod tests {
         assert_eq!(s.fill_opacity, Some(Animated::Constant(0.25)));
         // its colour as it is at that instant is its fill, each part kept within 0 to 1
         assert_eq!((&s.fill, &s.fill_color), (&Some(Paint::Solid { color: Color([0.75, 0.5, 0.0, 0.5]) }), &None));
+        // and so are its box, its corner (never below none) and its outline
+        assert_eq!((s.size, s.radius, &s.keys), ([20.0, 10.0], 0.0, &None));
+        assert_eq!(s.stroke, Some(ShapeStroke { color: Color([0.0, 0.25, 0.0, 1.0]), width: 3.0 }));
         // a trim past the whole outline is the whole outline
         let plan = plan_frame(&spec, Tick::from_seconds(0.9), 1.0);
         let PlannedSource::Shape(s) = &plan.layers[1].source else { panic!() };
         assert_eq!(s.trim.as_ref().unwrap().end, Animated::Constant(1.0));
+    }
+
+    #[test]
+    fn a_leaning_layer_s_corners_slide_along_its_edges() {
+        let mut spec = crate::tests::spec();
+        spec.layers[0].content = LayerContent::Solid { color: reelforge_renderspec::Color([1.0; 4]) };
+        let (w, h) = (spec.output.width as f32, spec.output.height as f32);
+        let corners = |spec: &RenderSpec| {
+            let plan = plan_frame(spec, Tick::ZERO, 1.0);
+            let m = plan.layers[0].matrix(w, h, [w, h]);
+            (plan.layers[0].plain(), apply(&m, 0.0, 0.0).unwrap(), apply(&m, 0.0, h).unwrap())
+        };
+        let (_, tl0, bl0) = corners(&spec);
+        spec.layers[0].transform.skew = Some(Animated::Constant([45.0, 0.0]));
+        let (plain, tl, bl) = corners(&spec);
+        assert!(!plain);
+        // about its middle: the top edge goes left by half its height, the bottom right
+        let half = (bl0[1] - tl0[1]) / 2.0;
+        assert!((tl[0] - (tl0[0] - half)).abs() < 1e-2 && (tl[1] - tl0[1]).abs() < 1e-2, "{tl:?} {tl0:?}");
+        assert!((bl[0] - (bl0[0] + half)).abs() < 1e-2 && (bl[1] - bl0[1]).abs() < 1e-2, "{bl:?} {bl0:?}");
+        // and past ±89 degrees it leans no further
+        spec.layers[0].transform.skew = Some(Animated::Constant([0.0, 120.0]));
+        let plan = plan_frame(&spec, Tick::ZERO, 1.0);
+        assert!((plan.layers[0].skew[1] - 89f32.to_radians()).abs() < 1e-6);
     }
 
     #[test]
