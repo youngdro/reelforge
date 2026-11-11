@@ -1429,6 +1429,10 @@ pub struct Transform {
     /// The layer turned in space, seen in perspective (feature `transform.3d/1`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn: Option<Turn>,
+    /// Degrees the layer leans about its anchor, `[across, down]`, as CSS `skew(x, y)`: after it
+    /// is scaled and stretched, before it is turned (feature `transform.skew/1`). Within ±89.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skew: Option<Animated<[f32; 2]>>,
 }
 
 /// A layer turned out of the frame's plane about its anchor, after its `rotation` in the plane
@@ -1478,7 +1482,15 @@ fn zero2() -> Animated<[f32; 2]> {
 
 impl Default for Transform {
     fn default() -> Transform {
-        Transform { position: zero2(), scale: one(), rotation: zero(), stretch: None, anchor: None, turn: None }
+        Transform {
+            position: zero2(),
+            scale: one(),
+            rotation: zero(),
+            stretch: None,
+            anchor: None,
+            turn: None,
+            skew: None,
+        }
     }
 }
 
@@ -1911,6 +1923,9 @@ impl RenderSpec {
             }
             if layer.transform.turn.is_some() {
                 out.insert("transform.3d/1".to_string());
+            }
+            if layer.transform.skew.is_some() {
+                out.insert("transform.skew/1".to_string());
             }
             if layer.parent.is_some() {
                 out.insert("layer.parent/1".to_string());

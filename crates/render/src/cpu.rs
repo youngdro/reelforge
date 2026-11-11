@@ -202,6 +202,7 @@ fn flat_sprite(
         scale: layer.scale * boost,
         rotation: 0.0,
         stretch: [1.0, 1.0],
+        skew: [0.0, 0.0],
         anchor: [0.5, 0.5],
         turn: None,
         carried: Vec::new(),

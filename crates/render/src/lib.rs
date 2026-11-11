@@ -97,6 +97,7 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "time.reverse/1",
     "transform.3d/1",
     "transform.anchor/1",
+    "transform.skew/1",
     "transform.stretch/1",
 ];
 

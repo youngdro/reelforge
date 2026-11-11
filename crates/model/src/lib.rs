@@ -750,6 +750,9 @@ pub struct ClipTransform {
     /// Degrees about the vertical axis through its anchor: positive swings its right edge away.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub rotation_y: f32,
+    /// Degrees it leans, `[across, down]`, about its anchor (as CSS `skewX` and `skewY`).
+    #[serde(default, skip_serializing_if = "is_flat")]
+    pub skew: [f32; 2],
     /// The point of the picture (as it shows) that the placement places and that it is scaled
     /// and turned about, as fractions of its width and height from its top left: its middle
     /// unless told.
@@ -782,8 +785,13 @@ impl ClipTransform {
             || self.scale_y != 1.0
             || self.rotation_x != 0.0
             || self.rotation_y != 0.0
+            || self.skew != [0.0, 0.0]
             || self.anchor != [0.5, 0.5]
     }
+}
+
+fn is_flat(v: &[f32; 2]) -> bool {
+    *v == [0.0, 0.0]
 }
 
 fn is_one(v: &f32) -> bool {
@@ -817,6 +825,7 @@ impl Default for ClipTransform {
             scale_y: 1.0,
             rotation_x: 0.0,
             rotation_y: 0.0,
+            skew: [0.0, 0.0],
             anchor: [0.5, 0.5],
             distance: ClipTransform::DISTANCE,
             motion_blur: 0.0,

@@ -147,8 +147,8 @@
 
   // ---- nodes ---------------------------------------------------------------------------
   const PLACE = ["x", "y", "scale", "rotation", "opacity"];
-  // width and height apart, and turned in space about the horizontal and the vertical axis
-  const SPACE = ["scaleX", "scaleY", "rotationX", "rotationY"];
+  // width and height apart, turned in space about the horizontal and the vertical axis, leaning
+  const SPACE = ["scaleX", "scaleY", "rotationX", "rotationY", "skewX", "skewY"];
   // a colour's parts, as the editor keys them
   const RGBA = ["colorR", "colorG", "colorB", "colorA"];
   const OUTLINE = ["strokeR", "strokeG", "strokeB", "strokeA"];
@@ -199,7 +199,7 @@
   const SHAPE_OPTS = ["width", "height", "radius", "points", "inner", "fill", "stroke", "shadow", "trim"];
   const TEXT_OPTS = ["size", "color", "weight", "align", "wrap", "outline", "background", "radius", "gradient", "outer",
     "shadow", "lineBoxes", "font", "tracking", "leading", "italic", "underline", "template", "counter"];
-  const BASE = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, scaleX: 1, scaleY: 1, rotationX: 0, rotationY: 0, drawStart: 0, drawEnd: 1,
+  const BASE = { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, scaleX: 1, scaleY: 1, rotationX: 0, rotationY: 0, skewX: 0, skewY: 0, drawStart: 0, drawEnd: 1,
     exposure: 0, contrast: 0, saturation: 0, temperature: 0, tint: 0, highlights: 0, shadows: 0, fade: 0, vignette: 0,
     cropLeft: 0, cropTop: 0, cropRight: 0, cropBottom: 0,
     maskX: 0.5, maskY: 0.5, maskWidth: 1, maskHeight: 1, maskRotation: 0, maskFeather: 0 };
@@ -225,6 +225,7 @@
     }
     if (n.base.opacity < 0 || n.base.opacity > 1) fail(`${label}: \`opacity\` is from 0 to 1`);
     if (!(n.base.scale >= 0)) fail(`${label}: \`scale\` must not be negative`);
+    if (Math.abs(n.base.skewX) > 89 || Math.abs(n.base.skewY) > 89) fail(`${label}: \`skewX\` and \`skewY\` are degrees within ±89`);
     if (opts.perspective !== undefined) {
       // the eye's distance, in pixels as CSS says it; the editor counts it in canvas heights
       if (!isNum(opts.perspective) || opts.perspective <= 0) fail(`${label}: \`perspective\` is the eye's distance in pixels, above 0`);
@@ -404,7 +405,7 @@
   const SPECIAL = ["duration", "ease", "delay", "stagger", "repeat", "yoyo", "repeatDelay", "motionPath"];
   // GSAP properties with nothing behind them yet, and what to do meanwhile
   const NOT_YET = {
-    skewX: "nothing skews yet", skewY: "nothing skews yet", skew: "nothing skews yet",
+    skew: "write `skewX` and `skewY`",
     width: "only a shape has a width to tween; tween scaleX", height: "only a shape (not a line) has a height to tween; tween scaleY",
     fill: "this node has no fill to tween (give a shape its `fill` when making it; a title's colour is `color`)",
     color: "only a title has a `color` to tween (a shape's is `fill`)",

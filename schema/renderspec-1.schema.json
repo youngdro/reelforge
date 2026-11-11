@@ -2128,6 +2128,17 @@
           "default": 1.0,
           "description": "Uniform scale; 1 is the fitted size."
         },
+        "skew": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Animated2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Degrees the layer leans about its anchor, `[across, down]`, as CSS `skew(x, y)`: after it\nis scaled and stretched, before it is turned (feature `transform.skew/1`). Within ±89."
+        },
         "stretch": {
           "anyOf": [
             {
