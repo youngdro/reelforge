@@ -200,6 +200,7 @@ cargo run -q -p reelforge-cli -- exec ad.reel.json beat.cut '{"clips": ["c1", "c
 cargo run -q -p reelforge-cli -- exec ad.reel.json beat.apply '{"clips": ["c7"], "move": "squash", "every": 4}' --save   # the price tag squashes on the first beat of every bar (beat.list has punch, pulse, shake, flash, strobe, tilt, bounce)
 cargo run -q -p reelforge-cli -- exec ad.reel.json decor.add '{"decor": "confettiBurst", "start": {"seconds": 12}}' --save   # confetti over the closing scene, in the brand's colours (decor.list has twenty animated decorations)
 cargo run -q -p reelforge-cli -- exec ad.reel.json decor.add '{"decor": "circleMark", "start": {"seconds": 6}, "x": 0.1, "y": 0.2, "color": [1, 0.8, 0.2]}' --save   # a ring drawn by hand round the price
+cargo run -q -p reelforge-cli -- call script.add -p cut.reel.json source=@docs/examples/price-card.js start=2s   # motion written as code: a script builds keyframed clips (docs/scripts.md)
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t1", "shape": {"kind": "star", "points": 16, "inner": 0.8, "size": [300, 300], "fill": {"type": "radial", "from": [1, 0.8, 0.2], "to": [1, 0.4, 0]}}}' --save   # a shape of your own
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setKey '{"clip": "c5", "prop": "scale", "at": {"seconds": 4}, "value": 1.3, "ease": "inOut"}' --save
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setEase '{"clip": "c5", "at": {"seconds": 4}, "ease": [0.3, 1.5, 0.6, 1]}' --save   # on from that key: past the next one and back

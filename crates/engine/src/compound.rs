@@ -19,8 +19,10 @@ pub(crate) fn tidy_groups(proj: &mut Project) {
             *count.entry(g.clone()).or_default() += 1;
         }
     }
+    // a script's group stays a group even of one clip: it is what the script is kept by
+    let scripts = &proj.scripts;
     for c in proj.tracks.iter_mut().flat_map(|t| &mut t.clips) {
-        if c.group.as_ref().is_some_and(|g| count[g] < 2) {
+        if c.group.as_ref().is_some_and(|g| count[g] < 2 && !scripts.contains_key(g)) {
             c.group = None;
         }
     }

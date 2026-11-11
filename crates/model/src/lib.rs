@@ -88,6 +88,34 @@ pub struct Project {
     /// The captions written from the copy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub copy_lines: Vec<CopyLine>,
+    /// The motion scripts whose clips are in the project, by the id of the group each built
+    /// (`g…`). The clips are ordinary clips; the script is kept so that they can be built again
+    /// with other parameters.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub scripts: BTreeMap<String, Script>,
+}
+
+/// A motion script that built a group of clips: JavaScript that makes nodes and tweens them, run
+/// once by the engine (`script.add`). Nothing of it reaches the renderer.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Script {
+    /// What it is called.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// Its source.
+    pub source: String,
+    /// The values given for its parameters; the rest take the script's own defaults.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, serde_json::Value>,
+    /// The parameters it declared when it last ran: `{name: {type, default, label?, …}}`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub declared: BTreeMap<String, serde_json::Value>,
+    /// What its random numbers start from.
+    #[serde(default)]
+    pub seed: u32,
+    /// How long it was asked to be, when it was; else it is as long as it says itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<Tick>,
 }
 
 /// A mark on a timeline: a place to come back to, and to snap to.
@@ -849,6 +877,7 @@ impl Project {
             timeline: String::new(),
             markers: Vec::new(),
             cover: None,
+            scripts: BTreeMap::new(),
             brand: Brand::default(),
             copy: Vec::new(),
             copy_lines: Vec::new(),
@@ -887,6 +916,20 @@ impl Project {
     /// The end of the last clip: the length of the edit.
     pub fn duration(&self) -> Tick {
         self.tracks.iter().flat_map(|t| t.clips.iter().map(Clip::end)).max().unwrap_or(Tick::ZERO)
+    }
+
+    /// Forgets the scripts none of whose clips are left, on this timeline or another.
+    pub fn drop_stray_scripts(&mut self) {
+        if self.scripts.is_empty() {
+            return;
+        }
+        let parked = self.timelines.iter().flat_map(|t| &t.tracks);
+        let used: std::collections::BTreeSet<&String> =
+            self.tracks.iter().chain(parked).flat_map(|t| &t.clips).filter_map(|c| c.group.as_ref()).collect();
+        let stray: Vec<String> = self.scripts.keys().filter(|g| !used.contains(g)).cloned().collect();
+        for g in stray {
+            self.scripts.remove(&g);
+        }
     }
 
     /// Sorts every track's clips by start time.

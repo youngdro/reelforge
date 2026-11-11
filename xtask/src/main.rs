@@ -13,6 +13,7 @@ use std::process::{Command, ExitCode};
 const LAYERS: &[(&str, u8)] = &[
     ("reelforge-time", 0),
     ("reelforge-matte", 0),
+    ("reelforge-script", 0),
     ("reelforge-lottie", 0),
     ("reelforge-renderspec", 1),
     ("reelforge-model", 1),

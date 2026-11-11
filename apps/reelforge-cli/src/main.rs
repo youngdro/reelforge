@@ -173,7 +173,8 @@ enum Cmd {
         token: Option<String>,
     },
     /// Call one operation, on a project file or a running server. Parameters are one JSON object or
-    /// `name=value` pairs (`at=2s` is two seconds, `at=45f` frame 45; JSON values pass as they are).
+    /// `name=value` pairs (`at=2s` is two seconds, `at=45f` frame 45, `source=@card.js` the text of
+    /// that file; JSON values pass as they are).
     Call {
         /// Operation, such as clip.split (or its tool name, clip_split).
         op: String,
@@ -495,7 +496,12 @@ fn call_params(args: &[String]) -> Result<Value, String> {
     for a in args {
         let (k, v) =
             a.split_once('=').ok_or_else(|| format!("{a:?}: parameters are name=value, or one JSON object"))?;
-        obj.insert(k.to_string(), param_value(v));
+        // `source=@card.js`: the text of a file, as curl reads one
+        let value = match v.strip_prefix('@') {
+            Some(path) => json!(std::fs::read_to_string(path).map_err(|e| format!("{k}: cannot read {path}: {e}"))?),
+            None => param_value(v),
+        };
+        obj.insert(k.to_string(), value);
     }
     Ok(Value::Object(obj))
 }

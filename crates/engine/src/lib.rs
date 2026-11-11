@@ -26,6 +26,7 @@ mod pieces;
 mod promo;
 mod remix;
 mod schema;
+mod script;
 mod shared;
 pub mod space;
 mod storyboard;
@@ -135,6 +136,7 @@ impl Session {
         let mut next = (*self.project).clone();
         let out = change(&mut next)?;
         next.sort_clips();
+        next.drop_stray_scripts();
         next.pack_magnetic();
         next.check().map_err(|e| EngineError::Refused(e.to_string()))?;
         if let Some(t) = next.changed_locked_track(&self.project) {
