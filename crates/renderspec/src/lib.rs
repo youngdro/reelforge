@@ -374,6 +374,28 @@ pub struct CropKeys {
     pub bottom: Animated<f32>,
 }
 
+/// A colour that changes (features `shape.color/1`, `text.color/1`): each part keyed, as the
+/// colour itself is written (not premultiplied), 0 to 1.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ColorKeys {
+    /// Red.
+    pub r: Animated<f32>,
+    /// Green.
+    pub g: Animated<f32>,
+    /// Blue.
+    pub b: Animated<f32>,
+    /// How solid.
+    pub a: Animated<f32>,
+}
+
+impl ColorKeys {
+    /// The colour at `t` from the layer's start.
+    pub fn sample(&self, t: Tick) -> Color {
+        Color([&self.r, &self.g, &self.b, &self.a].map(|e| e.sample(t).clamp(0.0, 1.0)))
+    }
+}
+
 impl CropKeys {
     /// The crop at `t` from the layer's start.
     pub fn sample(&self, t: Tick) -> Crop {
@@ -718,6 +740,9 @@ pub struct TextContent {
     pub size: f32,
     /// Fill colour.
     pub color: Color,
+    /// The fill colour over time, in place of `color` (feature `text.color/1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_keys: Option<ColorKeys>,
     /// Weight, 100 (thin) to 900 (black); 400 is regular, 700 bold.
     #[serde(default = "regular")]
     pub weight: u16,
@@ -1071,6 +1096,7 @@ impl TextContent {
     /// Plain text: the default face, regular, centred, no wrapping, outline or box.
     pub fn new(text: impl Into<String>, size: f32, color: Color) -> TextContent {
         TextContent {
+            color_keys: None,
             text: text.into(),
             font: None,
             size,
@@ -1230,6 +1256,10 @@ pub struct ShapeContent {
     /// How much of the fill shows, 0 to 1 (1 when absent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill_opacity: Option<Animated<f32>>,
+    /// The fill's colour over time (feature `shape.color/1`): in place of a solid fill's colour,
+    /// or of the colour a gradient starts from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_color: Option<ColorKeys>,
 }
 
 fn five() -> u32 {
@@ -1807,9 +1837,15 @@ impl RenderSpec {
                 if t.needs_v7() {
                     out.insert("text/7".to_string());
                 }
+                if t.color_keys.is_some() {
+                    out.insert("text.color/1".to_string());
+                }
             }
-            if let LayerContent::Shape(_) = &layer.content {
+            if let LayerContent::Shape(sh) = &layer.content {
                 out.insert("shape/1".to_string());
+                if sh.fill_color.is_some() {
+                    out.insert("shape.color/1".to_string());
+                }
             }
             if let LayerContent::Media { time, between, .. } = &layer.content {
                 out.extend(time.features().map(str::to_string));

@@ -149,6 +149,9 @@
   const PLACE = ["x", "y", "scale", "rotation", "opacity"];
   // width and height apart, and turned in space about the horizontal and the vertical axis
   const SPACE = ["scaleX", "scaleY", "rotationX", "rotationY"];
+  // a colour's parts, as the editor keys them
+  const RGBA = ["colorR", "colorG", "colorB", "colorA"];
+  const tinted = (n, c, name) => { RGBA.forEach((part, i) => { n.base[part] = c[i]; }); n.props = n.props.concat([name]); };
   const MORE = ["perspective", "motionBlur", "transformOrigin", "origin", "parent", "mask", "animate"];
   // a mask's own numbers, as the editor keys them
   const MASK = { x: "maskX", y: "maskY", width: "maskWidth", height: "maskHeight", rotation: "maskRotation", feather: "maskFeather" };
@@ -300,6 +303,8 @@
       if (kind === "line" && o.fill === undefined) s.fill = null;
       n.add = { shape: s };
       if (s.stroke) n.props = n.props.concat(["drawStart", "drawEnd"]);
+      // its fill's colour moves (a gradient's, the colour it starts from)
+      if (kind !== "line" && s.fill) tinted(n, Array.isArray(s.fill) ? s.fill : s.fill.from, "fill");
       return n;
     };
   }
@@ -342,6 +347,7 @@
       // plain words unless the script says otherwise: no outline, no shadow
       for (const k of ["outline", "shadow"]) if (add[k] === undefined && add.template === undefined) add[k] = null;
       n.add = add;
+      if (add.color !== undefined || add.template === undefined) tinted(n, add.color || [1, 1, 1, 1], "color");
       if (o.counter !== undefined) {
         const c = o.counter;
         if (c === null || typeof c !== "object") fail("scene.text: `counter` is {from, to, duration?, ease?, decimals?, group?, clock?}");
@@ -389,8 +395,9 @@
   const NOT_YET = {
     skewX: "nothing skews yet", skewY: "nothing skews yet", skew: "nothing skews yet",
     width: "a size is not tweened yet; tween scaleX", height: "a size is not tweened yet; tween scaleY",
-    fill: "a colour is not tweened yet; cross-fade two nodes", color: "a colour is not tweened yet; cross-fade two nodes",
-    backgroundColor: "a colour is not tweened yet; cross-fade two nodes",
+    fill: "this node has no fill to tween (give a shape its `fill` when making it; a title's colour is `color`)",
+    color: "only a title has a `color` to tween (a shape's is `fill`)",
+    backgroundColor: "tween `fill` on a shape, or `color` on a title", stroke: "an outline's colour is not tweened yet",
     radius: "a corner is not tweened yet", borderRadius: "a corner is not tweened yet",
     blur: "a blur is not tweened yet", filter: "filters are not tweened yet; exposure, contrast, saturation and the other adjustments are",
     z: "there is no depth yet; rotationX and rotationY turn a node in space", xPercent: "write pixels", yPercent: "write pixels",
@@ -491,6 +498,15 @@
       } else if (!names.size) fail(`${what}: it changes nothing; name a property, such as opacity or x`);
       for (const k of names) {
         if (NOT_YET[k] !== undefined && !n.props.includes(k)) fail(`${what}: \`${k}\` cannot be tweened: ${NOT_YET[k]}`);
+        if ((k === "fill" || k === "color") && n.props.includes(k)) {
+          // a colour is four numbers, each tweened
+          const a = from && from[k] !== undefined ? colour(from[k], `${what} ${k}`) : null;
+          const b = to && to[k] !== undefined ? colour(to[k], `${what} ${k}`) : null;
+          if (state.tweens.length + 4 > LIMIT.tweens) fail(`a script makes at most ${LIMIT.tweens} tweens`);
+          RGBA.forEach((part, i) => state.tweens.push({ node: n, prop: part, t0: this.offset + t0, dur, ease: e, repeat, gap,
+            yoyo: !!vars.yoyo, from: a ? a[i] : undefined, to: b ? b[i] : undefined, what, order: state.tweens.length }));
+          continue;
+        }
         if (!n.props.includes(k)) fail(`${what}: ${n.name} has no \`${k}\` to tween; it has ${n.props.join(", ")}`);
         if (state.tweens.length >= LIMIT.tweens) fail(`a script makes at most ${LIMIT.tweens} tweens`);
         state.tweens.push({ node: n, prop: k, t0: this.offset + t0, dur, ease: e, repeat, gap, yoyo: !!vars.yoyo,

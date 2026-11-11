@@ -81,6 +81,15 @@ pub enum Prop {
     RotationX,
     /// Degrees about the vertical axis: positive swings the right edge away.
     RotationY,
+    /// The red of a shape's fill (its one colour, or the colour its gradient starts from) or of
+    /// a title's words, 0 to 1.
+    ColorR,
+    /// Its green.
+    ColorG,
+    /// Its blue.
+    ColorB,
+    /// How solid it is.
+    ColorA,
 }
 
 impl Prop {
@@ -120,8 +129,10 @@ impl Prop {
     ];
     /// A shape's outline: where it starts and stops being drawn.
     pub const DRAW: [Prop; 2] = [Prop::DrawStart, Prop::DrawEnd];
+    /// A shape's or a title's colour: red, green, blue, and how solid.
+    pub const COLOR: [Prop; 4] = [Prop::ColorR, Prop::ColorG, Prop::ColorB, Prop::ColorA];
     /// Every property.
-    pub const ALL: [Prop; 32] = [
+    pub const ALL: [Prop; 36] = [
         Prop::X,
         Prop::Y,
         Prop::Scale,
@@ -154,6 +165,10 @@ impl Prop {
         Prop::ScaleY,
         Prop::RotationX,
         Prop::RotationY,
+        Prop::ColorR,
+        Prop::ColorG,
+        Prop::ColorB,
+        Prop::ColorA,
     ];
 
     /// The name commands use (`x`, `volumeDb`, `cropLeft`, `maskX`, `exposure`…).
@@ -191,6 +206,10 @@ impl Prop {
             Prop::ScaleY => "scaleY",
             Prop::RotationX => "rotationX",
             Prop::RotationY => "rotationY",
+            Prop::ColorR => "colorR",
+            Prop::ColorG => "colorG",
+            Prop::ColorB => "colorB",
+            Prop::ColorA => "colorA",
         }
     }
 
@@ -207,6 +226,7 @@ impl Prop {
         }
         match self {
             Prop::Opacity | Prop::DrawStart | Prop::DrawEnd => Some((0.0, 1.0)),
+            p if Prop::COLOR.contains(&p) => Some((0.0, 1.0)),
             p if Prop::CROP.contains(&p) => Some((0.0, 0.98)),
             Prop::MaskWidth | Prop::MaskHeight | Prop::MaskFeather => Some((0.0, f32::MAX)),
             _ => None,
@@ -855,6 +875,19 @@ impl Animations {
 }
 
 impl Clip {
+    /// The colour its colour keys move: a title's, a shape's fill (a gradient's first). None
+    /// where it has no such colour.
+    pub fn own_color(&self) -> Option<[f32; 4]> {
+        match &self.content {
+            crate::ClipContent::Text { color, .. } => Some(*color),
+            crate::ClipContent::Shape { shape } => match shape.fill.as_ref()? {
+                crate::Fill::Solid { color } => Some(*color),
+                crate::Fill::Linear { from, .. } | crate::Fill::Radial { from, .. } => Some(*from),
+            },
+            _ => None,
+        }
+    }
+
     /// The constant value of `p`, used where it has no keys.
     pub fn base(&self, p: Prop) -> f32 {
         match p {
@@ -886,6 +919,10 @@ impl Clip {
                 crate::ClipContent::Text { style, .. } => style.counter.map_or(0.0, |c| c.to),
                 _ => 0.0,
             },
+            Prop::ColorR | Prop::ColorG | Prop::ColorB | Prop::ColorA => {
+                let i = Prop::COLOR.iter().position(|c| *c == p).expect("a colour's part");
+                self.own_color().map_or(1.0, |c| c[i])
+            }
             p => {
                 let i = Prop::ADJUST.iter().position(|a| *a == p).expect("every other property is an adjustment");
                 self.color.adjust.values()[i]
@@ -933,6 +970,18 @@ impl Clip {
                     && let Some(c) = &mut style.counter
                 {
                     c.to = v;
+                }
+            }
+            Prop::ColorR | Prop::ColorG | Prop::ColorB | Prop::ColorA => {
+                let i = Prop::COLOR.iter().position(|c| *c == p).expect("a colour's part");
+                match &mut self.content {
+                    crate::ClipContent::Text { color, .. } => color[i] = v,
+                    crate::ClipContent::Shape { shape } => match &mut shape.fill {
+                        Some(crate::Fill::Solid { color }) => color[i] = v,
+                        Some(crate::Fill::Linear { from, .. } | crate::Fill::Radial { from, .. }) => from[i] = v,
+                        None => {}
+                    },
+                    _ => {}
                 }
             }
             p => {

@@ -395,6 +395,7 @@ mod tests {
             shadow: None,
             trim: None,
             fill_opacity: None,
+            fill_color: None,
         }
     }
 

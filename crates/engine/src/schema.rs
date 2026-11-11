@@ -144,7 +144,7 @@ fn title_props() -> Vec<(&'static str, Value)> {
 fn prop_schema() -> (&'static str, Value) {
     (
         "prop",
-        json!({"enum": reelforge_model::Prop::ALL.map(reelforge_model::Prop::name), "description": "The property that moves: placement, opacity and volume; the crop's edges; the mask's centre, size, turn and soft edge; the colour adjustments."}),
+        json!({"enum": reelforge_model::Prop::ALL.map(reelforge_model::Prop::name).to_vec(), "description": "The property that moves: placement, opacity and volume; the crop's edges; the mask's centre, size, turn and soft edge; the colour adjustments; `colorR`, `colorG`, `colorB`, `colorA` (each 0 to 1), the colour of a title's words or of a shape's fill (of a gradient, the colour it starts from)."}),
     )
 }
 
@@ -1090,7 +1090,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
                     "props",
                     json!({
                         "type": "array", "minItems": 1,
-                        "items": {"enum": reelforge_model::Prop::ALL.map(reelforge_model::Prop::name)},
+                        "items": {"enum": reelforge_model::Prop::ALL.map(reelforge_model::Prop::name).to_vec()},
                         "description": "Only these properties' keyframes; every property keyed at that time by default.",
                     }),
                 ),
