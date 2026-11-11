@@ -662,7 +662,7 @@ impl GpuCompositor {
             // a composition is drawn here, unless its picture is blurred or cut out (its people
             // kept, its backdrop gone): those are made on the CPU
             if let PlannedSource::Comp(inner) = &layer.source
-                && crate::cpu::blur_radius(layer).is_none()
+                && !crate::cpu::blurs(layer)
                 && !crate::cutout::cuts(&layer.fx)
             {
                 let n = self.nested_slot(inner.width, inner.height);

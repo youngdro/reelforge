@@ -57,6 +57,7 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "audio.stretch/1",
     "blend/2",
     "blur.gaussian@1",
+    "blur.layer@1",
     "color.brightness@1",
     "color.grade@1",
     "color.lut@1",
@@ -747,6 +748,47 @@ mod tests {
         let at = |t: f64| render_frame(&s, Tick::from_seconds(t), 1.0, &NoMedia, Quality::Final).unwrap().0;
         assert_eq!([px(&at(0.0), 10, 10), px(&at(0.75), 20, 10), px(&at(0.75), 10, 10)], [RED, RED, BLUE]);
         assert!(s.required_features().contains("layer.parent/1") && unsupported_features(&s).is_empty());
+    }
+
+    #[test]
+    fn a_shape_out_of_focus_spreads_past_its_box_and_thins_inside() {
+        use reelforge_renderspec::{Paint, ShapeContent, ShapeKind};
+        let mut s = spec();
+        s.layers[0].content = LayerContent::Shape(Box::new(ShapeContent {
+            kind: ShapeKind::Rectangle,
+            size: [10.0, 10.0],
+            radius: 0.0,
+            points: 5,
+            inner: 0.5,
+            fill: Some(Paint::Solid { color: Color([1.0, 0.0, 0.0, 1.0]) }),
+            stroke: None,
+            shadow: None,
+            trim: None,
+            fill_opacity: None,
+            fill_color: None,
+            keys: None,
+        }));
+        s.layers[0].transform = Transform::default();
+        let red = |s: &RenderSpec, x: u32, y: u32| px(&drawn(s), x, y)[0];
+        let (cx, cy) = (s.output.width / 2, s.output.height / 2);
+        // sharp: all of it in its box, none two pixels outside
+        assert_eq!((red(&s, cx, cy), red(&s, cx + 7, cy)), (255, 0));
+        s.layers[0].fx = vec![Effect {
+            id: effects::SOFT.into(),
+            params: [("radius".to_string(), Animated::Constant(3.0))].into(),
+            asset: None,
+        }];
+        reelforge_renderspec::validate(&s).expect("valid");
+        assert!(s.required_features().contains("blur.layer@1") && unsupported_features(&s).is_empty());
+        let (middle, outside, far) = (red(&s, cx, cy), red(&s, cx + 7, cy), red(&s, cx + 18, cy));
+        assert!(middle < 250 && middle > 120, "{middle}");
+        assert!(outside > 20 && outside < middle, "{outside}");
+        assert_eq!(far, 0);
+        // the more of it, the thinner; none at all, and it is as it was
+        s.layers[0].fx[0].params.insert("radius".into(), Animated::Constant(6.0));
+        assert!(red(&s, cx, cy) < middle);
+        s.layers[0].fx[0].params.insert("radius".into(), Animated::Constant(0.0));
+        assert_eq!((red(&s, cx, cy), red(&s, cx + 7, cy)), (255, 0));
     }
 
     #[test]

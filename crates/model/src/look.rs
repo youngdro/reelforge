@@ -40,6 +40,14 @@ pub struct Look {
     /// A shadow under the picture, of its outline as it shows (media and compound clips).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shadow: Option<CastShadow>,
+    /// Out of focus by this much: a blur's standard deviation in canvas pixels, before the
+    /// clip's scale (as CSS `filter: blur()`; any clip that shows a picture, a title or a shape).
+    #[serde(skip_serializing_if = "blur_is_none")]
+    pub blur: f32,
+}
+
+fn blur_is_none(v: &f32) -> bool {
+    *v == 0.0
 }
 
 /// How a plain backdrop is told from what stands before it.
@@ -175,6 +183,9 @@ fn is_false(b: &bool) -> bool {
 }
 
 impl Look {
+    /// The most a clip is blurred, in canvas pixels.
+    pub const BLURS: f32 = 500.0;
+
     /// Changes nothing.
     pub fn is_empty(&self) -> bool {
         *self == Look::default()
@@ -186,6 +197,9 @@ impl Look {
         let edges = [c.left, c.top, c.right, c.bottom];
         if edges.iter().any(|e| !(0.0..1.0).contains(e)) || c.left + c.right > 0.99 || c.top + c.bottom > 0.99 {
             return Some("a crop must leave at least 1 % of the picture");
+        }
+        if !(0.0..=Look::BLURS).contains(&self.blur) {
+            return Some("a blur is from 0 to 500 pixels");
         }
         if self.backdrop.is_some_and(|b| !(0.0..=1.0).contains(&b)) {
             return Some("a backdrop's blur is from 0 to 1");

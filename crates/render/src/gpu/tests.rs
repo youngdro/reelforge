@@ -854,3 +854,50 @@ fn the_frost_is_the_frame_blurred_with_room_around_it() {
         }
     }
 }
+
+#[test]
+fn layers_out_of_focus_match_the_cpu() {
+    use reelforge_renderspec::{Paint, ShapeContent, ShapeKind};
+    let mut s = base(160, 96);
+    let soft = |px: f32| vec![fx_of(effects::SOFT, &[("radius", px)])];
+    // a picture, with a blur of its picture as well
+    let i = with_picture(&mut s, Fit::Contain);
+    s.layers[i].transform.scale = Animated::Constant(0.6);
+    s.layers[i].fx = vec![fx_of(effects::BLUR, &[("radius", 0.02)]), fx_of(effects::SOFT, &[("radius", 6.0)])];
+    // a title drawn straight onto the frame, and one turned and stretched
+    let mut title = layer("t", LayerContent::Text(Box::new(TextContent::new("Ab".to_string(), 40.0, Color([1.0; 4])))));
+    title.transform.position = Animated::Constant([-0.2, -0.2]);
+    title.fx = soft(3.0);
+    s.layers.push(title.clone());
+    title.id = "t2".into();
+    title.transform.position = Animated::Constant([0.25, 0.2]);
+    title.transform.stretch = Some(Animated::Constant([1.4, 0.8]));
+    title.transform.skew = Some(Animated::Constant([20.0, 0.0]));
+    s.layers.push(title);
+    // a shape near the frame's edge: its blur stops at the frame
+    let mut dot = layer(
+        "dot",
+        LayerContent::Shape(Box::new(ShapeContent {
+            kind: ShapeKind::Ellipse,
+            size: [40.0, 40.0],
+            radius: 0.0,
+            points: 5,
+            inner: 0.5,
+            fill: Some(Paint::Solid { color: Color([1.0, 0.3, 0.1, 1.0]) }),
+            stroke: None,
+            shadow: None,
+            trim: None,
+            fill_opacity: None,
+            fill_color: None,
+            keys: None,
+        })),
+    );
+    dot.transform.position = Animated::Constant([0.45, -0.4]);
+    dot.fx = soft(8.0);
+    s.layers.push(dot);
+    reelforge_renderspec::validate(&s).expect("valid");
+    assert!(crate::unsupported_features(&s).is_empty());
+    let media = Pictures(picture(60, 40));
+    same(&s, Tick::ZERO, 1.0, &media, Quality::Final);
+    same(&s, Tick::ZERO, 0.5, &media, Quality::Final);
+}

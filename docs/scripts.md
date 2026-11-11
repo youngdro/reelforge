@@ -57,6 +57,9 @@ replies use). Later nodes lie over earlier ones. Every node also takes:
 - `scaleX`, `scaleY`: width and height apart, on top of `scale` (negative mirrors);
 - `skewX`, `skewY`: leaning, in degrees within ±89, as CSS `skew` (`skewX: 20` slants the top
   edge left and the bottom right, about the node's `transformOrigin`);
+- `blur`: out of focus, a radius in canvas pixels from 0 to 500, as CSS `filter: blur()` (also
+  written `filter: "blur(12px)"`). A picture keeps its edges; a title or a shape softens outwards.
+  A group has nothing to blur; blur the nodes it carries;
 - `rotationX`, `rotationY`: turned in space, in degrees (`rotationY` swings it like a door,
   `rotationX` tips it like a lid; past 90 it shows its back), seen from `perspective` pixels away
   (two canvas heights unless told; nearer is stronger);
@@ -108,7 +111,8 @@ script.
   `repeat` (a whole number of extra times), `yoyo`, `repeatDelay`.
 - A value is a number, or `"+=n"` / `"-=n"` from where the property is.
 - **Properties**: `x`, `y`, `scale`, `rotation`, `opacity`, `scaleX`, `scaleY`, `rotationX`,
-  `rotationY`, `skewX`, `skewY` on every node; `maskX`, `maskY`, `maskWidth`, `maskHeight`, `maskRotation`,
+  `rotationY`, `skewX`, `skewY` on every node; `blur` (or `filter: "blur(12px)"`, `"none"` for 0) on
+  every node but a group; `maskX`, `maskY`, `maskWidth`, `maskHeight`, `maskRotation`,
   `maskFeather` on a node with a `mask`; `fill` on a shape made with a fill and `color` on a title
   (a colour as anywhere else; of a gradient, the colour it starts from; each of red, green, blue
   and alpha goes its own straight way, so fade with `opacity` rather than to a transparent black);
@@ -190,7 +194,7 @@ what to write meanwhile (a script that uses one is refused, and told so):
 | --- | --- | --- |
 | `width`, `height` of a title or a picture | only a shape's box is keyed | `scaleX`, `scaleY` with a `transformOrigin` |
 | a shadow's colour, a gradient's second colour, a title's box | a fill's, a title's and an outline's colour are keyed | cross-fade two nodes |
-| `filter: blur()` and other filters | not keyed | the colour adjustments are; `motionBlur` |
+| filters other than `blur()` (`drop-shadow()`, `hue-rotate()`, …) | `blur` is keyed | the colour adjustments (`exposure`, `saturation`, …) are keyed by their own names; `shadow` on a shape |
 | `z`, `rotationX/Y` with depth sorting | nodes are drawn in the order made | order them yourself |
 | `SplitText` (characters, words, lines as targets) | a title is one node | `animate` with the editor's character, word and line animations; or one node a word |
 | `clip-path` with a path of its own | a mask is a rectangle, a circle, a line or a band | `mask` |

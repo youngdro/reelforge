@@ -165,6 +165,11 @@ In rough priority order for short videos:
    width and outline colour (`Prop::SHAPE`: `width`, `height`, `radius`, `strokeWidth`;
    `Prop::STROKE`: `strokeR` … `strokeA`), written into the shape of the instant the same way
    (`ShapeContent::at`).
+   `blur.layer@1` (an effect, `effects::SOFT`; `Look.blur`, `Prop::Blur`, `clip.set` with `blur`)
+   puts a layer out of focus by a keyed radius in output pixels. It is done before the layer is
+   placed, where both compositors get their pictures (`cpu::resolve`): a picture is blurred with
+   its edges held, as `blur.gaussian@1` is, and a title's or a shape's sprite is given room and
+   blurred (`image::soft`), so the GPU compositor draws it with nothing new.
    `motion.blur/1` (`Layer.motion_blur`, a shutter open for a share of a frame's time) smears a
    layer along its own movement. The plan places the layer at several instants of that time
    (`PlannedLayer.smear`, as many as keep them a couple of pixels apart, `plan::SMEAR` at most,
