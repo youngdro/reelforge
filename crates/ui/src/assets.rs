@@ -73,6 +73,8 @@ pub(crate) enum Item {
     Promo(&'static str),
     /// An animated decoration of the built-in library (`decor.add`), by id.
     Decor(&'static str),
+    /// A motion preset: a script with the values it was saved with (`script.add`).
+    Preset(Box<reelforge_model::Script>),
 }
 
 /// A shape's shown name.
@@ -108,7 +110,9 @@ impl Item {
             Item::Media(_) => TrackKind::Video,
             Item::Sound { .. } => TrackKind::Audio,
             Item::Title(_) => TrackKind::Text,
-            Item::Sticker(_) | Item::Effect(_) | Item::Shape(_) | Item::Promo(_) | Item::Decor(_) => TrackKind::Video,
+            Item::Sticker(_) | Item::Effect(_) | Item::Shape(_) | Item::Promo(_) | Item::Decor(_) | Item::Preset(_) => {
+                TrackKind::Video
+            }
         }
     }
 
@@ -119,6 +123,7 @@ impl Item {
             Item::Sound { length, .. } => *length,
             Item::Title(_) => TITLE_LENGTH,
             Item::Sticker(_) | Item::Effect(_) | Item::Shape(_) | Item::Promo(_) => OVERLAY_LENGTH,
+            Item::Preset(script) => script.duration.unwrap_or(OVERLAY_LENGTH),
             Item::Decor(id) => {
                 Tick::from_seconds(f64::from(reelforge_media::decor::find(id).map_or(3.0, |d| d.seconds)))
             }
@@ -138,6 +143,7 @@ impl Item {
             Item::Shape(k) => shape_name(*k, s).to_string(),
             Item::Promo(id) => promo_name(id, s).to_string(),
             Item::Decor(id) => decor_name(id, s).to_string(),
+            Item::Preset(script) => script.name.clone(),
         }
     }
 }
@@ -165,6 +171,8 @@ pub(crate) enum Action {
     Storyboard(&'static str),
     /// Give a field of the project's copy these words.
     Copy(String, String),
+    /// Forget this motion preset.
+    ForgetPreset(Box<reelforge_model::Script>),
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -240,6 +248,8 @@ pub(crate) struct AssetPanel {
     boards: bool,
     /// The project's copy as it is typed over there.
     copy: crate::storyboard::CopyForm,
+    /// The motion presets to offer, the person's own and the project's, given each frame.
+    pub(crate) presets: Vec<reelforge_model::Script>,
 }
 
 /// A name being typed in the media tab.
@@ -1078,7 +1088,9 @@ impl AssetPanel {
                 .filter(|i| finds(&query, decor_name(self.decor[*i].1.decor().id, s)) || finds(&query, s.sec_decor))
                 .filter(|_| shown(1))
                 .collect();
-            if all.is_empty() && decor.is_empty() && lists.iter().all(|(_, items)| items.is_empty()) {
+            let any_preset =
+                self.presets.iter().any(|p| shown(2) && (finds(&query, &p.name) || finds(&query, s.preset_heading)));
+            if all.is_empty() && decor.is_empty() && !any_preset && lists.iter().all(|(_, items)| items.is_empty()) {
                 nothing_matches(ui, s);
                 return;
             }
@@ -1165,6 +1177,35 @@ impl AssetPanel {
                 ui.add_space(gap - ui.spacing().item_spacing.y);
             }
             if !all.is_empty() {
+                ui.add_space(8.0);
+            }
+            // the person's motion presets, first among the pieces
+            let presets: Vec<&reelforge_model::Script> = self
+                .presets
+                .iter()
+                .filter(|p| shown(2) && (finds(&query, &p.name) || finds(&query, s.preset_heading)))
+                .collect();
+            if !presets.is_empty() {
+                ui.label(egui::RichText::new(s.preset_heading).small().color(color::WEAK));
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                    for script in presets {
+                        let item = Item::Preset(Box::new(script.clone()));
+                        let r = ui.add(egui::Button::new(&script.name).sense(Sense::click_and_drag()));
+                        if r.drag_started() {
+                            egui::DragAndDrop::set_payload(ui.ctx(), item.clone());
+                        }
+                        r.context_menu(|ui| {
+                            if ui.button(s.preset_forget).clicked() {
+                                *action = Some(Action::ForgetPreset(Box::new(script.clone())));
+                                ui.close();
+                            }
+                        });
+                        if r.on_hover_text(s.preset_tip).clicked() {
+                            *action = Some(Action::Add(item));
+                        }
+                    }
+                });
                 ui.add_space(8.0);
             }
             // the shapes and the ready-made pieces, list by list, as words to click or drag
@@ -1564,7 +1605,7 @@ fn drag_preview(ctx: &egui::Context, p: &Project, s: &Strings) {
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("asset drag")));
     let glyph = match (&*item, item.track_kind(p)) {
         (Item::Sticker(_) | Item::Shape(_) | Item::Promo(_), _) => icon::STICKER,
-        (Item::Decor(_), _) => icon::SPARKLE,
+        (Item::Decor(_) | Item::Preset(_), _) => icon::SPARKLE,
         (Item::Effect(_), _) => icon::SPARKLE,
         (_, TrackKind::Audio) => icon::MUSIC,
         (_, TrackKind::Text) => icon::TEXT,

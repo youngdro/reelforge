@@ -1586,3 +1586,39 @@ fn sound_brought_in_is_with_the_library_sounds_and_not_among_the_pictures() {
     assert!(!media.contains("Voice over take 2") && media.contains("Pictures"), "{media}");
     assert_eq!(media.matches("Audio").count(), 1, "only the audio tab's own name: {media}");
 }
+
+#[test]
+fn a_saved_preset_is_offered_in_other_projects_and_builds_its_script() {
+    let source = "export const params = { size: { type: \"number\", default: 100 } };\n\
+                  export function build({ params, scene, timeline }) {\n\
+                    const dot = scene.circle({ name: \"dot\", radius: params.size, fill: \"#f00\" });\n\
+                    timeline().from(dot, { scale: 0, duration: 0.5 });\n\
+                  }";
+    let mut app = EditorApp::new(Session::default());
+    let out = app.execute("script.add", json!({"source": source, "params": {"size": 40}, "name": "Pop"})).unwrap();
+    app.save_preset(json!({"group": out["group"]}));
+    app.save_preset(json!({"group": out["group"]}));
+    // twice in the project, once in the person's own list
+    assert_eq!(app.project().presets.len(), 2);
+    assert_eq!(app.presets.len(), 1);
+    assert_eq!(app.presets_shown().len(), 1);
+    assert!(app.presets_unsaved);
+
+    // another project: the person's preset is there, and builds the script with its values
+    let mut other = EditorApp::new(Session::default());
+    other.presets = app.presets.clone();
+    let shown = other.presets_shown();
+    assert_eq!(shown[0].name, "Pop");
+    other.add_item(&crate::assets::Item::Preset(Box::new(shown[0].clone())), Tick::from_seconds(3.0), None);
+    let p = other.project();
+    let (group, script) = p.scripts.iter().next().unwrap();
+    assert_eq!(script.params["size"], json!(40));
+    let clip = p.tracks.iter().flat_map(|t| &t.clips).find(|c| c.group.as_deref() == Some(group)).unwrap();
+    assert_eq!(clip.start, Tick::from_seconds(3.0));
+    assert_eq!(other.selected.as_deref(), Some(clip.id.as_str()));
+
+    // forgotten, it is gone from both lists
+    app.forget_preset(&shown[0]);
+    assert!(app.presets.is_empty() && app.project().presets.is_empty());
+    assert!(app.presets_shown().is_empty());
+}

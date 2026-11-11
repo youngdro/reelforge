@@ -93,6 +93,21 @@ pub struct Project {
     /// with other parameters.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub scripts: BTreeMap<String, Script>,
+    /// Motion scripts kept to use again (`preset.save`), each with the parameter values it was
+    /// saved with.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub presets: Vec<Preset>,
+}
+
+/// A motion script kept to use again: its source and the values it was saved with
+/// (`preset.apply` builds it as `script.add` would).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Preset {
+    /// Id (`p…`).
+    pub id: String,
+    /// The script, with its name and values.
+    #[serde(flatten)]
+    pub script: Script,
 }
 
 /// A motion script that built a group of clips: JavaScript that makes nodes and tweens them, run
@@ -878,6 +893,7 @@ impl Project {
             markers: Vec::new(),
             cover: None,
             scripts: BTreeMap::new(),
+            presets: Vec::new(),
             brand: Brand::default(),
             copy: Vec::new(),
             copy_lines: Vec::new(),

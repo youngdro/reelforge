@@ -300,7 +300,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
         "commands.list" | "project.inspect" | "project.outline" | "project.new" | "edit.undo" | "edit.redo"
         | "title.templates" | "sound.library" | "timeline.list" | "fx.list" | "sticker.library" | "voice.list"
         | "template.list" | "template.slots" | "promo.list" | "brand.get" | "decor.list" | "layout.list"
-        | "script.list" | "beat.list" => object(vec![], &[]),
+        | "script.list" | "beat.list" | "preset.list" => object(vec![], &[]),
         "beat.apply" | "beat.cut" => {
             let moves: Vec<&str> = crate::beat::MOVES.iter().map(|m| m.id).collect();
             let cut = id == "beat.cut";
@@ -1193,6 +1193,49 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ("name", json!({"type": "string", "description": "What to call it."})),
             ],
             &["group", "source"],
+        ),
+        "preset.save" => object(
+            vec![
+                ("group", ident("Keep the script that built this group, such as g7 (script.list), with its values.")),
+                ("source", json!({"type": "string", "description": "Or keep this script source (see script.add)."})),
+                (
+                    "params",
+                    json!({"type": "object", "description": "With `source`: the values to keep, by name; the rest stay the script's defaults."}),
+                ),
+                ("name", json!({"type": "string", "description": "What to call the preset."})),
+                (
+                    "seed",
+                    json!({"type": "integer", "minimum": 0, "description": "With `source`: what its Math.random starts from."}),
+                ),
+                ("duration", time("With `source`: how long it is.")),
+            ],
+            &[],
+        ),
+        "preset.get" | "preset.remove" => {
+            object(vec![("preset", ident("The preset's id, such as p12, or its name (preset.list)."))], &["preset"])
+        }
+        "preset.set" => object(
+            vec![
+                ("preset", ident("The preset's id, such as p12, or its name (preset.list).")),
+                ("name", json!({"type": "string", "description": "Its new name."})),
+            ],
+            &["preset", "name"],
+        ),
+        "preset.apply" => object(
+            vec![
+                ("preset", ident("The preset's id, such as p12, or its name (preset.list).")),
+                ("start", time("Where it starts on the timeline; 0 by default.")),
+                (
+                    "params",
+                    json!({"type": "object", "description": "Values over those it was saved with, by name; null takes the script's default."}),
+                ),
+                ("duration", time("How long the piece is.")),
+                (
+                    "seed",
+                    json!({"type": "integer", "minimum": 0, "description": "What the script's Math.random starts from."}),
+                ),
+            ],
+            &["preset"],
         ),
         "promo.add" | "promo.set" => {
             let mut props = vec![
