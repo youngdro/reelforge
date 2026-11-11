@@ -48,7 +48,10 @@ clients send `Authorization: Bearer SECRET`.
 ### Editing alongside a person
 
 To have the agent edit while someone watches, let the desktop editor host the server; the agent's
-edits appear in the window as they commit, and undo covers both:
+edits appear in the window as they commit, and undo covers both. In the editor, the agent button in
+the top bar (or "Connect agents" in the command palette, Ctrl/Cmd+K) opens a window that starts
+sharing with one click, optionally to other computers with a token, and shows the Claude Code
+command and the JSON to paste into other clients, each with a Copy button. From a terminal:
 
 ```sh
 cargo run -r -p reelforge -- cut.reel.json --serve          # MCP at http://127.0.0.1:7878/mcp

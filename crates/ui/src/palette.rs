@@ -26,6 +26,8 @@ pub(crate) enum Run {
     PreviewOnly,
     /// The list of keys.
     Keys,
+    /// Connecting agents.
+    Agents,
     Seek(Tick),
     /// Place this file at the playhead.
     Media(String),
@@ -54,6 +56,10 @@ impl Entry {
         self
     }
 }
+
+/// How dark the editor gets behind the palette: a little, so it stays readable, as the editor is
+/// dark already.
+const SHADE: f32 = 72.0;
 
 #[derive(Default)]
 pub(crate) struct Palette {
@@ -121,7 +127,7 @@ impl Palette {
             ctx,
             |ui| {
                 let r = ui.allocate_rect(screen, Sense::click());
-                ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha((150.0 * shown) as u8));
+                ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha((SHADE * shown) as u8));
                 if r.clicked() {
                     self.open = false;
                 }
@@ -129,6 +135,10 @@ impl Palette {
         );
         let width = (screen.width() - 32.0).min(580.0);
         let top = (screen.height() * 0.14).max(12.0) - 10.0 * (1.0 - shown);
+        // over its shade, always: a click on the shade (which closes the palette) brings the
+        // shade's layer to the top, and the next time the palette would open under it, dimmed
+        // and out of reach
+        ctx.move_to_top(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("palette")));
         egui::Area::new(egui::Id::unique("palette"))
             .order(egui::Order::Foreground)
             .anchor(Align2::CENTER_TOP, vec2(0.0, top))

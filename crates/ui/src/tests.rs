@@ -1399,6 +1399,122 @@ fn scrolling_over_the_picture_moves_it_and_keeps_some_of_it_in_sight() {
 }
 
 #[test]
+fn the_agents_window_starts_sharing_and_an_agent_reaches_the_project() {
+    use crate::i18n::Lang;
+    let mut app = EditorApp::demo().with_lang(Lang::En);
+    let hub = Arc::new(Hub::shared(app.session().clone(), None).unwrap());
+    app = app.with_agent_host(Box::new(move |addr: &str, token| {
+        // the test asks for any free port, whatever the window says
+        assert!(addr.starts_with("0.0.0.0:"), "{addr}");
+        let server = HttpServer::bind(hub.clone(), "127.0.0.1:0", token)?;
+        let base = format!("http://{}", server.local_addr());
+        std::thread::spawn(move || server.run());
+        Ok(base)
+    }));
+    app.agents.open = true;
+    let draw = |app: &mut EditorApp| {
+        for lang in Lang::ALL {
+            app.lang = lang;
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx, lang == Lang::Ja);
+            ctx.run_ui(Default::default(), |ui| app.agents_window(ui.ctx())).textures_delta.clear();
+        }
+        app.lang = Lang::En;
+    };
+    draw(&mut app);
+
+    // other computers need a token: without one, nothing starts
+    app.agents.port = "nope".into();
+    app.start_sharing();
+    assert!(app.agents.error.as_deref().unwrap().contains("port"), "{:?}", app.agents.error);
+    app.agents.port = "7878".into();
+    app.agents.others = true;
+    app.agents.token = " ".into();
+    app.start_sharing();
+    assert!(app.agents.serving.is_none());
+    app.agents.token = "t".into();
+    app.start_sharing();
+    let (base, token) = app.agents.serving.clone().expect("sharing");
+    assert_eq!(token.as_deref(), Some("t"));
+    assert!(app.agents.error.is_none());
+    draw(&mut app);
+
+    // an agent's edit through that address lands in this editor's project
+    let mut other = EditorApp::join(&base, token, "agent");
+    let remote = other.remote().expect("joined").clone();
+    until("the agent has the project", || remote.settled());
+    let video = first_track(&other, reelforge_model::TrackKind::Video);
+    let added =
+        other.execute("clip.add", json!({"track": video, "color": [0, 1, 0], "duration": {"seconds": 1}})).unwrap();
+    let id = added["clip"].as_str().unwrap().to_string();
+    until("the editor has the agent's clip", || app.session().project().clip(&id).is_some());
+}
+
+#[test]
+fn the_palette_stays_over_its_shade_and_the_shade_lets_the_editor_show() {
+    use eframe::egui;
+    let app = EditorApp::new(Session::default());
+    let ctx = egui::Context::default();
+    crate::theme::install(&ctx, false);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+    let mut palette = crate::palette::Palette::default();
+    let frame = |palette: &mut crate::palette::Palette, events: Vec<egui::Event>| {
+        let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            palette.show(ui.ctx(), app.s(), app.palette_entries());
+        });
+        out.textures_delta.clear();
+        out.shapes
+    };
+    let click = |at: egui::Pos2| {
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        vec![egui::Event::PointerMoved(at), press(true), press(false)]
+    };
+    let middle = egui::pos2(600.0, 200.0);
+    // opened, closed by a click beside it (which brings the shade's layer to the top), opened again
+    for round in 0..2 {
+        palette.toggle();
+        for _ in 0..20 {
+            frame(&mut palette, vec![]);
+        }
+        let top = ctx.layer_id_at(middle).expect("something is there");
+        assert_eq!(top.id, egui::Id::unique("palette"), "round {round}: {top:?}");
+        let shade = frame(&mut palette, vec![])
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Rect(r) if r.rect == screen => Some(r.fill),
+                _ => None,
+            })
+            .expect("a shade");
+        assert!(shade.a() <= 100, "{shade:?}");
+        frame(&mut palette, click(egui::pos2(20.0, 780.0)));
+        for _ in 0..20 {
+            frame(&mut palette, vec![]);
+        }
+        assert!(!palette.open);
+    }
+}
+
+#[test]
+fn the_keys_of_a_mac_are_drawn_with_their_symbols() {
+    use eframe::egui;
+    let ctx = egui::Context::default();
+    crate::theme::install(&ctx, false);
+    ctx.set_os(egui::os::OperatingSystem::Mac);
+    ctx.run_ui(Default::default(), |_| {}).textures_delta.clear();
+    let written = crate::i18n::keys(&ctx, "Ctrl+Shift+Z Alt+D");
+    assert_eq!(written, "⌘⇧Z ⌥D");
+    for font in [egui::FontId::proportional(13.0), egui::FontId::monospace(13.0)] {
+        assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, &written)), "{font:?}");
+    }
+}
+
+#[test]
 fn a_script_s_colour_parameter_is_read_for_the_picker_where_it_can_be() {
     use crate::script_rgb;
     assert_eq!(script_rgb(&json!("#ff3b5c")), Some([255, 59, 92]));

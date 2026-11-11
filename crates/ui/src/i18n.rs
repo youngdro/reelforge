@@ -125,10 +125,11 @@ impl Lang {
     }
 }
 
-/// A key combination as written on this system: on a Mac, Ctrl (egui's command key) is ⌘.
+/// A key combination as written on this system: on a Mac, Ctrl (egui's command key) is ⌘, Shift
+/// ⇧ and Alt ⌥ (the fonts have each).
 pub fn keys(ctx: &eframe::egui::Context, combo: &str) -> String {
     if ctx.os() == eframe::egui::os::OperatingSystem::Mac {
-        combo.replace("Ctrl+", "⌘").replace("Shift+", "⇧")
+        combo.replace("Ctrl+", "⌘").replace("Shift+", "⇧").replace("Alt+", "⌥")
     } else {
         combo.to_string()
     }
@@ -739,6 +740,24 @@ pub(crate) struct Strings {
     pub(crate) loudness_done: &'static str,
     pub(crate) duck_done: &'static str,
     pub(crate) denoise_done: &'static str,
+    pub(crate) agents_title: &'static str,
+    pub(crate) agents_tip: &'static str,
+    pub(crate) agents_about: &'static str,
+    pub(crate) agents_serving: &'static str,
+    pub(crate) agents_token: &'static str,
+    pub(crate) agents_copy: &'static str,
+    pub(crate) agents_claude_code: &'static str,
+    pub(crate) agents_json: &'static str,
+    pub(crate) agents_desktop: &'static str,
+    pub(crate) agents_after: &'static str,
+    pub(crate) agents_off: &'static str,
+    pub(crate) agents_port: &'static str,
+    pub(crate) agents_others: &'static str,
+    pub(crate) agents_others_tip: &'static str,
+    pub(crate) agents_start: &'static str,
+    pub(crate) agents_bad_port: &'static str,
+    pub(crate) agents_need_token: &'static str,
+    pub(crate) agents_how: &'static str,
     pub(crate) canvas_title: &'static str,
     pub(crate) canvas_tip: &'static str,
     pub(crate) canvas_ratio: &'static str,
@@ -1661,6 +1680,24 @@ static EN: Strings = Strings {
     loudness_done: "Loudness levelled on {} clips",
     duck_done: "Lowered under {} stretches of voice",
     denoise_done: "Noise measured at {} dB and reduced",
+    agents_title: "Connect an agent",
+    agents_tip: "Let AI agents (Claude Code, Claude Desktop, any MCP client) edit this project",
+    agents_about: "Agents edit this project through MCP with the same commands as the editor; their edits show here as they make them, and undo covers both.",
+    agents_serving: "Agents can connect at {}",
+    agents_token: "Token",
+    agents_copy: "Copy",
+    agents_claude_code: "Claude Code (in a terminal)",
+    agents_json: "Clients that take a URL (.mcp.json, Cursor…)",
+    agents_desktop: "Claude Desktop config (needs Node.js)",
+    agents_after: "Then ask the agent to call project_outline. Sharing lasts until the editor closes. docs/agents.md has the tools for each feature.",
+    agents_off: "This project is not shared with agents.",
+    agents_port: "Port",
+    agents_others: "Allow other computers",
+    agents_others_tip: "Listen on every network address; clients must send the token",
+    agents_start: "Share with agents",
+    agents_bad_port: "The port must be a number from 1 to 65535",
+    agents_need_token: "Other computers need a token",
+    agents_how: "Agents connect to a server: run `reelforge-cli serve project.reel.json --web dist` and open this editor from it, or use the desktop app.",
     canvas_title: "Canvas",
     canvas_tip: "Canvas shape, size, frame rate and background",
     canvas_ratio: "Ratio",
@@ -2568,6 +2605,24 @@ static ZH: Strings = Strings {
     loudness_done: "已统一 {} 个片段的响度",
     duck_done: "已在 {} 段人声下压低",
     denoise_done: "测得底噪 {} dB，已降噪",
+    agents_title: "连接 agent",
+    agents_tip: "让 AI agent（Claude Code、Claude Desktop 或任何 MCP 客户端）编辑这个工程",
+    agents_about: "agent 通过 MCP 用和编辑器相同的命令编辑这个工程；它的修改会实时出现在这里，撤销也一起算。",
+    agents_serving: "agent 可以连接 {}",
+    agents_token: "令牌",
+    agents_copy: "复制",
+    agents_claude_code: "Claude Code（在终端里运行）",
+    agents_json: "填网址的客户端（.mcp.json、Cursor 等）",
+    agents_desktop: "Claude Desktop 配置（需要 Node.js）",
+    agents_after: "连上后让 agent 先调用 project_outline。关掉编辑器后共享就停止。各功能对应的工具见 docs/agents.md。",
+    agents_off: "这个工程还没有共享给 agent。",
+    agents_port: "端口",
+    agents_others: "允许其他电脑连接",
+    agents_others_tip: "在所有网络地址上监听；客户端必须带上令牌",
+    agents_start: "共享给 agent",
+    agents_bad_port: "端口必须是 1 到 65535 之间的数字",
+    agents_need_token: "其他电脑连接需要令牌",
+    agents_how: "agent 需要连接服务端：运行 `reelforge-cli serve 工程.reel.json --web dist`，再从服务端打开这个编辑器，或者用桌面版。",
     canvas_title: "画布",
     canvas_tip: "画布比例、尺寸、帧率和背景",
     canvas_ratio: "比例",
