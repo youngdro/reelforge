@@ -724,6 +724,18 @@ pub(crate) struct Strings {
     pub(crate) loudness_done: &'static str,
     pub(crate) duck_done: &'static str,
     pub(crate) denoise_done: &'static str,
+    pub(crate) canvas_title: &'static str,
+    pub(crate) canvas_tip: &'static str,
+    pub(crate) canvas_ratio: &'static str,
+    pub(crate) canvas_original: &'static str,
+    pub(crate) canvas_original_tip: &'static str,
+    pub(crate) canvas_resolution: &'static str,
+    pub(crate) canvas_size: &'static str,
+    pub(crate) canvas_apply: &'static str,
+    pub(crate) canvas_fps: &'static str,
+    pub(crate) canvas_background: &'static str,
+    pub(crate) canvas_refit: &'static str,
+    pub(crate) canvas_refit_tip: &'static str,
 }
 
 static EN: Strings = Strings {
@@ -1618,6 +1630,18 @@ static EN: Strings = Strings {
     loudness_done: "Loudness levelled on {} clips",
     duck_done: "Lowered under {} stretches of voice",
     denoise_done: "Noise measured at {} dB and reduced",
+    canvas_title: "Canvas",
+    canvas_tip: "Canvas shape, size, frame rate and background",
+    canvas_ratio: "Ratio",
+    canvas_original: "Original",
+    canvas_original_tip: "The shape of the first video or picture on the main track",
+    canvas_resolution: "Resolution",
+    canvas_size: "Size",
+    canvas_apply: "Apply",
+    canvas_fps: "Frame rate",
+    canvas_background: "Background",
+    canvas_refit: "Fit clips to the new size",
+    canvas_refit_tip: "Pictures that fill the frame go on filling it, and titles keep their size against the picture",
 };
 
 static ZH: Strings = Strings {
@@ -2497,6 +2521,18 @@ static ZH: Strings = Strings {
     loudness_done: "已统一 {} 个片段的响度",
     duck_done: "已在 {} 段人声下压低",
     denoise_done: "测得底噪 {} dB，已降噪",
+    canvas_title: "画布",
+    canvas_tip: "画布比例、尺寸、帧率和背景",
+    canvas_ratio: "比例",
+    canvas_original: "原始",
+    canvas_original_tip: "主轨道上第一个视频或图片的比例",
+    canvas_resolution: "分辨率",
+    canvas_size: "尺寸",
+    canvas_apply: "应用",
+    canvas_fps: "帧率",
+    canvas_background: "背景",
+    canvas_refit: "片段跟随新尺寸",
+    canvas_refit_tip: "铺满画面的素材继续铺满，文字相对画面的大小不变",
 };
 
 #[cfg(test)]

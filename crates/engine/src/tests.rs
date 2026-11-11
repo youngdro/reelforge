@@ -4394,3 +4394,70 @@ fn a_montage_is_cut_so_that_every_clip_ends_on_a_beat() {
     let late = s.execute("beat.cut", &json!({"clips": [above], "at": [0]}));
     assert!(matches!(late, Err(EngineError::Refused(m)) if m.contains("no beat")));
 }
+
+#[test]
+fn a_new_canvas_shape_keeps_covering_pictures_covering() {
+    let mut s = Session::default();
+    let video = video_track(&s);
+    let text = s.project().tracks.iter().find(|t| t.kind == TrackKind::Text).unwrap().id.clone();
+    let import = |s: &mut Session, path: &str, size: [u32; 2]| -> String {
+        s.execute(
+            "media.import",
+            &json!({"path": path, "kind": "image", "size": size, "duration": {"seconds": 3}, "sha256": "ab".repeat(32)}),
+        )
+        .unwrap()["media"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+    };
+    let wide = import(&mut s, "/nowhere/wide.png", [1920, 1080]);
+    let tall = import(&mut s, "/nowhere/tall.png", [1080, 1920]);
+    let add = |s: &mut Session, media: &str, start: i64| -> String {
+        s.execute(
+            "clip.add",
+            &json!({"track": video, "media": media, "start": {"seconds": start}, "duration": {"seconds": 2}}),
+        )
+        .unwrap()["clip"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    // a portrait picture fills the default 9:16 canvas; a landscape one is fitted inside, and a
+    // second landscape one is scaled to cover it
+    let filled = add(&mut s, &tall, 0);
+    let fitted = add(&mut s, &wide, 2);
+    let covered = add(&mut s, &wide, 4);
+    let k = (1920.0f32 / 1080.0).powi(2);
+    s.execute("clip.set", &json!({"clip": covered, "scale": k})).unwrap();
+    let title = s.execute("clip.add", &json!({"track": text, "text": "hi", "size": 90})).unwrap()["clip"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let r = s.execute("project.setCanvas", &json!({"ratio": "16:9"})).unwrap();
+    assert_eq!(r["canvas"]["width"], 1920);
+    assert_eq!(r["canvas"]["height"], 1080);
+    let scale = |s: &Session, id: &str| s.project().clip(id).unwrap().1.transform.scale;
+    assert!((scale(&s, &filled) - k).abs() < 1e-3, "a filling picture goes on covering");
+    assert_eq!(scale(&s, &fitted), 1.0, "a fitted one stays fitted");
+    assert!((scale(&s, &covered) - 1.0).abs() < 1e-3, "a covering one now fills by its own shape");
+    // the shorter side did not change, so neither did the title
+    let size = |s: &Session| match &s.project().clip(&title).unwrap().1.content {
+        ClipContent::Text { size, .. } => *size,
+        _ => unreachable!(),
+    };
+    assert_eq!(size(&s), 90.0);
+
+    // the same shape at a smaller size: pictures stay, titles shrink with it
+    s.execute("project.setCanvas", &json!({"width": 1280, "height": 720})).unwrap();
+    assert!((scale(&s, &filled) - k).abs() < 1e-3);
+    assert!((size(&s) - 60.0).abs() < 1e-3);
+
+    // without refitting nothing moves; a bad shape is refused
+    s.execute("project.setCanvas", &json!({"width": 720, "height": 720, "refit": false})).unwrap();
+    assert!((scale(&s, &filled) - k).abs() < 1e-3);
+    assert!(s.execute("project.setCanvas", &json!({"ratio": "5:7"})).is_err());
+    assert!(s.execute("project.setCanvas", &json!({"width": 8})).is_err());
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.project().canvas.width, 1280);
+}

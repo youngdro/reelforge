@@ -11,6 +11,7 @@
 //! reader (a preview, an export) holds a snapshot and never blocks an edit.
 
 mod beat;
+mod canvas;
 mod capcut;
 mod captions;
 mod commands;
@@ -38,6 +39,7 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 pub use beat::{MOVES as BEAT_MOVES, Move as BeatMove};
+pub use canvas::RATIOS;
 pub use captions::{CAPTIONS_TRACK, CAPTIONS_TRACK_2, Cue, format_srt, parse_srt};
 pub use commands::{CommandSpec, media_uses, registry};
 pub use layout::{LAYOUTS, Layout};

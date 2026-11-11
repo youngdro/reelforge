@@ -13,6 +13,7 @@ use reelforge_model::{Clip, ClipContent, MediaKind, Project, Prop, TrackKind};
 use reelforge_time::Tick;
 use serde_json::{Value, json};
 
+use crate::canvas::cover;
 use crate::commands::{fps, not_found, one_step};
 use crate::params::P;
 use crate::{CmdResult, EngineError, Session};
@@ -364,16 +365,6 @@ pub(crate) fn slots_json(proj: &Project) -> Value {
         "empty": slots.iter().filter(|s| s.media.is_none()).count(),
         "texts": texts,
     })
-}
-
-/// How much larger than it is drawn at scale 1 (fitted inside the canvas) a picture of `size`
-/// must be to cover the canvas.
-fn cover(canvas: [u32; 2], size: [u32; 2]) -> f32 {
-    if size[0] == 0 || size[1] == 0 {
-        return 1.0;
-    }
-    let (w, h) = (canvas[0] as f32 / size[0] as f32, canvas[1] as f32 / size[1] as f32);
-    w.max(h) / w.min(h).max(f32::MIN_POSITIVE)
 }
 
 /// Makes clip `id` show media `media` from `source_in`, in the same place for the same length
