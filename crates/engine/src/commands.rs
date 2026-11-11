@@ -178,7 +178,7 @@ static REGISTRY: &[CommandSpec] = &[
         id: "title.templates",
         label: "Title Templates",
         params: "{}",
-        doc: "The ready-made title looks (花字): pass an id as `template` to clip.add or clip.set.",
+        doc: "The ready-made title looks (花字), dozens of them on ten shelves (`group`: basic, variety, gradient, texture, glow, solid, hollow, playful, backing, promo): pass an id as `template` to clip.add or clip.set. Each comes with its `style`, which shows how the looks are made from the title parameters (fill, palette, shadows, depth, hollow, bevel, scatter, arc, backing, border, skew).",
         edits: false,
         enabled: always,
         run: title_templates_list,
@@ -357,7 +357,7 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.add",
         label: "Add Clip",
-        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "scaleX"?, "scaleY"?, "rotationX"?, "rotationY"?, "skewX"?, "skewY"?, "perspective"?, "motionBlur"?, "anchorX"?, "anchorY"?, "name"?: string, "adjustment"?: bool, "timeline"?: id, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "shape"?: {"kind"?, "size"?: [w, h], "radius"?, "points"?, "inner"?, "fill"?, "stroke"?, "shadow"?, "trim"?}, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "karaoke"?: {"color"?: [r,g,b,a], "mode"?: "sweep"|"word"|"line", "start"?: time, "duration"?: time | null} | null, "template"?: id}"#,
+        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "scaleX"?, "scaleY"?, "rotationX"?, "rotationY"?, "skewX"?, "skewY"?, "perspective"?, "motionBlur"?, "anchorX"?, "anchorY"?, "name"?: string, "adjustment"?: bool, "timeline"?: id, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "shape"?: {"kind"?, "size"?: [w, h], "radius"?, "points"?, "inner"?, "fill"?, "stroke"?, "shadow"?, "trim"?}, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "karaoke"?: {"color"?: [r,g,b,a], "mode"?: "sweep"|"word"|"line", "start"?: time, "duration"?: time | null} | null, "fill"?: {"colors": [color, ...], "angle"?: deg, "lines"?: bool, "bands"?: bool, "repeat"?: number} | [color, ...] | null, "palette"?: {"colors": [color, ...], "unit"?: "char"|"word"|"line"} | [color, ...] | null, "shadows"?: [{"color", "offset", "blur"}] | null, "depth"?: {"color"?, "offset"?: [x, y] em, "fade"?: color | null} | null, "hollow"?: em | null, "bevel"?: {"light"?, "dark"?, "size"?: em, "angle"?: deg} | null, "scatter"?: {"rotate"?: deg, "shift"?: em, "scale"?, "seed"?} | null, "arc"?: deg, "backing"?: "box"|"marker"|"tiles", "border"?: {"color"?, "width"?: em} | null, "skew"?: deg, "template"?: id}"#,
         doc: "Places media, a library sticker, text, a drawn shape (`shape`, on a video track: see clip.setShape), a colour or an adjustment clip on a track; starts at the track's end unless `start` is given. Titles default to bold white with a black outline, wrapping at 90 % of the canvas. A sticker (sticker.library) is an image a third of the frame wide; `name` is what the project's media calls it (its English name by default). An adjustment clip shows nothing: its effects (`fx`) and colour work on the tracks below it while it lasts. `timeline` places another timeline of the project as a compound clip on a video track, from `sourceIn`.",
         edits: true,
         enabled: always,
@@ -582,7 +582,7 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.set",
         label: "Clip Properties",
-        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "scaleX"?, "scaleY"?, "rotationX"?, "rotationY"?, "skewX"?, "skewY"?, "perspective"?, "anchorX"?, "anchorY"?, "keep"?: bool, "motionBlur"?: bool | number, "at"?: time, "fadeIn"?: time, "fadeOut"?: time, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "karaoke"?: {"color"?: [r,g,b,a], "mode"?: "sweep"|"word"|"line", "start"?: time, "duration"?: time | null} | null, "template"?: id}"#,
+        params: r#"{"clip": id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "scaleX"?, "scaleY"?, "rotationX"?, "rotationY"?, "skewX"?, "skewY"?, "perspective"?, "anchorX"?, "anchorY"?, "keep"?: bool, "motionBlur"?: bool | number, "at"?: time, "fadeIn"?: time, "fadeOut"?: time, "text"?, "size"?, "color"?, "weight"?, "align"?, "wrap"?, "outline"?: {...} | null, "background"?: color | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "karaoke"?: {"color"?: [r,g,b,a], "mode"?: "sweep"|"word"|"line", "start"?: time, "duration"?: time | null} | null, "fill"?: {"colors": [color, ...], "angle"?: deg, "lines"?: bool, "bands"?: bool, "repeat"?: number} | [color, ...] | null, "palette"?: {"colors": [color, ...], "unit"?: "char"|"word"|"line"} | [color, ...] | null, "shadows"?: [{"color", "offset", "blur"}] | null, "depth"?: {"color"?, "offset"?: [x, y] em, "fade"?: color | null} | null, "hollow"?: em | null, "bevel"?: {"light"?, "dark"?, "size"?: em, "angle"?: deg} | null, "scatter"?: {"rotate"?: deg, "shift"?: em, "scale"?, "seed"?} | null, "arc"?: deg, "backing"?: "box"|"marker"|"tiles", "border"?: {"color"?, "width"?: em} | null, "skew"?: deg, "template"?: id}"#,
         doc: "Sets a clip's placement, opacity, volume, sound fades or title. A property with keyframes is set at `at` (a timeline time), adding or changing the keyframe there. Beyond moving, scaling and turning it in the plane, a clip can be stretched (`scaleX`, `scaleY`: width and height apart, on top of `scale`; negative mirrors) and turned in space (`rotationX` tips its top edge away, `rotationY` swings its right edge away, in degrees; past 90 it shows its back), leaned (`skewX` slants it across, `skewY` down, in degrees within ±89, as CSS `skew`), seen in perspective from `perspective` canvas heights away (2 unless told; nearer is stronger). It is placed, scaled and turned about its anchor: `anchorX` and `anchorY` are shares of its picture from the top left (0.5, 0.5 is its middle; 0, 0.5 the middle of its left edge, to swing it like a door; 0.5, 1 the middle of its bottom edge, to grow it from its base). Giving it another anchor leaves the picture where it lies and changes `x` and `y` to match, unless `keep` is false. `motionBlur` smears the clip along its own movement, as a camera's open shutter does: true turns it on (the shutter open for half of each frame's time, a film camera's), a number says for how much of it (0.5 by default, up to 2; more is a longer smear), false or 0 turns it off. It blurs only while the clip moves, grows or turns (its keyframes, animations, transitions, path, and whatever carries it), and leaves it sharp at rest.",
         edits: true,
         enabled: always,
@@ -2012,7 +2012,7 @@ fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
                     text: t.clone(),
                     size,
                     color: color.unwrap_or([1.0; 4]),
-                    style: title_style(&p, TitleStyle::subtitle())?,
+                    style: Box::new(title_style(&p, TitleStyle::subtitle())?),
                 },
                 None,
             ),
@@ -2581,7 +2581,7 @@ fn clip_set_speed(s: &mut Session, v: &Value) -> CmdResult {
     })
 }
 
-const STYLE_KEYS: [&str; 17] = [
+const STYLE_KEYS: [&str; 28] = [
     "karaoke",
     "font",
     "tracking",
@@ -2599,6 +2599,17 @@ const STYLE_KEYS: [&str; 17] = [
     "shadow",
     "lineBoxes",
     "template",
+    "fill",
+    "palette",
+    "shadows",
+    "depth",
+    "hollow",
+    "bevel",
+    "scatter",
+    "arc",
+    "backing",
+    "border",
+    "skew",
 ];
 
 /// `base` with the title style parameters in `p` applied (`null` removes an outline or box).
@@ -2735,6 +2746,12 @@ fn title_style(p: &P, base: TitleStyle) -> Result<TitleStyle, EngineError> {
         Some(_) => return Err(EngineError::Params("`karaoke` must be an object or null".into())),
         None => {}
     }
+    match p.v.get("gradient") {
+        // one fill or the other
+        Some(v) if !v.is_null() && p.v.get("fill").is_none() => st.fill = None,
+        _ => {}
+    }
+    crate::lettering::wear(p, &mut st)?;
     Ok(st)
 }
 
@@ -2750,7 +2767,12 @@ fn template(p: &P) -> Result<Option<TitleTemplate>, EngineError> {
 fn title_templates_list(_: &mut Session, _: &Value) -> CmdResult {
     let list: Vec<Value> = title_templates()
         .into_iter()
-        .map(|t| json!({"id": t.id, "name": t.name, "nameZh": t.name_zh, "color": t.color, "style": t.style}))
+        .map(|t| {
+            json!({
+                "id": t.id, "name": t.name, "nameZh": t.name_zh, "group": t.group.id(), "color": t.color,
+                "style": t.style,
+            })
+        })
         .collect();
     Ok(json!({ "templates": list }))
 }
@@ -2837,7 +2859,7 @@ fn clip_set(s: &mut Session, v: &Value) -> CmdResult {
         }
         match &mut clip.content {
             ClipContent::Text { text: tt, size: ts, color: tc, style } => {
-                *style = title_style(&p, style.clone())?;
+                **style = title_style(&p, (**style).clone())?;
                 if let Some(v) = text {
                     *tt = v;
                 }

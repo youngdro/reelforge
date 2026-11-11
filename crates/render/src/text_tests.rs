@@ -7,10 +7,10 @@ use reelforge_time::{FrameRate, Tick};
 
 use crate::*;
 
-const W: u32 = 480;
-const H: u32 = 240;
+pub(crate) const W: u32 = 480;
+pub(crate) const H: u32 = 240;
 
-fn spec_with(text: TextContent) -> RenderSpec {
+pub(crate) fn spec_with(text: TextContent) -> RenderSpec {
     let mut s = RenderSpec::new(Output {
         width: W,
         height: H,
@@ -43,23 +43,23 @@ fn spec_with(text: TextContent) -> RenderSpec {
     s
 }
 
-fn white(text: &str, size: f32) -> TextContent {
+pub(crate) fn white(text: &str, size: f32) -> TextContent {
     TextContent::new(text, size, Color([1.0; 4]))
 }
 
-fn draw(s: &RenderSpec, scale: f32) -> Image {
+pub(crate) fn draw(s: &RenderSpec, scale: f32) -> Image {
     let (img, report) = render_frame(s, Tick::ZERO, scale, &NoMedia, Quality::Final).expect("renders");
     assert!(report.placeholders.is_empty());
     img
 }
 
 /// Total red (the background has none, white text has it all), in pixels' worth.
-fn ink(img: &Image) -> f32 {
+pub(crate) fn ink(img: &Image) -> f32 {
     img.pixels.iter().map(|p| p[0]).sum()
 }
 
 /// The box `[x0, y0, x1, y1]` of pixels with any red.
-fn ink_box(img: &Image) -> [u32; 4] {
+pub(crate) fn ink_box(img: &Image) -> [u32; 4] {
     let mut b = [u32::MAX, u32::MAX, 0, 0];
     for y in 0..img.height {
         for x in 0..img.width {
@@ -128,8 +128,12 @@ fn outline_and_box_draw_behind_the_fill() {
     assert!(o[0] + 4 <= p[0] && o[2] >= p[2] + 4, "the outline reaches beyond the glyphs");
 
     t.stroke = None;
-    t.background =
-        Some(TextBackground { color: Color([0.0, 1.0, 0.0, 1.0]), padding: 0.25, radius: 0.0, lines: false });
+    t.background = Some(TextBackground {
+        padding: 0.25,
+        radius: 0.0,
+        lines: false,
+        ..TextBackground::of(Color([0.0, 1.0, 0.0, 1.0]))
+    });
     let boxed = draw(&spec_with(t), 1.0).to_srgba8();
     let at = |x: u32, y: u32| {
         let i = ((y * W + x) * 4) as usize;
@@ -142,8 +146,12 @@ fn outline_and_box_draw_behind_the_fill() {
     // with a wrap width far wider than the words, the box still hugs them
     let mut t = white("字幕", 72.0);
     t.width = Some(460.0);
-    t.background =
-        Some(TextBackground { color: Color([0.0, 1.0, 0.0, 1.0]), padding: 0.25, radius: 0.0, lines: false });
+    t.background = Some(TextBackground {
+        padding: 0.25,
+        radius: 0.0,
+        lines: false,
+        ..TextBackground::of(Color([0.0, 1.0, 0.0, 1.0]))
+    });
     let wide = draw(&spec_with(t), 1.0).to_srgba8();
     let green = |x: u32| wide[((H / 2 * W + x) * 4) as usize + 1] == 255 && wide[((H / 2 * W + x) * 4) as usize] == 0;
     assert!(!green(30) && !green(W - 30), "no box far from the words");
@@ -281,7 +289,12 @@ fn second_outlines_shadows_gradients_and_round_boxes() {
 
     // a round box leaves its corners to the background
     let mut t = white("花字", 80.0);
-    t.background = Some(TextBackground { color: Color([0.0, 1.0, 0.0, 1.0]), padding: 0.3, radius: 0.5, lines: false });
+    t.background = Some(TextBackground {
+        padding: 0.3,
+        radius: 0.5,
+        lines: false,
+        ..TextBackground::of(Color([0.0, 1.0, 0.0, 1.0]))
+    });
     let rounded = draw(&spec_with(t.clone()), 1.0);
     t.background.as_mut().expect("set").radius = 0.0;
     let square = draw(&spec_with(t), 1.0);
@@ -417,8 +430,12 @@ fn line_boxes_hug_each_line() {
         img[i] == 0 && img[i + 1] == 255
     };
     let mut t = white("WWWWWWWW\nW", 40.0);
-    t.background =
-        Some(TextBackground { color: Color([0.0, 1.0, 0.0, 1.0]), padding: 0.25, radius: 0.0, lines: false });
+    t.background = Some(TextBackground {
+        padding: 0.25,
+        radius: 0.0,
+        lines: false,
+        ..TextBackground::of(Color([0.0, 1.0, 0.0, 1.0]))
+    });
     let block = draw(&spec_with(t.clone()), 1.0);
     let b = ink_box(&block);
     t.background.as_mut().unwrap().lines = true;

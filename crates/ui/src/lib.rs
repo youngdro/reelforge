@@ -221,7 +221,10 @@ pub struct EditorApp {
     /// The project revision and playhead the inspector's values were read at.
     inspector_seen: (u64, Tick),
     /// Pictures of the title templates, made when first shown.
-    looks: Option<Vec<(&'static str, egui::TextureHandle)>>,
+    looks: Option<Vec<looks::Look>>,
+    /// The shelf of title templates the inspector shows, once one is picked: until then, the
+    /// one the title's own look is on.
+    look_shelf: Option<usize>,
     /// The server whose session this editor mirrors, when it joined one.
     remote: Option<remote::Remote>,
     /// The interface's language.
@@ -495,6 +498,31 @@ struct Title {
     underline: bool,
     /// What is being said takes another colour: what is lit, and the colour as on screen.
     karaoke: Option<(reelforge_model::KaraokeMode, [u8; 3])>,
+    /// What the letters wear: only their edges inked, depth, lit edges, a colour per character,
+    /// each a little out of line.
+    hollow: bool,
+    depth: bool,
+    bevel: bool,
+    colours: bool,
+    scatter: bool,
+    /// A fill through several colours.
+    fill: Option<FillEdit>,
+    /// How far the lines bend, in degrees.
+    arc: f32,
+    /// What the box is, how far its sides lean in degrees, and whether it has a border.
+    backing: reelforge_model::Backing,
+    skew: f32,
+    border: bool,
+}
+
+/// A title's fill through several colours in the inspector.
+#[derive(Clone, PartialEq)]
+struct FillEdit {
+    /// The colours as on screen.
+    colors: Vec<[u8; 3]>,
+    angle: f32,
+    bands: bool,
+    repeat: f32,
 }
 
 impl EditorApp {
@@ -577,6 +605,7 @@ impl EditorApp {
             inspector: None,
             inspector_seen: (0, Tick::ZERO),
             looks: None,
+            look_shelf: None,
             remote: None,
             lang: Lang::detect(),
             lang_chosen: false,
@@ -3432,6 +3461,25 @@ impl EditorApp {
                     karaoke: style
                         .karaoke
                         .map(|k| (k.mode, [k.color[0], k.color[1], k.color[2]].map(|v| (v * 255.0).round() as u8))),
+                    hollow: style.hollow.is_some(),
+                    depth: style.depth.is_some(),
+                    bevel: style.bevel.is_some(),
+                    colours: style.palette.is_some(),
+                    scatter: style.scatter.is_some(),
+                    fill: style.fill.as_ref().map(|f| FillEdit {
+                        colors: f
+                            .colors
+                            .iter()
+                            .map(|c| [c[0], c[1], c[2]].map(|v| (v * 255.0).round() as u8))
+                            .collect(),
+                        angle: f.angle,
+                        bands: f.bands,
+                        repeat: f.repeat,
+                    }),
+                    arc: style.arc,
+                    backing: style.backing,
+                    skew: style.skew,
+                    border: style.border.is_some(),
                 }),
                 _ => None,
             },
@@ -3487,13 +3535,13 @@ impl EditorApp {
         let worn = match &clip.content {
             ClipContent::Text { color, style, .. } => reelforge_engine::title_templates()
                 .into_iter()
-                .find(|t| t.color == *color && style.wearing(&t.style) == *style)
+                .find(|t| t.color == *color && style.wearing(&t.style) == **style)
                 .map(|t| t.id),
             _ => None,
         };
         let edit_is_title = matches!(clip.content, ClipContent::Text { .. });
-        if edit_is_title && self.looks.is_none() {
-            self.looks = Some(looks::previews(ui.ctx()));
+        if edit_is_title {
+            looks::more(ui.ctx(), self.looks.get_or_insert_default());
         }
         let mut wear: Option<&'static str> = None;
         let looks = self.looks.as_deref().unwrap_or_default();
@@ -3832,6 +3880,70 @@ impl EditorApp {
                         }
                     });
                     ui.horizontal_wrapped(|ui| {
+                        commit |= ui.toggle_value(&mut t.hollow, s.t_hollow).changed();
+                        commit |= ui.toggle_value(&mut t.depth, s.t_depth).changed();
+                        commit |= ui.toggle_value(&mut t.bevel, s.t_bevel).changed();
+                        commit |= ui.toggle_value(&mut t.colours, s.t_colours).changed();
+                        commit |= ui.toggle_value(&mut t.scatter, s.t_scatter).changed();
+                        let mut on = t.fill.is_some();
+                        if ui.toggle_value(&mut on, s.t_fill).changed() {
+                            // from the title's colour to a warm one, until others are picked
+                            let own = edit.color.map_or([255; 3], |c| [c[0], c[1], c[2]].map(|v| (v * 255.0) as u8));
+                            t.fill = on.then(|| FillEdit {
+                                colors: vec![own, [255, 95, 162]],
+                                angle: 90.0,
+                                bands: false,
+                                repeat: 1.0,
+                            });
+                            commit = true;
+                        }
+                    });
+                    if let Some(f) = &mut t.fill {
+                        ui.horizontal_wrapped(|ui| {
+                            for c in &mut f.colors {
+                                // sent once the picker is let go
+                                ui.color_edit_button_srgb(c);
+                            }
+                            if f.colors.len() < 8 && ui.small_button(icon::ADD).clicked() {
+                                f.colors.push(*f.colors.last().unwrap_or(&[255; 3]));
+                                commit = true;
+                            }
+                            if f.colors.len() > 2 && ui.small_button("−").clicked() {
+                                f.colors.pop();
+                                commit = true;
+                            }
+                            commit |= ui.toggle_value(&mut f.bands, s.t_bands).changed();
+                        });
+                        egui::Grid::new("title fill").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                            commit |= row(ui, s.t_angle, &mut f.angle, 1.0, -360.0..=360.0, "°");
+                            let (lo, hi) = reelforge_model::TitleFill::REPEATS;
+                            commit |= row(ui, s.t_repeat, &mut f.repeat, 0.05, lo..=hi, "×");
+                        });
+                    }
+                    egui::Grid::new("title shape").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                        let most = reelforge_model::TitleStyle::ARC;
+                        commit |= row(ui, s.t_arc, &mut t.arc, 1.0, -most..=most, "°");
+                        if t.boxed {
+                            theme::field_name(ui, s.t_backing);
+                            let all = reelforge_model::Backing::ALL;
+                            let at = all.iter().position(|b| *b == t.backing).unwrap_or(0);
+                            egui::ComboBox::from_id_salt("backing")
+                                .selected_text(s.t_backings[at])
+                                .width(ui.available_width())
+                                .show_ui(ui, |ui| {
+                                    for (b, name) in all.into_iter().zip(s.t_backings) {
+                                        commit |= ui.selectable_value(&mut t.backing, b, name).changed();
+                                    }
+                                });
+                            ui.end_row();
+                            let most = reelforge_model::TitleStyle::SKEW;
+                            commit |= row(ui, s.t_skew, &mut t.skew, 1.0, -most..=most, "°");
+                        }
+                    });
+                    if t.boxed {
+                        commit |= ui.toggle_value(&mut t.border, s.t_border).changed();
+                    }
+                    ui.horizontal_wrapped(|ui| {
                         let mut on = t.karaoke.is_some();
                         if ui.toggle_value(&mut on, s.karaoke).on_hover_text(s.karaoke_tip).changed() {
                             t.karaoke = on.then_some((reelforge_model::KaraokeMode::Sweep, [255, 214, 26]));
@@ -3859,8 +3971,22 @@ impl EditorApp {
                         reelforge_engine::title_templates().into_iter().map(|t| t.id).zip(s.template_names).collect();
                     let width = (ui.available_width() - 8.0) / 2.0;
                     let size = egui::vec2(width, width * looks::SIZE[1] as f32 / looks::SIZE[0] as f32);
+                    // one shelf at a time: the one the title's look is on, until another is asked for
+                    let shelves = looks::shelves(looks);
+                    let worn_on = worn.and_then(|id| shelves.iter().find(|(_, on)| on.iter().any(|(l, _)| *l == id)));
+                    let shelf = self.look_shelf.or(worn_on.map(|(g, _)| *g)).unwrap_or(0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                        for (g, _) in &shelves {
+                            if ui.selectable_label(shelf == *g, s.template_groups[*g]).clicked() {
+                                self.look_shelf = Some(*g);
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+                    let shown = shelves.iter().find(|(g, _)| *g == shelf).map_or(&[][..], |(_, on)| *on);
                     egui::Grid::new("looks").num_columns(2).spacing([8.0, 8.0]).show(ui, |ui| {
-                        for (i, (id, texture)) in looks.iter().enumerate() {
+                        for (i, (id, texture)) in shown.iter().enumerate() {
                             let on = worn == Some(*id);
                             let (rect, r) = ui.allocate_exact_size(size, egui::Sense::click());
                             ui.painter().image(
@@ -4821,7 +4947,11 @@ impl EditorApp {
         }
         // a colour is committed once the pointer lets go of the picker
         let lit = |i: &Inspector| i.title.as_ref().and_then(|t| t.karaoke).map(|k| k.1);
-        let picked = self.inspector.as_ref().is_some_and(|e| e.color != current.color || lit(e) != lit(&current));
+        let fill = |i: &Inspector| i.title.as_ref().and_then(|t| t.fill.as_ref()).map(|f| f.colors.clone());
+        let picked = self
+            .inspector
+            .as_ref()
+            .is_some_and(|e| e.color != current.color || lit(e) != lit(&current) || fill(e) != fill(&current));
         commit |= picked && !ui.ctx().egui_is_using_pointer();
         for (cmd, params) in actions {
             if cmd == "clip.pickChromaKey" {
@@ -4931,7 +5061,46 @@ impl EditorApp {
                 let was = current.title.as_ref();
                 params["text"] = json!(t.text);
                 params["size"] = json!(t.size);
-                params["weight"] = json!(if t.bold { 700 } else { 400 });
+                // a look's own weight stays until bold is turned on or off
+                if was.is_some_and(|w| w.bold != t.bold) {
+                    params["weight"] = json!(if t.bold { 700 } else { 400 });
+                }
+                for (name, now, before, on) in [
+                    ("hollow", t.hollow, was.map(|w| w.hollow), json!(0.05)),
+                    ("depth", t.depth, was.map(|w| w.depth), json!({})),
+                    ("bevel", t.bevel, was.map(|w| w.bevel), json!({})),
+                    ("scatter", t.scatter, was.map(|w| w.scatter), json!({"rotate": 8, "shift": 0.08, "scale": 0.1})),
+                    ("border", t.border, was.map(|w| w.border), json!({})),
+                    (
+                        "palette",
+                        t.colours,
+                        was.map(|w| w.colours),
+                        json!({"colors": [[1.0, 0.32, 0.32], [1.0, 0.7, 0.0], [0.0, 0.78, 0.33], [0.16, 0.47, 1.0], [0.84, 0.0, 0.98]]}),
+                    ),
+                ] {
+                    if before.is_some_and(|b| b != now) {
+                        params[name] = if now { on } else { Value::Null };
+                    }
+                }
+                if was.is_some_and(|w| w.fill != t.fill) {
+                    params["fill"] = match &t.fill {
+                        Some(f) => {
+                            let colors: Vec<[f32; 3]> =
+                                f.colors.iter().map(|c| c.map(|v| f32::from(v) / 255.0)).collect();
+                            json!({"colors": colors, "angle": f.angle, "bands": f.bands, "repeat": f.repeat})
+                        }
+                        None => Value::Null,
+                    };
+                }
+                if was.is_some_and(|w| w.arc != t.arc) {
+                    params["arc"] = json!(t.arc);
+                }
+                if was.is_some_and(|w| w.backing != t.backing) {
+                    params["backing"] = json!(t.backing.name());
+                }
+                if was.is_some_and(|w| w.skew != t.skew) {
+                    params["skew"] = json!(t.skew);
+                }
                 if was.is_some_and(|w| w.outline != t.outline) {
                     params["outline"] = if t.outline { json!({}) } else { Value::Null };
                 }
@@ -5677,8 +5846,8 @@ impl eframe::App for EditorApp {
             })
             .map(|r| r.inner)
             .unwrap_or_default();
-        if self.assets.wants_looks() && self.looks.is_none() {
-            self.looks = Some(looks::previews(&ctx));
+        if self.assets.wants_looks() {
+            looks::more(&ctx, self.looks.get_or_insert_default());
         }
         let looks = self.looks.clone().unwrap_or_default();
         let asked = side("library", true, 360.0)

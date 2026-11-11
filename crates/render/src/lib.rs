@@ -36,6 +36,8 @@ pub mod yuv;
 
 #[cfg(test)]
 mod text_tests;
+#[cfg(test)]
+mod text_wear_tests;
 
 use reelforge_renderspec::RenderSpec;
 use reelforge_time::Tick;
@@ -91,6 +93,7 @@ pub const SUPPORTED_FEATURES: &[&str] = &[
     "text/5",
     "text/6",
     "text/7",
+    "text/8",
     "text.color/1",
     "time.hold/1",
     "time.ramp/1",

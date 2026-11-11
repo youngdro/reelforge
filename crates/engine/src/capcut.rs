@@ -318,7 +318,7 @@ fn read_draft(proj: &mut Project, draft: &Value, folder: Option<&str>) -> Result
                         text,
                         size,
                         color: color.unwrap_or([1.0, 1.0, 1.0, 1.0]),
-                        style: TitleStyle::default(),
+                        style: Box::new(TitleStyle::default()),
                     }
                 }
             };

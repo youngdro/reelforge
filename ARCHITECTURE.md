@@ -116,6 +116,20 @@ In rough priority order for short videos:
    of its outline as it has got to, the way a shape's trimmed outline is inked, and its fill
    fades in behind). The model's side is animation kinds (`wordRise`, `charBounce`, `draw`…) and
    `TitleStyle.karaoke`; the compiler turns their times into the progress keys.
+   `text/8` is what letters wear beyond one colour, two outlines and a shadow: a `fill` through
+   several colours (at an angle, smooth or in bands, once or round and round, measured across the
+   lines' em boxes), a `palette` (a colour per character, word or line), more `shadows`, `depth`
+   (the glyphs and outlines swept to one side as a block, above the shadows, which the block casts
+   too), `hollow` (only a line inside each glyph's edge is inked, and everything else is of that
+   line), `bevel` (edges lit and shaded inside the glyphs), `scatter` and `arc` (each character
+   stands turned, moved or on a circle: the same per-character placement the animations use, so
+   they compose with them, and a pixel is mapped back to the flat layout to find its fill colour),
+   and a background that is a highlighter's band or a tile per character, with a border or leaning
+   sides. All of it is drawn on the CPU into the text's sprite, so both compositors agree. Lengths
+   are in ems except outline and border widths, which are in pixels as `stroke` is. The model's
+   side is `reelforge_model::title` (the same parts on `TitleStyle`, all in ems); the 67 templates
+   in `reelforge_engine::templates` are nothing but values of it, sorted onto ten shelves
+   (`TitleGroup`).
    `shape/1` draws shapes the way text is drawn: `reelforge_render::shape` makes a sprite in target
    pixels, already placed, scaled and turned by its layer, which both compositors lay over the frame,
    so CPU and GPU agree. The outline is a polyline; the part `trim` keeps is inked by distance, so

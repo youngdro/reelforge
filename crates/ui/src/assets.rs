@@ -330,7 +330,7 @@ impl AssetPanel {
         p: &Project,
         media: &Footage,
         lang: crate::i18n::Lang,
-        looks: &[(&'static str, egui::TextureHandle)],
+        looks: &[crate::looks::Look],
         playing: bool,
         playhead: Tick,
         selected: &[String],
@@ -1490,12 +1490,7 @@ fn row(
 }
 
 /// Titles: a plain one and the templates (花字), as pictures.
-fn text_tab(
-    ui: &mut egui::Ui,
-    s: &Strings,
-    looks: &[(&'static str, egui::TextureHandle)],
-    action: &mut Option<Action>,
-) {
+fn text_tab(ui: &mut egui::Ui, s: &Strings, looks: &[crate::looks::Look], action: &mut Option<Action>) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.label(egui::RichText::new(s.text_basic).small().strong().color(color::WEAK));
         ui.add_space(2.0);
@@ -1508,19 +1503,24 @@ fn text_tab(
             }
         });
         ui.add_space(10.0);
-        ui.label(egui::RichText::new(s.sec_templates).small().strong().color(color::WEAK));
-        ui.add_space(2.0);
-        for pair in looks.chunks(2) {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = gap;
-                for (id, texture) in pair {
-                    let item = Item::Title(Some(id));
-                    if let Some(a) = title_card(ui, vec2(w, h), Some(texture), item, template_name(id, s), s) {
-                        *action = Some(a);
+        // the templates, shelf by shelf
+        for (g, shelf) in crate::looks::shelves(looks) {
+            let head = format!("{} · {}", s.template_groups[g], shelf.len());
+            ui.label(egui::RichText::new(head).small().strong().color(color::WEAK));
+            ui.add_space(2.0);
+            for pair in shelf.chunks(2) {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    for (id, texture) in pair {
+                        let item = Item::Title(Some(id));
+                        if let Some(a) = title_card(ui, vec2(w, h), Some(texture), item, template_name(id, s), s) {
+                            *action = Some(a);
+                        }
                     }
-                }
-            });
-            ui.add_space(gap - ui.spacing().item_spacing.y);
+                });
+                ui.add_space(gap - ui.spacing().item_spacing.y);
+            }
+            ui.add_space(6.0);
         }
     });
 }

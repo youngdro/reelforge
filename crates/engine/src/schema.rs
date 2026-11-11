@@ -135,10 +135,128 @@ fn title_props() -> Vec<(&'static str, Value)> {
             })),
         ),
         (
+            "fill",
+            nullable(json!({
+                "description": "A fill through several colours, in place of `color` and `gradient`: an object, or just the list of colours (top to bottom). A part said again changes that part. null removes it.",
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "colors": colors("Two to eight colours, evenly spaced along the way."),
+                            "angle": num("Which way they run, in degrees clockwise: 0 from left to right, 90 (the default) from top to bottom."),
+                            "lines": {"type": "boolean", "description": "They run across each line on its own (the default), not once across the whole title."},
+                            "bands": {"type": "boolean", "description": "Bands with hard edges (stripes), not a smooth run."},
+                            "repeat": {"type": "number", "minimum": 0.1, "maximum": 32, "description": "How many times the colours go round along the way; 1 by default."}
+                        },
+                    },
+                    colors("Two to eight colours."),
+                ],
+            })),
+        ),
+        (
+            "palette",
+            nullable(json!({
+                "description": "The title's characters, words or lines take colours in turn, over whatever else fills them: an object, or just the list of colours. null removes it.",
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "colors": colors("One to eight colours: the first unit takes the first, the next the second, and round again."),
+                            "unit": {"enum": ["char", "word", "line"], "description": "What takes one colour; a character by default (a Chinese character is a word of its own)."}
+                        },
+                    },
+                    colors("One to eight colours."),
+                ],
+            })),
+        ),
+        (
+            "shadows",
+            nullable(json!({
+                "description": "More shadows beneath `shadow`, the last one lowest, at most four: one with no offset is a glow, two of them a neon halo, hard ones stepped aside are stacked layers. The list replaces the one before; null or [] removes them.",
+                "type": "array",
+                "maxItems": 4,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "color": color("Shadow colour; translucent black unless given."),
+                        "offset": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "[right, down] in em; [0, 0] unless given."},
+                        "blur": num("Softness in em; 0.1 unless given.")
+                    },
+                },
+            })),
+        ),
+        (
+            "depth",
+            nullable(json!({
+                "description": "The letters (and their outlines) drawn out to one side as a solid block: letters with thickness. null removes it.",
+                "type": "object",
+                "properties": {
+                    "color": color("The block's colour; black unless given."),
+                    "offset": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "How far it reaches, [right, down] in em, up to 1 either way; [0.06, 0.06] unless given."},
+                    "fade": nullable(color("The colour at its far end, when it changes along the way."))
+                },
+            })),
+        ),
+        (
+            "hollow",
+            json!({"type": ["number", "null"], "minimum": 0, "maximum": 0.5, "description": "Hollow letters: only a line this wide (in em, 0.05 is usual) just inside each letter's edge is inked; outlines, depth and shadows are then of that line. null or 0 fills them again."}),
+        ),
+        (
+            "bevel",
+            nullable(json!({
+                "description": "Edges lit from one side and shaded on the other, inside the letters, as if they stood up from the page (metal, embossing, jelly). null removes it.",
+                "type": "object",
+                "properties": {
+                    "light": color("The lit edge's colour; translucent white unless given."),
+                    "dark": color("The shaded edge's colour; translucent black unless given."),
+                    "size": num("How wide the edges are, in em (up to 0.5); 0.05 unless given."),
+                    "angle": num("Where the light is, in degrees clockwise from straight above; 315, the top left, unless given.")
+                },
+            })),
+        ),
+        (
+            "scatter",
+            nullable(json!({
+                "description": "Each character turned, moved and sized a little by chance, about its own centre, the same way every time. null removes it.",
+                "type": "object",
+                "properties": {
+                    "rotate": {"type": "number", "minimum": 0, "maximum": 180, "description": "The most a character turns either way, in degrees."},
+                    "shift": {"type": "number", "minimum": 0, "maximum": 2, "description": "The most it moves up or down, in em."},
+                    "scale": {"type": "number", "minimum": 0, "maximum": 0.9, "description": "The most it grows or shrinks, as a share of its size."},
+                    "seed": {"type": "integer", "minimum": 0, "description": "Which arrangement: another number, another one."}
+                },
+            })),
+        ),
+        (
+            "arc",
+            json!({"type": ["number", "null"], "minimum": -360, "maximum": 360, "description": "The lines bend round a circle: the title's width spans this many degrees, arching up when positive and hanging down when negative; 0 or null is straight. Boxes and underlines stay straight."}),
+        ),
+        (
+            "backing",
+            json!({"enum": ["box", "marker", "tiles"], "description": "What `background` is the colour of: a box (behind the title, or each line with `lineBoxes`), a highlighter's band behind the lower half of each line, or a tile behind each character (the characters then stand 0.3 em further apart)."}),
+        ),
+        (
+            "border",
+            nullable(json!({
+                "description": "A line just inside the edge of the box (band, tiles). null removes it.",
+                "type": "object",
+                "properties": {"color": color("The line's colour; white unless given."), "width": num("Its width in em (up to 0.5); 0.04 unless given.")},
+            })),
+        ),
+        (
+            "skew",
+            json!({"type": ["number", "null"], "minimum": -60, "maximum": 60, "description": "The box's sides lean this many degrees (a parallelogram), to the right when positive."}),
+        ),
+        (
             "template",
-            json!({"type": "string", "description": "A title template id from title.templates (classic, variety, sticker, candy, fire, neon, retro, soft, boxed, label); other parameters given override it."}),
+            json!({"type": "string", "description": "A title template id from title.templates (dozens, on ten shelves: basic, variety, gradient, texture, glow, solid, hollow, playful, backing, promo; for example classic, variety, gold, neonpink, block, hollow, confetti, arch, marker, sale); other parameters given override it."}),
         ),
     ]
+}
+
+/// A list of colours.
+fn colors(doc: &str) -> Value {
+    json!({"type": "array", "items": color("A colour."), "description": doc})
 }
 
 fn prop_schema() -> (&'static str, Value) {
