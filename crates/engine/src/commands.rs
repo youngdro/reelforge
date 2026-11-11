@@ -357,11 +357,11 @@ static REGISTRY: &[CommandSpec] = &[
     CommandSpec {
         id: "clip.add",
         label: "Add Clip",
-        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "name"?: string, "adjustment"?: bool, "timeline"?: id, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "shape"?: {"kind"?, "size"?: [w, h], "radius"?, "points"?, "inner"?, "fill"?, "stroke"?, "shadow"?, "trim"?}, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "karaoke"?: {"color"?: [r,g,b,a], "mode"?: "sweep"|"word"|"line", "start"?: time, "duration"?: time | null} | null, "template"?: id}"#,
+        params: r#"{"track": id, "start"?: time, "duration"?: time, "media"?: id, "sourceIn"?: time, "sticker"?: id, "x"?, "y"?, "scale"?, "rotation"?, "opacity"?, "volumeDb"?, "scaleX"?, "scaleY"?, "rotationX"?, "rotationY"?, "perspective"?, "motionBlur"?, "anchorX"?, "anchorY"?, "name"?: string, "adjustment"?: bool, "timeline"?: id, "fx"?: [{"kind": name, "strength"?: 0-1, "speed"?: 0.25-4} | name], "shape"?: {"kind"?, "size"?: [w, h], "radius"?, "points"?, "inner"?, "fill"?, "stroke"?, "shadow"?, "trim"?}, "text"?: string, "size"?: px, "color"?: [r,g,b,a], "weight"?: 100-900, "align"?: "left"|"center"|"right", "wrap"?: 0-1, "outline"?: {"color": [r,g,b,a], "width": em} | null, "background"?: [r,g,b,a] | null, "radius"?: em, "gradient"?: [r,g,b,a] | null, "outer"?: {"color", "width"} | null, "shadow"?: {"color", "offset": [x, y] em, "blur": em} | null, "lineBoxes"?: bool, "font"?: id | null, "tracking"?: em, "leading"?: em, "italic"?: bool, "underline"?: bool, "karaoke"?: {"color"?: [r,g,b,a], "mode"?: "sweep"|"word"|"line", "start"?: time, "duration"?: time | null} | null, "template"?: id}"#,
         doc: "Places media, a library sticker, text, a drawn shape (`shape`, on a video track: see clip.setShape), a colour or an adjustment clip on a track; starts at the track's end unless `start` is given. Titles default to bold white with a black outline, wrapping at 90 % of the canvas. A sticker (sticker.library) is an image a third of the frame wide; `name` is what the project's media calls it (its English name by default). An adjustment clip shows nothing: its effects (`fx`) and colour work on the tracks below it while it lasts. `timeline` places another timeline of the project as a compound clip on a video track, from `sourceIn`.",
         edits: true,
         enabled: always,
-        run: clip_add,
+        run: clip_add_placed,
     },
     CommandSpec {
         id: "clip.split",
@@ -740,6 +740,33 @@ static REGISTRY: &[CommandSpec] = &[
         edits: true,
         enabled: always,
         run: crate::layout::layout_apply,
+    },
+    CommandSpec {
+        id: "beat.list",
+        label: "Beat Moves",
+        params: "{}",
+        doc: "What beat.apply can make a clip do on every beat: punch (jumps larger and settles), pulse (swells up to the beat and down between), shake, flash (goes bright), strobe (goes faint), tilt (kicks to alternate sides), bounce (hops) and squash (goes wide and flat and springs back). For each its id, name, the properties it keys (`props`) and `about`.",
+        edits: false,
+        enabled: always,
+        run: crate::beat::beat_list,
+    },
+    CommandSpec {
+        id: "beat.apply",
+        label: "Move On Beat",
+        params: r#"{"clips": [id], "move": "punch"|"pulse"|"shake"|"flash"|"strobe"|"tilt"|"bounce"|"squash", "strength"?: 0-1, "every"?: 1-16, "offset"?: 0-15, "bpm"?: 20-400, "first"?: time, "at"?: [time]}"#,
+        doc: "Makes clips move in time with the music (剪映's 卡点): at every beat that falls within a clip, writes the keys of a `move` (beat.list says what each looks like), `strength` 0.5 as designed, 1 twice as far. The beat is the timeline's beat markers, the ones audio.beats puts on the music; or a tempo, `bpm` with the time of its `first` beat (0 unless told), when the tempo is known and nothing has been listened to; or the times themselves in `at`. `every` 2 takes every second beat (4 for the first of each bar in four-four), `offset` leaves out that many beats first. The keys are ordinary keys of the properties the move names, measured from the clip's own place, size and look, and they replace the keys those properties had (so a second move of another kind adds to the first, and the same kind again replaces it); change them with clip.setKey or take them off with clip.clearKeys. Titles, shapes and stickers move as well as pictures; `flash` is for video, picture and compound clips, and a clip on a path takes no `shake` or `bounce`. The answer says how many beats each clip met. One undo step.",
+        edits: true,
+        enabled: always,
+        run: crate::beat::beat_apply,
+    },
+    CommandSpec {
+        id: "beat.cut",
+        label: "Cut On Beat",
+        params: r#"{"clips": [id], "every"?: 1-16, "offset"?: 0-15, "from"?: time, "move"?: move, "strength"?: 0-1, "bpm"?: 20-400, "first"?: time, "at"?: [time]}"#,
+        doc: "Lays clips of one track end to end so that every cut is on a beat (a 卡点 montage): in the order given, starting `from` a time (where the earliest of them starts unless told), each clip runs to the next beat that counts and the following one starts there. The beat is given as for beat.apply: the timeline's beat markers, or `bpm` and `first`, or `at`; `every` 2 gives each clip two beats, counted from the start (when that is not on a beat, the first clip runs to the second beat after it), and `offset` leaves beats out first. A clip is made shorter from its end, and a picture, title or shape longer; a video too short to reach its beat ends on the last beat it does reach, and is refused when it reaches none. Clips left when the beats run out follow at their own length. With `move`, every clip also arrives with that beat move once, at its cut (punch and flash are the usual ones), `strength` as for beat.apply. Other clips on the track are not moved: the command is refused when one is in the way. The answer lists each clip's `start` and `duration`, and `onBeat`, how many cuts landed on a beat. One undo step.",
+        edits: true,
+        enabled: always,
+        run: crate::beat::beat_cut,
     },
     CommandSpec {
         id: "clip.setVoice",
@@ -1790,6 +1817,29 @@ fn track_add(s: &mut Session, v: &Value) -> CmdResult {
 }
 
 const STILL_LENGTH: Tick = Tick(5 * reelforge_time::TICKS_PER_SECOND);
+
+/// What clip.add takes that clip.set sets once the clip is there: a stretch, a turn in space, an
+/// anchor, motion blur. One undo step with the add.
+const ADD_THEN_SET: [&str; 8] =
+    ["scaleX", "scaleY", "rotationX", "rotationY", "perspective", "motionBlur", "anchorX", "anchorY"];
+
+fn clip_add_placed(s: &mut Session, v: &Value) -> CmdResult {
+    let later: serde_json::Map<String, Value> = ADD_THEN_SET
+        .iter()
+        .filter_map(|k| Some((k.to_string(), v.get(*k).filter(|x| !x.is_null())?.clone())))
+        .collect();
+    if later.is_empty() {
+        return clip_add(s, v);
+    }
+    one_step(s, "Add Clip", |s| {
+        let added = clip_add(s, v)?;
+        let mut set = Value::Object(later);
+        set["clip"] = added["clip"].clone();
+        set["at"] = added["start"].clone();
+        clip_set(s, &set)?;
+        Ok(added)
+    })
+}
 
 fn clip_add(s: &mut Session, v: &Value) -> CmdResult {
     let p = P::new(v, fps(s));

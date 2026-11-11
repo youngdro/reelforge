@@ -935,6 +935,54 @@ fn selected_pictures_are_laid_out_from_the_lowest_track_up() {
 }
 
 #[test]
+fn selected_clips_move_and_are_cut_on_the_marked_beats() {
+    use crate::timeline::{Action, Select};
+    use reelforge_model::{Prop, TrackKind};
+    let mut app = EditorApp::new(Session::default());
+    app.lang = crate::i18n::Lang::Zh;
+    let track = first_track(&app, TrackKind::Video);
+    let mut clips = vec![];
+    for i in 0..3 {
+        let at = json!({"track": track, "color": [1, 0, 0], "start": {"seconds": 1.4 * i as f64}, "duration": {"seconds": 1.4}});
+        clips.push(app.execute("clip.add", at).unwrap()["clip"].as_str().unwrap().to_string());
+    }
+    // with no beat marked yet, nothing changes and the status line says what to do first
+    app.select(Select::Set(clips.clone()));
+    let before = app.project().clone();
+    app.act(Action::Beat("punch"));
+    app.act(Action::BeatCut);
+    assert_eq!(app.project(), before);
+    assert!(app.status.contains("踩点"), "{}", app.status);
+
+    for i in 0..6 {
+        app.execute("marker.add", json!({"at": {"seconds": i as f64}, "note": reelforge_engine::listen::BEAT}))
+            .unwrap();
+    }
+    // chosen in any order, cut in the order they are on the track: a second each
+    app.select(Select::Set(vec![clips[2].clone(), clips[0].clone(), clips[1].clone()]));
+    app.act(Action::BeatCut);
+    let p = app.project();
+    let spans: Vec<(f64, f64)> =
+        clips.iter().map(|c| p.clip(c).unwrap().1).map(|c| (c.start.seconds(), c.duration.seconds())).collect();
+    assert_eq!(spans, [(0.0, 1.0), (1.0, 1.0), (2.0, 1.0)]);
+    assert!(app.status.contains('3'), "{}", app.status);
+    // and each jumps larger where a beat falls within it
+    app.act(Action::Beat("punch"));
+    let p = app.project();
+    assert!(clips.iter().all(|c| p.clip(c).unwrap().1.value_at(Prop::Scale, reelforge_time::Tick::ZERO) > 1.1));
+    assert!(app.status.contains("缩放冲击"), "{}", app.status);
+    // every move is named in every language, and found in the palette
+    for lang in crate::i18n::Lang::ALL {
+        let s = lang.strings();
+        assert_eq!(s.beat_names.len(), reelforge_engine::BEAT_MOVES.len());
+        assert!(s.beat_names.iter().all(|n| !n.is_empty()) && s.beat_done.contains("{}"));
+        assert!(s.beat_cut_done.contains("{}") && !s.beat_none.is_empty() && !s.beat_cut.is_empty());
+    }
+    let words = app.palette_entries();
+    assert!(words.len() > reelforge_engine::BEAT_MOVES.len() + reelforge_engine::LAYOUTS.len());
+}
+
+#[test]
 fn a_group_is_chosen_as_one_and_a_compound_clip_is_opened_and_left() {
     use crate::timeline::{Action, Select};
     use reelforge_model::TrackKind;
@@ -1080,12 +1128,12 @@ fn the_palette_finds_actions_titles_and_markers_and_does_what_is_chosen() {
     let at = Tick::from_seconds(2.0);
     let added = app.execute("clip.add", json!({"track": text, "text": "Hello there", "start": at})).unwrap();
     let title = added["clip"].as_str().unwrap().to_string();
-    app.execute("marker.add", json!({"at": Tick::from_seconds(1.0), "note": "beat"})).unwrap();
+    app.execute("marker.add", json!({"at": Tick::from_seconds(1.0), "note": "chorus"})).unwrap();
 
     let entries = app.palette_entries();
     let find = |label: &str| entries.iter().find(|e| e.label.contains(label)).unwrap_or_else(|| panic!("{label}"));
     assert_eq!(find("Hello there").run, Run::Clip(title.clone(), at));
-    assert_eq!(find("beat").run, Run::Seek(Tick::from_seconds(1.0)));
+    assert_eq!(find("chorus").run, Run::Seek(Tick::from_seconds(1.0)));
     // nothing is selected yet: there is nothing to delete, and one clip is no group
     assert!(!find("Duplicate").enabled);
     assert!(find("Split").enabled);

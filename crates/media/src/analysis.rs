@@ -160,7 +160,8 @@ pub fn beats(sound: &[f32], rate: u32) -> Option<Beats> {
     let bend = l - 2.0 * m + r;
     let period = (lo - 1 + best) as f32 + if bend < 0.0 { (0.5 * (l - r) / bend).clamp(-0.5, 0.5) } else { 0.0 };
     // the comb that collects the most
-    let teeth = |phase: f32| (0..).map(move |k| phase + k as f32 * period).take_while(|t| (*t as usize) < frames);
+    let teeth =
+        |phase: f32| (0..).map(move |k| phase + k as f32 * period).take_while(|t| (t.max(0.0) as usize) < frames);
     let phase = (0..period.ceil() as usize)
         .map(|p| p as f32)
         .max_by(|a, b| {
@@ -169,11 +170,14 @@ pub fn beats(sound: &[f32], rate: u32) -> Option<Beats> {
         })
         .unwrap_or(0.0);
     let reach = (period / 10.0) as usize;
+    // a song that opens on a beat has nothing to rise from there: when the comb's first tooth is
+    // a whole period in, there is one at the very start too
+    let phase = if phase - period >= -(reach as f32) { phase - period } else { phase };
     let clear = 0.2 * flux.iter().copied().fold(0.0f32, f32::max);
     let mut on = 0;
     let at: Vec<i64> = teeth(phase)
         .map(|t| {
-            let t = t.round() as usize;
+            let t = t.round().max(0.0) as usize;
             let (a, b) = (t.saturating_sub(reach), (t + reach + 1).min(frames));
             let strongest = (a..b).max_by(|x, y| flux[*x].total_cmp(&flux[*y])).unwrap_or(t);
             on += usize::from(flux[strongest] > clear);
@@ -469,6 +473,20 @@ mod tests {
             assert!(on as f32 >= found.at.len() as f32 * 0.9, "{bpm}: {on} of {}", found.at.len());
             assert!(found.at.len() as f32 >= (secs - 0.6) / gap * 0.9, "{bpm}: {}", found.at.len());
         }
+        // a song that opens on a beat has that beat too: the first is at its very start (a
+        // tempo that is not a whole number of frames, so that no comb falls on it by chance)
+        let gap = (RATE as f32 * 60.0 / 119.9) as usize;
+        let mut song = vec![0f32; gap * 16];
+        for k in 0..16 {
+            for j in 0..4800 {
+                let env = (-(j as f32) / 900.0).exp();
+                song[k * gap + j] += 0.8 * env * (std::f32::consts::TAU * 60.0 * j as f32 / RATE as f32).sin();
+            }
+        }
+        let found = beats(&song, RATE).expect("a beat");
+        assert!((found.bpm - 120.0).abs() < 2.0, "{}", found.bpm);
+        assert!(found.at[0] < RATE as i64 / 30 && found.at.len() == 16, "{:?}", found.at);
+        assert!(found.at.iter().enumerate().all(|(k, b)| (b - (k * gap) as i64).abs() < RATE as i64 / 30));
         // a steady tone has no beat, and a moment is too short to tell
         assert_eq!(beats(&tone(440.0, 0.5, 6.0), RATE), None);
         assert_eq!(beats(&tone(440.0, 0.5, 0.5), RATE), None);

@@ -300,7 +300,55 @@ pub fn input_schema(id: &str) -> Option<Value> {
         "commands.list" | "project.inspect" | "project.outline" | "project.new" | "edit.undo" | "edit.redo"
         | "title.templates" | "sound.library" | "timeline.list" | "fx.list" | "sticker.library" | "voice.list"
         | "template.list" | "template.slots" | "promo.list" | "brand.get" | "decor.list" | "layout.list"
-        | "script.list" => object(vec![], &[]),
+        | "script.list" | "beat.list" => object(vec![], &[]),
+        "beat.apply" | "beat.cut" => {
+            let moves: Vec<&str> = crate::beat::MOVES.iter().map(|m| m.id).collect();
+            let cut = id == "beat.cut";
+            let mut props = vec![
+                (
+                    "clips",
+                    json!({"type": "array", "items": {"type": "string"}, "minItems": 1, "description": if cut {
+                        "The clips, all on one track, in the order they are to follow one another."
+                    } else {
+                        "The clips to move: anything that is seen."
+                    }}),
+                ),
+                (
+                    "move",
+                    json!({"enum": moves, "description": if cut {
+                        "A beat move every clip arrives with, once, at its cut; none unless given."
+                    } else {
+                        "What the clips do on each beat; beat.list says what each looks like."
+                    }}),
+                ),
+                ("strength", num("How far the move goes, 0 to 1; 0.5 is the move as designed.")),
+                (
+                    "every",
+                    json!({"type": "integer", "minimum": 1, "maximum": 16, "description": if cut {
+                        "How many beats each clip takes; 1 by default."
+                    } else {
+                        "Every how many beats the clips move; 1 by default, 4 for the first of each bar in four-four."
+                    }}),
+                ),
+                (
+                    "offset",
+                    json!({"type": "integer", "minimum": 0, "maximum": 15, "description": "How many beats to leave out first; 0 by default."}),
+                ),
+                ("bpm", num("A tempo to use in place of the timeline's beat markers, in beats a minute, 20 to 400.")),
+                ("first", time("With `bpm`: when the first beat is; 0 by default.")),
+                (
+                    "at",
+                    json!({"type": "array", "items": time("A beat."), "minItems": 1, "description": "The beats themselves, in place of the timeline's beat markers."}),
+                ),
+            ];
+            if cut {
+                props.push((
+                    "from",
+                    time("Where the first clip starts; where the earliest of the clips starts by default."),
+                ));
+            }
+            object(props, if cut { &["clips"] } else { &["clips", "move"] })
+        }
         "layout.apply" => object(
             vec![
                 (
@@ -568,6 +616,11 @@ pub fn input_schema(id: &str) -> Option<Value> {
             &["track"],
         ),
         "clip.add" => {
+            // a stretch, a turn in space, an anchor and motion blur, as clip.set says them
+            let set = input_schema("clip.set").expect("clip.set has a schema");
+            let placed =
+                ["scaleX", "scaleY", "rotationX", "rotationY", "perspective", "motionBlur", "anchorX", "anchorY"]
+                    .map(|k| (k, set["properties"][k].clone()));
             let mut props = vec![
                 ("track", ident("Track id, such as t1 (project.inspect lists them).")),
                 ("start", time("Timeline start; the end of the track by default.")),
@@ -611,6 +664,7 @@ pub fn input_schema(id: &str) -> Option<Value> {
                 ),
             ];
             props.extend(title_props());
+            props.extend(placed);
             object(props, &["track"])
         }
         "clip.setFx" => object(

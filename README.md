@@ -76,6 +76,12 @@ compare slider, where the second picture shows only past a divider that travels 
 and after). Each clip is cropped about its middle to the shape of its cell and scaled to fill it, so
 nothing is squashed; `clip.setCrop` reframes it inside. In the editor select the clips and pick Layout
 from a clip's menu, or from the command palette.
+Clips keep time with the music (卡点): `audio.beats` marks the beats of a song, `beat.cut` lays clips
+end to end so that every cut is on one (two beats each with `every: 2`), and `beat.apply` makes a clip
+do something on every beat: punch in, pulse, shake, flash, strobe, tilt, bounce or squash. A tempo
+(`bpm`, `first`) or the times themselves (`at`) stand in for the markers when the beat is already known.
+A move is written as ordinary keyframes, so it can be edited or cleared afterwards. In the editor
+select the clips and pick On the beat from a clip's menu, or from the command palette.
 A shaky shot is held steady (防抖): `clip.stabilize` watches the frames a video clip shows, follows how the
 camera moved from each to the next, and keeps that path with the clip; the picture is then moved and
 turned against the shake and drawn just large enough that its edges stay out of sight. How much goes
@@ -181,10 +187,6 @@ cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t1", "m
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t2", "text": "第一句字幕", "size": 72, "start": {"seconds": 0.5}, "duration": {"seconds": 2}}' --save
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setAnimation '{"clip": "c6", "slot": "in", "kind": "pop"}' --save
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setAnimation '{"clip": "c6", "slot": "loop", "kind": "wave"}' --save   # its characters, round and round
-<<<<<<< HEAD
-cargo run -q -p reelforge-cli -- exec cut.reel.json promo.add '{"kind": "priceTag", "value": 129.9, "y": -0.2}' --save   # a price tag whose price counts up (promo.list has the others)
-cargo run -q -p reelforge-cli -- call script.add -p cut.reel.json source=@docs/examples/price-card.js start=2s   # motion written as code: a script builds keyframed clips (docs/scripts.md)
-=======
 cargo run -q -p reelforge-cli -- exec cut.reel.json promo.add '{"kind": "priceTag", "value": 129.9, "y": -0.2}' --save   # a price tag whose price counts up (promo.list has the other 36: coupons, checklists, ratings, buy buttons, end cards, a product card that swings in with your picture on it, a product lifted off its photograph and stood in a pool of light…)
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setCutout '{"clip": "c5"}' --save   # a product photo on a white or studio backdrop: the backdrop goes, the product stays
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setShadow '{"clip": "c5", "kind": "ground"}' --save   # and stands on its own shadow (drop, ground, long, glow)
@@ -194,9 +196,11 @@ cargo run -q -p reelforge-cli -- exec cut.reel.json promo.set '{"clip": "c9", "l
 cargo run -q -p reelforge-cli -- exec ad.reel.json storyboard.apply '{"storyboard": "flashSale", "copy": {"price": 59, "oldPrice": 89}}' --save   # a whole flash-sale video planned ahead: scenes, pieces, music (storyboard.list has twelve)
 cargo run -q -p reelforge-cli -- exec ad.reel.json storyboard.fill '{"copy": {"discount": "直降 30 元", "stock": 12}}' --save   # other copy: every piece written from it is made again
 cargo run -q -p reelforge-cli -- exec ad.reel.json layout.apply '{"layout": "compare", "clips": ["c1", "c2"]}' --save   # before and after: c2, on the track above, shows past a divider that slides across c1 (layout.list has columns, rows, grid, focus, pip)
+cargo run -q -p reelforge-cli -- exec ad.reel.json beat.cut '{"clips": ["c1", "c2", "c3", "c4"], "every": 2, "move": "punch"}' --save   # a montage on the beat: each clip two beats long, arriving with a punch (the beat is the markers audio.beats left; or give "bpm": 120)
+cargo run -q -p reelforge-cli -- exec ad.reel.json beat.apply '{"clips": ["c7"], "move": "squash", "every": 4}' --save   # the price tag squashes on the first beat of every bar (beat.list has punch, pulse, shake, flash, strobe, tilt, bounce)
 cargo run -q -p reelforge-cli -- exec ad.reel.json decor.add '{"decor": "confettiBurst", "start": {"seconds": 12}}' --save   # confetti over the closing scene, in the brand's colours (decor.list has twenty animated decorations)
 cargo run -q -p reelforge-cli -- exec ad.reel.json decor.add '{"decor": "circleMark", "start": {"seconds": 6}, "x": 0.1, "y": 0.2, "color": [1, 0.8, 0.2]}' --save   # a ring drawn by hand round the price
->>>>>>> origin/main
+cargo run -q -p reelforge-cli -- call script.add -p cut.reel.json source=@docs/examples/price-card.js start=2s   # motion written as code: a script builds keyframed clips (docs/scripts.md)
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.add '{"track": "t1", "shape": {"kind": "star", "points": 16, "inner": 0.8, "size": [300, 300], "fill": {"type": "radial", "from": [1, 0.8, 0.2], "to": [1, 0.4, 0]}}}' --save   # a shape of your own
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setKey '{"clip": "c5", "prop": "scale", "at": {"seconds": 4}, "value": 1.3, "ease": "inOut"}' --save
 cargo run -q -p reelforge-cli -- exec cut.reel.json clip.setEase '{"clip": "c5", "at": {"seconds": 4}, "ease": [0.3, 1.5, 0.6, 1]}' --save   # on from that key: past the next one and back
